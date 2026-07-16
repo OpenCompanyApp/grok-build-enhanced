@@ -20,6 +20,15 @@ The tool implementations under `src/implementations/codex/` (`apply_patch`,
 [openai/codex](https://github.com/openai/codex) project
 (`codex-rs/core/src/tools/handlers/`).
 
+The ChatGPT Codex backend branches under
+`src/implementations/grok_build/image_gen/` and
+`src/implementations/grok_build/image_edit/` adapt the current public client
+contract and image handling from `codex-rs/codex-api/src/endpoint/images.rs`,
+`codex-rs/ext/image-generation/src/tool.rs`, and
+`codex-rs/utils/image/src/lib.rs`. They have been substantially modified for
+Grok Build's tool runtime, provider-scoped dynamic authentication, local media
+storage, response limits, sandbox-aware reads, and one-shot recovery.
+
 Copyright 2025 OpenAI
 
 Licensed under the Apache License, Version 2.0 (the "License");

@@ -770,18 +770,29 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Xhigh,
+    /// Codex catalog tier above `xhigh`.
+    Max,
+    /// Codex catalog tier above `max`.
+    Ultra,
 }
 
 impl ReasoningEffort {
-    pub fn to_responses_api(self) -> crate::rs::ReasoningEffort {
-        match self {
+    /// Convert to the subset represented by the pinned `async-openai` type.
+    ///
+    /// `max` and `ultra` are current Codex catalog values but are not yet
+    /// variants of `async_openai::types::responses::ReasoningEffort`. The
+    /// sampler carries those values separately and injects them at the Codex
+    /// JSON wire boundary rather than silently degrading them to `xhigh`.
+    pub fn to_responses_api(self) -> Option<crate::rs::ReasoningEffort> {
+        Some(match self {
             Self::None => crate::rs::ReasoningEffort::None,
             Self::Minimal => crate::rs::ReasoningEffort::Minimal,
             Self::Low => crate::rs::ReasoningEffort::Low,
             Self::Medium => crate::rs::ReasoningEffort::Medium,
             Self::High => crate::rs::ReasoningEffort::High,
             Self::Xhigh => crate::rs::ReasoningEffort::Xhigh,
-        }
+            Self::Max | Self::Ultra => return None,
+        })
     }
 
     /// Inverse of [`to_responses_api`](Self::to_responses_api): the effort the
@@ -805,6 +816,8 @@ impl ReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Xhigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
         }
     }
 
@@ -816,6 +829,8 @@ impl ReasoningEffort {
             Self::Medium => Some("medium"),
             Self::High => Some("high"),
             Self::Xhigh => Some("max"),
+            Self::Max => Some("max"),
+            Self::Ultra => None,
         }
     }
 }
@@ -836,15 +851,17 @@ impl std::str::FromStr for ReasoningEffort {
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
-            "xhigh" | "max" => Ok(Self::Xhigh), // max is a CLI/UX alias of xhigh
+            "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
             _ => Err(format!(
-                "invalid reasoning effort: {s:?} (expected one of: none, minimal, low, medium, high, xhigh, max)"
+                "invalid reasoning effort: {s:?} (expected one of: none, minimal, low, medium, high, xhigh, max, ultra)"
             )),
         }
     }
 }
 
-/// Canonical wire parse only (`max` → `Xhigh`); remapped menu ids need a model catalog.
+/// Canonical wire parse only; remapped menu ids need a model catalog.
 pub fn parse_canonical_effort_token(token: &str) -> Option<ReasoningEffort> {
     token.parse().ok()
 }
@@ -869,14 +886,14 @@ pub fn parse_reasoning_effort_meta(
     let s = match raw.as_str() {
         Some(s) => s,
         None => {
-            tracing::warn!(value = %raw, "meta.reasoningEffort: expected string, ignoring");
+            tracing::warn!("meta.reasoningEffort: expected string, ignoring");
             return None;
         }
     };
     match s.parse() {
         Ok(eff) => Some(eff),
-        Err(err) => {
-            tracing::warn!(value = %s, error = %err, "meta.reasoningEffort: parse failed, ignoring");
+        Err(_) => {
+            tracing::warn!("meta.reasoningEffort: unknown value, ignoring");
             None
         }
     }
@@ -972,15 +989,16 @@ impl<'de> serde::Deserialize<'de> for ReasoningEffortOption {
 /// shared by the meta reader and the remote `/models` parser.
 pub fn parse_reasoning_effort_options(arr: &[serde_json::Value]) -> Vec<ReasoningEffortOption> {
     arr.iter()
-        .filter_map(
-            |el| match serde_json::from_value::<ReasoningEffortOption>(el.clone()) {
+        .enumerate()
+        .filter_map(|(index, el)| {
+            match serde_json::from_value::<ReasoningEffortOption>(el.clone()) {
                 Ok(opt) => Some(opt),
-                Err(err) => {
-                    tracing::warn!(value = %el, error = %err, "reasoningEfforts: skipping invalid entry");
+                Err(_) => {
+                    tracing::warn!(index, "reasoningEfforts: skipping invalid entry");
                     None
                 }
-            },
-        )
+            }
+        })
         .collect()
 }
 
@@ -995,7 +1013,7 @@ pub fn parse_reasoning_efforts_meta(
     let arr = match raw.as_array() {
         Some(arr) => arr,
         None => {
-            tracing::warn!(value = %raw, "meta.reasoningEfforts: expected array, ignoring");
+            tracing::warn!("meta.reasoningEfforts: expected array, ignoring");
             return None;
         }
     };
@@ -1032,6 +1050,16 @@ impl ApiBackend {
 /// Sampling client configuration (API key excluded — that stays in the client).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SamplingConfig {
+    /// Provider owning this model and every credential used for it. This is
+    /// persisted with chat state so resumed sessions never infer auth routing
+    /// from a URL.
+    #[serde(default)]
+    pub provider: crate::ProviderId,
+    /// Non-secret credential binding persisted alongside the provider. The
+    /// record ID is opaque and the generation is monotonic; neither is derived
+    /// from credential or account material.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_binding: Option<crate::CredentialBinding>,
     pub base_url: String,
     pub model: String,
     pub max_completion_tokens: Option<u32>,
@@ -1083,6 +1111,12 @@ pub struct CreateResponseWrapper {
     /// `async_openai`'s `rs::Tool` enum (e.g., `x_search`). Injected
     /// as raw JSON into the serialized request body's `tools` array.
     pub extra_raw_tools: Vec<serde_json::Value>,
+
+    /// Canonical reasoning effort selected for this request. The typed
+    /// `async-openai` request already carries values through `xhigh`; this
+    /// side channel preserves newer Codex-only `max`/`ultra` values until the
+    /// sampler's provider-aware JSON serialization boundary.
+    pub wire_reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl CreateResponseWrapper {
@@ -1099,6 +1133,7 @@ impl CreateResponseWrapper {
             x_grok_user_id: None,
             trace: None,
             extra_raw_tools: vec![],
+            wire_reasoning_effort: None,
         }
     }
 
@@ -1207,6 +1242,8 @@ mod tests {
             ReasoningEffort::Medium,
             ReasoningEffort::High,
             ReasoningEffort::Xhigh,
+            ReasoningEffort::Max,
+            ReasoningEffort::Ultra,
         ] {
             let json = serde_json::to_string(&v).unwrap();
             assert_eq!(json, format!("\"{}\"", v.as_str()), "serialize {v:?}");
@@ -1214,31 +1251,42 @@ mod tests {
             assert_eq!(back, v, "round-trip {v:?}");
         }
         assert!(serde_json::from_str::<ReasoningEffort>("\"BOGUS\"").is_err());
-        assert!(serde_json::from_str::<ReasoningEffort>("\"max\"").is_err());
     }
 
     #[test]
-    fn reasoning_effort_from_str_accepts_max_as_xhigh() {
+    fn reasoning_effort_from_str_preserves_extended_codex_levels() {
         assert_eq!(
             "max".parse::<ReasoningEffort>().unwrap(),
-            ReasoningEffort::Xhigh
+            ReasoningEffort::Max
         );
         assert_eq!(
             "MAX".parse::<ReasoningEffort>().unwrap(),
-            ReasoningEffort::Xhigh
+            ReasoningEffort::Max
         );
         assert_eq!(
             "xhigh".parse::<ReasoningEffort>().unwrap(),
             ReasoningEffort::Xhigh
         );
+        assert_eq!(
+            "ultra".parse::<ReasoningEffort>().unwrap(),
+            ReasoningEffort::Ultra
+        );
         assert_eq!(ReasoningEffort::Xhigh.as_str(), "xhigh");
+        assert_eq!(ReasoningEffort::Max.as_str(), "max");
+        assert_eq!(ReasoningEffort::Ultra.as_str(), "ultra");
+        assert_eq!(ReasoningEffort::Max.to_responses_api(), None);
+        assert_eq!(ReasoningEffort::Ultra.to_responses_api(), None);
     }
 
     #[test]
     fn parse_canonical_effort_token_helper() {
         assert_eq!(
             parse_canonical_effort_token("max"),
-            Some(ReasoningEffort::Xhigh)
+            Some(ReasoningEffort::Max)
+        );
+        assert_eq!(
+            parse_canonical_effort_token("ultra"),
+            Some(ReasoningEffort::Ultra)
         );
         assert_eq!(
             parse_canonical_effort_token("high"),
@@ -1398,7 +1446,12 @@ mod tests {
         );
         let bad_type = as_map(serde_json::json!({"reasoningEffort": 3}));
         assert_eq!(parse_reasoning_effort_meta(Some(&bad_type)), None);
-        let unknown = as_map(serde_json::json!({"reasoningEffort": "ULTRA"}));
+        let ultra = as_map(serde_json::json!({"reasoningEffort": "ULTRA"}));
+        assert_eq!(
+            parse_reasoning_effort_meta(Some(&ultra)),
+            Some(ReasoningEffort::Ultra)
+        );
+        let unknown = as_map(serde_json::json!({"reasoningEffort": "quantum"}));
         assert_eq!(parse_reasoning_effort_meta(Some(&unknown)), None);
     }
 

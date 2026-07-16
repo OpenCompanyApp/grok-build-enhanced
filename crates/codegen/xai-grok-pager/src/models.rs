@@ -3,7 +3,7 @@
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 use xai_grok_shell::agent::config::Config as AgentConfig;
-use xai_grok_shell::cli_models::{AuthStatus, list_models};
+use xai_grok_shell::cli_models::{AuthStatus, list_codex_subscription_models, list_models};
 
 use crate::client_identity::{PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 
@@ -36,5 +36,36 @@ pub async fn list_available_models(agent_config: &AgentConfig) -> Result<()> {
     }
 
     cancel.cancel();
+    Ok(())
+}
+
+/// List only models advertised to the authenticated ChatGPT Codex account.
+///
+/// Unlike the default xAI path this does not start an ACP agent just to obtain
+/// model state: Codex discovery has its own authenticated catalog endpoint and
+/// provider-scoped 401 recovery.
+pub async fn list_available_codex_models() -> Result<()> {
+    let state = list_codex_subscription_models().await?;
+
+    println!("You are logged in with ChatGPT Codex.");
+    println!();
+    if let Some(default_model_id) = state.default_model_id.as_deref() {
+        println!("Default model: {default_model_id}");
+    } else {
+        println!("Default model: (none)");
+    }
+    println!();
+    println!("Available models:");
+    if state.available_models.is_empty() {
+        println!("  (none advertised for this account)");
+    }
+    for model in state.available_models {
+        if state.default_model_id.as_deref() == Some(model.id.as_str()) {
+            println!("  * {} (default)", model.id);
+        } else {
+            println!("  - {}", model.id);
+        }
+    }
+
     Ok(())
 }

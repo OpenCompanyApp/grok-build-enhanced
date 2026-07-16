@@ -700,7 +700,7 @@ async fn migrate_devbox_auth_if_legacy(
         "devbox legacy auth migration: starting",
         None,
         Some(serde_json::json!({
-            "user_id": auth.user_id,
+            "has_user_id": !auth.user_id.is_empty(),
             "auth_mode": format!("{:?}", auth.auth_mode),
         })),
     );
@@ -735,13 +735,16 @@ async fn migrate_devbox_auth_if_legacy(
                 "devbox legacy auth migration: succeeded",
                 None,
                 Some(serde_json::json!({
-                    "user_id": saved_auth.user_id,
+                    "has_user_id": !saved_auth.user_id.is_empty(),
                     "has_refresh_token": saved_auth.refresh_token.is_some(),
                     "expires_at": saved_auth.expires_at.map(|e| e.to_rfc3339()),
                     "auth_mode": format!("{:?}", saved_auth.auth_mode),
                 })),
             );
-            info!(user_id = %saved_auth.user_id, "Devbox legacy auth migrated to OIDC successfully");
+            info!(
+                has_user_id = !saved_auth.user_id.is_empty(),
+                "Devbox legacy auth migrated to OIDC successfully"
+            );
             Some(saved_auth)
         }
         Err(e) => {
@@ -1402,7 +1405,7 @@ pub async fn run_leader(
             // Gated on user_grok_home() so a cwd-relative .grok/auth.json is never
             // read as the user auth store when no home resolves.
             let initial_auth_key_hash = xai_grok_config::user_grok_home()
-                .map(|g| g.join("auth.json"))
+                .map(|g| crate::auth::resolved_auth_path(&g))
                 .and_then(|auth_path| crate::auth::read_auth_json(&auth_path).ok())
                 .and_then(|store| {
                     crate::auth::lookup_auth(&store, &auth_scope)
@@ -1487,7 +1490,7 @@ pub async fn run_leader(
                     match update {
                         ConfigUpdate::Auth(auth) => {
                             info!(
-                                key_len = auth.key.len(),
+                                credential_present = !auth.key.is_empty(),
                                 expires_at = ?auth.expires_at,
                                 "Auth token hot-reloaded from config watcher"
                             );
@@ -1495,7 +1498,7 @@ pub async fn run_leader(
                                 "auth hot-swapped from disk",
                                 None,
                                 Some(serde_json::json!({
-                                    "key_len": auth.key.len(),
+                                    "credential_present": !auth.key.is_empty(),
                                     "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
                                 })),
                             );
@@ -1529,6 +1532,14 @@ pub async fn run_leader(
                                 None,
                             );
                             info!("Auth cleared by config watcher");
+                        }
+                        ConfigUpdate::OpenAiCodexAuthChanged => {
+                            info!(
+                                "OpenAI Codex auth identity changed — refreshing provider catalog"
+                            );
+                            models_manager_for_config
+                                .on_openai_codex_auth_changed()
+                                .await;
                         }
                         ConfigUpdate::McpServersChanged => {
                             info!("MCP server config change detected — reloading active sessions");

@@ -919,6 +919,23 @@ fn show_usage_with_redirect_url_shows_link_and_skips_fetch() {
     );
 }
 
+#[test]
+fn show_usage_codex_session_ignores_xai_billing_redirect() {
+    let mut app = test_app_with_agent();
+    app.usage_billing_redirect_url = Some("https://billing.example.com/me".to_string());
+    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+    agent.session.models.current = Some(agent_client_protocol::ModelId::new(
+        "openai-codex/gpt-5.6-sol",
+    ));
+
+    let effects = dispatch(Action::ShowUsage, &mut app);
+
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::FetchBilling { silent: false, .. }]
+    ));
+}
+
 // ── Minimal update-notice tests ──────────────────────────────────────
 
 #[test]

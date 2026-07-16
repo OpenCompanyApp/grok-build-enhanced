@@ -58,20 +58,19 @@ pub fn write_secure_file(path: &Path, contents: &[u8]) -> io::Result<()> {
     file.write_all(contents)?;
     file.flush()?;
 
-    // On Windows, we need to set permissions after file creation
-    #[cfg(windows)]
-    {
-        set_windows_secure_permissions(path)?;
-    }
-
     Ok(())
 }
 
-/// Opens a file for writing with secure permissions set during creation (Unix)
-/// or prepares it for permission setting after creation (Windows).
+/// Opens a file for writing only after owner-only permissions are in place.
+///
+/// The file is opened without truncation, hardened, and only then truncated.
+/// This ordering is important on Windows, where the initial empty file may
+/// briefly inherit its parent ACL: callers never write credential bytes until
+/// the protected DACL has been installed. Existing Unix files are also
+/// normalized to `0o600` instead of relying only on the create-time mode.
 pub fn open_secure_file(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
-    options.truncate(true).write(true).create(true);
+    options.write(true).create(true);
 
     #[cfg(unix)]
     {
@@ -79,7 +78,37 @@ pub fn open_secure_file(path: &Path) -> io::Result<File> {
         options.mode(0o600);
     }
 
-    options.open(path)
+    let file = options.open(path)?;
+    ensure_secure_file_permissions(&file, path)?;
+    file.set_len(0)?;
+    Ok(file)
+}
+
+/// Ensure an already-open file is owner-only before sensitive bytes are
+/// written. This is also used for collision-resistant temporary files created
+/// by `tempfile`, whose handle must remain under its cleanup guard.
+pub fn ensure_secure_file_permissions(file: &File, _path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_mode(0o600);
+        file.set_permissions(permissions)?;
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = file;
+        set_windows_secure_permissions(_path)?;
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (file, _path);
+    }
+
+    Ok(())
 }
 
 /// Sets Windows-specific secure permissions on a file.
@@ -227,5 +256,39 @@ mod tests {
         let mode = metadata.permissions().mode();
         // Check that only owner has read/write (0o600), ignoring file type bits
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_existing_unix_file_is_hardened_before_rewrite() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("existing.txt");
+        fs::write(&file_path, b"old content").unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut file = open_secure_file(&file_path).unwrap();
+        let mode = file.metadata().unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        file.write_all(b"new content").unwrap();
+        drop(file);
+        assert_eq!(fs::read(&file_path).unwrap(), b"new content");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_secure_acl_is_installed_before_caller_writes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("windows-secure.txt");
+
+        // `open_secure_file` does not return until SetNamedSecurityInfoW has
+        // installed the protected current-user DACL. The first caller write is
+        // therefore necessarily after ACL hardening.
+        let mut file = open_secure_file(&file_path).unwrap();
+        file.write_all(b"credential bytes").unwrap();
+        file.flush().unwrap();
+
+        assert_eq!(fs::read(&file_path).unwrap(), b"credential bytes");
     }
 }

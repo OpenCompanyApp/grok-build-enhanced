@@ -1570,6 +1570,65 @@ mod tests {
         .expect("agent should build for every pager-reachable flag combination")
     }
     #[tokio::test]
+    async fn unavailable_image_provider_keeps_stable_fail_closed_tool_facade() {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        use xai_grok_tools::implementations::grok_build::image_gen::{
+            ImageGenClient, ImageGenConfig,
+        };
+        use xai_grok_tools::notification::ToolNotificationHandle;
+
+        let agent = AgentBuilder::new(
+            std::env::temp_dir(),
+            Arc::new(LocalTerminalBackend::new()),
+            ToolNotificationHandle::noop(),
+        )
+        .from_definition(crate::config::AgentDefinition::default_grok_build())
+        .with_image_gen_config(ImageGenConfig::Unavailable {
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        })
+        .build()
+        .await
+        .expect("gate-only image facade should build");
+
+        let bridge = agent.tool_bridge();
+        let names = bridge
+            .tool_definitions()
+            .await
+            .into_iter()
+            .map(|definition| definition.function.name)
+            .collect::<Vec<_>>();
+        assert!(names.iter().any(|name| name == "image_gen"), "{names:?}");
+        assert!(names.iter().any(|name| name == "image_edit"), "{names:?}");
+        assert!(
+            bridge.read_resource::<ImageGenClient>().await.is_none(),
+            "facade must fail closed until the selected provider is callable"
+        );
+
+        let enabled = ImageGenConfig::Enabled {
+            api_key: "rotated-key".to_owned(),
+            base_url: "https://api.x.ai/v1".to_owned(),
+            extra_headers: Default::default(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+            model_override: None,
+            tier_restricted: false,
+        };
+        bridge
+            .update_resource(ImageGenClient::new(&enabled, None).unwrap())
+            .await;
+        assert!(bridge.read_resource::<ImageGenClient>().await.is_some());
+        bridge.remove_resource::<ImageGenClient>().await;
+        assert!(bridge.read_resource::<ImageGenClient>().await.is_none());
+        let names_after_switch = bridge
+            .tool_definitions()
+            .await
+            .into_iter()
+            .map(|definition| definition.function.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names_after_switch, names);
+    }
+    #[tokio::test]
     async fn pager_flag_combinations_satisfy_tool_invariants() {
         use crate::config::AgentDefinition;
         struct PagerFlagCase {

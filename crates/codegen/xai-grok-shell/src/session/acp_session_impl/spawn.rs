@@ -402,6 +402,8 @@ pub(crate) async fn spawn_session_actor(
         );
     }
     let chat_state_sampling_config = xai_grok_sampling_types::SamplingConfig {
+        provider: sampling_config.provider,
+        credential_binding: sampling_config.credential_binding.clone(),
         base_url: sampling_config.base_url.clone(),
         model: sampling_config.model.clone(),
         max_completion_tokens: sampling_config.max_completion_tokens,

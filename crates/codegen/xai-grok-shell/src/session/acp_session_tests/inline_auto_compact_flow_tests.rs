@@ -46,6 +46,8 @@ async fn create_test_actor(
     let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
+            provider: Default::default(),
+            credential_binding: None,
             base_url: "http://localhost".to_string(),
             model: "test".to_string(),
             max_completion_tokens: None,
@@ -357,6 +359,8 @@ async fn test_response_header_context_window_downgrade_rejected() {
             assert_eq!(cfg_before.context_window.get(), 500_000);
             actor
                 .handle_model_metadata_update(crate::sampling::ResponseModelMetadata {
+                    provider: xai_grok_sampling_types::ProviderId::Xai,
+                    credential_binding: None,
                     context_window: Some(256_000),
                     max_completion_tokens: None,
                     models_etag: None,
@@ -370,6 +374,8 @@ async fn test_response_header_context_window_downgrade_rejected() {
             );
             actor
                 .handle_model_metadata_update(crate::sampling::ResponseModelMetadata {
+                    provider: xai_grok_sampling_types::ProviderId::Xai,
+                    credential_binding: None,
                     context_window: Some(1_000_000),
                     max_completion_tokens: None,
                     models_etag: None,
@@ -477,6 +483,8 @@ async fn create_test_actor_with_memory(
     let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
+            provider: Default::default(),
+            credential_binding: None,
             base_url: "http://localhost".to_string(),
             model: "test".to_string(),
             max_completion_tokens: None,
@@ -1131,6 +1139,8 @@ fn api_error_with_context_window(context_window: u64) -> xai_grok_sampler::Sampl
         is_retryable: false,
         retry_after_secs: None,
         model_metadata: Some(crate::sampling::ResponseModelMetadata {
+            provider: xai_grok_sampling_types::ProviderId::Xai,
+            credential_binding: None,
             context_window: Some(context_window),
             max_completion_tokens: None,
             models_etag: None,
@@ -1228,6 +1238,8 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
             let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
                 vec![],
                 xai_grok_sampling_types::SamplingConfig {
+                    provider: Default::default(),
+                    credential_binding: None,
                     base_url: mock_url,
                     model: "test-model".to_string(),
                     max_completion_tokens: Some(8192),

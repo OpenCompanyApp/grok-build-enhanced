@@ -639,11 +639,12 @@ pub struct MvpAgent {
     pub(crate) gateway: GatewaySender,
     /// Agent configuration. LEADER-SAFE(init-once): never mutated after construction.
     pub(crate) cfg: RefCell<AgentConfig>,
-    /// Current auth method. LEADER-SAFE(shared): all clients share the same auth;
-    /// last authenticate() call wins, which is correct (same user, same creds).
-    /// Held as a shared live handle cloned into every running session so a
-    /// mid-session `authenticate` (`/login`) is observed by each session's
-    /// per-turn auth gate without re-spawning.
+    /// Current xAI auth method. LEADER-SAFE(shared): all clients share the same
+    /// xAI auth; the last xAI `authenticate()` call wins (same user, same
+    /// credentials). Held as a shared live handle cloned into every running
+    /// session so a mid-session xAI `/login` is observed by each xAI session's
+    /// per-turn auth gate without re-spawning. ChatGPT Codex auth is deliberately
+    /// provider-scoped and never stored here.
     pub(crate) auth_method_id: crate::agent::auth_method::SharedAuthMethodId,
     /// Global sampling config (API key + default base_url). LEADER-SAFE(shared):
     /// only api_key is written here (same for all clients). Per-session base_url
@@ -1263,9 +1264,8 @@ mod subagent_coordinator;
 mod agent_ops;
 mod acp_agent;
 pub(super) use super::ext_parsers;
-/// Emit the `auth.lifecycle` login span with optional user id and error
-/// category. Named `auth.lifecycle` (not `auth`) to avoid colliding with the
-/// pre-existing per-request `AuthManager::auth()` `#[instrument]` span.
+/// Emit the `auth.lifecycle` login span with credential-presence metadata and
+/// an optional error category. Account identifiers are never recorded.
 fn emit_login_span(
     success: bool,
     auth_method: &str,
@@ -1273,14 +1273,10 @@ fn emit_login_span(
     error_category: Option<&str>,
 ) {
     let span = tracing::info_span!(
-        "auth.lifecycle", action = "login", success, auth_method, user_id =
-        tracing::field::Empty, error_category = tracing::field::Empty,
+        "auth.lifecycle", action = "login", success, auth_method,
+        user_id_present = user_id.is_some_and(|u| !u.is_empty() &&
+        !u.eq_ignore_ascii_case("unknown")), error_category = tracing::field::Empty,
     );
-    if let Some(uid) = user_id
-        .filter(|u| !u.is_empty() && !u.eq_ignore_ascii_case("unknown"))
-    {
-        span.record("user_id", uid);
-    }
     if let Some(ec) = error_category {
         span.record("error_category", ec);
     }
@@ -1817,7 +1813,7 @@ impl MvpAgent {
                 None,
                 Some(
                     serde_json::json!(
-                        { "user_id" : user_id, "new_tier" : unblocked.new_tier, }
+                        { "user_id_present" : ! user_id.is_empty(), "new_tier" : unblocked.new_tier, }
                     ),
                 ),
             );
@@ -1845,7 +1841,7 @@ impl MvpAgent {
                     None,
                     Some(
                         serde_json::json!(
-                            { "user_id" : user_id, "new_tier" : unblocked.new_tier, }
+                            { "user_id_present" : ! user_id.is_empty(), "new_tier" : unblocked.new_tier, }
                         ),
                     ),
                 );
@@ -1865,7 +1861,9 @@ impl MvpAgent {
                     xai_grok_telemetry::unified_log::info(
                         "paywall_check_jwt_refreshed",
                         None,
-                        Some(serde_json::json!({ "user_id" : user_id })),
+                        Some(serde_json::json!({
+                            "user_id_present": !user_id.is_empty(),
+                        })),
                     );
                     true
                 }
@@ -1879,7 +1877,7 @@ impl MvpAgent {
                         None,
                         Some(
                             serde_json::json!(
-                                { "user_id" : user_id, "kind" :
+                                { "user_id_present" : ! user_id.is_empty(), "kind" :
                                 "post_unblock_refresh_failed", "detail" : e.to_string(), }
                             ),
                         ),
@@ -1899,7 +1897,7 @@ impl MvpAgent {
                 ));
             if jwt_matches_new_tier {
                 let models_manager = self.models_manager.clone();
-                let user_id_log = user_id.clone();
+                let user_id_present = !user_id.is_empty();
                 let new_tier = unblocked.new_tier.clone();
                 let jwt_claim_log = jwt_claim.clone();
                 tokio::task::spawn(async move {
@@ -1908,7 +1906,7 @@ impl MvpAgent {
                         None,
                         Some(
                             serde_json::json!(
-                                { "user_id" : user_id_log, "new_tier" : new_tier,
+                                { "user_id_present" : user_id_present, "new_tier" : new_tier,
                                 "refresh_ok" : refresh_ok, "jwt_claim" : jwt_claim_log,
                                 "jwt_matches_new_tier" : true, }
                             ),
@@ -1926,7 +1924,7 @@ impl MvpAgent {
                     None,
                     Some(
                         serde_json::json!(
-                            { "user_id" : user_id, "new_tier" : unblocked.new_tier,
+                            { "user_id_present" : ! user_id.is_empty(), "new_tier" : unblocked.new_tier,
                             "refresh_ok" : refresh_ok, "jwt_claim" : jwt_claim, }
                         ),
                     ),
@@ -1935,7 +1933,7 @@ impl MvpAgent {
                     self.auth_manager.clone(),
                     self.models_manager.clone(),
                     self.post_unblock_jwt_retry_in_flight.clone(),
-                    user_id.clone(),
+                    !user_id.is_empty(),
                     unblocked.new_tier.clone(),
                 );
             }
@@ -1943,7 +1941,9 @@ impl MvpAgent {
             xai_grok_telemetry::unified_log::info(
                 "paywall_check_no_subscription",
                 None,
-                Some(serde_json::json!({ "user_id" : user_id, })),
+                Some(serde_json::json!({
+                    "user_id_present": !user_id.is_empty(),
+                })),
             );
         }
     }
@@ -2510,7 +2510,7 @@ fn spawn_post_unblock_jwt_and_catalog_retry(
     auth_manager: std::sync::Arc<crate::auth::AuthManager>,
     models_manager: crate::agent::models::ModelsManager,
     in_flight: Arc<std::sync::atomic::AtomicBool>,
-    user_id: String,
+    user_id_present: bool,
     new_tier: String,
 ) {
     use std::sync::atomic::Ordering;
@@ -2524,7 +2524,10 @@ fn spawn_post_unblock_jwt_and_catalog_retry(
         xai_grok_telemetry::unified_log::info(
             "model catalog: post_subscription_unblock jwt retry skipped (already in flight)",
             None,
-            Some(serde_json::json!({ "user_id" : user_id, "new_tier" : new_tier, })),
+            Some(serde_json::json!({
+                "user_id_present": user_id_present,
+                "new_tier": new_tier,
+            })),
         );
         return;
     }
@@ -2576,7 +2579,6 @@ fn spawn_post_unblock_jwt_and_catalog_retry(
                     }
                 },
                 |attempt, max_retries, delay| {
-                    let user_id = user_id.clone();
                     let new_tier = new_tier.clone();
                     async move {
                         xai_grok_telemetry::unified_log::warn(
@@ -2584,7 +2586,7 @@ fn spawn_post_unblock_jwt_and_catalog_retry(
                             None,
                             Some(
                                 serde_json::json!(
-                                    { "user_id" : user_id, "new_tier" : new_tier, "attempt" :
+                                    { "user_id_present" : user_id_present, "new_tier" : new_tier, "attempt" :
                                     attempt, "max_retries" : max_retries, "delay_ms" : delay
                                     .as_millis() as u64, }
                                 ),
@@ -2601,7 +2603,7 @@ fn spawn_post_unblock_jwt_and_catalog_retry(
                     None,
                     Some(
                         serde_json::json!(
-                            { "user_id" : user_id, "new_tier" : new_tier, }
+                            { "user_id_present" : user_id_present, "new_tier" : new_tier, }
                         ),
                     ),
                 );
@@ -2613,7 +2615,7 @@ fn spawn_post_unblock_jwt_and_catalog_retry(
                     None,
                     Some(
                         serde_json::json!(
-                            { "user_id" : user_id, "new_tier" : new_tier, "error" : e
+                            { "user_id_present" : user_id_present, "new_tier" : new_tier, "error" : e
                             .to_string(), }
                         ),
                     ),

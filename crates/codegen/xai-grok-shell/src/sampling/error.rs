@@ -46,6 +46,9 @@ pub fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
     use reqwest::StatusCode;
     match err {
         SamplingError::Auth(msg) => acp::Error::auth_required().data(msg),
+        SamplingError::ProviderAuthRejected { provider, .. } => {
+            acp::Error::auth_required().data(format!("{provider} authentication was rejected"))
+        }
         SamplingError::InvalidConfiguration(msg) => acp::Error::invalid_params().data(msg),
         SamplingError::Http(e) => {
             acp::Error::internal_error().data(format!("http client init failed: {e}"))

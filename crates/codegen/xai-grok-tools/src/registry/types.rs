@@ -1300,6 +1300,12 @@ impl FinalizedToolset {
     pub async fn update_resource<T: Send + Sync + 'static>(&self, resource: T) {
         self.resources.lock().await.insert(resource);
     }
+    /// Remove a typed runtime resource. This is used when a model/provider
+    /// switch disables a capability so a client holding credentials for the
+    /// previous provider cannot remain callable.
+    pub async fn remove_resource<T: Send + Sync + 'static>(&self) -> Option<T> {
+        self.resources.lock().await.remove::<T>()
+    }
     /// Clone a typed resource out of this toolset, if present.
     ///
     /// Used to carry session-scoped backends (e.g. the browser service)

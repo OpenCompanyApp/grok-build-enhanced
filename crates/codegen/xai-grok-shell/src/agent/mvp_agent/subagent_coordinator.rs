@@ -378,6 +378,15 @@ impl MvpAgent {
             })
         }?;
         let available_models = self.models_manager.models();
+        let parent_sampling_config =
+            config::find_model_by_id(&available_models, parent_model_id.0.as_ref())
+                .map(|model| self.prepare_sampling_config_for_model(model, None))
+                .unwrap_or_else(|| self.sampling_config.borrow().clone());
+        let parent_provider = parent_sampling_config.provider;
+        let parent_image_gen_config =
+            self.prepare_image_gen_config_for_sampling_config(&parent_sampling_config);
+        let parent_video_gen_config =
+            self.prepare_video_gen_config_for_sampling_config(&parent_sampling_config);
         let parent_lsp = {
             let sessions = self.sessions.borrow();
             sessions
@@ -435,11 +444,23 @@ impl MvpAgent {
             }
             None => (None, None),
         };
+        let api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider> = if parent_provider
+            == xai_grok_sampling_types::ProviderId::OpenAiCodex
+        {
+            crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home())
+                .ok()
+                .map(Arc::new)
+                .map(crate::auth::codex::shared_api_key_provider)
+        } else {
+            Some(Arc::new(crate::auth::manager::SharedAuthKeyProvider(
+                am.clone(),
+            )))
+        };
         Some(crate::agent::subagent::SubagentSpawnContext {
             lsp: parent_lsp,
             gateway: self.gateway.clone(),
             client_hooks: Default::default(),
-            sampling_config: self.sampling_config.borrow().clone(),
+            sampling_config: parent_sampling_config,
             managed_mcp_proxy_base_url: parent_managed_mcp_proxy_base_url
                 .unwrap_or_else(|| self.cli_chat_proxy_base_url()),
             alpha_test_key: self.alpha_test_key(),
@@ -468,8 +489,8 @@ impl MvpAgent {
             memory_config: self.memory_config.clone(),
             web_search_sampling_config: self.prepare_web_search_sampling_config(),
             web_fetch_config: self.prepare_web_fetch_config(),
-            image_gen_config: self.prepare_image_gen_config(),
-            video_gen_config: self.prepare_video_gen_config(),
+            image_gen_config: parent_image_gen_config,
+            video_gen_config: parent_video_gen_config,
             app_builder_deployer_config: self.prepare_app_builder_deployer_config(),
             write_file_enabled: self.cfg.borrow().resolve_write_file().value,
             goal_enabled: self.cfg.borrow().resolve_goal().value,
@@ -524,9 +545,7 @@ impl MvpAgent {
                     .map(|h| h.permission_handle.clone())
             },
             worktree_type: self.worktree_type,
-            api_key_provider: Some(Arc::new(crate::auth::manager::SharedAuthKeyProvider(
-                am.clone(),
-            ))),
+            api_key_provider,
             image_description_model: self.resolve_image_description_model(),
             workspace_ops: parent_workspace_ops.clone(),
             auth_manager: am.clone(),

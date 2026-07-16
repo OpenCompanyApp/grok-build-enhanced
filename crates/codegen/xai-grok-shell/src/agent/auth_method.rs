@@ -3,14 +3,14 @@ use agent_client_protocol as acp;
 use crate::agent::config::ModelEntry;
 use crate::auth::PreferredAuthMethod;
 
-/// Shared, live handle to the agent's current ACP auth method id.
+/// Shared, live handle to the agent's current xAI ACP auth method id.
 ///
 /// `Arc` so a clone can cross the per-session-thread boundary at spawn; the
 /// `ArcSwapOption` interior lets the agent's `authenticate` handler publish a
-/// new method that every running session's per-turn auth gate observes on its
-/// next turn -- no re-spawn. `None` until the first `authenticate`. Auth is
-/// process-global (one user, one `AuthManager`), so all sessions sharing one
-/// cell is correct.
+/// new xAI method that every running xAI session's per-turn auth gate observes
+/// on its next turn -- no re-spawn. `None` until the first xAI
+/// `authenticate`. ChatGPT Codex credentials use a separate provider-scoped
+/// manager and must never be written here.
 pub(crate) type SharedAuthMethodId = std::sync::Arc<arc_swap::ArcSwapOption<acp::AuthMethodId>>;
 
 /// Construct a [`SharedAuthMethodId`]. `None` is the pre-`authenticate` state.
@@ -291,6 +291,7 @@ pub enum AuthMethodKind {
     CachedToken,
     GrokCom,
     Oidc,
+    OpenAiCodex,
     Unknown,
 }
 
@@ -301,6 +302,7 @@ impl AuthMethodKind {
             CACHED_TOKEN_AUTH_METHOD_ID => Self::CachedToken,
             GROK_COM_METHOD_ID => Self::GrokCom,
             OIDC_METHOD_ID => Self::Oidc,
+            OPENAI_CODEX_METHOD_ID => Self::OpenAiCodex,
             _ => Self::Unknown,
         }
     }
@@ -318,6 +320,10 @@ impl AuthMethodKind {
     /// Requires user interaction (browser, OIDC redirect, or external auth command).
     pub fn needs_interactive_login(self) -> bool {
         matches!(self, Self::GrokCom | Self::Oidc)
+    }
+
+    pub fn is_openai_codex(self) -> bool {
+        matches!(self, Self::OpenAiCodex)
     }
 
     pub fn auth_error_message(self) -> &'static str {
@@ -476,6 +482,20 @@ pub fn oidc_auth_method(issuer: &str, label: Option<&str>) -> acp::AuthMethod {
     acp::AuthMethod::Agent(
         acp::AuthMethodAgent::new(acp::AuthMethodId::new(OIDC_METHOD_ID), name.clone())
             .description(Some(format!("Sign in with {name}"))),
+    )
+}
+
+pub const OPENAI_CODEX_METHOD_ID: &str = "openai-codex";
+
+pub fn openai_codex_auth_method() -> acp::AuthMethod {
+    acp::AuthMethod::Agent(
+        acp::AuthMethodAgent::new(
+            acp::AuthMethodId::new(OPENAI_CODEX_METHOD_ID),
+            "ChatGPT Codex".to_owned(),
+        )
+        .description(Some(
+            "Use the ChatGPT subscription saved by `grok login --provider openai-codex`".to_owned(),
+        )),
     )
 }
 

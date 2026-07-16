@@ -1,3 +1,11 @@
+> [!IMPORTANT]
+> This is an unofficial OpenCompanyApp fork of Grok Build. It is not affiliated
+> with, endorsed by, or supported by OpenAI, xAI, or SpaceXAI. Native ChatGPT
+> Codex subscription support in this fork follows current public open-source
+> Codex client behavior and uses an experimental backend contract that may
+> change without notice. The x.ai installer below installs the official upstream
+> build, not this fork; build this repository from source to use fork features.
+
 <div align="center">
 
 <h1>
@@ -69,6 +77,26 @@ cargo check -p xai-grok-pager-bin            # fast validation
 The binary artifact is named `xai-grok-pager`; official installs ship it as
 `grok`. On first launch it opens your browser to authenticate — see the
 [authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
+
+### ChatGPT Codex subscription (unofficial fork)
+
+This fork keeps Grok Build's TUI, sessions, agent loop, permissions, and tools
+while allowing an eligible ChatGPT account to supply entitled Codex models:
+
+```sh
+grok login --provider openai-codex
+grok models --provider openai-codex
+grok -m openai-codex/<entitled-model-slug>
+```
+
+Use `--device-auth` on the login command in a headless environment, and run
+`grok logout --provider openai-codex` to disconnect ChatGPT without changing
+the xAI login. Models and effort menus are discovered from the authenticated
+account rather than hardcoded. Current catalogs may advertise GPT-5.6 Sol and
+Terra through Ultra, and Luna through Max. Image-capable Codex entries use the
+existing image-read path and can expose `image_gen`/`image_edit` when enabled.
+See the authentication guide for the experimental-contract and code-mode
+compatibility limitations.
 
 ## Documentation
 

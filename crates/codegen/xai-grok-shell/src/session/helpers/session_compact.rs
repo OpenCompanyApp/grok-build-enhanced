@@ -59,6 +59,7 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
     let acp_err = acp::Error::internal_error().data(format!("compact failed: {err}"));
     let deterministic = match &err {
         SamplingError::Auth(_)
+        | SamplingError::ProviderAuthRejected { .. }
         | SamplingError::InvalidConfiguration(_)
         | SamplingError::Serialization(_)
         | SamplingError::IdleTimeout { .. } => true,
@@ -1586,6 +1587,9 @@ mod reasoning_compaction_regression_tests {
     }
     fn test_config(base_url: &str) -> SamplerConfig {
         SamplerConfig {
+            provider: Default::default(),
+            credential_source: Default::default(),
+            credential_binding: None,
             api_key: Some("test-api-key".to_string()),
             base_url: base_url.to_string(),
             model: "test-model".to_string(),
@@ -1608,6 +1612,7 @@ mod reasoning_compaction_regression_tests {
             origin_client: None,
             attribution_callback: None,
             bearer_resolver: None,
+            request_auth: None,
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,

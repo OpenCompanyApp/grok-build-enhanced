@@ -55,12 +55,10 @@ fn storage_breaker_config() -> BreakerConfig {
 /// a bridge implementation that wires into
 /// `crate::auth::attribution::record_consumer_401`.
 ///
-/// `sent_bearer_prefix` is the first-N characters of the bearer that was
-/// actually sent on the wire (extracted at the trait boundary so the full
-/// bearer never escapes `StorageClient`). `None` indicates no bearer was
-/// configured (the unauthenticated test/CI path).
+/// Only bearer presence crosses the callback boundary. Credential prefixes or
+/// suffixes are still credential material and must never enter telemetry.
 pub trait Auth401AttributionCallback: Send + Sync + std::fmt::Debug {
-    fn record_401(&self, operation: &str, sent_bearer_prefix: Option<&str>);
+    fn record_401(&self, operation: &str, bearer_was_sent: bool);
 }
 
 // ============================================================================
@@ -428,8 +426,8 @@ pub struct StorageClient {
     /// can record auth-attribution telemetry. Shell installs a bridge here;
     /// bins/tests typically leave it `None`.
     attribution: Option<Arc<dyn Auth401AttributionCallback>>,
-    /// Credential provider used to snapshot the bearer prefix at 401 sites
-    /// for attribution telemetry.
+    /// Credential provider used to snapshot bearer presence at 401 sites for
+    /// attribution telemetry. Credential bytes are never retained.
     credentials: Arc<dyn AuthCredentialProvider>,
 
     /// Client identity forwarded to cli-chat-proxy (for logging + metrics).
@@ -632,8 +630,8 @@ impl StorageClient {
     /// send and 401 response, though in practice this is rare).
     fn fire_401_attribution(&self, operation: &str) {
         if let Some(ref cb) = self.attribution {
-            let bearer_prefix = self.credentials.snapshot().token;
-            cb.record_401(operation, bearer_prefix.as_deref());
+            let bearer_was_sent = self.credentials.snapshot().token.is_some();
+            cb.record_401(operation, bearer_was_sent);
         }
     }
 

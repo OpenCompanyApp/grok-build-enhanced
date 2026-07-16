@@ -232,10 +232,21 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::BillingFetched {
             agent_id,
             balance,
+            codex_usage,
+            codex_api_equivalent_cost,
             silent,
             subscription_tier,
             autotopup,
-        } => handle_billing_fetched(app, agent_id, balance, silent, subscription_tier, autotopup),
+        } => handle_billing_fetched(
+            app,
+            agent_id,
+            balance,
+            codex_usage,
+            codex_api_equivalent_cost,
+            silent,
+            subscription_tier,
+            autotopup,
+        ),
         TaskResult::BillingError {
             agent_id,
             error,

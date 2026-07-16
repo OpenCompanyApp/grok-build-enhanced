@@ -1767,6 +1767,7 @@ impl SessionActor {
         let mut loop_index: u32 = 0;
         let mut todo_gate_fires: u32 = 0;
         let mut auth_retry_schedule = AuthRetrySchedule::new();
+        let mut codex_auth_retry_attempted = false;
         let mut turn_span_totals = TurnSpanTotals::default();
         let mut model_fingerprint: Option<String> = None;
         let mut structured_output_retries: u32 = 0;
@@ -1887,6 +1888,18 @@ impl SessionActor {
                     crate::managed_config::resolve_deployment_key().as_deref(),
                 );
             }
+            if let Some(config) = self.chat_state_handle.get_sampling_config().await
+                && let Some(instruction) = self.models_manager.codex_multi_agent_mode_instruction(
+                    config.provider,
+                    &config.model,
+                    config.reasoning_effort,
+                )
+            {
+                // Ephemeral and provider-scoped: do not persist this into the
+                // user's conversation. Recompute on every loop iteration so
+                // switching into or out of Ultra takes effect immediately.
+                request.items.push(ConversationItem::system(instruction));
+            }
             if structured_output_native {
                 request.json_schema = json_schema.clone();
             }
@@ -1912,13 +1925,26 @@ impl SessionActor {
                 )),
             );
             let model_timer = std::time::Instant::now();
-            let (response, latency) = match self.run_turn_via_sampler(request.clone()).await? {
+            let (response, latency) = match self
+                .run_turn_via_sampler(request.clone(), !codex_auth_retry_attempted)
+                .await?
+            {
                 SamplerTurnOutcome::Response(r, latency) => (r, latency),
                 SamplerTurnOutcome::CompactAndResubmit => {
                     auth_retry_schedule.reset();
                     continue;
                 }
                 SamplerTurnOutcome::RefreshAuthAndResubmit => {
+                    if self
+                        .chat_state_handle
+                        .get_sampling_config()
+                        .await
+                        .is_some_and(|config| {
+                            config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
+                        })
+                    {
+                        codex_auth_retry_attempted = true;
+                    }
                     if let Some((attempt, delay)) = auth_retry_schedule.next_delay() {
                         let delay_ms = delay.as_millis() as u64;
                         tracing::warn!(
@@ -2062,6 +2088,7 @@ impl SessionActor {
             let fallback_text = response.fallback_text();
             let stop_reason = response.stop_reason;
             let response_is_empty = response.is_empty();
+            let requires_provider_follow_up = response.requires_provider_follow_up();
             let turn_refused =
                 stop_reason == Some(xai_grok_sampling_types::StopReason::ContentFilter);
             let refusal_explanation = response.stop_message.clone();
@@ -2110,6 +2137,13 @@ impl SessionActor {
                 .await;
             }
             if tool_calls.is_empty() {
+                if requires_provider_follow_up {
+                    tracing::debug!(
+                        prompt_id = %req_id,
+                        "provider requested another sampling round in the same turn"
+                    );
+                    continue;
+                }
                 if !schema_ok
                     && !turn_refused
                     && let Some(gate_cfg) = self.todo_gate_policy()

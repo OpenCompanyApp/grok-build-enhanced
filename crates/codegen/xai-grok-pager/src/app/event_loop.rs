@@ -1930,6 +1930,10 @@ pub(crate) async fn run(
                 if let ActiveView::Agent(id) = app.active_view {
                     let effs = vec![Effect::FetchBilling {
                         agent_id: id,
+                        session_id: app
+                            .agents
+                            .get(&id)
+                            .and_then(|agent| agent.session.session_id.clone()),
                         silent: true,
                     }];
                     if process_effects(effs, &mut tasks, &mut app, &progress_tx) {

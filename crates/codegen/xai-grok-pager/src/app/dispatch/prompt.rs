@@ -1427,6 +1427,7 @@ pub(super) fn handle_prompt_response(
 
         effects.push(Effect::FetchBilling {
             agent_id,
+            session_id: agent.session.session_id.clone(),
             silent: true,
         });
         return effects;

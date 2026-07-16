@@ -16623,8 +16623,8 @@ to this repository root. Ported files have been modified from their originals
 (translated between languages where applicable, adapted to this codebase's
 APIs/runtimes, and extended); this section constitutes the prominent notice
 of those changes required by Apache License 2.0 §4(b). Full license texts are
-in Part II. A crate-local copy of these notices (with the same license bodies)
-ships at crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md.
+in Part II. Crate-local notices also ship with the affected shell and tools
+crates.
 
 
 --------------------------------------------------------------------------------
@@ -16632,7 +16632,12 @@ openai/codex
 --------------------------------------------------------------------------------
 Source:  https://github.com/openai/codex
 License: Apache-2.0
-Upstream paths: codex-rs/core/src/tools/handlers/ (and apply-patch crate)
+Upstream paths: codex-rs/core/src/tools/handlers/ (and apply-patch crate),
+  codex-rs/login/, codex-rs/model-provider/,
+  codex-rs/model-provider-info/, codex-rs/codex-api/src/endpoint/images.rs,
+  codex-rs/ext/image-generation/src/tool.rs, codex-rs/utils/image/src/lib.rs,
+  codex-rs/core/src/session/multi_agents.rs,
+  codex-rs/core/src/context/multi_agent_mode_instructions.rs
 
 Copyright notice:
   Copyright 2025 OpenAI
@@ -16647,6 +16652,24 @@ Additional requirements / notices:
   crate's Tool trait and runtime. Apache-2.0 §4 requires retention of
   copyright, patent, trademark, and attribution notices, a copy of the
   license, and a notice of changes (this entry).
+
+  The following Grok Build Codex-subscription integration modules also adapt
+  the current public openai/codex client behavior and have been extensively
+  modified to preserve Grok Build's agent loop, sessions, tools, and TUI:
+    crates/codegen/xai-grok-shell/src/auth/codex/
+    crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs
+    crates/codegen/xai-grok-shell/src/agent/models.rs
+    crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs
+    crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn.rs
+    crates/codegen/xai-grok-sampling-types/src/types.rs
+    crates/codegen/xai-grok-sampler/src/client.rs
+    crates/codegen/xai-grok-sampler/src/config.rs
+    crates/codegen/xai-grok-tools/src/implementations/grok_build/image_gen/
+    crates/codegen/xai-grok-tools/src/implementations/grok_build/image_edit/
+  These files implement a separate credential store, provider-scoped refresh
+  and account binding, model discovery, Responses authentication, and image
+  generation/editing. They are modified adaptations, not verbatim copies and
+  not a claim that the ChatGPT backend is a stable general-purpose API.
 
 
 --------------------------------------------------------------------------------

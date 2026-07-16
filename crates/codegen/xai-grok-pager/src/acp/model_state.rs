@@ -152,14 +152,20 @@ impl ModelState {
             self.current = fallback_current;
         }
         // The models/update broadcast carries each model's static default effort,
-        // not this session's choice; only re-derive when the model changed so a
-        // catalog refresh can't clobber a user-set effort.
+        // not this session's choice. Re-derive only when the model changed;
+        // otherwise preserve the choice while normalizing legacy aliases and
+        // rejecting a tier removed by a refreshed dynamic menu.
         if self.current != previous_current_model {
             self.reasoning_effort = self
                 .current
-                .as_ref()
-                .and_then(|id| self.available.get(id))
-                .and_then(|info| parse_reasoning_effort_meta(info.meta.as_ref()));
+                .clone()
+                .and_then(|id| self.default_reasoning_effort_for(&id));
+        } else if let Some(id) = self.current.clone()
+            && let Some(effort) = self.reasoning_effort
+        {
+            self.reasoning_effort = self
+                .resolve_effort_value_for(&id, effort)
+                .or_else(|| self.default_reasoning_effort_for(&id));
         }
     }
 
@@ -170,11 +176,9 @@ impl ModelState {
         effort_override: Option<ReasoningEffort>,
     ) {
         self.current = Some(model_id.clone());
-        self.reasoning_effort = effort_override.or_else(|| {
-            self.available
-                .get(&model_id)
-                .and_then(|info| parse_reasoning_effort_meta(info.meta.as_ref()))
-        });
+        self.reasoning_effort = effort_override
+            .and_then(|effort| self.resolve_effort_value_for(&model_id, effort))
+            .or_else(|| self.default_reasoning_effort_for(&model_id));
     }
 
     /// The reasoning-effort menu for the current model. Gate-first: an unset or
@@ -204,6 +208,42 @@ impl ModelState {
         parse_reasoning_efforts_meta(info.meta.as_ref()).unwrap_or_else(legacy_effort_options)
     }
 
+    fn resolve_effort_value_for(
+        &self,
+        id: &acp::ModelId,
+        effort: ReasoningEffort,
+    ) -> Option<ReasoningEffort> {
+        let options = self.reasoning_effort_options_for(id);
+        if options.iter().any(|option| option.value == effort) {
+            return Some(effort);
+        }
+        // An explicit Codex menu contains a distinct Max row. The fallback
+        // four-level menu does not, where `max` retains its historic xhigh
+        // alias meaning.
+        if effort == ReasoningEffort::Max
+            && options
+                .iter()
+                .any(|option| option.value == ReasoningEffort::Xhigh)
+        {
+            return Some(ReasoningEffort::Xhigh);
+        }
+        None
+    }
+
+    fn default_reasoning_effort_for(&self, id: &acp::ModelId) -> Option<ReasoningEffort> {
+        let info = self.available.get(id)?;
+        let options = self.reasoning_effort_options_for(id);
+        parse_reasoning_effort_meta(info.meta.as_ref())
+            .and_then(|effort| self.resolve_effort_value_for(id, effort))
+            .or_else(|| {
+                options
+                    .iter()
+                    .find(|option| option.default)
+                    .or_else(|| options.first())
+                    .map(|option| option.value)
+            })
+    }
+
     /// Map a typed/selected effort token to its canonical value for the current
     /// model. Accepts a menu option id (case-insensitive) or a canonical level
     /// that appears as a **value** in that model's menu. Levels the model does
@@ -231,14 +271,15 @@ impl ModelState {
         {
             return Some(option.value);
         }
-        // Canonical level (e.g. "high", "max"→xhigh) only if the model menu
+        // Canonical level (e.g. "high", "max", "ultra") only if the model menu
         // actually offers that value — not free-form power-user aliases that
         // would 400 on the server (e.g. `none` on grok-4.5).
         let parsed = token.parse::<ReasoningEffort>().ok()?;
-        options
-            .iter()
-            .find(|opt| opt.value == parsed)
-            .map(|o| o.value)
+        // `max` was Grok Build's long-standing CLI alias for `xhigh` before
+        // Codex gained a distinct Max tier. An explicit Codex catalog menu
+        // contains Max and resolves above; the legacy four-level menu does
+        // not, so preserve the old alias there.
+        self.resolve_effort_value_for(id, parsed)
     }
 
     /// Canonical effort-token policy: gate on the model's support flag first,
@@ -480,6 +521,99 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_effort_options_preserves_extended_codex_levels() {
+        let state = state_with_meta(Some(serde_json::json!({
+            "supportsReasoningEffort": true,
+            "reasoningEfforts": [
+                { "value": "xhigh", "label": "X-High" },
+                { "value": "max", "label": "Max" },
+                { "value": "ultra", "label": "Ultra" },
+            ],
+        })));
+        let opts = state.reasoning_effort_options();
+        assert_eq!(opts.len(), 3);
+        assert_eq!(opts[0].value, ReasoningEffort::Xhigh);
+        assert_eq!(opts[1].value, ReasoningEffort::Max);
+        assert_eq!(opts[2].value, ReasoningEffort::Ultra);
+        assert_eq!(
+            state.resolve_effort_token("max"),
+            Some(ReasoningEffort::Max)
+        );
+        assert_eq!(
+            state.resolve_effort_token("ultra"),
+            Some(ReasoningEffort::Ultra)
+        );
+    }
+
+    #[test]
+    fn set_current_enforces_gpt_56_model_specific_effort_menu() {
+        let mut state = ModelState::default();
+        let insert = |state: &mut ModelState, id: &str, default: &str, efforts: &[&str]| {
+            let model_id = acp::ModelId::new(Arc::from(id));
+            state.available.insert(
+                model_id.clone(),
+                acp::ModelInfo::new(model_id, id.to_owned()).meta(
+                    serde_json::json!({
+                        "supportsReasoningEffort": true,
+                        "reasoningEffort": default,
+                        "reasoningEfforts": efforts
+                            .iter()
+                            .map(|effort| serde_json::json!({
+                                "id": effort,
+                                "value": effort,
+                                "label": effort,
+                                "default": *effort == default,
+                            }))
+                            .collect::<Vec<_>>(),
+                    })
+                    .as_object()
+                    .cloned(),
+                ),
+            );
+        };
+        insert(
+            &mut state,
+            "gpt-5.6-sol",
+            "low",
+            &["low", "medium", "high", "xhigh", "max", "ultra"],
+        );
+        insert(
+            &mut state,
+            "gpt-5.6-terra",
+            "medium",
+            &["low", "medium", "high", "xhigh", "max", "ultra"],
+        );
+        insert(
+            &mut state,
+            "gpt-5.6-luna",
+            "medium",
+            &["low", "medium", "high", "xhigh", "max"],
+        );
+
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra"] {
+            state.set_current(
+                acp::ModelId::new(Arc::from(model)),
+                Some(ReasoningEffort::Ultra),
+            );
+            assert_eq!(state.reasoning_effort, Some(ReasoningEffort::Ultra));
+        }
+        state.set_current(
+            acp::ModelId::new(Arc::from("gpt-5.6-luna")),
+            Some(ReasoningEffort::Max),
+        );
+        assert_eq!(state.reasoning_effort, Some(ReasoningEffort::Max));
+        state.set_current(
+            acp::ModelId::new(Arc::from("gpt-5.6-luna")),
+            Some(ReasoningEffort::Ultra),
+        );
+        assert_eq!(
+            state.reasoning_effort,
+            Some(ReasoningEffort::Medium),
+            "Luna must fall back to its advertised default instead of retaining ultra",
+        );
+    }
+
+    #[test]
     fn reasoning_effort_options_gate_first_empty_when_unsupported() {
         // No current model → empty.
         assert!(ModelState::default().reasoning_effort_options().is_empty());
@@ -613,7 +747,7 @@ mod tests {
     #[test]
     fn resolve_effort_token_legacy_menu_rejects_none() {
         // supportsReasoningEffort without a server list → built-in low..xhigh.
-        let state = state_with_meta(Some(serde_json::json!({
+        let mut state = state_with_meta(Some(serde_json::json!({
             "supportsReasoningEffort": true,
         })));
         assert!(state.resolve_effort_token("none").is_none());
@@ -621,6 +755,18 @@ mod tests {
         assert_eq!(
             state.resolve_effort_token("low"),
             Some(ReasoningEffort::Low)
+        );
+        assert_eq!(
+            state.resolve_effort_token("max"),
+            Some(ReasoningEffort::Xhigh),
+            "legacy --effort max remains an alias for xhigh",
+        );
+        let current = state.current.clone().unwrap();
+        state.set_current(current, Some(ReasoningEffort::Max));
+        assert_eq!(
+            state.reasoning_effort,
+            Some(ReasoningEffort::Xhigh),
+            "restored/ACP max values use the same legacy alias policy",
         );
     }
 

@@ -529,6 +529,11 @@ impl ToolBridge {
         let _ = self.registry.update_resource(resource).await;
     }
 
+    /// Remove a typed resource when a provider switch invalidates it.
+    pub async fn remove_resource<T: Send + Sync + 'static>(&self) -> Option<T> {
+        self.registry.remove_resource::<T>().await
+    }
+
     /// Kill any background task
     pub async fn kill_background_task(
         &self,

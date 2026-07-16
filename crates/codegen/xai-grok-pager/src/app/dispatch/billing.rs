@@ -376,6 +376,8 @@ pub(super) fn handle_billing_fetched(
     app: &mut AppView,
     agent_id: AgentId,
     balance: Option<crate::views::credit_bar::CreditBalance>,
+    codex_usage: Option<xai_grok_shell::auth::codex::CodexUsageSnapshot>,
+    codex_api_equivalent_cost: Option<xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
     silent: bool,
     subscription_tier: Option<String>,
     autotopup: crate::views::credit_bar::AutoTopupFetch,
@@ -389,9 +391,11 @@ pub(super) fn handle_billing_fetched(
     // `Resolved` updates the cached rule, `Cleared` resets it to unknown
     // (no credits), `Unchanged` keeps the last-known-good (fetch failed).
     apply_auto_topup(&mut app.auto_topup, &autotopup);
-    app.billing_poll_wanted = balance
+    app.billing_poll_wanted = codex_usage
         .as_ref()
-        .map(|b| b.usage_pct >= 99.0)
+        .and_then(|usage| usage.highest_used_percent())
+        .map(|used| used >= 99.0)
+        .or_else(|| balance.as_ref().map(|b| b.usage_pct >= 99.0))
         .unwrap_or(false);
     if let Some(tier) = subscription_tier {
         app.subscription_tier = Some(tier);
@@ -404,11 +408,15 @@ pub(super) fn handle_billing_fetched(
         apply_auto_topup(&mut topup, &autotopup);
         agent.apply_credit_balance(balance.clone(), topup);
         if !silent && !agent.chat_kind {
-            let msg = match &balance {
-                Some(bal) => {
+            let msg = match (&codex_usage, &balance) {
+                (Some(usage), _) => crate::views::credit_bar::format_codex_usage_summary(
+                    usage,
+                    codex_api_equivalent_cost.as_ref(),
+                ),
+                (None, Some(bal)) => {
                     crate::views::credit_bar::format_usage_summary(bal, summary_topup.as_ref())
                 }
-                None => "No billing data available.".to_string(),
+                (None, None) => "No billing data available.".to_string(),
             };
             agent.scrollback.push_block(RenderBlock::System(
                 crate::scrollback::blocks::SystemMessageBlock::new(msg),
@@ -554,6 +562,7 @@ pub(super) fn handle_credit_limit_recheck_complete(
     let mut effects = maybe_drain_queue(agent);
     effects.push(Effect::FetchBilling {
         agent_id,
+        session_id: agent.session.session_id.clone(),
         silent: true,
     });
     effects

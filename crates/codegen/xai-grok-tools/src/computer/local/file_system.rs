@@ -1,6 +1,6 @@
 use std::{future::Future, io, path::Path, time::Duration};
 
-use tokio::{fs, time::sleep};
+use tokio::{fs, io::AsyncReadExt as _, time::sleep};
 
 use crate::computer::types::{AsyncFileSystem, ComputerError};
 
@@ -144,6 +144,38 @@ impl AsyncFileSystem for LocalFs {
         }
     }
 
+    #[tracing::instrument(name = "fs.read_file_limited", skip_all)]
+    async fn read_file_limited(
+        &self,
+        path: &Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ComputerError> {
+        let file = match fs::File::open(path).await {
+            Ok(file) => file,
+            Err(e) => {
+                if is_permission_error(&e) {
+                    xai_grok_sandbox::log_violation(&path.display().to_string(), "read");
+                }
+                return Err(e.into());
+            }
+        };
+        let mut bytes = Vec::new();
+        let mut limited = file.take(max_bytes.saturating_add(1) as u64);
+        if let Err(e) = limited.read_to_end(&mut bytes).await {
+            if is_permission_error(&e) {
+                xai_grok_sandbox::log_violation(&path.display().to_string(), "read");
+            }
+            return Err(e.into());
+        }
+        if bytes.len() > max_bytes {
+            return Err(ComputerError::io_with_kind(
+                format!("file exceeds {max_bytes} byte read limit"),
+                io::ErrorKind::InvalidData,
+            ));
+        }
+        Ok(bytes)
+    }
+
     #[tracing::instrument(name = "fs.write_file", skip_all)]
     async fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), ComputerError> {
         // implicitly creates the missing directories if any
@@ -181,6 +213,18 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
+
+    #[tokio::test]
+    async fn limited_read_stops_at_cap_plus_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.bin");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(8 * 1024 * 1024).unwrap();
+
+        let err = LocalFs.read_file_limited(&path, 1024).await.unwrap_err();
+        assert_eq!(err.io_error_kind(), Some(io::ErrorKind::InvalidData));
+        assert!(err.to_string().contains("1024 byte read limit"));
+    }
 
     #[test]
     fn classifies_windows_transient_write_lock_errors() {

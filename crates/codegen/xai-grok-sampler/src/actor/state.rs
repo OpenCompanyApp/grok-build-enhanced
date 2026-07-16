@@ -81,6 +81,9 @@ mod tests {
     /// Minimal config builder for tests in this module.
     fn cfg() -> SamplerConfig {
         SamplerConfig {
+            provider: Default::default(),
+            credential_source: Default::default(),
+            credential_binding: None,
             api_key: None,
             base_url: "https://example.test".into(),
             model: "test-model".into(),
@@ -103,6 +106,7 @@ mod tests {
             client_version: None,
             attribution_callback: None,
             bearer_resolver: None,
+            request_auth: None,
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,

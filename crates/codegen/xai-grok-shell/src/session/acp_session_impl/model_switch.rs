@@ -1,6 +1,165 @@
 use super::*;
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use xai_chat_state::conversation_util::replace_or_insert_system_head;
+
+fn xai_image_gen_config_with_rotated_key(
+    configured: &xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig,
+    current_api_key: Option<&str>,
+) -> Option<xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig> {
+    use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
+
+    let ImageGenConfig::Enabled {
+        api_key,
+        base_url,
+        extra_headers,
+        image_gen_enabled,
+        image_edit_enabled,
+        model_override,
+        tier_restricted,
+    } = configured
+    else {
+        return None;
+    };
+
+    Some(ImageGenConfig::Enabled {
+        api_key: current_api_key.unwrap_or(api_key).to_owned(),
+        base_url: base_url.clone(),
+        extra_headers: extra_headers.clone(),
+        image_gen_enabled: *image_gen_enabled,
+        image_edit_enabled: *image_edit_enabled,
+        model_override: model_override.clone(),
+        tier_restricted: *tier_restricted,
+    })
+}
+
+fn video_gen_config_for_provider(
+    provider: xai_grok_sampling_types::ProviderId,
+    configured: &xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig,
+    current_api_key: Option<&str>,
+    current_xai_base_url: &str,
+) -> xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig {
+    use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
+
+    if provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
+        return VideoGenConfig::Disabled;
+    }
+
+    let Some(configured) = configured.xai_fallback() else {
+        return VideoGenConfig::Disabled;
+    };
+    let VideoGenConfig::Enabled {
+        api_key,
+        base_url,
+        extra_headers,
+        zdr_video_output_s3,
+        tier_restricted,
+    } = configured
+    else {
+        return VideoGenConfig::Disabled;
+    };
+
+    VideoGenConfig::Enabled {
+        api_key: current_api_key.unwrap_or(api_key).to_owned(),
+        base_url: if current_xai_base_url.is_empty() {
+            base_url.clone()
+        } else {
+            current_xai_base_url.to_owned()
+        },
+        extra_headers: extra_headers.clone(),
+        zdr_video_output_s3: zdr_video_output_s3.clone(),
+        tier_restricted: *tier_restricted,
+    }
+}
+
+async fn video_tool_names(bridge: &crate::tools::bridge::ToolBridge) -> (String, String) {
+    use xai_grok_tools::implementations::grok_build::video_gen::{
+        IMAGE_TO_VIDEO_TOOL_NAME, REFERENCE_TO_VIDEO_TOOL_NAME,
+    };
+    use xai_grok_tools::types::tool::ToolKind;
+    let image = bridge
+        .tool_for_kind(ToolKind::ImageToVideo)
+        .await
+        .unwrap_or_else(|| IMAGE_TO_VIDEO_TOOL_NAME.to_owned());
+    let reference = bridge
+        .tool_for_kind(ToolKind::ReferenceToVideo)
+        .await
+        .unwrap_or_else(|| REFERENCE_TO_VIDEO_TOOL_NAME.to_owned());
+    (image, reference)
+}
+
+async fn remove_video_tool_definitions(bridge: &crate::tools::bridge::ToolBridge) {
+    let (image, reference) = video_tool_names(bridge).await;
+    bridge.unregister_tool_by_name(&image);
+    bridge.unregister_tool_by_name(&reference);
+}
+
+async fn ensure_video_tool_definitions(
+    bridge: &crate::tools::bridge::ToolBridge,
+) -> Result<(), xai_tool_runtime::ToolError> {
+    use xai_grok_tools::implementations::grok_build::video_gen::{
+        ImageToVideoTool, ReferenceToVideoTool,
+    };
+
+    let (image_name, reference_name) = video_tool_names(bridge).await;
+    let added_image = if bridge.tool_kind(&image_name).is_none() {
+        bridge
+            .register_mcp_tools(image_name.clone(), ImageToVideoTool, None)
+            .await?;
+        true
+    } else {
+        false
+    };
+    if bridge.tool_kind(&reference_name).is_none()
+        && let Err(error) = bridge
+            .register_mcp_tools(reference_name, ReferenceToVideoTool, None)
+            .await
+    {
+        if added_image {
+            bridge.unregister_tool_by_name(&image_name);
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn refresh_video_gen_resource(
+    bridge: &crate::tools::bridge::ToolBridge,
+    provider: xai_grok_sampling_types::ProviderId,
+    configured: &xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig,
+    current_api_key: Option<&str>,
+    current_xai_base_url: &str,
+    api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider>,
+    attribution_callback: Option<xai_grok_tools::SharedAttributionCallback>,
+) {
+    use xai_grok_tools::implementations::grok_build::video_gen::{VideoGenClient, VideoGenConfig};
+
+    let config =
+        video_gen_config_for_provider(provider, configured, current_api_key, current_xai_base_url);
+    if !matches!(config, VideoGenConfig::Enabled { .. }) {
+        remove_video_tool_definitions(bridge).await;
+        bridge.remove_resource::<VideoGenClient>().await;
+        return;
+    }
+
+    match VideoGenClient::new(&config, api_key_provider) {
+        Ok(client) => {
+            bridge
+                .update_resource(client.with_attribution_callback(attribution_callback))
+                .await;
+            if let Err(error) = ensure_video_tool_definitions(bridge).await {
+                tracing::warn!(%error, "failed to restore video tool definitions after provider switch");
+                remove_video_tool_definitions(bridge).await;
+                bridge.remove_resource::<VideoGenClient>().await;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to restore video generation after provider switch");
+            remove_video_tool_definitions(bridge).await;
+            bridge.remove_resource::<VideoGenClient>().await;
+        }
+    }
+}
+
 impl SessionActor {
     pub(super) async fn handle_set_session_model(
         &self,
@@ -10,7 +169,12 @@ impl SessionActor {
         skip_prompt_rewrite: bool,
         auto_compact_threshold_percent: u8,
     ) -> Result<acp::ModelId, acp::Error> {
-        let model_id = acp::ModelId::new(sampling_config.model.clone());
+        let model_id =
+            if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
+                acp::ModelId::new(format!("openai-codex/{}", sampling_config.model))
+            } else {
+                acp::ModelId::new(sampling_config.model.clone())
+            };
         let new_context_window = self.compaction.context_window_override.unwrap_or_else(|| {
             std::num::NonZeroU64::new(sampling_config.context_window).unwrap_or_else(|| {
                 std::num::NonZeroU64::new(DEFAULT_CONTEXT_WINDOW)
@@ -45,8 +209,39 @@ impl SessionActor {
                 }
             )),
         );
+        let previous_provider = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|config| config.provider);
+        if previous_provider.is_some_and(|provider| provider != sampling_config.provider) {
+            let conversation = self.chat_state_handle.get_conversation().await;
+            let (portable_conversation, removed) =
+                xai_grok_sampling_types::conversation::strip_provider_bound_response_items(
+                    conversation,
+                );
+            if removed > 0 {
+                self.chat_state_handle
+                    .replace_conversation(portable_conversation.clone());
+                // Keep durable replay aligned with the in-memory prefix; a
+                // restart after the switch must not resurrect opaque state
+                // belonging to the old provider.
+                persist_chat_history_jsonl_sync(&self.session_info, &portable_conversation);
+                let _ = self
+                    .notifications
+                    .persistence_tx
+                    .send(PersistenceMsg::ReplaceChatHistory(portable_conversation));
+                tracing::info!(
+                    session_id = % self.session_info.id.0,
+                    removed_provider_bound_items = removed,
+                    "removed provider-bound response state before provider switch"
+                );
+            }
+        }
         self.chat_state_handle
             .update_sampling_config(xai_grok_sampling_types::SamplingConfig {
+                provider: sampling_config.provider,
+                credential_binding: sampling_config.credential_binding.clone(),
                 base_url: sampling_config.base_url.clone(),
                 model: sampling_config.model.clone(),
                 max_completion_tokens: sampling_config.max_completion_tokens,
@@ -74,6 +269,8 @@ impl SessionActor {
                 alpha_test_key: existing.alpha_test_key,
                 client_version: sampling_config.client_version.clone(),
             });
+        self.refresh_provider_media_resources(&sampling_config)
+            .await;
         self.model_auth_facts.replace(None);
         self.signals_handle()
             .record_model_usage(&sampling_config.model);
@@ -114,6 +311,134 @@ impl SessionActor {
                 reasoning_effort: Some(sampling_config.reasoning_effort),
             });
         Ok(model_id)
+    }
+
+    async fn refresh_provider_media_resources(
+        &self,
+        sampling_config: &xai_grok_sampler::SamplerConfig,
+    ) {
+        use xai_grok_tools::implementations::grok_build::image_gen::{
+            ImageGenClient, ImageGenConfig,
+        };
+
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        let endpoints = self.models_manager.endpoints();
+        if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
+            let (image_gen_enabled, image_edit_enabled) = self.models_manager.image_tool_gates();
+            if (!image_gen_enabled && !image_edit_enabled)
+                || !self.models_manager.model_supports_image_input_for_provider(
+                    sampling_config.provider,
+                    &sampling_config.model,
+                )
+            {
+                bridge.remove_resource::<ImageGenClient>().await;
+                refresh_video_gen_resource(
+                    &bridge,
+                    sampling_config.provider,
+                    &self.rebuild_spec.video_gen_config,
+                    sampling_config.api_key.as_deref(),
+                    &endpoints.xai_api_base_url,
+                    None,
+                    None,
+                )
+                .await;
+                return;
+            }
+            let manager =
+                crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home())
+                    .ok()
+                    .map(std::sync::Arc::new);
+            let provider = manager.map(crate::auth::codex::shared_api_key_provider);
+            let config = ImageGenConfig::OpenAiCodex {
+                base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
+                image_gen_enabled,
+                image_edit_enabled,
+            };
+            if let Ok(client) = ImageGenClient::new(&config, provider) {
+                bridge
+                    .update_resource(client.with_attribution_callback(None))
+                    .await;
+            } else {
+                bridge.remove_resource::<ImageGenClient>().await;
+            }
+            refresh_video_gen_resource(
+                &bridge,
+                sampling_config.provider,
+                &self.rebuild_spec.video_gen_config,
+                sampling_config.api_key.as_deref(),
+                &endpoints.xai_api_base_url,
+                None,
+                None,
+            )
+            .await;
+            return;
+        }
+
+        let provider = self.auth_manager.as_ref().map(|manager| {
+            std::sync::Arc::new(crate::auth::manager::SharedAuthKeyProvider(manager.clone()))
+                as xai_grok_tools::types::SharedApiKeyProvider
+        });
+        let (image_gen_enabled, image_edit_enabled) = self.models_manager.image_tool_gates();
+        if let Some(api_key) = sampling_config.api_key.clone()
+            && (image_gen_enabled || image_edit_enabled)
+        {
+            let config = xai_image_gen_config_with_rotated_key(
+                &self.rebuild_spec.image_gen_config,
+                Some(&api_key),
+            )
+            .unwrap_or_else(|| {
+                // A session that began on Codex has no xAI image recipe in
+                // its rebuild spec. Construct the safe first xAI config from
+                // the provider endpoint and current feature gates. xAI-origin
+                // sessions take the lossless branch above.
+                let mut extra_headers = indexmap::IndexMap::new();
+                extra_headers.insert(
+                    "user-agent".to_owned(),
+                    format!("xai-grok-build/{}", xai_grok_version::VERSION),
+                );
+                ImageGenConfig::Enabled {
+                    api_key,
+                    base_url: endpoints.xai_api_base_url.clone(),
+                    extra_headers,
+                    image_gen_enabled,
+                    image_edit_enabled,
+                    model_override: self
+                        .rebuild_spec
+                        .image_gen_config
+                        .model_override()
+                        .map(ToOwned::to_owned),
+                    tier_restricted: false,
+                }
+            });
+            match ImageGenClient::new(&config, provider.clone()) {
+                Ok(client) => {
+                    bridge
+                        .update_resource(client.with_attribution_callback(
+                            self.rebuild_spec.attribution_callback.clone(),
+                        ))
+                        .await;
+                }
+                Err(_) => {
+                    bridge.remove_resource::<ImageGenClient>().await;
+                }
+            }
+        } else {
+            bridge.remove_resource::<ImageGenClient>().await;
+        }
+
+        // The Codex leg removes the xAI-only video client. Rebuild it from the
+        // session's original xAI media configuration when switching back,
+        // preserving ZDR and tier restrictions while using the current key.
+        refresh_video_gen_resource(
+            &bridge,
+            sampling_config.provider,
+            &self.rebuild_spec.video_gen_config,
+            sampling_config.api_key.as_deref(),
+            &endpoints.xai_api_base_url,
+            provider,
+            self.rebuild_spec.attribution_callback.clone(),
+        )
+        .await;
     }
     /// Handle [`SessionCommand::RebuildAgentForDefinition`].
     ///
@@ -313,5 +638,198 @@ impl SessionActor {
                 "handle_replace_system_prompt: head already matches, no-op"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod provider_media_switch_tests {
+    use super::*;
+    use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
+    use xai_grok_tools::implementations::grok_build::video_gen::{VideoGenClient, VideoGenConfig};
+
+    #[test]
+    fn xai_image_key_rotation_preserves_complete_provider_configuration() {
+        let configured = ImageGenConfig::Enabled {
+            api_key: "old-key".to_owned(),
+            base_url: "https://custom-image.example/v1".to_owned(),
+            extra_headers: indexmap::indexmap! {
+                "user-agent".to_owned() => "custom-agent".to_owned(),
+                "x-custom-route".to_owned() => "blue".to_owned(),
+            },
+            image_gen_enabled: false,
+            image_edit_enabled: true,
+            model_override: Some("custom-imagine-model".to_owned()),
+            tier_restricted: true,
+        };
+
+        let rotated =
+            xai_image_gen_config_with_rotated_key(&configured, Some("current-key")).unwrap();
+        let ImageGenConfig::Enabled {
+            api_key,
+            base_url,
+            extra_headers,
+            image_gen_enabled,
+            image_edit_enabled,
+            model_override,
+            tier_restricted,
+        } = rotated
+        else {
+            panic!("configured xAI image provider must remain enabled");
+        };
+        assert_eq!(api_key, "current-key");
+        assert_eq!(base_url, "https://custom-image.example/v1");
+        assert_eq!(
+            extra_headers.get("user-agent").map(String::as_str),
+            Some("custom-agent")
+        );
+        assert_eq!(
+            extra_headers.get("x-custom-route").map(String::as_str),
+            Some("blue")
+        );
+        assert!(!image_gen_enabled);
+        assert!(image_edit_enabled);
+        assert_eq!(model_override.as_deref(), Some("custom-imagine-model"));
+        assert!(tier_restricted);
+
+        let original = xai_image_gen_config_with_rotated_key(&configured, None).unwrap();
+        assert!(matches!(
+            original,
+            ImageGenConfig::Enabled { ref api_key, .. } if api_key == "old-key"
+        ));
+        assert!(xai_image_gen_config_with_rotated_key(&ImageGenConfig::Disabled, None).is_none());
+    }
+
+    fn enabled_video_config() -> VideoGenConfig {
+        VideoGenConfig::Enabled {
+            api_key: "original-xai-key".to_owned(),
+            base_url: "https://old-api.x.ai/v1".to_owned(),
+            extra_headers: indexmap::indexmap! {
+                "user-agent".to_owned() => "test-agent".to_owned(),
+            },
+            zdr_video_output_s3: None,
+            tier_restricted: true,
+        }
+    }
+
+    #[test]
+    fn provider_video_config_disables_codex_and_restores_xai_settings() {
+        let configured = enabled_video_config();
+        assert!(matches!(
+            video_gen_config_for_provider(
+                xai_grok_sampling_types::ProviderId::OpenAiCodex,
+                &configured,
+                None,
+                "https://api.x.ai/v1",
+            ),
+            VideoGenConfig::Disabled
+        ));
+
+        let restored = video_gen_config_for_provider(
+            xai_grok_sampling_types::ProviderId::Xai,
+            &configured,
+            Some("current-xai-key"),
+            "https://api.x.ai/v1",
+        );
+        let VideoGenConfig::Enabled {
+            api_key,
+            base_url,
+            extra_headers,
+            tier_restricted,
+            ..
+        } = restored
+        else {
+            panic!("xAI switch must restore video generation");
+        };
+        assert_eq!(api_key, "current-xai-key");
+        assert_eq!(base_url, "https://api.x.ai/v1");
+        assert_eq!(
+            extra_headers.get("user-agent").map(String::as_str),
+            Some("test-agent")
+        );
+        assert!(tier_restricted, "tier restriction must survive the switch");
+    }
+
+    #[tokio::test]
+    async fn video_resource_lifecycle_is_xai_to_codex_to_xai() {
+        use xai_grok_tools::implementations::grok_build::video_gen::{
+            IMAGE_TO_VIDEO_TOOL_NAME, REFERENCE_TO_VIDEO_TOOL_NAME,
+        };
+
+        async fn video_definition_names(bridge: &crate::tools::bridge::ToolBridge) -> Vec<String> {
+            bridge
+                .tool_definitions()
+                .await
+                .into_iter()
+                .filter(|definition| {
+                    matches!(
+                        definition.function.name.as_str(),
+                        IMAGE_TO_VIDEO_TOOL_NAME | REFERENCE_TO_VIDEO_TOOL_NAME
+                    )
+                })
+                .map(|definition| definition.function.name)
+                .collect()
+        }
+
+        let agent = super::super::support::test_agent_with_tools(vec![]).await;
+        let bridge = agent.tool_bridge().clone();
+        let configured = enabled_video_config();
+
+        refresh_video_gen_resource(
+            &bridge,
+            xai_grok_sampling_types::ProviderId::Xai,
+            &configured,
+            Some("first-xai-key"),
+            "https://api.x.ai/v1",
+            None,
+            None,
+        )
+        .await;
+        assert!(bridge.read_resource::<VideoGenClient>().await.is_some());
+        assert_eq!(video_definition_names(&bridge).await.len(), 2);
+
+        refresh_video_gen_resource(
+            &bridge,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            &configured,
+            None,
+            "https://api.x.ai/v1",
+            None,
+            None,
+        )
+        .await;
+        assert!(bridge.read_resource::<VideoGenClient>().await.is_none());
+        assert!(video_definition_names(&bridge).await.is_empty());
+
+        refresh_video_gen_resource(
+            &bridge,
+            xai_grok_sampling_types::ProviderId::Xai,
+            &configured,
+            Some("second-xai-key"),
+            "https://api.x.ai/v1",
+            None,
+            None,
+        )
+        .await;
+        assert!(bridge.read_resource::<VideoGenClient>().await.is_some());
+        assert_eq!(video_definition_names(&bridge).await.len(), 2);
+    }
+
+    #[test]
+    fn unavailable_video_recipe_restores_xai_without_exposing_codex_tools() {
+        let configured = VideoGenConfig::Unavailable {
+            xai_fallback: Some(Box::new(enabled_video_config())),
+        };
+        assert!(!configured.is_enabled());
+
+        let restored = video_gen_config_for_provider(
+            xai_grok_sampling_types::ProviderId::Xai,
+            &configured,
+            Some("new-key"),
+            "https://api.x.ai/v1",
+        );
+        assert!(matches!(
+            restored,
+            VideoGenConfig::Enabled { ref api_key, .. } if api_key == "new-key"
+        ));
     }
 }

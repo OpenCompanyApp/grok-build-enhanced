@@ -57,6 +57,36 @@ pub enum ConversationItem {
     Reasoning(rs::ReasoningItem),
 }
 
+/// Remove response items whose opaque state is valid only for the provider
+/// that produced it.
+///
+/// Responses reasoning items can contain encrypted payloads and backend tool
+/// calls can carry server-owned identifiers. Replaying either after changing
+/// providers risks sending one provider another provider's opaque state. The
+/// ordinary transcript remains portable: system/user/assistant messages and
+/// locally executed function calls/results are preserved in their original
+/// order.
+///
+/// Callers should apply this only when the provider identity actually changes;
+/// same-provider model switches intentionally retain the complete response
+/// prefix for cache continuity.
+pub fn strip_provider_bound_response_items(
+    items: Vec<ConversationItem>,
+) -> (Vec<ConversationItem>, usize) {
+    let before = items.len();
+    let retained = items
+        .into_iter()
+        .filter(|item| {
+            !matches!(
+                item,
+                ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
+            )
+        })
+        .collect::<Vec<_>>();
+    let removed = before.saturating_sub(retained.len());
+    (retained, removed)
+}
+
 /// System message content
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemItem {
@@ -721,6 +751,12 @@ pub struct ConversationResponse {
     /// the wire (Messages `message_delta.stop_details.explanation`); `None`
     /// otherwise and on backends that don't report one.
     pub stop_message: Option<String>,
+    /// Provider-owned turn-completion signal, when the wire protocol exposes
+    /// one. ChatGPT Codex sets this to `Some(false)` when the client must make
+    /// another sampling request in the same user turn even if the response did
+    /// not contain a client-executable tool call. Other providers leave it
+    /// `None` and retain the existing content/tool-call completion behavior.
+    pub provider_end_turn: Option<bool>,
 }
 
 /// Normalize a wire cost-ticks value at capture.
@@ -791,6 +827,12 @@ impl ConversationResponse {
     /// Returns `None` when the response has content or tool calls.
     pub fn empty_reason(&self) -> Option<crate::error::EmptyReason> {
         use crate::error::EmptyReason;
+        // A provider-requested continuation is protocol progress, not an empty
+        // model response. Let the owning agent loop issue the follow-up rather
+        // than routing it through generic empty-response retries.
+        if self.provider_end_turn == Some(false) {
+            return None;
+        }
         let Some(a) = self.assistant() else {
             return Some(EmptyReason::NoVisibleContent);
         };
@@ -813,6 +855,12 @@ impl ConversationResponse {
     /// responses are considered empty so the retry logic resamples.
     pub fn is_empty(&self) -> bool {
         self.empty_reason().is_some()
+    }
+
+    /// Whether the provider explicitly requested another sampling round in
+    /// the current user turn.
+    pub fn requires_provider_follow_up(&self) -> bool {
+        self.provider_end_turn == Some(false)
     }
 
     /// Get tool calls from the assistant message, if any
@@ -1934,11 +1982,20 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
         .filter(|s| !s.is_empty());
     // The server echoes the applied reasoning config; record the effort with
     // the same per-response provenance as `model`/`system_fingerprint`.
-    let reasoning_effort = response
-        .reasoning
+    let extended_reasoning_effort = response
+        .metadata
         .as_ref()
-        .and_then(|r| r.effort.clone())
-        .map(crate::ReasoningEffort::from_responses_api);
+        .and_then(|metadata| {
+            metadata.get(crate::OPENAI_CODEX_EXTENDED_REASONING_EFFORT_METADATA_KEY)
+        })
+        .and_then(|effort| effort.parse::<crate::ReasoningEffort>().ok());
+    let reasoning_effort = extended_reasoning_effort.or_else(|| {
+        response
+            .reasoning
+            .as_ref()
+            .and_then(|r| r.effort.clone())
+            .map(crate::ReasoningEffort::from_responses_api)
+    });
 
     let mut items: Vec<ConversationItem> = Vec::with_capacity(response.output.len() + 1);
     let mut content = String::new();
@@ -2148,7 +2205,7 @@ impl From<&ConversationRequest> for rs::CreateResponse {
             prompt_cache_key: None,
             prompt_cache_retention: None,
             reasoning: Some(rs::Reasoning {
-                effort: req.reasoning_effort.map(|e| e.to_responses_api()),
+                effort: req.reasoning_effort.and_then(|e| e.to_responses_api()),
                 summary: Some(rs::ReasoningSummary::Concise),
             }),
             safety_identifier: None,
@@ -3450,6 +3507,56 @@ mod compaction_item_bridge_tests {
 mod tests {
     use super::*;
     use assert_matches::assert_matches;
+
+    #[test]
+    fn provider_transition_strips_only_provider_bound_response_items() {
+        let local_call = ToolCall {
+            id: "call_1".into(),
+            name: "read_file".to_owned(),
+            arguments: r#"{"path":"README.md"}"#.into(),
+        };
+        let items = vec![
+            ConversationItem::system("system"),
+            ConversationItem::user("question"),
+            ConversationItem::Reasoning(rs::ReasoningItem {
+                id: "reasoning_1".to_owned(),
+                summary: vec![],
+                content: None,
+                encrypted_content: Some("opaque-provider-payload".to_owned()),
+                status: None,
+            }),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
+                    id: "search_1".to_owned(),
+                    status: rs::WebSearchToolCallStatus::Completed,
+                    action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                        query: "provider owned search".to_owned(),
+                        sources: Some(vec![]),
+                    }),
+                }),
+            }),
+            ConversationItem::assistant_tool_calls(vec![local_call]),
+            ConversationItem::tool_result("call_1", "local result"),
+            ConversationItem::assistant("answer"),
+        ];
+
+        let (portable, removed) = strip_provider_bound_response_items(items);
+
+        assert_eq!(removed, 2);
+        assert_eq!(portable.len(), 5);
+        assert!(matches!(&portable[0], ConversationItem::System(_)));
+        assert!(matches!(&portable[1], ConversationItem::User(_)));
+        assert_matches!(
+            &portable[2],
+            ConversationItem::Assistant(AssistantItem { tool_calls, .. })
+                if tool_calls.len() == 1 && tool_calls[0].name == "read_file"
+        );
+        assert!(matches!(&portable[3], ConversationItem::ToolResult(_)));
+        assert_matches!(
+            &portable[4],
+            ConversationItem::Assistant(AssistantItem { content, .. }) if content.as_ref() == "answer"
+        );
+    }
 
     #[test]
     fn prior_turn_interrupt_serde_round_trip_and_unknown_fallback() {
@@ -5078,6 +5185,7 @@ mod tests {
             (crate::ReasoningEffort::Medium, "medium"),
             (crate::ReasoningEffort::High, "high"),
             (crate::ReasoningEffort::Xhigh, "max"),
+            (crate::ReasoningEffort::Max, "max"),
         ] {
             let req = messages_test_request(Some(variant));
             let msgs = build_messages_request(&req);
@@ -5102,6 +5210,7 @@ mod tests {
             None,
             Some(crate::ReasoningEffort::None),
             Some(crate::ReasoningEffort::Minimal),
+            Some(crate::ReasoningEffort::Ultra),
         ];
         for input in none_or_unsupported {
             let req = messages_test_request(input);
@@ -5126,6 +5235,8 @@ mod tests {
             (crate::ReasoningEffort::Medium, "medium"),
             (crate::ReasoningEffort::High, "high"),
             (crate::ReasoningEffort::Xhigh, "xhigh"),
+            (crate::ReasoningEffort::Max, "max"),
+            (crate::ReasoningEffort::Ultra, "ultra"),
         ] {
             let req = ConversationRequest::from_items(vec![ConversationItem::user("hi")])
                 .with_model("test");
@@ -5177,6 +5288,23 @@ mod tests {
                 json.pointer("/reasoning/effort").and_then(|v| v.as_str()),
                 Some(expected),
                 "{variant:?} should serialize as reasoning.effort={expected:?}; got: {json:#}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_typed_responses_request_defers_extended_codex_efforts_to_sampler() {
+        for variant in [crate::ReasoningEffort::Max, crate::ReasoningEffort::Ultra] {
+            let req = ConversationRequest {
+                reasoning_effort: Some(variant),
+                ..ConversationRequest::from_items(vec![ConversationItem::user("hi")])
+                    .with_model("test")
+            };
+            let resp: crate::rs::CreateResponse = (&req).into();
+            let json = serde_json::to_value(&resp).unwrap();
+            assert!(
+                json.pointer("/reasoning/effort").is_none(),
+                "{variant:?} must not be degraded through async-openai; got: {json:#}",
             );
         }
     }
@@ -6576,6 +6704,7 @@ mod tests {
             message_chunks_emitted: 0,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert!(response.is_empty());
 
@@ -6588,6 +6717,7 @@ mod tests {
             message_chunks_emitted: 1,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert!(!response.is_empty());
 
@@ -6604,6 +6734,7 @@ mod tests {
             message_chunks_emitted: 0,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert!(!response.is_empty());
     }
@@ -6626,6 +6757,7 @@ mod tests {
             message_chunks_emitted: 0,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert!(
             response.is_empty(),
@@ -6647,6 +6779,7 @@ mod tests {
             message_chunks_emitted: 1,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert!(
             !response.is_empty(),
@@ -6672,6 +6805,7 @@ mod tests {
             message_chunks_emitted: 0,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert!(
             !response.is_empty(),
@@ -6700,6 +6834,7 @@ mod tests {
             message_chunks_emitted: 0,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
 
         let calls = response.tool_calls();
@@ -6720,6 +6855,7 @@ mod tests {
             message_chunks_emitted: 0,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert_eq!(
             response.fallback_text().as_deref(),
@@ -6739,6 +6875,7 @@ mod tests {
             message_chunks_emitted: 42,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert!(response.fallback_text().is_none());
     }
@@ -6754,6 +6891,7 @@ mod tests {
             message_chunks_emitted: 0,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert!(response.fallback_text().is_none());
     }
@@ -6773,6 +6911,7 @@ mod tests {
             message_chunks_emitted: 0, // only reasoning chunks were streamed
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert_eq!(
             response.fallback_text().as_deref(),
@@ -6795,6 +6934,7 @@ mod tests {
             message_chunks_emitted: 0,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert!(response.fallback_text().is_none());
     }
@@ -8121,6 +8261,7 @@ mod tests {
             message_chunks_emitted: 0,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         }
     }
 
@@ -8138,6 +8279,16 @@ mod tests {
             name: "read_file".into(),
             arguments: "{}".into(),
         }]));
+        assert!(resp.empty_reason().is_none());
+        assert!(!resp.is_empty());
+    }
+
+    #[test]
+    fn provider_requested_follow_up_is_not_an_empty_response_retry() {
+        let mut resp = make_response(ConversationItem::assistant(""));
+        resp.provider_end_turn = Some(false);
+
+        assert!(resp.requires_provider_follow_up());
         assert!(resp.empty_reason().is_none());
         assert!(!resp.is_empty());
     }
@@ -8171,6 +8322,7 @@ mod tests {
             message_chunks_emitted: 0,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
         assert_eq!(
             response.empty_reason(),

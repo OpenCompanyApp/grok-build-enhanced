@@ -3085,6 +3085,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
         info: crate::agent::config::ModelInfo {
             user_selectable: true,
             id: None,
+            provider: xai_grok_sampling_types::ProviderId::Xai,
             model: model_id.to_string(),
             base_url: String::new(),
             name: None,
@@ -3107,6 +3108,8 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            multi_agent_version: None,
+            supports_image_input: false,
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,
@@ -3307,6 +3310,8 @@ fn normalize_forked_context_short_conversation() {
 fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingConfig {
     use std::num::NonZeroU64;
     xai_grok_sampling_types::SamplingConfig {
+        provider: Default::default(),
+        credential_binding: None,
         base_url: "https://api.test/v1".to_string(),
         model: model_slug.to_string(),
         max_completion_tokens: None,

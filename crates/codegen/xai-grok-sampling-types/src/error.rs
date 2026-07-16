@@ -8,6 +8,8 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::provider::{CredentialBinding, ProviderId};
+
 pub type Result<T> = std::result::Result<T, SamplingError>;
 
 /// Why the model's response was classified as "empty" by [`ConversationResponse::empty_reason`].
@@ -70,6 +72,16 @@ impl EmptyResponseContext {
 /// Model metadata from response headers.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResponseModelMetadata {
+    /// Provider that authenticated and issued the request producing these
+    /// headers. This is captured at response time so a later model switch
+    /// cannot route an ETag to a different provider's catalog.
+    #[serde(default)]
+    pub provider: ProviderId,
+    /// Exact non-secret credential generation that authenticated the request.
+    /// Codex catalog ETag renewal uses this to reject delayed responses from
+    /// an older refresh-token generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_binding: Option<CredentialBinding>,
     pub context_window: Option<u64>,
     pub max_completion_tokens: Option<u32>,
     /// `x-models-etag` — triggers model catalog refresh when changed.
@@ -85,6 +97,15 @@ const SERIALIZATION_DISPLAY_PREFIX: &str = "serialization error: ";
 pub enum SamplingError {
     #[error("{0}")]
     Auth(String),
+    /// A provider-owned credential snapshot was rejected before any response
+    /// body was accepted. The binding identifies exactly what signed that
+    /// request, allowing a refresh waiter to adopt a newer generation instead
+    /// of rotating it again. Its custom `Debug` redacts the opaque record ID.
+    #[error("{provider} authentication was rejected")]
+    ProviderAuthRejected {
+        provider: ProviderId,
+        credential: CredentialBinding,
+    },
     #[error("invalid client configuration: {0}")]
     InvalidConfiguration(&'static str),
     #[error("request error: {0}")]
@@ -162,6 +183,7 @@ impl SamplingError {
         matches!(
             self,
             SamplingError::Auth(_)
+                | SamplingError::ProviderAuthRejected { .. }
                 | SamplingError::Api {
                     status: StatusCode::UNAUTHORIZED,
                     ..
@@ -177,6 +199,16 @@ impl SamplingError {
                 ..
             }
         )
+    }
+
+    pub fn rejected_provider_credential(&self) -> Option<(ProviderId, &CredentialBinding)> {
+        match self {
+            Self::ProviderAuthRejected {
+                provider,
+                credential,
+            } => Some((*provider, credential)),
+            _ => None,
+        }
     }
 
     pub fn is_payload_too_large(&self) -> bool {
@@ -240,6 +272,7 @@ impl SamplingError {
     pub fn is_retryable(&self) -> bool {
         match self {
             SamplingError::Auth(_) => false,
+            SamplingError::ProviderAuthRejected { .. } => false,
             SamplingError::InvalidConfiguration(_) => false,
             SamplingError::Http(err) => is_retryable_reqwest(err),
             SamplingError::Serialization(_) => false,
@@ -761,5 +794,39 @@ mod tests {
             !err.is_retryable(),
             "direct 400 must not be retryable by is_retryable()"
         );
+    }
+
+    #[test]
+    fn provider_auth_rejection_is_typed_and_redacts_record_identity() {
+        let mut credential =
+            CredentialBinding::openai_codex(Some("sentinel-credential-id".to_owned()));
+        credential.generation = 9;
+        let err = SamplingError::ProviderAuthRejected {
+            provider: ProviderId::OpenAiCodex,
+            credential: credential.clone(),
+        };
+
+        assert!(err.is_auth_error());
+        assert!(!err.is_retryable());
+        assert_eq!(
+            err.rejected_provider_credential(),
+            Some((ProviderId::OpenAiCodex, &credential))
+        );
+        let rendered = format!("{err:?} {err}");
+        assert!(!rendered.contains("sentinel-credential-id"));
+        assert!(rendered.contains("generation: 9"));
+    }
+
+    #[test]
+    fn legacy_response_metadata_defaults_to_xai_provider() {
+        let metadata: ResponseModelMetadata = serde_json::from_value(serde_json::json!({
+            "context_window": 8192,
+            "models_etag": "legacy-etag"
+        }))
+        .unwrap();
+
+        assert_eq!(metadata.provider, ProviderId::Xai);
+        assert!(metadata.credential_binding.is_none());
+        assert_eq!(metadata.models_etag.as_deref(), Some("legacy-etag"));
     }
 }

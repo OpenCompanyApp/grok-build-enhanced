@@ -16,10 +16,11 @@
 //! image into the project working directory when it needs a persistent asset.
 
 use base64::Engine as _;
+use image::ImageReader;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 
 use crate::attribution::{SharedAttributionCallback, ToolConsumer};
-use crate::types::SharedApiKeyProvider;
+use crate::types::{RequestAuth, RequestCredentialSnapshot, SharedApiKeyProvider};
 
 use crate::types::output::{MediaGenOutput, ToolOutput};
 use crate::types::requirements::{Expr, ToolRequirement};
@@ -29,6 +30,11 @@ use crate::types::tool::{ToolKind, ToolNamespace};
 /// Default Imagine model for `image_gen`. Used unless an explicit
 /// `model_override` is supplied via `ImageGenConfig::Enabled`.
 const XAI_IMAGINE_MODEL: &str = "grok-imagine-image-quality";
+/// Current ChatGPT Codex image model, verified against openai/codex at
+/// commit 9ff47868eb2afeec579183e01bb9d3d3e9df2bcd (2026-07-16).
+/// This backend is experimental and the model is deliberately isolated from
+/// the coding-model catalog so an upstream change has one update point.
+pub(crate) const OPENAI_CODEX_IMAGE_MODEL: &str = "gpt-image-2";
 // Some Imagine models (e.g. `grok-imagine-image`, selectable via `model_override`)
 // expand the prompt then generate, and the proxy buffers
 // the whole image before sending any bytes — so the client may receive nothing
@@ -37,6 +43,11 @@ const XAI_IMAGINE_MODEL: &str = "grok-imagine-image-quality";
 const IMAGE_GEN_TIMEOUT_SECS: u64 = 300;
 const IMAGE_GEN_READ_TIMEOUT_SECS: u64 = 240;
 const DEFAULT_IMAGE_DIR: &str = "images";
+const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
+const MAX_IMAGE_RESPONSE_BODY_BYTES: usize = 48 * 1024 * 1024;
+const MAX_GENERATED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_GENERATED_IMAGE_PIXELS: u64 = 40_000_000;
+const MAX_GENERATED_IMAGE_DIMENSION: u32 = 8192;
 
 pub use xai_grok_tools_api::slash_commands::{
     IMAGE_GEN_TOOL_NAME, IMAGINE_COMMAND_NAME, imagine_instruction, imagine_usage_message,
@@ -58,6 +69,11 @@ pub struct ImageGenClient {
     /// [`XAI_IMAGINE_MODEL`]). `image_edit` uses its own model and is
     /// unaffected.
     model: String,
+    backend: ImageGenBackend,
+    /// Static fallback exists only for the legacy xAI backend. Codex auth is
+    /// always resolved dynamically so an access token is never treated as a
+    /// permanent image API key.
+    fallback_api_key: Option<String>,
     writer: super::storage::SessionFileWriter,
     api_key_provider: Option<SharedApiKeyProvider>,
     /// Optional 401-attribution hook. Hosts wire this so a 401 from the
@@ -71,41 +87,90 @@ pub struct ImageGenClient {
     tier_restricted: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageGenBackend {
+    XaiImagine,
+    OpenAiCodex,
+}
+
 impl ImageGenClient {
     pub fn new(
         config: &ImageGenConfig,
         api_key_provider: Option<SharedApiKeyProvider>,
     ) -> Result<Self, xai_tool_runtime::ToolError> {
-        let ImageGenConfig::Enabled {
-            api_key,
-            base_url,
-            extra_headers,
-            model_override,
-            tier_restricted,
-            ..
-        } = config
-        else {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
-                "Cannot create ImageGenClient from disabled config",
-            ));
-        };
-        let model = model_override
-            .clone()
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or_else(|| XAI_IMAGINE_MODEL.to_owned());
+        let (base_url, model, backend, fallback_api_key, extra_headers, tier_restricted) =
+            match config {
+                ImageGenConfig::Enabled {
+                    api_key,
+                    base_url,
+                    extra_headers,
+                    model_override,
+                    tier_restricted,
+                    ..
+                } => (
+                    base_url.clone(),
+                    model_override
+                        .clone()
+                        .filter(|m| !m.trim().is_empty())
+                        .unwrap_or_else(|| XAI_IMAGINE_MODEL.to_owned()),
+                    ImageGenBackend::XaiImagine,
+                    Some(api_key.clone()),
+                    extra_headers.clone(),
+                    *tier_restricted,
+                ),
+                ImageGenConfig::OpenAiCodex { base_url, .. } => (
+                    validate_codex_base_url(base_url)?,
+                    OPENAI_CODEX_IMAGE_MODEL.to_owned(),
+                    ImageGenBackend::OpenAiCodex,
+                    None,
+                    indexmap::IndexMap::new(),
+                    false,
+                ),
+                ImageGenConfig::Disabled | ImageGenConfig::Unavailable { .. } => {
+                    return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                        "Cannot create ImageGenClient without provider credentials",
+                    ));
+                }
+            };
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        // Always bake the static api_key as the default Authorization header.
-        // The dynamic provider overrides per-request; this is the fallback.
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
-                    "Invalid API key for header: {e}"
-                ))
-            })?,
-        );
+        if backend == ImageGenBackend::OpenAiCodex {
+            headers.insert(
+                reqwest::header::USER_AGENT,
+                HeaderValue::from_str(&format!("grok-build-codex/{}", xai_grok_version::VERSION))
+                    .map_err(|_| {
+                    xai_tool_runtime::ToolError::invalid_arguments(
+                        "Invalid Codex image client version",
+                    )
+                })?,
+            );
+            headers.insert(
+                reqwest::header::HeaderName::from_static("originator"),
+                HeaderValue::from_static("grok_build_codex"),
+            );
+            headers.insert(
+                reqwest::header::HeaderName::from_static("version"),
+                HeaderValue::from_str(xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION)
+                    .map_err(|_| {
+                        xai_tool_runtime::ToolError::invalid_arguments(
+                            "Invalid Codex image client version",
+                        )
+                    })?,
+            );
+        }
+        if let Some(api_key) = fallback_api_key.as_deref() {
+            // Legacy xAI fallback. Managed Codex auth is never installed as a
+            // default client header and is resolved anew for every attempt.
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|e| {
+                    xai_tool_runtime::ToolError::invalid_arguments(format!(
+                        "Invalid API key for header: {e}"
+                    ))
+                })?,
+            );
+        }
 
         extra_headers.into_iter().try_for_each(|(key, value)| {
             let header_name =
@@ -114,7 +179,7 @@ impl ImageGenClient {
                         "Invalid header name '{key}': {e}"
                     ))
                 })?;
-            let header_value = HeaderValue::from_str(value).map_err(|e| {
+            let header_value = HeaderValue::from_str(&value).map_err(|e| {
                 xai_tool_runtime::ToolError::invalid_arguments(format!(
                     "Invalid header value for '{key}': {e}"
                 ))
@@ -126,6 +191,7 @@ impl ImageGenClient {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(IMAGE_GEN_TIMEOUT_SECS))
             .read_timeout(std::time::Duration::from_secs(IMAGE_GEN_READ_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::none())
             .default_headers(headers)
             .build()
             .map_err(|e| {
@@ -136,12 +202,14 @@ impl ImageGenClient {
 
         Ok(Self {
             http,
-            base_url: base_url.clone(),
+            base_url,
             model,
+            backend,
+            fallback_api_key,
             writer: super::storage::SessionFileWriter::new(DEFAULT_IMAGE_DIR, "jpg"),
             api_key_provider,
             attribution_callback: None,
-            tier_restricted: *tier_restricted,
+            tier_restricted,
         })
     }
 
@@ -163,24 +231,209 @@ impl ImageGenClient {
         self
     }
 
-    pub(crate) async fn current_bearer(&self) -> Option<String> {
-        crate::types::api_key_provider::resolve_bearer(self.api_key_provider.as_ref()).await
+    pub(crate) fn backend(&self) -> ImageGenBackend {
+        self.backend
+    }
+
+    async fn current_request_auth(&self) -> Result<RequestAuth, xai_tool_runtime::ToolError> {
+        let auth = crate::types::api_key_provider::resolve_request_auth(
+            self.api_key_provider.as_ref(),
+        )
+        .await
+        .or_else(|| self.fallback_api_key.clone().map(RequestAuth::bearer))
+        .ok_or_else(|| {
+            xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Custom,
+                "Image provider authentication is required. Sign in to the selected provider and retry.",
+            )
+            .with_details(serde_json::json!({"code": "auth_required"}))
+        })?;
+
+        match self.backend {
+            ImageGenBackend::OpenAiCodex if auth.provider() != Some(OPENAI_CODEX_PROVIDER_ID) => {
+                return Err(xai_tool_runtime::ToolError::new(
+                    xai_tool_runtime::ToolErrorKind::Custom,
+                    "Codex image authentication is unavailable for this session.",
+                )
+                .with_details(serde_json::json!({"code": "auth_provider_mismatch"})));
+            }
+            ImageGenBackend::XaiImagine if auth.provider() == Some(OPENAI_CODEX_PROVIDER_ID) => {
+                return Err(xai_tool_runtime::ToolError::new(
+                    xai_tool_runtime::ToolErrorKind::Custom,
+                    "Refusing to send Codex credentials to the xAI image service.",
+                )
+                .with_details(serde_json::json!({"code": "auth_provider_mismatch"})));
+            }
+            _ => {}
+        }
+        if self.backend == ImageGenBackend::OpenAiCodex
+            && auth
+                .credential_snapshot()
+                .is_none_or(|snapshot| snapshot.opaque_id().trim().is_empty())
+        {
+            return Err(xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Custom,
+                "Codex image authentication did not identify its credential generation.",
+            )
+            .with_details(serde_json::json!({"code": "auth_provider_mismatch"})));
+        }
+        Ok(auth)
+    }
+
+    fn apply_request_auth(
+        &self,
+        mut request: reqwest::RequestBuilder,
+        auth: &RequestAuth,
+    ) -> Result<reqwest::RequestBuilder, xai_tool_runtime::ToolError> {
+        let mut has_authorization = false;
+        let mut has_account = false;
+        let mut has_fedramp = false;
+        for (name, value) in auth.headers() {
+            let normalized = name.to_ascii_lowercase();
+            if self.backend == ImageGenBackend::OpenAiCodex {
+                match normalized.as_str() {
+                    "authorization" if has_authorization => {
+                        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                            "Codex authentication emitted duplicate authorization headers.",
+                        ));
+                    }
+                    "authorization"
+                        if value
+                            .strip_prefix("Bearer ")
+                            .is_none_or(|token| token.trim().is_empty()) =>
+                    {
+                        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                            "Codex authentication emitted an invalid authorization header.",
+                        ));
+                    }
+                    "chatgpt-account-id" if has_account || value.trim().is_empty() => {
+                        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                            "Codex authentication emitted an invalid account header.",
+                        ));
+                    }
+                    "x-openai-fedramp" if has_fedramp || value != "true" => {
+                        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                            "Codex authentication emitted an invalid FedRAMP header.",
+                        ));
+                    }
+                    "authorization" | "chatgpt-account-id" | "x-openai-fedramp" => {}
+                    _ => {
+                        return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                            "Unsupported Codex authentication header: {name}"
+                        )));
+                    }
+                }
+            }
+            has_authorization |= normalized == "authorization";
+            has_account |= normalized == "chatgpt-account-id";
+            has_fedramp |= normalized == "x-openai-fedramp";
+            let header_name =
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                    xai_tool_runtime::ToolError::invalid_arguments("Invalid authentication header")
+                })?;
+            let mut header_value = HeaderValue::from_str(value).map_err(|_| {
+                xai_tool_runtime::ToolError::invalid_arguments(
+                    "Invalid authentication header value",
+                )
+            })?;
+            if matches!(normalized.as_str(), "authorization" | "chatgpt-account-id") {
+                header_value.set_sensitive(true);
+            }
+            request = request.header(header_name, header_value);
+        }
+        if !has_authorization || (self.backend == ImageGenBackend::OpenAiCodex && !has_account) {
+            return Err(xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Custom,
+                "Image provider authentication is incomplete.",
+            )
+            .with_details(serde_json::json!({"code": "auth_required"})));
+        }
+        Ok(request)
+    }
+
+    async fn send_json_once(
+        &self,
+        url: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(reqwest::Response, Option<RequestCredentialSnapshot>), xai_tool_runtime::ToolError>
+    {
+        let auth = self.current_request_auth().await?;
+        let credential_snapshot = auth.credential_snapshot().cloned();
+        let request = self.apply_request_auth(self.http.post(url).json(payload), &auth)?;
+        let response = request.send().await.map_err(|e| {
+            xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Custom,
+                format!("Image provider request failed: {e}"),
+            )
+            .with_details(serde_json::json!({"code": "transport_failure"}))
+        })?;
+        Ok((response, credential_snapshot))
+    }
+
+    pub(crate) async fn post_json(
+        &self,
+        path: &str,
+        payload: &serde_json::Value,
+    ) -> Result<reqwest::Response, xai_tool_runtime::ToolError> {
+        if self.backend == ImageGenBackend::OpenAiCodex
+            && !matches!(
+                path.trim_matches('/'),
+                "images/generations" | "images/edits"
+            )
+        {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "Refusing an unsupported Codex image endpoint.",
+            ));
+        }
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{base}/{}", path.trim_start_matches('/'));
+        let (mut response, rejected_credential) = self.send_json_once(&url, payload).await?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            // Attribution intentionally receives no credential material.
+            if self.backend == ImageGenBackend::XaiImagine {
+                self.record_401_attribution(ToolConsumer::ImageGen, None);
+            }
+            let recovered = match self.api_key_provider.as_ref() {
+                Some(provider) => {
+                    provider
+                        .recover_unauthorized_async(rejected_credential)
+                        .await
+                }
+                None => false,
+            };
+            if recovered {
+                response = self.send_json_once(&url, payload).await?.0;
+            }
+        }
+        Ok(response)
     }
 
     pub(crate) fn record_401_attribution(&self, consumer: ToolConsumer, sent_bearer: Option<&str>) {
         crate::attribution::emit_401(self.attribution_callback.as_ref(), consumer, sent_bearer);
     }
 
-    pub(crate) fn base_url(&self) -> &str {
-        &self.base_url
-    }
-
-    pub(crate) fn http(&self) -> &reqwest::Client {
-        &self.http
-    }
-
     pub(crate) fn writer(&self) -> &super::storage::SessionFileWriter {
         &self.writer
+    }
+
+    /// Structured details for a terminal provider response. A Codex 401 has
+    /// already consumed the provider-scoped reload/refresh/replay path in
+    /// [`Self::post_json`], so mark it as owned and exhausted. The shell uses
+    /// this signal to prevent a second retry through xAI's `AuthManager`.
+    pub(crate) fn http_failure_details(&self, status: reqwest::StatusCode) -> serde_json::Value {
+        let mut details = serde_json::json!({
+            "code": "http_failure",
+            "status": status.as_u16(),
+        });
+        if self.backend == ImageGenBackend::OpenAiCodex
+            && status == reqwest::StatusCode::UNAUTHORIZED
+        {
+            details[crate::types::AUTH_RECOVERY_PROVIDER_DETAILS_KEY] =
+                serde_json::Value::String(OPENAI_CODEX_PROVIDER_ID.to_owned());
+            details[crate::types::AUTH_RECOVERY_EXHAUSTED_DETAILS_KEY] =
+                serde_json::Value::Bool(true);
+        }
+        details
     }
 
     pub async fn generate(
@@ -188,60 +441,37 @@ impl ImageGenClient {
         prompt: &str,
         aspect_ratio: &str,
     ) -> Result<Vec<u8>, xai_tool_runtime::ToolError> {
-        let url = format!("{}/images/generations", self.base_url.trim_end_matches('/'));
+        let payload = match self.backend {
+            ImageGenBackend::XaiImagine => serde_json::json!({
+                "model": self.model,
+                "prompt": prompt,
+                "n": 1,
+                "aspect_ratio": aspect_ratio,
+                "resolution": "1k",
+                "response_format": "b64_json",
+            }),
+            ImageGenBackend::OpenAiCodex => serde_json::json!({
+                "model": self.model,
+                "prompt": prompt,
+                "background": "auto",
+                "quality": "auto",
+                "size": codex_image_size(aspect_ratio),
+            }),
+        };
 
-        let payload = serde_json::json!({
-            "model": self.model,
-            "prompt": prompt,
-            "n": 1,
-            "aspect_ratio": aspect_ratio,
-            "resolution": "1k",
-            "response_format": "b64_json",
-        });
-
-        // Capture the bearer once so the request and the 401-attribution
-        // emit see the same value (even if the provider rotates between
-        // the send and the response handling).
-        let sent_bearer = self.current_bearer().await;
-        let mut req = self.http.post(&url).json(&payload);
-        if let Some(ref key) = sent_bearer {
-            req = req.header(AUTHORIZATION, format!("Bearer {key}"));
-        }
-
-        let response = req.send().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
-                "Image generation API request failed: {e}"
-            ))
-        })?;
+        let response = self.post_json("images/generations", &payload).await?;
 
         let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            self.record_401_attribution(ToolConsumer::ImageGen, sent_bearer.as_deref());
-        }
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let truncated: String = body.chars().take(200).collect();
-            tracing::warn!(http_status = %status, "Imagine API error: {truncated}");
+            tracing::warn!(http_status = %status, "image provider generation request failed");
             return Err(xai_tool_runtime::ToolError::new(
                 xai_tool_runtime::ToolErrorKind::Custom,
-                format!("Image generation failed with HTTP {status}: {truncated}"),
+                format!("Image generation failed with HTTP {status}"),
             )
-            .with_details(serde_json::json!({"code": "http_failure", "status": status.as_u16()})));
+            .with_details(self.http_failure_details(status)));
         }
 
-        let body = response.text().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
-                "Failed to read image generation response body: {e}"
-            ))
-        })?;
-
-        let resp_json: ImageGenResponse = serde_json::from_str(&body).map_err(|e| {
-            let preview: String = body.chars().take(500).collect();
-            tracing::warn!("Imagine API returned unparseable body: {preview}");
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
-                "Failed to parse image generation response: {e} — body preview: {preview}"
-            ))
-        })?;
+        let resp_json = read_image_response(response).await?;
 
         let b64_data = resp_json.b64_data().unwrap_or("");
 
@@ -251,14 +481,69 @@ impl ImageGenClient {
             ));
         }
 
-        base64::engine::general_purpose::STANDARD
+        if b64_data.len() > MAX_GENERATED_IMAGE_BYTES.saturating_mul(4) / 3 + 8 {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "Image generation response exceeded the configured size limit.",
+            ));
+        }
+        let decoded = base64::engine::general_purpose::STANDARD
             .decode(b64_data)
             .map_err(|e| {
                 xai_tool_runtime::ToolError::invalid_arguments(format!(
                     "Failed to decode base64 image data: {e}"
                 ))
-            })
+            })?;
+        validate_generated_image(&decoded)?;
+        Ok(decoded)
     }
+}
+
+/// Map Grok's aspect-ratio vocabulary to exact `gpt-image-2` canvases.
+///
+/// The current image endpoint accepts flexible dimensions when both edges are
+/// multiples of 16, neither edge exceeds 3840px, the ratio is at most 3:1, and
+/// the total pixel count is within the model's documented bounds. These sizes
+/// stay close to one megapixel while preserving every advertised ratio.
+pub(crate) fn codex_image_size(aspect_ratio: &str) -> &'static str {
+    match aspect_ratio.trim() {
+        "1:1" => "1024x1024",
+        "16:9" => "1280x720",
+        "9:16" => "720x1280",
+        "4:3" => "1024x768",
+        "3:4" => "768x1024",
+        "3:2" => "1152x768",
+        "2:3" => "768x1152",
+        "2:1" => "1152x576",
+        "1:2" => "576x1152",
+        "19.5:9" => "1248x576",
+        "9:19.5" => "576x1248",
+        "20:9" => "1280x576",
+        "9:20" => "576x1280",
+        _ => "auto",
+    }
+}
+
+fn validate_codex_base_url(base_url: &str) -> Result<String, xai_tool_runtime::ToolError> {
+    let parsed = reqwest::Url::parse(base_url).map_err(|_| {
+        xai_tool_runtime::ToolError::invalid_arguments("Invalid Codex image base URL")
+    })?;
+    let production = parsed.scheme() == "https"
+        && parsed.host_str() == Some("chatgpt.com")
+        && parsed.path().trim_end_matches('/') == "/backend-api/codex"
+        && parsed.query().is_none()
+        && parsed.fragment().is_none();
+    #[cfg(test)]
+    let test_origin = parsed
+        .host_str()
+        .is_some_and(|host| matches!(host, "127.0.0.1" | "localhost" | "::1"));
+    #[cfg(not(test))]
+    let test_origin = false;
+    if !production && !test_origin {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            "Codex image credentials may only be sent to the ChatGPT Codex endpoint.",
+        ));
+    }
+    Ok(base_url.trim_end_matches('/').to_owned())
 }
 
 /// `Enabled` means credentials are present; each tool has its own gate.
@@ -266,6 +551,14 @@ impl ImageGenClient {
 pub enum ImageGenConfig {
     #[default]
     Disabled,
+    /// Stable fail-closed tool facade. The feature gates are enabled, so the
+    /// definitions remain in a finalized session toolset across provider/model
+    /// switches, but no client resource is constructed until the host supplies
+    /// a provider-backed configuration.
+    Unavailable {
+        image_gen_enabled: bool,
+        image_edit_enabled: bool,
+    },
     Enabled {
         api_key: String,
         base_url: String,
@@ -285,18 +578,32 @@ pub enum ImageGenConfig {
         /// API-key / workspace callers.
         tier_restricted: bool,
     },
+    /// ChatGPT Codex subscription image backend. Authentication is supplied
+    /// dynamically through `SharedApiKeyProvider`; no access token is stored
+    /// in this configuration.
+    OpenAiCodex {
+        base_url: String,
+        image_gen_enabled: bool,
+        image_edit_enabled: bool,
+    },
 }
 
 impl ImageGenConfig {
     /// Credentials present — required to construct any of the clients.
     pub fn has_credentials(&self) -> bool {
-        matches!(self, Self::Enabled { .. })
+        matches!(self, Self::Enabled { .. } | Self::OpenAiCodex { .. })
     }
 
     pub fn image_gen_enabled(&self) -> bool {
         matches!(
             self,
             Self::Enabled {
+                image_gen_enabled: true,
+                ..
+            } | Self::Unavailable {
+                image_gen_enabled: true,
+                ..
+            } | Self::OpenAiCodex {
                 image_gen_enabled: true,
                 ..
             }
@@ -307,6 +614,12 @@ impl ImageGenConfig {
         matches!(
             self,
             Self::Enabled {
+                image_edit_enabled: true,
+                ..
+            } | Self::Unavailable {
+                image_edit_enabled: true,
+                ..
+            } | Self::OpenAiCodex {
                 image_edit_enabled: true,
                 ..
             }
@@ -320,8 +633,121 @@ impl ImageGenConfig {
             Self::Enabled { model_override, .. } => {
                 model_override.as_deref().filter(|m| !m.trim().is_empty())
             }
-            Self::Disabled => None,
+            Self::Disabled | Self::Unavailable { .. } | Self::OpenAiCodex { .. } => None,
         }
+    }
+}
+
+pub(crate) async fn read_image_response(
+    response: reqwest::Response,
+) -> Result<ImageGenResponse, xai_tool_runtime::ToolError> {
+    read_image_response_with_limit(response, MAX_IMAGE_RESPONSE_BODY_BYTES).await
+}
+
+async fn read_image_response_with_limit(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<ImageGenResponse, xai_tool_runtime::ToolError> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > max_bytes as u64)
+    {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            "Image provider response exceeded the configured size limit.",
+        ));
+    }
+    let body = collect_limited_image_response(response.bytes_stream(), max_bytes).await?;
+    serde_json::from_slice(&body).map_err(|_| {
+        xai_tool_runtime::ToolError::invalid_arguments(
+            "Image provider returned an invalid response.",
+        )
+    })
+}
+
+async fn collect_limited_image_response<S, B, E>(
+    stream: S,
+    max_bytes: usize,
+) -> Result<Vec<u8>, xai_tool_runtime::ToolError>
+where
+    S: futures_util::Stream<Item = Result<B, E>>,
+    B: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
+    use futures_util::StreamExt as _;
+
+    futures_util::pin_mut!(stream);
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| {
+            xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "Failed to read image provider response: {e}"
+            ))
+        })?;
+        let chunk = chunk.as_ref();
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "Image provider response exceeded the configured size limit.",
+            ));
+        }
+        body.extend_from_slice(chunk);
+    }
+    Ok(body)
+}
+
+pub(crate) fn validate_generated_image(
+    image_bytes: &[u8],
+) -> Result<(), xai_tool_runtime::ToolError> {
+    if image_bytes.is_empty() || image_bytes.len() > MAX_GENERATED_IMAGE_BYTES {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            "Generated image exceeded the configured size limit.",
+        ));
+    }
+    let kind = infer::get(image_bytes).ok_or_else(|| {
+        xai_tool_runtime::ToolError::invalid_arguments(
+            "Image provider returned data that is not a recognized image.",
+        )
+    })?;
+    if !matches!(
+        kind.mime_type(),
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    ) {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            "Image provider returned an unsupported image format.",
+        ));
+    }
+    let reader = ImageReader::new(std::io::Cursor::new(image_bytes))
+        .with_guessed_format()
+        .map_err(|_| {
+            xai_tool_runtime::ToolError::invalid_arguments(
+                "Image provider returned an invalid image.",
+            )
+        })?;
+    let (width, height) = reader.into_dimensions().map_err(|_| {
+        xai_tool_runtime::ToolError::invalid_arguments("Image provider returned an invalid image.")
+    })?;
+    if width > MAX_GENERATED_IMAGE_DIMENSION
+        || height > MAX_GENERATED_IMAGE_DIMENSION
+        || u64::from(width) * u64::from(height) > MAX_GENERATED_IMAGE_PIXELS
+    {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            "Generated image dimensions exceeded the configured safety limit.",
+        ));
+    }
+    Ok(())
+}
+
+/// Returns the extension corresponding to the already-validated image bytes.
+///
+/// Image providers may return PNG, JPEG, WebP, or GIF regardless of the
+/// writer's historical JPEG default. Keeping the extension in sync with the
+/// actual media type makes generated files usable by downstream readers.
+pub(crate) fn generated_image_extension(image_bytes: &[u8]) -> Option<&'static str> {
+    match infer::get(image_bytes)?.mime_type() {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
     }
 }
 
@@ -371,7 +797,7 @@ impl crate::types::tool_metadata::ToolMetadata for ImageGenTool {
     }
 
     fn description_template(&self) -> &str {
-        "Generate a new image from a text description using Imagine; returns the saved image's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `images/1.jpg`) rather than the absolute path, so it renders as a clickable link that opens the image. To produce multiple images, emit multiple tool calls with distinct prompts."
+        "Generate a new image from a text description using the selected provider; returns the saved image's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `images/1.jpg`) rather than the absolute path, so it renders as a clickable link that opens the image. To produce multiple images, emit multiple tool calls with distinct prompts."
     }
 
     fn requires_expr(&self) -> Expr<ToolRequirement> {
@@ -437,9 +863,10 @@ impl xai_tool_runtime::Tool for ImageGenTool {
             res.require::<SessionFolder>()?.0.clone()
         };
 
+        let extension = generated_image_extension(&image_bytes);
         let absolute_path = client
             .writer
-            .save(&session_folder, &image_bytes, None)
+            .save(&session_folder, &image_bytes, extension)
             .await
             .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
 
@@ -457,6 +884,86 @@ impl xai_tool_runtime::Tool for ImageGenTool {
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx_with_call_id;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    struct CodexTestAuth;
+
+    impl crate::types::ApiKeyProvider for CodexTestAuth {
+        fn current_api_key(&self) -> Option<String> {
+            None
+        }
+
+        fn current_request_auth_async(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Option<RequestAuth>> + Send + '_>> {
+            Box::pin(std::future::ready(Some(
+                RequestAuth::for_provider_snapshot(
+                    OPENAI_CODEX_PROVIDER_ID,
+                    RequestCredentialSnapshot::new("test-credential", 1),
+                    [
+                        ("authorization".to_owned(), "Bearer test-access".to_owned()),
+                        ("chatgpt-account-id".to_owned(), "test-account".to_owned()),
+                        ("x-openai-fedramp".to_owned(), "true".to_owned()),
+                    ],
+                ),
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn response_stream_is_bounded_before_appending_next_chunk() {
+        let stream = futures_util::stream::iter([
+            Ok::<_, std::io::Error>(vec![1_u8, 2, 3]),
+            Ok(vec![4_u8, 5]),
+        ]);
+        assert_eq!(
+            collect_limited_image_response(stream, 5).await.unwrap(),
+            vec![1, 2, 3, 4, 5]
+        );
+
+        let oversized = futures_util::stream::iter([
+            Ok::<_, std::io::Error>(vec![1_u8, 2, 3]),
+            Ok(vec![4_u8, 5, 6]),
+        ]);
+        let err = collect_limited_image_response(oversized, 5)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("size limit"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn chunked_http_response_without_content_length_is_stream_bounded() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{address}/chunked"))
+            .await
+            .unwrap();
+        assert_eq!(response.content_length(), None);
+        let err = read_image_response_with_limit(response, 5)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("size limit"), "got: {err}");
+        server.await.unwrap();
+    }
 
     #[test]
     fn tool_name_and_description() {
@@ -472,6 +979,52 @@ mod tests {
     fn default_aspect_ratio_is_auto() {
         let input: ImageGenInput = serde_json::from_str(r#"{"prompt": "test"}"#).unwrap();
         assert_eq!(input.aspect_ratio, "auto");
+    }
+
+    #[test]
+    fn codex_aspect_ratios_map_to_supported_canvases() {
+        assert_eq!(codex_image_size("1:1"), "1024x1024");
+        assert_eq!(codex_image_size("16:9"), "1280x720");
+        assert_eq!(codex_image_size("9:16"), "720x1280");
+        assert_eq!(codex_image_size("2:3"), "768x1152");
+        assert_eq!(codex_image_size("19.5:9"), "1248x576");
+        assert_eq!(codex_image_size("9:20"), "576x1280");
+        assert_eq!(codex_image_size("auto"), "auto");
+        assert_eq!(codex_image_size("unsupported"), "auto");
+
+        for (ratio, numerator, denominator) in [
+            ("1:1", 1_u64, 1_u64),
+            ("16:9", 16, 9),
+            ("9:16", 9, 16),
+            ("4:3", 4, 3),
+            ("3:4", 3, 4),
+            ("3:2", 3, 2),
+            ("2:3", 2, 3),
+            ("2:1", 2, 1),
+            ("1:2", 1, 2),
+            ("19.5:9", 13, 6),
+            ("9:19.5", 6, 13),
+            ("20:9", 20, 9),
+            ("9:20", 9, 20),
+        ] {
+            let (width, height) = codex_image_size(ratio)
+                .split_once('x')
+                .map(|(width, height)| {
+                    (
+                        width.parse::<u64>().unwrap(),
+                        height.parse::<u64>().unwrap(),
+                    )
+                })
+                .expect("known ratio must map to concrete dimensions");
+            assert_eq!(width % 16, 0, "{ratio} width");
+            assert_eq!(height % 16, 0, "{ratio} height");
+            assert!(width <= 3840 && height <= 3840, "{ratio} edge bound");
+            assert!(
+                (655_360..=8_294_400).contains(&(width * height)),
+                "{ratio} pixel bound"
+            );
+            assert_eq!(width * denominator, height * numerator, "{ratio}");
+        }
     }
 
     #[test]
@@ -491,6 +1044,14 @@ mod tests {
         assert_eq!(cfg.model_override(), Some("grok-imagine-image"));
 
         assert!(!ImageGenConfig::Disabled.has_credentials());
+        let unavailable = ImageGenConfig::Unavailable {
+            image_gen_enabled: true,
+            image_edit_enabled: false,
+        };
+        assert!(!unavailable.has_credentials());
+        assert!(unavailable.image_gen_enabled());
+        assert!(!unavailable.image_edit_enabled());
+        assert!(ImageGenClient::new(&unavailable, None).is_err());
     }
 
     #[test]
@@ -521,6 +1082,220 @@ mod tests {
                 .model,
             "grok-imagine-image"
         );
+    }
+
+    #[tokio::test]
+    async fn codex_generation_uses_exact_provider_contract_without_xai_headers() {
+        use wiremock::matchers::{body_json, header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .and(header("authorization", "Bearer test-access"))
+            .and(header("chatgpt-account-id", "test-account"))
+            .and(header("x-openai-fedramp", "true"))
+            .and(header("originator", "grok_build_codex"))
+            .and(header(
+                "version",
+                xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION,
+            ))
+            .and(header(
+                "user-agent",
+                format!("grok-build-codex/{}", xai_grok_version::VERSION),
+            ))
+            .and(body_json(serde_json::json!({
+                "model": OPENAI_CODEX_IMAGE_MODEL,
+                "prompt": "a lighthouse",
+                "background": "auto",
+                "quality": "auto",
+                "size": "1280x720",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"b64_json": encoded}]
+            })))
+            .mount(&server)
+            .await;
+
+        let config = ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: SharedApiKeyProvider = Arc::new(CodexTestAuth);
+        let client = ImageGenClient::new(&config, Some(provider)).unwrap();
+        let result = client.generate("a lighthouse", "16:9").await.unwrap();
+        assert!(!result.is_empty());
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let headers = &requests[0].headers;
+        assert!(
+            headers
+                .keys()
+                .all(|name| !name.as_str().starts_with("x-grok-"))
+        );
+        assert!(!headers.contains_key("x-xai-token-auth"));
+    }
+
+    struct StaggeredCodexTestAuth {
+        auth_calls: AtomicUsize,
+        recoveries: AtomicUsize,
+        rejected: Mutex<Option<RequestCredentialSnapshot>>,
+    }
+
+    impl crate::types::ApiKeyProvider for StaggeredCodexTestAuth {
+        fn current_api_key(&self) -> Option<String> {
+            None
+        }
+
+        fn current_request_auth_async(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Option<RequestAuth>> + Send + '_>> {
+            let call = self.auth_calls.fetch_add(1, Ordering::SeqCst);
+            let (token, generation) = if call == 0 {
+                // Simulate another request rotating the manager immediately
+                // after this request was signed but before its 401 arrives.
+                ("Bearer generation-seven", 7)
+            } else {
+                ("Bearer generation-eight", 8)
+            };
+            Box::pin(std::future::ready(Some(
+                RequestAuth::for_provider_snapshot(
+                    OPENAI_CODEX_PROVIDER_ID,
+                    RequestCredentialSnapshot::new("stable-credential", generation),
+                    [
+                        ("authorization".to_owned(), token.to_owned()),
+                        ("chatgpt-account-id".to_owned(), "test-account".to_owned()),
+                    ],
+                ),
+            )))
+        }
+
+        fn recover_unauthorized_async(
+            &self,
+            rejected: Option<RequestCredentialSnapshot>,
+        ) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+            self.recoveries.fetch_add(1, Ordering::SeqCst);
+            *self.rejected.lock().unwrap() = rejected;
+            Box::pin(std::future::ready(true))
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_401_recovery_receives_generation_that_signed_request() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .and(header("authorization", "Bearer generation-seven"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .and(header("authorization", "Bearer generation-eight"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"b64_json": encoded}]
+            })))
+            .mount(&server)
+            .await;
+
+        let config = ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider = Arc::new(StaggeredCodexTestAuth {
+            auth_calls: AtomicUsize::new(0),
+            recoveries: AtomicUsize::new(0),
+            rejected: Mutex::new(None),
+        });
+        let client =
+            ImageGenClient::new(&config, Some(Arc::clone(&provider) as SharedApiKeyProvider))
+                .unwrap();
+        assert!(
+            !client
+                .generate("a lighthouse", "auto")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        assert_eq!(provider.auth_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.recoveries.load(Ordering::SeqCst), 1);
+        let rejected = provider.rejected.lock().unwrap().clone().unwrap();
+        assert_eq!(rejected.opaque_id(), "stable-credential");
+        assert_eq!(rejected.generation(), 7);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn terminal_codex_401_marks_provider_recovery_as_exhausted() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let config = ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: SharedApiKeyProvider = Arc::new(CodexTestAuth);
+        let error = ImageGenClient::new(&config, Some(provider))
+            .unwrap()
+            .generate("a lighthouse", "auto")
+            .await
+            .expect_err("401 must surface");
+        let details = error.details.expect("structured failure details");
+        assert_eq!(details.get("status"), Some(&serde_json::json!(401)));
+        assert_eq!(
+            details.get(crate::types::AUTH_RECOVERY_PROVIDER_DETAILS_KEY),
+            Some(&serde_json::json!(OPENAI_CODEX_PROVIDER_ID))
+        );
+        assert_eq!(
+            details.get(crate::types::AUTH_RECOVERY_EXHAUSTED_DETAILS_KEY),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "a provider that cannot recover must not replay"
+        );
+    }
+
+    #[test]
+    fn codex_base_url_is_sealed_outside_loopback_tests() {
+        let config = ImageGenConfig::OpenAiCodex {
+            base_url: "https://example.com/backend-api/codex".to_owned(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: SharedApiKeyProvider = Arc::new(CodexTestAuth);
+        let error = ImageGenClient::new(&config, Some(provider))
+            .err()
+            .expect("untrusted Codex origin must be rejected");
+        assert!(error.to_string().contains("ChatGPT Codex endpoint"));
     }
 
     #[tokio::test]

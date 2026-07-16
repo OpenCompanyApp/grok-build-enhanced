@@ -1,6 +1,6 @@
 # Authentication
 
-Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
+Grok supports several authentication methods, including interactive browser login, ChatGPT Codex subscription login, enterprise single sign-on (SSO), and headless CI/CD runners. xAI and ChatGPT Codex credentials are stored in separate scopes and can remain signed in at the same time.
 
 ---
 
@@ -29,7 +29,97 @@ Running `grok login` starts the sign-in flow again, replacing your cached sessio
 | `--oauth` | Sign in through SpaceXAI OAuth at `auth.x.ai`. This is the default, so the flag is optional. |
 | `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
 
-To sign out, run `grok logout`. It takes no flags and clears your cached credentials.
+To sign out of xAI, run `grok logout`. Add `--provider openai-codex` to clear
+only the independent ChatGPT Codex credential, as described below.
+
+---
+
+## ChatGPT Codex Subscription
+
+This unofficial fork can use models and image capabilities included with an
+eligible ChatGPT Codex subscription. It keeps the Grok Build agent loop, tools,
+sessions, and TUI; ChatGPT supplies the selected Codex model rather than an
+OpenAI Platform API key.
+
+Sign in through the browser:
+
+```bash
+grok login --provider openai-codex
+```
+
+ACP/editor clients can choose the advertised **ChatGPT Codex subscription**
+authentication method; when no saved credential exists, Grok starts the same
+browser-PKCE flow. This remains independent from the selected xAI auth method.
+
+For SSH, containers, and other headless environments, use the device flow:
+
+```bash
+grok login --provider openai-codex --device-auth
+```
+
+After authentication, list the models currently available to that ChatGPT
+account and select a namespaced model:
+
+```bash
+grok models --provider openai-codex
+grok -m openai-codex/<model-slug>
+```
+
+The model list is fetched from the authenticated Codex service; this fork does
+not maintain a hardcoded entitlement list. To disconnect ChatGPT without
+affecting the xAI login:
+
+```bash
+grok logout --provider openai-codex
+```
+
+Current Codex catalogs can advertise the GPT-5.6 Sol, Terra, and Luna variants.
+They are not hardcoded into this fork: an entitled variant appears under its
+`openai-codex/` model ID only when the authenticated service returns it. The
+model picker and `/effort` menu likewise use that model's advertised reasoning
+levels. In the catalog audited for this implementation, Sol and Terra advertise
+`low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; Luna advertises `low`,
+`medium`, `high`, `xhigh`, and `max`. The authenticated service remains
+authoritative if those menus change. In the current public Codex client,
+`ultra` is a client orchestration tier rather than a backend effort value; this
+fork keeps it in the Sol/Terra UI menu but sends the service-supported `max`
+wire effort. On Codex v2 catalogs, Ultra also activates a turn-local proactive
+delegation policy through Grok Build's existing subagent tool and coordinator;
+lower levels use explicit-request-only delegation. This does not launch Codex
+app-server or change Grok Build's permission checks, nesting limits, sessions,
+or tool implementations.
+
+To preserve Grok Build's existing agent loop, sessions, permission checks, and
+tool implementations, this fork currently exposes Grok tools as direct function
+schemas inside the Codex Responses Lite `additional_tools` item. The public
+OpenAI Codex client currently marks GPT-5.6 Sol, Terra, and Luna as
+`code_mode_only` and normally wraps its nested tools behind a V8-backed `exec`
+custom tool plus `wait`. That V8 code-mode runtime is intentionally not ported
+into this fork. If the service returns a custom/freeform tool call instead of a
+direct function call, Grok fails that turn safely rather than treating it as an
+xAI search or executing generated JavaScript. Direct-function behavior still
+requires live validation with an entitled ChatGPT account and remains part of
+the experimental integration contract.
+
+Codex access, refresh, and identity tokens are stored under the dedicated
+`openai::codex` scope in `~/.grok/auth.json`. They are refreshed per request and
+are never treated as permanent model API keys. This integration does not read
+or copy credentials from `~/.codex/auth.json`.
+
+Codex sessions can read attached/local images through the existing multimodal
+file path and expose `image_gen` plus `image_edit` when those tools are enabled
+and the authenticated model catalog advertises image input support.
+Requested aspect ratios are mapped to exact, model-valid `gpt-image-2` canvases
+for the current Codex image endpoint. ChatGPT Codex does not currently expose a
+subscription video-generation endpoint, so the xAI video tools are unavailable
+while a Codex model is selected and return when the session switches back to
+xAI.
+
+> [!WARNING]
+> Direct ChatGPT Codex backend integration is experimental. It follows the
+> behavior of the current public `openai/codex` client and is not a stable,
+> general-purpose OpenAI API contract. Availability depends on the authenticated
+> account and can change independently of this fork.
 
 ---
 
@@ -206,6 +296,13 @@ This prints a URL and code to the terminal. Open the URL on any device, enter th
 
 You can also implement the device-code flow through an [External Auth Provider](#external-auth-provider) for full control.
 
+For ChatGPT Codex, qualify the provider so the device flow does not replace the
+xAI session:
+
+```bash
+grok login --provider openai-codex --device-auth
+```
+
 ---
 
 ## Automatic Credential Refresh
@@ -215,6 +312,7 @@ Grok automatically refreshes expired credentials:
 - **Before expiry:** If your auth provider returned `expires_in` (JSON output) or you set `auth_token_ttl`, Grok re-runs the auth binary ~5 minutes before expiry.
 - **On auth error:** If the server returns 401 Unauthorized, Grok refreshes the credentials and retries the request.
 - **OIDC:** If a `refresh_token` is available, Grok silently refreshes via your IdP without re-opening the browser.
+- **ChatGPT Codex:** Grok reloads the provider-scoped credential, refreshes a rotating token family once under a cross-process lock, and retries only before a response stream has started.
 
 Tune the refresh buffer:
 
@@ -241,6 +339,11 @@ Grok resolves credentials for each request in this order, highest to lowest:
 1. **Per-model `api_key` or `env_key`** -- set under `[model.<name>]` in `config.toml`. Wins whenever present.
 2. **Active session token** -- obtained through browser, OIDC/OAuth2, or external-provider login and stored in `~/.grok/auth.json`.
 3. **`XAI_API_KEY`** -- fallback when no session token is active.
+
+This precedence applies to xAI and ordinary custom models. A model whose ID is
+under `openai-codex/` always uses the separately scoped ChatGPT Codex OAuth
+credential. It never inherits a per-model key, the xAI session, or
+`XAI_API_KEY`.
 
 When more than one login flow is configured, Grok populates the session token from the first available source, highest to lowest:
 
@@ -289,3 +392,5 @@ RUST_LOG=debug grok -p "hello" 2> /tmp/grok.log
 - **Token expires too quickly** -- Set `auth_token_ttl` or return `expires_in` in your auth provider's JSON output.
 - **OIDC redirect fails** -- Ensure your IdP allows loopback redirect URIs (`http://127.0.0.1/callback`).
 - **External auth provider not found** -- Check that the `auth_provider_command` path is correct and the binary is executable.
+- **Codex authentication required** -- Run `grok login --provider openai-codex`; this does not alter the xAI login.
+- **Codex account changed** -- Re-select the Codex model after signing in. Existing sessions are not silently rebound to a different ChatGPT account.

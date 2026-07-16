@@ -70,6 +70,9 @@ impl MockServer {
 
 fn test_config(base_url: String, model: &str) -> SamplerConfig {
     SamplerConfig {
+        provider: Default::default(),
+        credential_source: Default::default(),
+        credential_binding: None,
         api_key: Some("test-key".into()),
         base_url,
         model: model.into(),
@@ -93,6 +96,7 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         client_version: None,
         attribution_callback: None,
         bearer_resolver: None,
+        request_auth: None,
         supports_backend_search: false,
         compactions_remaining: None,
         compaction_at_tokens: None,

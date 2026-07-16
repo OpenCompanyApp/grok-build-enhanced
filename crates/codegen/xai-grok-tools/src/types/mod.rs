@@ -21,7 +21,10 @@ pub mod tool;
 pub mod tool_index;
 pub mod tool_io;
 pub mod tool_metadata;
-pub use api_key_provider::{ApiKeyProvider, SharedApiKeyProvider};
+pub use api_key_provider::{
+    AUTH_RECOVERY_EXHAUSTED_DETAILS_KEY, AUTH_RECOVERY_PROVIDER_DETAILS_KEY, ApiKeyProvider,
+    RequestAuth, RequestCredentialSnapshot, SharedApiKeyProvider,
+};
 pub use claude_alias::{claude_names_for, grok_names, grok_names_for, kind_for};
 pub use compat::{
     COMPAT_CELLS, CompatCell, CompatConfig, CompatConfigToml, CompatRemoteKey, CompatSurface,

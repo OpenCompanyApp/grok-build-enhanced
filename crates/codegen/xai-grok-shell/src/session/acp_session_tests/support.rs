@@ -173,6 +173,8 @@ pub(crate) async fn create_test_actor_ex(
     let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
+            provider: Default::default(),
+            credential_binding: None,
             base_url: "http://localhost".to_string(),
             model: "test".to_string(),
             max_completion_tokens: None,

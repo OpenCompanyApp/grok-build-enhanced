@@ -263,6 +263,12 @@ pub fn format_sampling_error(err: &SamplingError, retry_count: Option<u32>) -> S
                 retry_prefix, msg
             )
         }
+        SamplingError::ProviderAuthRejected { provider, .. } => {
+            format!(
+                "{}{} authentication was rejected. Sign in to that provider again if the problem persists.",
+                retry_prefix, provider
+            )
+        }
         SamplingError::InvalidConfiguration(msg) => {
             format!(
                 "{}Invalid configuration: {}. Please check your model settings.",
@@ -384,6 +390,13 @@ pub fn format_sampling_error(err: &SamplingError, retry_count: Option<u32>) -> S
 pub(crate) fn clone_error(err: &SamplingError) -> SamplingError {
     match err {
         SamplingError::Auth(msg) => SamplingError::Auth(msg.clone()),
+        SamplingError::ProviderAuthRejected {
+            provider,
+            credential,
+        } => SamplingError::ProviderAuthRejected {
+            provider: *provider,
+            credential: credential.clone(),
+        },
         SamplingError::InvalidConfiguration(msg) => SamplingError::InvalidConfiguration(msg),
         SamplingError::Http(e) => {
             // reqwest::Error is not Clone; preserve the rendered message

@@ -48,15 +48,16 @@ impl MvpAgent {
             Some(mut cfg) => {
                 cfg.client_identifier = primary.client_identifier.clone();
                 cfg.attribution_callback = primary.attribution_callback.clone();
-                cfg.bearer_resolver = primary.bearer_resolver.clone();
+                if cfg.provider == primary.provider {
+                    cfg.bearer_resolver = primary.bearer_resolver.clone();
+                }
                 cfg.max_retries = primary.max_retries;
                 cfg
             }
-            None => {
-                let mut fallback = primary.clone();
-                fallback.model = slug;
-                fallback
-            }
+            // A helper slug that cannot be routed with its own credentials
+            // must stay on the active provider/model. Forcing an xAI default
+            // slug onto a Codex endpoint (or vice versa) is never valid.
+            None => primary.clone(),
         };
         let model = config.model.clone();
         let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
@@ -73,10 +74,53 @@ impl MvpAgent {
             .as_deref()
             .is_some_and(crate::agent::auth_method::is_session_based_method)
     }
-    /// Publish the current ACP auth method into the shared live handle so every
-    /// running session's per-turn auth gate observes it on its next turn.
+    /// Publish the current xAI ACP auth method into the shared live handle so
+    /// every running xAI session's per-turn refresh gate observes it on its
+    /// next turn.
+    ///
+    /// ChatGPT Codex authentication is provider-scoped and travels through
+    /// `SamplingConfig::request_auth`; it must never replace this xAI method.
+    /// Keeping that boundary here protects already-running xAI sessions when a
+    /// client authenticates or switches to a Codex model.
     pub(super) fn set_auth_method(&self, id: acp::AuthMethodId) {
+        if crate::agent::auth_method::AuthMethodKind::from_id(&id).is_openai_codex() {
+            tracing::warn!(
+                "ignoring provider-scoped Codex auth method for the global xAI auth handle"
+            );
+            return;
+        }
         self.auth_method_id.store(Some(std::sync::Arc::new(id)));
+    }
+
+    /// Fail before spawning or mutating a session when its provider has no
+    /// usable credentials. xAI keeps its existing ACP flow; Codex gets a
+    /// provider-specific refresh/login gate that does not touch xAI auth.
+    pub(crate) async fn ensure_provider_authenticated(
+        &self,
+        provider: xai_grok_sampling_types::ProviderId,
+    ) -> Result<(), acp::Error> {
+        if provider != xai_grok_sampling_types::ProviderId::OpenAiCodex {
+            return Ok(());
+        }
+        let manager = crate::auth::codex::CodexAuthManager::new(
+            &crate::util::grok_home::grok_home(),
+        )
+        .map_err(|_| {
+            acp::Error::auth_required().data(
+                "Could not load ChatGPT Codex credentials. Run `grok login --provider openai-codex`.",
+            )
+        })?;
+        manager.ensure_fresh().await.map(|_| ()).map_err(|error| {
+            let message = if matches!(
+                error,
+                crate::auth::codex::CodexAuthError::NotLoggedIn
+            ) {
+                "ChatGPT Codex login required. Run `grok login --provider openai-codex`."
+            } else {
+                "ChatGPT Codex credentials could not be refreshed. Run `grok login --provider openai-codex` to re-authenticate."
+            };
+            acp::Error::auth_required().data(message)
+        })
     }
     /// Return auth for sync config construction.
     pub(super) fn current_or_buffered_auth(&self) -> Option<crate::auth::GrokAuth> {
@@ -1086,6 +1130,31 @@ impl MvpAgent {
         model: &ModelEntry,
         origin_client: Option<crate::http::OriginClientInfo>,
     ) -> SamplingConfig {
+        if model.info().provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
+            let cfg = self.cfg.borrow();
+            let mut sampling = crate::agent::config::sampling_config_for_model(
+                model,
+                resolve_credentials(model, None),
+                None,
+                cfg.client_version.clone(),
+                None,
+                None,
+            );
+            drop(cfg);
+            sampling.origin_client = origin_client;
+            if let Ok(manager) = crate::auth::codex::CodexAuthManager::new(
+                &crate::util::grok_home::grok_home(),
+            ) {
+                let manager = std::sync::Arc::new(manager);
+                if let Some(credentials) = manager.current() {
+                    sampling.credential_binding = Some(credentials.credential_binding());
+                    sampling.request_auth = Some(
+                        crate::auth::codex::shared_sampler_request_auth(manager),
+                    );
+                }
+            }
+            return sampling;
+        }
         let preferred = self.cfg.borrow().grok_com_config.preferred_method;
         let session = match preferred {
             Some(crate::auth::PreferredAuthMethod::ApiKey) => None,
@@ -1245,10 +1314,53 @@ impl MvpAgent {
     pub(super) fn prepare_image_gen_config(
         &self,
     ) -> xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig {
+        let sampling_config = self.sampling_config.borrow().clone();
+        self.prepare_image_gen_config_for_sampling_config(&sampling_config)
+    }
+
+    /// Build image-tool configuration from the exact session/subagent sampler
+    /// selection. A restored or profile-pinned session can differ from the
+    /// process-wide default, so consulting `self.sampling_config` here would
+    /// pair the wrong provider/model/key with that session.
+    pub(super) fn prepare_image_gen_config_for_sampling_config(
+        &self,
+        sampling_config: &SamplingConfig,
+    ) -> xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig {
         use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
-        let sampling_config = self.sampling_config.borrow();
-        let Some(ref api_key) = sampling_config.api_key else {
+        let (image_gen_enabled, image_edit_enabled) = {
+            let cfg = self.cfg.borrow();
+            (
+                cfg.resolve_image_gen().value,
+                cfg.resolve_image_edit().value,
+            )
+        };
+        if !image_gen_enabled && !image_edit_enabled {
             return ImageGenConfig::Disabled;
+        }
+        if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
+            if !self
+                .models_manager
+                .model_supports_image_input_for_provider(
+                    sampling_config.provider,
+                    &sampling_config.model,
+                )
+            {
+                return ImageGenConfig::Unavailable {
+                    image_gen_enabled,
+                    image_edit_enabled,
+                };
+            }
+            return ImageGenConfig::OpenAiCodex {
+                base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
+                image_gen_enabled,
+                image_edit_enabled,
+            };
+        }
+        let Some(ref api_key) = sampling_config.api_key else {
+            return ImageGenConfig::Unavailable {
+                image_gen_enabled,
+                image_edit_enabled,
+            };
         };
         let tier_restricted = self.is_tier_restricted_capability();
         let cfg = self.cfg.borrow();
@@ -1270,8 +1382,8 @@ impl MvpAgent {
             api_key: api_key.clone(),
             base_url,
             extra_headers: headers,
-            image_gen_enabled: cfg.resolve_image_gen().value,
-            image_edit_enabled: cfg.resolve_image_edit().value,
+            image_gen_enabled,
+            image_edit_enabled,
             model_override: cfg.resolve_image_gen_model_override(),
             tier_restricted,
         }
@@ -1287,10 +1399,15 @@ impl MvpAgent {
     pub(super) fn prepare_video_gen_config(
         &self,
     ) -> xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig {
+        let sampling_config = self.sampling_config.borrow().clone();
+        self.prepare_video_gen_config_for_sampling_config(&sampling_config)
+    }
+
+    pub(super) fn prepare_video_gen_config_for_sampling_config(
+        &self,
+        sampling_config: &SamplingConfig,
+    ) -> xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig {
         use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
-        let Some(api_key) = self.sampling_config.borrow().api_key.clone() else {
-            return VideoGenConfig::Disabled;
-        };
         let tier_restricted = self.is_tier_restricted_capability();
         let cfg = self.cfg.borrow();
         let zdr_video_output_s3 = cfg
@@ -1316,12 +1433,34 @@ impl MvpAgent {
             alpha_test_key.as_deref(),
             &base_url,
         );
-        VideoGenConfig::Enabled {
+        // Retain the complete xAI recipe even while Codex is selected. The
+        // unavailable wrapper does not expose tools or construct a client;
+        // it only lets a later xAI switch restore exact headers/ZDR/tier state.
+        let api_key = if sampling_config.provider
+            == xai_grok_sampling_types::ProviderId::OpenAiCodex
+        {
+            self.current_or_buffered_auth()
+                .filter(|auth| auth.is_xai_auth())
+                .map(|auth| auth.key)
+                .unwrap_or_default()
+        } else {
+            sampling_config.api_key.clone().unwrap_or_default()
+        };
+        let xai_config = VideoGenConfig::Enabled {
             api_key,
             base_url,
             extra_headers: headers,
             zdr_video_output_s3: zdr_video_output_s3.map(Box::new),
             tier_restricted,
+        };
+        if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
+            || sampling_config.api_key.is_none()
+        {
+            VideoGenConfig::Unavailable {
+                xai_fallback: Some(Box::new(xai_config)),
+            }
+        } else {
+            xai_config
         }
     }
     pub(super) fn prepare_web_search_sampling_config(&self) -> Option<SamplingConfig> {
@@ -2104,10 +2243,7 @@ impl MvpAgent {
         let auth_manager = self.auth_manager.clone();
         let trace_upload_live = self.trace_upload_live.clone();
         Some(
-            std::sync::Arc::new(move |
-                log_bytes: Vec<u8>,
-                auth_token: String,
-                email: String|
+            std::sync::Arc::new(move |log_bytes: Vec<u8>, email: String|
             {
                 let proxy_base_url = proxy_base_url.clone();
                 let deployment_key = deployment_key.clone();
@@ -2125,7 +2261,7 @@ impl MvpAgent {
                     }
                     let upload_method = crate::session::repo_changes::UploadMethod::Proxy {
                         proxy_base_url,
-                        user_token: auth_token,
+                        user_token: String::new(),
                         deployment_key,
                         alpha_test_key,
                     };
@@ -2258,7 +2394,11 @@ impl MvpAgent {
         let override_effort = session_id
             .and_then(|sid| self.sessions.borrow().get(sid).map(|h| h.reasoning_effort))
             .flatten()
-            .or_else(|| self.models_manager.current_reasoning_effort());
+            .or_else(|| self.models_manager.current_reasoning_effort())
+            .and_then(|effort| {
+                self.models_manager
+                    .resolve_reasoning_effort_for_model(model_id.0.as_ref(), effort)
+            });
         if let Some(override_effort) = override_effort
             && let Some(info) = available_models
                 .iter_mut()
@@ -2306,6 +2446,10 @@ impl MvpAgent {
                 })
                 .flatten()
                 .or_else(|| self.models_manager.current_reasoning_effort())
+                .and_then(|effort| {
+                    self.models_manager
+                        .resolve_reasoning_effort_for_model(model_id.0.as_ref(), effort)
+                })
                 .or_else(|| {
                     self
                         .models_manager
@@ -3113,7 +3257,10 @@ impl MvpAgent {
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
         let sampling_config = self
             .resolve_sampling_config_for_model(&session_model_id, origin_client.clone());
-        if self.auth_method_id.load().is_none() {
+        if self.auth_method_id.load().is_none()
+            && sampling_config.provider
+                != xai_grok_sampling_types::ProviderId::OpenAiCodex
+        {
             return Err(acp::Error::auth_required().data("no auth method id provided"));
         }
         let auth_method_id = std::sync::Arc::clone(&self.auth_method_id);
@@ -3197,8 +3344,32 @@ impl MvpAgent {
         {
             xai_grok_agent::config::ModelOverride::Override(id) => {
                 let mid = acp::ModelId::new(Arc::from(id.as_str()));
+                let codex_slug = id.strip_prefix("openai-codex/");
+                let strict_codex = codex_slug.is_some();
+                if codex_slug.is_some_and(|slug| slug.trim().is_empty()) {
+                    return Err(acp::Error::invalid_params()
+                        .data("agent profile Codex model id must include a model slug"));
+                }
+                if strict_codex {
+                    // A provider-qualified profile pin is an explicit routing
+                    // request. Authenticate and give its account-scoped
+                    // catalog one synchronous refresh before resolution; it
+                    // must never silently fall back to the xAI session model.
+                    self.ensure_provider_authenticated(
+                        xai_grok_sampling_types::ProviderId::OpenAiCodex,
+                    )
+                    .await?;
+                    if self.resolve_model_id(&mid).is_err() {
+                        self.models_manager.refresh_openai_codex_models().await;
+                    }
+                }
                 match self.resolve_model_id(&mid) {
                     Ok(entry) => Some((mid, entry)),
+                    Err(_) if strict_codex => {
+                        return Err(acp::Error::invalid_params().data(format!(
+                            "agent profile Codex model `{id}` is not available to the authenticated account"
+                        )));
+                    }
                     Err(_) => {
                         tracing::warn!(
                             agent = % agent_definition.name, model = % id,
@@ -3228,6 +3399,9 @@ impl MvpAgent {
                 sampling_config,
                 origin_client.clone(),
             );
+        self
+            .ensure_provider_authenticated(sampling_config.provider)
+            .await?;
         let max_turns = {
             let cfg = self.cfg.borrow();
             cfg.cli_agent_overrides
@@ -3329,8 +3503,10 @@ impl MvpAgent {
             .and_then(|entry| entry.info.max_retries);
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
         let web_search_sampling_config = self.prepare_web_search_sampling_config();
-        let image_gen_config = self.prepare_image_gen_config();
-        let video_gen_config = self.prepare_video_gen_config();
+        let image_gen_config =
+            self.prepare_image_gen_config_for_sampling_config(&sampling_config);
+        let video_gen_config =
+            self.prepare_video_gen_config_for_sampling_config(&sampling_config);
         let app_builder_deployer_config = self.prepare_app_builder_deployer_config();
         let web_fetch_config = self.prepare_web_fetch_config();
         let write_file_enabled = self.cfg.borrow().resolve_write_file().value;
@@ -3350,6 +3526,21 @@ impl MvpAgent {
         let subagent_toggle = self.subagent_toggle.clone();
         let handle_display_cwd = prompt_display_cwd.clone();
         let auth_manager = Some(self.auth_manager.clone());
+        let tool_api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider> =
+            if sampling_config.provider
+                == xai_grok_sampling_types::ProviderId::OpenAiCodex
+            {
+                crate::auth::codex::CodexAuthManager::new(
+                    &crate::util::grok_home::grok_home(),
+                )
+                .ok()
+                .map(std::sync::Arc::new)
+                .map(crate::auth::codex::shared_api_key_provider)
+            } else {
+                Some(Arc::new(crate::auth::manager::SharedAuthKeyProvider(
+                    self.auth_manager.clone(),
+                )))
+            };
         let bash_params_json = {
             let cfg = self.cfg.borrow();
             let remote_auto_bg = cfg
@@ -3598,13 +3789,7 @@ impl MvpAgent {
                     self.models_manager.clone(),
                     None,
                     None,
-                    Some(
-                        Arc::new(
-                            crate::auth::manager::SharedAuthKeyProvider(
-                                self.auth_manager.clone(),
-                            ),
-                        ),
-                    ),
+                    tool_api_key_provider,
                     self.resolve_image_description_model(),
                     agent_hook_registry_override,
                     workspace_ops.clone(),

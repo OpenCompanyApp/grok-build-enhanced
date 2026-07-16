@@ -2177,6 +2177,8 @@ mod inline_auto_compact_flow_tests {
         let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
             vec![],
             xai_grok_sampling_types::SamplingConfig {
+                provider: Default::default(),
+                credential_binding: None,
                 base_url: "http://localhost".to_string(),
                 model: "test".to_string(),
                 max_completion_tokens: None,
@@ -3163,6 +3165,8 @@ mod inline_auto_compact_flow_tests {
             is_retryable: false,
             retry_after_secs: None,
             model_metadata: Some(crate::sampling::ResponseModelMetadata {
+                provider: xai_grok_sampling_types::ProviderId::Xai,
+                credential_binding: None,
                 context_window: Some(context_window),
                 max_completion_tokens: None,
                 models_etag: None,

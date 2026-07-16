@@ -3,6 +3,82 @@
 //! [`acp::Agent`] trait implementation for [`MvpAgent`].
 //! Co-located child of `mvp_agent` (`use super::*`).
 use super::*;
+
+const OPENAI_CODEX_MODEL_PREFIX: &str = "openai-codex/";
+
+fn is_strict_openai_codex_model_id(model_id: &acp::ModelId) -> bool {
+    model_id.0.starts_with(OPENAI_CODEX_MODEL_PREFIX)
+}
+
+async fn refresh_openai_codex_catalog_for_selection(
+    agent: &MvpAgent,
+) -> Result<(), acp::Error> {
+    agent
+        .ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::OpenAiCodex)
+        .await?;
+    // Authentication and discovery are separate. Refresh after the credential
+    // gate so an explicit provider-qualified selection is resolved only against
+    // the currently authenticated ChatGPT account's entitlement catalog.
+    agent.models_manager.on_openai_codex_auth_changed().await;
+    Ok(())
+}
+
+async fn resolve_explicit_model_for_selection(
+    agent: &MvpAgent,
+    requested: &acp::ModelId,
+) -> Result<ModelEntry, acp::Error> {
+    if !is_strict_openai_codex_model_id(requested) {
+        return agent.resolve_model_id(requested);
+    }
+
+    refresh_openai_codex_catalog_for_selection(agent).await?;
+    let model = agent.resolve_model_id(requested).map_err(|_| {
+        acp::Error::invalid_params().data(format!(
+            "ChatGPT Codex model \"{}\" is not available to the authenticated account.",
+            requested.0
+        ))
+    })?;
+    if model.info().provider != xai_grok_sampling_types::ProviderId::OpenAiCodex {
+        return Err(acp::Error::invalid_params().data(
+            "The requested openai-codex model did not resolve to the ChatGPT Codex provider.",
+        ));
+    }
+    Ok(model)
+}
+
+async fn resolve_persisted_openai_codex_model_for_load(
+    agent: &MvpAgent,
+    persisted: &acp::ModelId,
+) -> Result<acp::ModelId, acp::Error> {
+    debug_assert!(is_strict_openai_codex_model_id(persisted));
+    refresh_openai_codex_catalog_for_selection(agent).await?;
+
+    let models = agent.models_manager.models();
+    let available = agent.models_manager.available();
+    let provider = xai_grok_sampling_types::ProviderId::OpenAiCodex;
+    if let Some(exact) = crate::agent::models::selectable_catalog_key_for_persisted_provider(
+        &models,
+        &available,
+        persisted,
+        agent.models_manager.is_session_auth(),
+        provider,
+    ) {
+        return Ok(exact);
+    }
+    if let Some(fallback) = crate::agent::models::first_available_catalog_key_for_provider(
+        &models,
+        &available,
+        provider,
+    ) {
+        return Ok(fallback);
+    }
+
+    Err(acp::Error::invalid_params().data(format!(
+        "ChatGPT Codex model \"{}\" is unavailable and no entitled Codex fallback model is available. Re-authenticate with `grok login --provider openai-codex` or retry model discovery.",
+        persisted.0
+    )))
+}
+
 #[async_trait::async_trait(?Send)]
 impl acp::Agent for MvpAgent {
     /// In the meta, we provide
@@ -57,10 +133,9 @@ impl acp::Agent for MvpAgent {
                 None,
                 Some(
                     serde_json::json!(
-                        { "user_id" : user_id, "needs_user_info" : needs_user_info,
-                        "key_prefix" : crate ::auth::token_suffix(& auth.key),
-                        "rt_prefix" : auth.refresh_token.as_deref().map(crate
-                        ::auth::token_suffix), }
+                        { "has_user_id" : ! user_id.is_empty(), "needs_user_info" :
+                        needs_user_info, "credential_present" : ! auth.key.is_empty(),
+                        "has_refresh_token" : auth.refresh_token.is_some(), }
                     ),
                 ),
             );
@@ -141,37 +216,25 @@ impl acp::Agent for MvpAgent {
         if self.initialize_request.set(arguments).is_err() {
             tracing::info!("Initialize called on reconnect (already initialized)");
         }
-        let pre = self
-            .auth_manager
-            .current()
-            .map(|a| (
-                crate::auth::token_suffix(&a.key).to_owned(),
-                a
-                    .refresh_token
-                    .as_deref()
-                    .map(|t| crate::auth::token_suffix(t).to_owned()),
-            ));
+        let pre = self.auth_manager.current();
         self.auth_manager.force_reload_from_disk();
-        let post = self
-            .auth_manager
-            .current()
-            .map(|a| (
-                crate::auth::token_suffix(&a.key).to_owned(),
-                a
-                    .refresh_token
-                    .as_deref()
-                    .map(|t| crate::auth::token_suffix(t).to_owned()),
-            ));
+        let post = self.auth_manager.current();
+        let credential_changed = match (&pre, &post) {
+            (Some(pre), Some(post)) => pre.key != post.key,
+            (None, None) => false,
+            _ => true,
+        };
         xai_grok_telemetry::unified_log::info(
             "auth init disk refresh",
             None,
             Some(
                 serde_json::json!(
-                    { "pre_key" : pre.as_ref().map(| p | & p.0), "pre_rt" : pre.as_ref()
-                    .and_then(| p | p.1.as_deref()), "post_key" : post.as_ref().map(| p |
-                    & p.0), "post_rt" : post.as_ref().and_then(| p | p.1.as_deref()),
-                    "changed" : pre.as_ref().map(| p | & p.0) != post.as_ref().map(| p |
-                    & p.0), }
+                    { "pre_credential_present" : pre.as_ref().is_some_and(| a | ! a
+                    .key.is_empty()), "pre_has_refresh_token" : pre.as_ref().is_some_and(|
+                    a | a.refresh_token.is_some()), "post_credential_present" : post
+                    .as_ref().is_some_and(| a | ! a.key.is_empty()),
+                    "post_has_refresh_token" : post.as_ref().is_some_and(| a | a
+                    .refresh_token.is_some()), "credential_changed" : credential_changed, }
                 ),
             ),
         );
@@ -214,10 +277,13 @@ impl acp::Agent for MvpAgent {
                     None,
                     Some(
                         serde_json::json!(
-                            { "force_login_team_uuid" : gc.force_login_team_uuid.as_ref()
-                            .map(| t | format!("{t:?}")), "disable_api_key_auth_knob" :
-                            gc.disable_api_key_auth, "api_key_auth_disabled" :
-                            disable_api_key_auth, }
+                            { "force_login_team_policy_present" : gc
+                            .force_login_team_uuid.is_some(), "allowed_team_count" : gc
+                            .force_login_team_uuid.as_ref().map(| policy | match policy {
+                            crate ::auth::ForceLoginTeam::Single(_) => 1, crate
+                            ::auth::ForceLoginTeam::AnyOf(teams) => teams.len(), }),
+                            "disable_api_key_auth_knob" : gc.disable_api_key_auth,
+                            "api_key_auth_disabled" : disable_api_key_auth, }
                         ),
                     ),
                 );
@@ -311,7 +377,7 @@ impl acp::Agent for MvpAgent {
             Some(crate::auth::PreferredAuthMethod::ApiKey) => false,
             _ => has_cached_token,
         };
-        let built = auth_method::build_auth_methods(auth_method::AuthMethodsBuildInputs {
+        let mut built = auth_method::build_auth_methods(auth_method::AuthMethodsBuildInputs {
             has_external_api_key,
             has_cached_token,
             has_enterprise_oidc,
@@ -320,6 +386,29 @@ impl acp::Agent for MvpAgent {
             has_auth_provider_command: has_auth_provider,
             preferred_method,
         });
+        // The shared method drives xAI proactive refresh and 401 recovery.
+        // Preserve it independently from the provider presented as the ACP
+        // default below: selecting Codex must not demote a live xAI session.
+        let xai_default_auth_method_id = built.default_auth_method_id.clone();
+        let codex_selected = self.sampling_config.borrow().provider
+            == xai_grok_sampling_types::ProviderId::OpenAiCodex;
+        let codex_configured = crate::auth::codex::CodexAuthManager::new(
+            &crate::util::grok_home::grok_home(),
+        )
+        .ok()
+        .and_then(|manager| manager.current())
+        .is_some();
+        if codex_selected {
+            built.methods.insert(0, auth_method::openai_codex_auth_method());
+            built.default_auth_method_id = codex_configured.then(|| {
+                acp::AuthMethodId::new(auth_method::OPENAI_CODEX_METHOD_ID)
+            });
+        } else {
+            built.methods.push(auth_method::openai_codex_auth_method());
+            // Codex remains discoverable, but it is never the default for an
+            // xAI-selected session. A successful ChatGPT login cannot satisfy
+            // an xAI model's independent credential requirement.
+        }
         let auth_methods = built.methods;
         xai_grok_telemetry::unified_log::info(
             "auth: initialize() built auth_methods for ACP response",
@@ -341,7 +430,7 @@ impl acp::Agent for MvpAgent {
             ),
         );
         debug_assert!(
-            ! has_external_api_key || matches!(auth_methods.first().map(| m |
+            codex_selected || ! has_external_api_key || matches!(auth_methods.first().map(| m |
             auth_method::AuthMethodKind::from_id(m.id())),
             Some(auth_method::AuthMethodKind::XaiApiKey)),
             "BYOK invariant violated: xai.api_key MUST be auth_methods.first() \
@@ -365,7 +454,9 @@ impl acp::Agent for MvpAgent {
                     ),
                 ),
             );
-            self.set_auth_method(default_id);
+        }
+        if let Some(xai_default_id) = xai_default_auth_method_id {
+            self.set_auth_method(xai_default_id);
         }
         let current_working_directory = self.launch_cwd.clone();
         let hostname = gethostname::gethostname();
@@ -448,7 +539,7 @@ impl acp::Agent for MvpAgent {
         );
         if let Some(preferred) = self.cfg.borrow().grok_com_config.preferred_method {
             let kind = auth_method::AuthMethodKind::from_id(&arguments.method_id);
-            let allowed = match preferred {
+            let allowed = kind.is_openai_codex() || match preferred {
                 crate::auth::PreferredAuthMethod::ApiKey => kind.is_api_key(),
                 crate::auth::PreferredAuthMethod::Oidc => kind.is_session_based(),
             };
@@ -471,6 +562,63 @@ impl acp::Agent for MvpAgent {
             }
         }
         match arguments.method_id.0.as_ref() {
+            auth_method::OPENAI_CODEX_METHOD_ID => {
+                let manager = crate::auth::codex::CodexAuthManager::new(
+                    &crate::util::grok_home::grok_home(),
+                )
+                .map_err(|error| {
+                    acp::Error::auth_required().data(format!(
+                        "Could not load ChatGPT Codex credentials: {error}"
+                    ))
+                })?;
+                let credentials = match manager.ensure_fresh().await {
+                    Ok(credentials) => credentials,
+                    Err(crate::auth::codex::CodexAuthError::NotLoggedIn) => {
+                        // ACP clients selected the advertised ChatGPT method;
+                        // start the same browser-PKCE flow as the CLI instead
+                        // of pretending a missing credential is authenticated.
+                        crate::auth::codex::run_codex_cli_login(false)
+                            .await
+                            .map_err(|error| {
+                                acp::Error::auth_required().data(format!(
+                                    "ChatGPT Codex login failed: {error}. You can retry with `grok login --provider openai-codex`."
+                                ))
+                            })?;
+                        manager.reload().map_err(|error| {
+                            acp::Error::auth_required().data(format!(
+                                "ChatGPT Codex login was saved but could not be reloaded: {error}"
+                            ))
+                        })?;
+                        manager.ensure_fresh().await.map_err(|error| {
+                            acp::Error::auth_required().data(format!(
+                                "ChatGPT Codex authentication failed after login: {error}"
+                            ))
+                        })?
+                    }
+                    Err(error) => {
+                        return Err(acp::Error::auth_required().data(format!(
+                            "ChatGPT Codex authentication failed: {error}. Run `grok login --provider openai-codex` to re-authenticate."
+                        )));
+                    }
+                };
+                // Authentication and model discovery are separate operations:
+                // retain a successful login even if the catalog is temporarily
+                // offline, but refresh the picker immediately when possible.
+                self.models_manager.on_openai_codex_auth_changed().await;
+                if self.sampling_config.borrow().provider
+                    == xai_grok_sampling_types::ProviderId::OpenAiCodex
+                {
+                    let manager = std::sync::Arc::new(manager);
+                    let mut sampling_config = self.sampling_config.borrow_mut();
+                    sampling_config.credential_binding =
+                        Some(credentials.credential_binding());
+                    sampling_config.request_auth = Some(
+                        crate::auth::codex::shared_sampler_request_auth(manager),
+                    );
+                }
+                emit_login_span(true, auth_method::OPENAI_CODEX_METHOD_ID, None, None);
+                Ok(Default::default())
+            }
             auth_method::XAI_API_KEY_METHOD_ID => {
                 if self.cfg.borrow().grok_com_config.api_key_auth_disabled() {
                     emit_login_span(false, "api_key", None, Some("disabled_by_admin"));
@@ -906,10 +1054,10 @@ impl acp::Agent for MvpAgent {
         let mut disallowed_custom: Option<String> = None;
         let session_initial_model = chat_initial_model(is_chat_kind, custom_model_id);
         let build_custom_model_id = if is_chat_kind { None } else { custom_model_id };
-        let resolved_custom_model = build_custom_model_id
-            .and_then(|custom_model| match self
-                .resolve_model_id(&acp::ModelId::new(custom_model))
-            {
+        let resolved_custom_model = if let Some(custom_model) = build_custom_model_id {
+            let requested = acp::ModelId::new(custom_model);
+            let strict_codex = is_strict_openai_codex_model_id(&requested);
+            match resolve_explicit_model_for_selection(self, &requested).await {
                 Ok(model) if model.info.user_selectable => {
                     model_agent_type = Some(model.info().agent_type.clone());
                     let origin_client = self
@@ -919,6 +1067,12 @@ impl acp::Agent for MvpAgent {
                     );
                     Some(custom_model)
                 }
+                Ok(_) if strict_codex => {
+                    return Err(
+                        acp::Error::invalid_params()
+                            .data("This ChatGPT Codex model isn't allowed by your allowed_models setting."),
+                    );
+                }
                 Ok(_) => {
                     tracing::warn!(
                         requested_model = custom_model,
@@ -927,6 +1081,7 @@ impl acp::Agent for MvpAgent {
                     disallowed_custom = Some(custom_model.to_string());
                     None
                 }
+                Err(error) if strict_codex => return Err(error),
                 Err(_) => {
                     tracing::warn!(
                         requested_model = custom_model, fallback_model = % self
@@ -935,7 +1090,10 @@ impl acp::Agent for MvpAgent {
                     );
                     None
                 }
-            });
+            }
+        } else {
+            None
+        };
         if model_agent_type.is_none() && custom_model_id.is_none()
             && let Ok(default_model) = self
                 .resolve_model_id(&self.models_manager.current_model_id())
@@ -959,11 +1117,15 @@ impl acp::Agent for MvpAgent {
                     )
             });
         if let Some(effort) = self.models_manager.current_reasoning_effort()
-            && self
+            && let Some(effective_effort) = self
                 .models_manager
-                .model_supports_reasoning_effort(&session_sampling.model)
+                .resolve_reasoning_effort_for_provider(
+                    session_sampling.provider,
+                    &session_sampling.model,
+                    effort,
+                )
         {
-            session_sampling.reasoning_effort = Some(effort);
+            session_sampling.reasoning_effort = Some(effective_effort);
         }
         let (summary_client, summary_model) = self
             .build_summary_client(&session_sampling)?;
@@ -1351,6 +1513,23 @@ impl acp::Agent for MvpAgent {
             announcement_state: persisted_announcement_state,
             goal_mode_state: _persisted_goal_mode,
         } = persistence_info;
+        // A provider-qualified persisted model is an authentication boundary,
+        // not merely a display id. Resolve it before replay/spawn so a missing
+        // Codex catalog can never cause this session to be constructed with the
+        // process-wide xAI default sampler and tools.
+        let persisted_codex_model = if is_strict_openai_codex_model_id(
+            &summary.current_model_id,
+        ) {
+            Some(
+                resolve_persisted_openai_codex_model_for_load(
+                    self,
+                    &summary.current_model_id,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let restored_compaction_count = persisted_signals
             .as_ref()
             .map(|s| s.compaction_count as u64)
@@ -1571,12 +1750,15 @@ impl acp::Agent for MvpAgent {
                 "session.spawn_and_register_session"
             );
             spawn_timer.with_field("session_id", session_id.0.as_ref());
+            let spawn_model_id = persisted_codex_model
+                .clone()
+                .unwrap_or_else(|| summary.current_model_id.clone());
             let persisted_agent_name: Option<String> = summary
                 .agent_name
                 .clone()
                 .or_else(|| {
                     self
-                        .resolve_model_id(&summary.current_model_id)
+                        .resolve_model_id(&spawn_model_id)
                         .ok()
                         .map(|m| m.info().agent_type.clone())
                 });
@@ -1605,7 +1787,7 @@ impl acp::Agent for MvpAgent {
                         session_meta: request_meta.as_ref(),
                         managed_mcp_expires_at,
                         model_agent_type: persisted_agent_name.as_deref(),
-                        session_model_id: summary.current_model_id.clone(),
+                        session_model_id: spawn_model_id,
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd,
@@ -1738,8 +1920,29 @@ impl acp::Agent for MvpAgent {
             &models,
             &available,
             &persisted_model,
+            self.models_manager.is_session_auth(),
         );
-        let model_id = if let Some(catalog_key) = selectable_catalog_key {
+        let model_id = if let Some(codex_model) = persisted_codex_model {
+            if codex_model != persisted_model {
+                tracing::warn!(
+                    session_id = % session_id.0, previous = % persisted_model.0, new = %
+                    codex_model.0,
+                    "Persisted ChatGPT Codex model no longer available; switching within the Codex provider"
+                );
+                let reason = format!(
+                    "ChatGPT Codex model \"{}\" is no longer available for your account; this session is using another entitled Codex model.",
+                    persisted_model.0,
+                );
+                self.send_model_auto_switched(
+                        &session_id,
+                        &persisted_model,
+                        &codex_model,
+                        &reason,
+                    )
+                    .await;
+            }
+            codex_model
+        } else if let Some(catalog_key) = selectable_catalog_key {
             if catalog_key != persisted_model {
                 tracing::info!(
                     session_id = % session_id.0, persisted = % persisted_model.0,
@@ -2020,6 +2223,7 @@ impl acp::Agent for MvpAgent {
                     &models,
                     &available,
                     &unavailable_model,
+                    self.models_manager.is_session_auth(),
                 )
                 .unwrap_or(unavailable_model.clone());
             if available.contains_key(&restore_model_id) {
@@ -3119,7 +3323,7 @@ impl acp::Agent for MvpAgent {
         &self,
         args: acp::SetSessionModelRequest,
     ) -> Result<acp::SetSessionModelResponse, acp::Error> {
-        let model = self.resolve_model_id(&args.model_id)?;
+        let model = resolve_explicit_model_for_selection(self, &args.model_id).await?;
         if !model.info.user_selectable {
             return Err(
                 acp::Error::invalid_params()

@@ -2084,6 +2084,7 @@ pub(crate) async fn new(
     let (tx, rx) = mpsc::unbounded_channel::<PersistenceMsg>();
 
     let info_clone = info.clone();
+    let summary_session_id = info.id.to_string();
     let storage: Arc<dyn StorageAdapter> = Arc::from(storage);
     let remote_sync = init_remote_sync(&summary, storage_mode, auth_manager)?;
     let handle = PersistenceHandle {
@@ -2103,6 +2104,7 @@ pub(crate) async fn new(
                 crate::session::summary::SummaryConfig {
                     sampling_client,
                     model: session_summary_model,
+                    session_id: summary_session_id,
                     persistence_tx: tx,
                 },
             ),
@@ -2155,6 +2157,7 @@ pub async fn new_with_explicit_dir(
     let (tx, rx) = mpsc::unbounded_channel::<PersistenceMsg>();
 
     let info_clone = info.clone();
+    let summary_session_id = info.id.to_string();
     let storage: Arc<dyn StorageAdapter> = Arc::from(storage);
     let handle = PersistenceHandle {
         tx: tx.clone(),
@@ -2173,6 +2176,7 @@ pub async fn new_with_explicit_dir(
                 crate::session::summary::SummaryConfig {
                     sampling_client,
                     model: session_summary_model,
+                    session_id: summary_session_id,
                     persistence_tx: tx,
                 },
             ),
@@ -2276,11 +2280,13 @@ pub(crate) async fn load(
         tx: tx.clone(),
         noop: false,
     };
+    let summary_session_id = loaded_info.id.to_string();
     tokio::task::spawn(async move {
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
                 sampling_client,
                 model: session_summary_model,
+                session_id: summary_session_id,
                 persistence_tx: tx,
             },
         );
@@ -2361,11 +2367,13 @@ pub(crate) async fn load_light(
         tx: tx.clone(),
         noop: false,
     };
+    let summary_session_id = loaded_info.id.to_string();
     tokio::task::spawn(async move {
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
                 sampling_client,
                 model: session_summary_model,
+                session_id: summary_session_id,
                 persistence_tx: tx,
             },
         );

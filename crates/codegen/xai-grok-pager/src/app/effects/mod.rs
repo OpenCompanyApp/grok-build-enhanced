@@ -3840,14 +3840,20 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::FetchBilling { agent_id, silent } => {
+        Effect::FetchBilling {
+            agent_id,
+            session_id,
+            silent,
+        } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
                     use xai_grok_shell::extensions::billing::BillingConfigResponse;
                     let req = acp::ExtRequest::new(
                         "x.ai/billing",
-                        serde_json::value::to_raw_value(&serde_json::json!({}))
+                        serde_json::value::to_raw_value(&serde_json::json!({
+                            "sessionId": session_id,
+                        }))
                             .expect("serialize billing params")
                             .into(),
                     );
@@ -3881,8 +3887,12 @@ pub(crate) fn execute(
                         }
                     };
                     let subscription_tier = billing.subscription_tier;
+                    let codex_usage = billing.codex_usage;
+                    let codex_api_equivalent_cost = billing.codex_api_equivalent_cost;
                     let balance = billing.config.map(credit_balance_from_config);
-                    let autotopup = if has_prepaid_credits(balance.as_ref()) {
+                    let autotopup = if codex_usage.is_some() {
+                        crate::views::credit_bar::AutoTopupFetch::Cleared
+                    } else if has_prepaid_credits(balance.as_ref()) {
                         fetch_auto_topup_info(&tx).await
                     } else {
                         crate::views::credit_bar::AutoTopupFetch::Cleared
@@ -3890,6 +3900,8 @@ pub(crate) fn execute(
                     TaskResult::BillingFetched {
                         agent_id,
                         balance,
+                        codex_usage,
+                        codex_api_equivalent_cost,
                         silent,
                         subscription_tier,
                         autotopup,

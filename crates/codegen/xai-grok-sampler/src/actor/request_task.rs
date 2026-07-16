@@ -115,6 +115,11 @@ pub(crate) async fn run_request_task(
 
     let mut request = request;
     let mut retry_count: u32 = 0;
+    // Provider auth recovery is a separate, exactly-once budget. It must not
+    // consume the transport retry budget and must use this client's pinned
+    // request-auth manager rather than constructing a new credential owner.
+    let mut provider_auth_recovery_attempted = false;
+    let mut provider_auth_retry_count: u32 = 0;
     // Doom-loop recovery keeps its own resample budget, independent of the
     // transport/empty budget above.
     let doom_policy = config.doom_loop_recovery;
@@ -147,7 +152,7 @@ pub(crate) async fn run_request_task(
                 response,
                 mut metrics,
             } => {
-                metrics.attempts = retry_count + doom_retry_count + 1;
+                metrics.attempts = retry_count + doom_retry_count + provider_auth_retry_count + 1;
                 if let Some(policy) = doom_policy {
                     let confident = policy.confident_triggers(&response.doom_loop_signals);
                     if !confident.is_empty() {
@@ -235,6 +240,19 @@ pub(crate) async fn run_request_task(
                     tokio::time::sleep(backoff).await;
                     continue;
                 }
+                if maybe_recover_provider_auth(
+                    &error,
+                    &client,
+                    &config,
+                    &mut provider_auth_recovery_attempted,
+                    &mut provider_auth_retry_count,
+                    &event_tx,
+                    &request_id,
+                )
+                .await
+                {
+                    continue;
+                }
                 if !apply_retry_decision(
                     &error,
                     &mut retry_count,
@@ -257,6 +275,19 @@ pub(crate) async fn run_request_task(
                 return request_id;
             }
             AttemptOutcome::InitFailed { error } => {
+                if maybe_recover_provider_auth(
+                    &error,
+                    &client,
+                    &config,
+                    &mut provider_auth_recovery_attempted,
+                    &mut provider_auth_retry_count,
+                    &event_tx,
+                    &request_id,
+                )
+                .await
+                {
+                    continue;
+                }
                 if !apply_retry_decision(
                     &error,
                     &mut retry_count,
@@ -276,6 +307,44 @@ pub(crate) async fn run_request_task(
             }
         }
     }
+}
+
+/// Recover an OpenAI Codex 401 through the exact request-auth instance that
+/// signed the rejected request. The boolean budget prevents a second refresh
+/// when the retry is also rejected; non-Codex providers never enter this path.
+async fn maybe_recover_provider_auth(
+    err: &SamplingError,
+    client: &SamplingClient,
+    config: &SamplerConfig,
+    attempted: &mut bool,
+    retry_count: &mut u32,
+    event_tx: &mpsc::UnboundedSender<SamplingEvent>,
+    request_id: &RequestId,
+) -> bool {
+    if *attempted || !config.provider.is_openai_codex() {
+        return false;
+    }
+    let Some((provider, rejected)) = err.rejected_provider_credential() else {
+        return false;
+    };
+    if provider != config.provider {
+        return false;
+    }
+    *attempted = true;
+    if !client
+        .recover_provider_auth_after_unauthorized(rejected.clone())
+        .await
+    {
+        return false;
+    }
+    *retry_count = 1;
+    emit_retrying(event_tx, request_id, 1, 1, err);
+    tracing::info!(
+        target: crate::sampling_log::TARGET,
+        provider = "openai_codex",
+        "provider authentication recovered; retrying request once"
+    );
+    true
 }
 
 /// Apply a [`RetryDecision`]. Returns `true` if the loop should
@@ -447,7 +516,14 @@ async fn run_one_attempt(
                 collector.disarm_abort();
             }
             let (teed, captured) = tee_errors(raw);
-            let l2 = stream_responses(teed, metadata, request_id.clone(), idle_timeout, doom_loop);
+            let l2 = stream_responses(
+                teed,
+                metadata,
+                request_id.clone(),
+                idle_timeout,
+                doom_loop,
+                client.provider(),
+            );
             drive_l2(l2, request_id, event_tx, cancel_token, captured, doom_check).await
         }
         ApiBackend::Messages => {
@@ -748,6 +824,121 @@ fn send_completion(
 mod tests {
     use super::*;
     use futures_util::stream;
+
+    struct CountingRequestAuth(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl crate::config::RequestAuth for CountingRequestAuth {
+        fn apply(
+            &self,
+            headers: &mut reqwest::header::HeaderMap,
+        ) -> std::result::Result<
+            xai_grok_sampling_types::CredentialBinding,
+            crate::config::RequestAuthError,
+        > {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_static("Bearer test-token"),
+            );
+            headers.insert(
+                reqwest::header::HeaderName::from_static("chatgpt-account-id"),
+                reqwest::header::HeaderValue::from_static("test-account"),
+            );
+            Ok(rejected_binding())
+        }
+
+        fn recover_unauthorized(
+            &self,
+            rejected: xai_grok_sampling_types::CredentialBinding,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
+            Box::pin(async move {
+                assert_eq!(rejected, rejected_binding());
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                true
+            })
+        }
+    }
+
+    fn rejected_binding() -> xai_grok_sampling_types::CredentialBinding {
+        let mut binding = xai_grok_sampling_types::CredentialBinding::openai_codex(Some(
+            "test-credential".to_owned(),
+        ));
+        binding.generation = 7;
+        binding
+    }
+
+    #[tokio::test]
+    async fn codex_provider_auth_recovery_is_exactly_once() {
+        let recoveries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut config = SamplerConfig::openai_codex("gpt-5-codex");
+        config.request_auth = Some(std::sync::Arc::new(CountingRequestAuth(
+            std::sync::Arc::clone(&recoveries),
+        )));
+        let client = SamplingClient::new(config.clone()).expect("Codex client");
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let request_id = RequestId::from("request");
+        let error = SamplingError::ProviderAuthRejected {
+            provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            credential: rejected_binding(),
+        };
+        let mut attempted = false;
+        let mut retry_count = 0;
+
+        assert!(
+            maybe_recover_provider_auth(
+                &error,
+                &client,
+                &config,
+                &mut attempted,
+                &mut retry_count,
+                &event_tx,
+                &request_id,
+            )
+            .await
+        );
+        assert!(
+            !maybe_recover_provider_auth(
+                &error,
+                &client,
+                &config,
+                &mut attempted,
+                &mut retry_count,
+                &event_tx,
+                &request_id,
+            )
+            .await
+        );
+        assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(retry_count, 1);
+    }
+
+    #[tokio::test]
+    async fn generic_auth_error_cannot_enter_codex_recovery() {
+        let recoveries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut config = SamplerConfig::openai_codex("gpt-5-codex");
+        config.request_auth = Some(std::sync::Arc::new(CountingRequestAuth(
+            std::sync::Arc::clone(&recoveries),
+        )));
+        let client = SamplingClient::new(config.clone()).expect("Codex client");
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let mut attempted = false;
+        let mut retry_count = 0;
+
+        assert!(
+            !maybe_recover_provider_auth(
+                &SamplingError::Auth("generic auth failure".to_owned()),
+                &client,
+                &config,
+                &mut attempted,
+                &mut retry_count,
+                &event_tx,
+                &RequestId::from("request"),
+            )
+            .await
+        );
+        assert!(!attempted);
+        assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(retry_count, 0);
+    }
 
     #[test]
     fn synthesize_idle_timeout_extracts_elapsed_secs() {

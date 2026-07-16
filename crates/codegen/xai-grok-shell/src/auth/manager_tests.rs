@@ -18,6 +18,29 @@ fn make_auth(expires_at: Option<DateTime<Utc>>, create_time: DateTime<Utc>) -> G
 }
 
 #[test]
+fn grok_auth_debug_never_contains_credentials_or_account_identifiers() {
+    let auth = GrokAuth {
+        key: "access-token-secret".into(),
+        refresh_token: Some("refresh-token-secret".into()),
+        user_id: "user-account-secret".into(),
+        email: Some("secret@example.com".into()),
+        ..GrokAuth::test_default()
+    };
+
+    let rendered = format!("{auth:?}");
+    for secret in [
+        "access-token-secret",
+        "refresh-token-secret",
+        "user-account-secret",
+        "secret@example.com",
+    ] {
+        assert!(!rendered.contains(secret), "Debug leaked {secret:?}");
+    }
+    assert!(rendered.contains("has_key"));
+    assert!(rendered.contains("has_refresh_token"));
+}
+
+#[test]
 fn expired_within_5min_buffer() {
     let auth = make_auth(Some(Utc::now() + Duration::minutes(4)), Utc::now());
     assert!(is_expired(&auth));
@@ -521,21 +544,6 @@ fn manager_collection_predicates_fail_directions() {
         !mgr.allows_data_collection(),
         "cleared credentials must close the collection gate"
     );
-}
-
-// -- token_suffix ----------------------------------------------------------------
-
-#[test]
-fn token_suffix_matrix() {
-    let cases: &[(&str, &str)] = &[
-        ("abcdefghijklmnop", "efghijklmnop"), // takes last 12
-        ("short", "short"),                   // short unchanged
-        ("", ""),                             // empty
-        ("123456789012", "123456789012"),     // exact 12
-    ];
-    for (input, expected) in cases {
-        assert_eq!(token_suffix(input), *expected, "input={input:?}");
-    }
 }
 
 // -- read_disk_auth ----------------------------------------------------------

@@ -563,11 +563,12 @@ pub(crate) struct SubagentSpawnInfo {
 /// Phase 3: Post-flight handling after dispatch (inline in execute_tool_calls for now).
 pub(crate) struct SessionActor {
     pub(crate) session_info: SessionInfo,
-    /// Shared live handle to the current ACP auth method. Normal sessions hold a
-    /// clone of `MvpAgent::auth_method_id`, so a mid-session `/login` is picked
-    /// up by the per-turn auth gate without re-spawning; subagents instead get a
-    /// fresh, isolated handle seeded once at spawn (frozen for their lifetime).
-    /// `None` until the agent has selected a method.
+    /// Shared live handle to the current xAI ACP auth method. Normal sessions
+    /// hold a clone of `MvpAgent::auth_method_id`, so a mid-session xAI `/login`
+    /// is picked up by the per-turn refresh gate without re-spawning; subagents
+    /// instead get a fresh, isolated handle seeded once at spawn (frozen for
+    /// their lifetime). Codex auth remains provider-scoped in request auth.
+    /// `None` until the agent has selected an xAI method.
     pub(crate) auth_method_id: crate::agent::auth_method::SharedAuthMethodId,
     /// Memoized per-model auth facts, keyed by model id — see
     /// [`SessionActor::model_auth_facts`].

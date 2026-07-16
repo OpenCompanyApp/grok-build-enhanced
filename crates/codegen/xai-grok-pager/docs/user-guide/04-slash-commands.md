@@ -140,7 +140,7 @@ Aliases: `/m`
 
 ### `/effort <level>`
 
-Set reasoning effort on the **current** model without re-selecting it. Levels: `low`, `medium`, `high`, `xhigh`. Only works when the active model supports reasoning effort.
+Set reasoning effort on the **current** model without re-selecting it. The fallback levels are `low`, `medium`, `high`, and `xhigh`; authenticated model catalogs can additionally expose `max`, `ultra`, or provider-specific menu labels. Only levels advertised by the active model are accepted.
 
 ```
 /effort high

@@ -972,6 +972,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         }
         effects.push(Effect::FetchBilling {
             agent_id,
+            session_id: Some(hydrate_sid.clone()),
             silent: true,
         });
         if let Some((model_id, effort)) = deferred {

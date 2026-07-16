@@ -14,7 +14,7 @@ pub(crate) use oidc_refresher::OidcRefresher;
 
 /// Callback for diagnostic log upload on auth refresh failure.
 pub(crate) type DiagnosticUploader =
-    Arc<dyn Fn(Vec<u8>, String, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+    Arc<dyn Fn(Vec<u8>, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Read-only view of `AuthManager` for refreshers. Enforces the
 /// no-mutation contract on *credential* state at the type level: refreshers

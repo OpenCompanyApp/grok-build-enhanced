@@ -790,10 +790,6 @@ pub(in crate::app::dispatch) fn skip_picker_and_create_session(
         model_id: None,
         preferred_session_id,
         chat_kind,
-        
-        
-        
-        
     }]
 }
 pub(in crate::app::dispatch) fn handle_session_created(
@@ -860,6 +856,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
         }
         effects.push(Effect::FetchBilling {
             agent_id,
+            session_id: Some(session_id_clone.clone()),
             silent: true,
         });
         if let Some((model_id, effort)) = deferred {
@@ -950,6 +947,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         }
         effects.push(Effect::FetchBilling {
             agent_id,
+            session_id: Some(session_id_clone.clone()),
             silent: true,
         });
         if let Some((model_id, effort)) = deferred {

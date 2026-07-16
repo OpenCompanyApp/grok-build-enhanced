@@ -7,6 +7,91 @@
 //! the parent module's private helpers.
 use super::*;
 use futures::StreamExt;
+
+/// Generated media is trusted tool output, but still cap the source read
+/// before embedding it into conversation history. The normalizer below
+/// reduces the on-wire copy to the regular conversation image budget; the
+/// original file remains on disk for lossless follow-up edits.
+const MAX_MEDIA_GEN_INLINE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+
+async fn media_gen_inline_image(
+    output: &ToolsToolOutput,
+    is_cursor_harness: bool,
+) -> Option<ContentPart> {
+    if is_cursor_harness {
+        return None;
+    }
+    let media = match output {
+        ToolsToolOutput::ImageGen(media) | ToolsToolOutput::ImageEdit(media) => media,
+        _ => return None,
+    };
+    if media.path.as_os_str().is_empty() {
+        return None;
+    }
+
+    let metadata = match tokio::fs::metadata(&media.path).await {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) => {
+            tracing::warn!("generated image output path is not a regular file");
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "generated image output could not be inspected");
+            return None;
+        }
+    };
+    if metadata.len() > MAX_MEDIA_GEN_INLINE_SOURCE_BYTES {
+        tracing::warn!(
+            bytes = metadata.len(),
+            "generated image output exceeded inline source limit"
+        );
+        return None;
+    }
+    use tokio::io::AsyncReadExt as _;
+    let file = match tokio::fs::File::open(&media.path).await {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::warn!(%error, "generated image output could not be read for history");
+            return None;
+        }
+    };
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut limited = file.take(MAX_MEDIA_GEN_INLINE_SOURCE_BYTES + 1);
+    if let Err(error) = limited.read_to_end(&mut bytes).await {
+        tracing::warn!(%error, "generated image output could not be read for history");
+        return None;
+    }
+    if bytes.len() as u64 > MAX_MEDIA_GEN_INLINE_SOURCE_BYTES {
+        tracing::warn!("generated image output grew beyond inline source limit");
+        return None;
+    }
+    let mime = match infer::get(&bytes).map(|kind| kind.mime_type()) {
+        Some(mime @ ("image/png" | "image/jpeg" | "image/webp" | "image/gif")) => mime,
+        _ => {
+            tracing::warn!("generated image output has an unsupported inline format");
+            return None;
+        }
+    };
+
+    use base64::Engine as _;
+    let image = agent_client_protocol::ImageContent::new(
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+        mime,
+    );
+    let mut normalized =
+        crate::session::image_normalize::normalize_images(vec![image], is_cursor_harness).await;
+    if !normalized.dropped.is_empty() {
+        tracing::warn!(
+            count = normalized.dropped.len(),
+            "generated image output was not attached to conversation history"
+        );
+    }
+    let image = normalized.images.pop()?;
+    Some(ContentPart::Image {
+        url: std::sync::Arc::<str>::from(format!("data:{};base64,{}", image.mime_type, image.data)),
+    })
+}
+
 /// Whether a tool name is an MCP `create_pull_request` (qualified
 /// `server__create_pull_request` or bare).
 fn is_mcp_create_pull_request(tool_name: &str) -> bool {
@@ -2132,6 +2217,7 @@ impl SessionActor {
             let path = tool_parsed_args
                 .get("target_file")
                 .or_else(|| tool_parsed_args.get("path"))
+                .or_else(|| tool_parsed_args.get("file_path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             use crate::session::image_normalize::{InlineAttachVerdict, inline_attach_verdict};
@@ -2170,6 +2256,7 @@ impl SessionActor {
             let path = tool_parsed_args
                 .get("target_file")
                 .or_else(|| tool_parsed_args.get("path"))
+                .or_else(|| tool_parsed_args.get("file_path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             prompt_text = format!(
@@ -2177,6 +2264,10 @@ impl SessionActor {
                 pdf.pages.len(),
                 pdf.total_pages,
             );
+        }
+        if let Some(image) = media_gen_inline_image(&result.output, self.is_cursor_harness()).await
+        {
+            inline_images.push(image);
         }
         let tool_chat = if inline_images.is_empty() {
             ConversationItem::tool_result(call_id.to_string(), prompt_text)
@@ -3011,5 +3102,50 @@ mod wait_interrupt_tests {
         task.abort();
         let _ = task.await;
         assert_eq!(depth.load(Ordering::SeqCst), 0, "abort must not leak");
+    }
+}
+
+#[cfg(test)]
+mod media_gen_inline_image_tests {
+    use super::{ContentPart, ToolsToolOutput, media_gen_inline_image};
+    use base64::Engine as _;
+    use xai_grok_tools::types::output::MediaGenOutput;
+
+    #[tokio::test]
+    async fn generated_image_output_becomes_multimodal_history_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("generated.png");
+        let image = image::DynamicImage::new_rgba8(64, 64);
+        let mut encoded = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut encoded),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        std::fs::write(&path, encoded).unwrap();
+
+        let output = ToolsToolOutput::ImageGen(MediaGenOutput::new(path));
+        let content = media_gen_inline_image(&output, false)
+            .await
+            .expect("generated image should be attached to tool history");
+        let ContentPart::Image { url } = content else {
+            panic!("expected inline image content");
+        };
+        let payload = url
+            .strip_prefix("data:image/png;base64,")
+            .expect("PNG data URL");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .unwrap();
+        assert_eq!(
+            image::guess_format(&bytes).unwrap(),
+            image::ImageFormat::Png
+        );
+
+        assert!(
+            media_gen_inline_image(&output, true).await.is_none(),
+            "external harnesses retain their existing path-only contract"
+        );
     }
 }

@@ -75,9 +75,10 @@ pub async fn generate_session_summary(
     user_message: String,
     client: OaiCompatClient,
     model: &str,
+    session_id: &str,
 ) -> String {
     let clean_message = title_source_text(&user_message);
-    let request = ConversationRequest::from_items(vec![
+    let mut request = ConversationRequest::from_items(vec![
         ConversationItem::system(
             r#"You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.
 We describe the session title below
@@ -114,6 +115,15 @@ Just generate the session_title and nothing else"#,
     .with_max_output_tokens(100)
     .with_temperature(1.0)
     .with_tool_choice(ConversationToolChoice::Function("session_title".to_owned()));
+
+    // ChatGPT's Codex Responses endpoint requires the same stable session and
+    // thread identity on auxiliary requests as on the main agent turn. Leave
+    // the request ID empty so title generation neither consumes nor replays a
+    // user turn's `x-codex-turn-state` routing token.
+    if !session_id.is_empty() {
+        request.x_grok_conv_id = Some(session_id.to_owned());
+        request.x_grok_session_id = Some(session_id.to_owned());
+    }
 
     match client.conversation_collect(request).await {
         Ok(response) => {

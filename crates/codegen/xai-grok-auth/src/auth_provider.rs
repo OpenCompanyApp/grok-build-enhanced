@@ -7,10 +7,9 @@ use reqwest::RequestBuilder;
 
 use crate::visibility::HttpAuth;
 
-/// Snapshot of the currently effective credentials. Used by callers
-/// that build their own header maps (the OTel OTLP exporter) or that
-/// need the bearer prefix for 401-attribution telemetry.
-#[derive(Clone, Debug, Default)]
+/// Snapshot of the currently effective credentials. Used by callers that
+/// build their own header maps or perform provider-scoped recovery.
+#[derive(Clone, Default)]
 pub struct CredentialSnapshot {
     /// Bearer token. `None` when no auth is configured (CI / `--api-key` headless).
     pub token: Option<String>,
@@ -30,6 +29,19 @@ pub struct CredentialSnapshot {
     pub organization_id: Option<String>,
 }
 
+impl std::fmt::Debug for CredentialSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialSnapshot")
+            .field("has_token", &self.token.is_some())
+            .field("has_user_id", &self.user_id.is_some())
+            .field("has_team_id", &self.team_id.is_some())
+            .field("has_deployment_id", &self.deployment_id.is_some())
+            .field("has_api_key_id", &self.api_key_id.is_some())
+            .field("has_organization_id", &self.organization_id.is_some())
+            .finish()
+    }
+}
+
 /// Source of truth for outbound auth on data-collector requests.
 ///
 /// Supertrait of `HttpAuth` so a single impl satisfies both this trait
@@ -41,8 +53,7 @@ pub trait AuthCredentialProvider: HttpAuth + Send + Sync + 'static {
     /// issue a cheap disk re-read (`AuthManager::refresh`) before
     /// snapshotting so callers see updates from sibling processes
     /// (`grok-desktop`, `grok login`). The `token` field MUST mirror
-    /// the bearer that `HttpAuth::apply` would send on the wire so
-    /// 401-attribution prefixes match the actual request.
+    /// the bearer that `HttpAuth::apply` would send on the wire.
     fn snapshot(&self) -> CredentialSnapshot;
 
     /// Attempt to obtain a fresh token. Returns `true` if a different
@@ -73,8 +84,8 @@ pub trait AuthCredentialProvider: HttpAuth + Send + Sync + 'static {
 ///
 /// `bearer` is the wire bearer the inner `HttpAuth` will send in the
 /// `Authorization` header. Stored alongside the inner so `snapshot().token`
-/// returns the same prefix that goes out on the wire (used by
-/// 401-attribution telemetry). `None` when no bearer is configured.
+/// returns the same credential that goes out on the wire. `None` when no
+/// bearer is configured. Its `Debug` implementation never prints the value.
 pub struct StaticAuthCredentialProvider {
     inner: Box<dyn HttpAuth>,
     bearer: Option<String>,
@@ -114,5 +125,35 @@ impl AuthCredentialProvider for StaticAuthCredentialProvider {
 
     async fn refresh_after_unauthorized(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_snapshot_debug_redacts_all_identifiers_and_secrets() {
+        let snapshot = CredentialSnapshot {
+            token: Some("secret-access-token".to_string()),
+            user_id: Some("user-sensitive".to_string()),
+            team_id: Some("team-sensitive".to_string()),
+            deployment_id: Some("deployment-sensitive".to_string()),
+            api_key_id: Some("api-key-sensitive".to_string()),
+            organization_id: Some("org-sensitive".to_string()),
+        };
+
+        let rendered = format!("{snapshot:?}");
+        for sensitive in [
+            "secret-access-token",
+            "user-sensitive",
+            "team-sensitive",
+            "deployment-sensitive",
+            "api-key-sensitive",
+            "org-sensitive",
+        ] {
+            assert!(!rendered.contains(sensitive));
+        }
+        assert!(rendered.contains("has_token: true"));
     }
 }

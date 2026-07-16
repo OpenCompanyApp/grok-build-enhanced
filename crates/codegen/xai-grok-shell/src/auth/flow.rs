@@ -302,8 +302,8 @@ async fn run_external_auth_provider(
         .map_err(|e| anyhow::anyhow!("failed to save external auth credentials: {e}"))?;
 
     tracing::info!(
-        user_id = %auth.user_id,
-        email = ?auth.email,
+        has_user_id = !auth.user_id.is_empty(),
+        has_email = auth.email.is_some(),
         "auth: external provider login complete"
     );
 
@@ -596,7 +596,7 @@ async fn run_auth_flow_inner(
                         "auth: devbox migration in auth flow succeeded",
                         None,
                         Some(serde_json::json!({
-                            "user_id": auth.user_id,
+                            "has_user_id": !auth.user_id.is_empty(),
                             "auth_mode": format!("{:?}", auth.auth_mode),
                         })),
                     );
@@ -973,7 +973,7 @@ pub fn perform_logout(
         Some(serde_json::json!({
             "was_logged_in": was_logged_in,
             "scope": scope.unwrap_or("(current)"),
-            "user_id": auth.as_ref().map(|a| a.user_id.clone()),
+            "has_user_id": auth.as_ref().is_some_and(|a| !a.user_id.is_empty()),
         })),
     );
     if was_logged_in {

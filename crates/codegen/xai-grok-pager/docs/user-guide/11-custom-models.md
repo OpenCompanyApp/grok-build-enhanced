@@ -6,13 +6,19 @@ Grok connects to custom model endpoints for alternative providers, self-hosted m
 
 ## Default Models
 
-By default, Grok uses models hosted by SpaceXAI, and new sessions start with `grok-build`. Default models require no configuration. Authenticate with `grok login` or an API key, then start a session.
+By default, Grok uses models hosted by SpaceXAI, and new sessions start with `grok-build`. Default models require no configuration. Authenticate with `grok login` or an API key, then start a session. This fork also adds entitled ChatGPT Codex models after `grok login --provider openai-codex`; those models use the `openai-codex/` namespace.
 
 List all available models:
 
 ```bash
 grok models
 ```
+
+ChatGPT Codex subscription models are managed first-class providers, not custom
+models. Do not copy a ChatGPT access token into `api_key`, configure the Codex
+backend URL manually, or import `~/.codex/auth.json`. Use the provider-aware
+login command so tokens can refresh and account-scoped entitlements remain
+correct.
 
 ---
 
@@ -65,7 +71,7 @@ Grok supports three API backends. Set `api_backend` in your `[model.*]` config t
 
 When you omit `api_backend`, Grok uses `chat_completions`.
 
-To send provider-specific authentication or version headers -- for example, Anthropic's `x-api-key` -- use the `extra_headers` field described below. Grok sends those headers verbatim with every request to the endpoint.
+To send provider-specific authentication or version headers -- for example, Anthropic's `x-api-key` -- use the `extra_headers` field described below. Grok sends those headers with every request to that custom endpoint. Credential-bearing headers such as `Authorization`, `Cookie`, and `ChatGPT-Account-ID` are protected for managed providers and cannot be overridden through custom headers.
 
 ---
 

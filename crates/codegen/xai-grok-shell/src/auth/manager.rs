@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 #[path = "manager/enrichment.rs"]
 mod enrichment;
 #[path = "manager/lock.rs"]
-mod lock;
+pub(crate) mod lock;
 #[path = "manager/sleep_gate.rs"]
 mod sleep_gate;
 
@@ -29,7 +29,6 @@ use xai_grok_telemetry::events::ManualAuthSurface;
 use super::model::UserInfo;
 use super::model::{
     AuthMode, GrokAuth, early_invalidation, is_expired, is_expired_with_buffer, lookup_auth,
-    token_suffix,
 };
 use super::refresh::{RefreshOutcome, TokenRefresher, resolve_refresh_credential};
 use super::storage::{
@@ -293,9 +292,7 @@ impl AuthManager {
         }
 
         // GROK_AUTH_PATH: custom file path (overrides default $GROK_HOME/auth.json).
-        let path = std::env::var("GROK_AUTH_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| grok_home.join("auth.json"));
+        let path = crate::auth::resolved_auth_path(grok_home);
 
         let (auth, auth_read_detail, initial_disk_state) = match read_auth_json(&path) {
             Ok(map) => {
@@ -329,7 +326,7 @@ impl AuthManager {
                     "found": found.is_some(),
                     "auth_mode": found.as_ref().map(|a| format!("{:?}", a.auth_mode)),
                     "is_expired": found.as_ref().map(is_expired),
-                    "key_prefix": found.as_ref().map(|a| token_suffix(&a.key).to_owned()),
+                    "has_access_token": found.as_ref().map(|a| !a.key.is_empty()),
                 });
                 let state = if found.is_some() {
                     DiskAuthState::Ok
@@ -568,7 +565,7 @@ impl AuthManager {
                 None,
                 Some(serde_json::json!({
                     "disk_state": format!("{last_state:?}"),
-                    "retained_key_prefix": token_suffix(&a.key),
+                    "has_access_token": !a.key.is_empty(),
                     "was_expired": is_expired(&a),
                 })),
             );
@@ -591,7 +588,7 @@ impl AuthManager {
                 None,
                 Some(serde_json::json!({
                     "reason": reason,
-                    "dropped_key_prefix": token_suffix(&d.key),
+                    "had_access_token": !d.key.is_empty(),
                     "had_refresh_token": d.refresh_token.is_some(),
                     "was_expired": is_expired(&d),
                     "disk_state": (*self.disk_state.read()).map(|s| format!("{s:?}")),
@@ -819,8 +816,8 @@ impl AuthManager {
                 "auth update disk written",
                 None,
                 Some(serde_json::json!({
-                    "rt_prefix": auth.refresh_token.as_deref().map(token_suffix),
-                    "key_prefix": token_suffix(&auth.key),
+                    "has_refresh_token": auth.refresh_token.is_some(),
+                    "has_access_token": !auth.key.is_empty(),
                     "elapsed_ms": elapsed_ms,
                 })),
             ),
@@ -879,8 +876,8 @@ impl AuthManager {
                 "auth update disk written (no enrichment)",
                 None,
                 Some(serde_json::json!({
-                    "rt_prefix": auth.refresh_token.as_deref().map(token_suffix),
-                    "key_prefix": token_suffix(&auth.key),
+                    "has_refresh_token": auth.refresh_token.is_some(),
+                    "has_access_token": !auth.key.is_empty(),
                     "elapsed_ms": elapsed_ms,
                 })),
             ),
@@ -991,15 +988,12 @@ impl AuthManager {
     fn try_adopt_disk_token(&self, reason: RefreshReason, msg: &str) -> Option<GrokAuth> {
         let disk_auth = self.read_disk_auth();
         let refreshed = self.try_use_disk_token(disk_auth.as_ref(), reason)?;
-        let adopted = token_suffix(&refreshed.key);
-        let prev = self.expired_auth().map(|a| token_suffix(&a.key).to_owned());
         xai_grok_telemetry::unified_log::info(
             msg,
             None,
             Some(serde_json::json!({
-                "adopted_key_prefix": adopted,
-                "prev_key_prefix": prev,
-                "key_changed": prev.as_deref() != Some(adopted),
+                "has_access_token": !refreshed.key.is_empty(),
+                "has_refresh_token": refreshed.refresh_token.is_some(),
             })),
         );
         Some(refreshed)
@@ -1147,7 +1141,7 @@ impl AuthManager {
             "path": self.path.display().to_string(),
             "scope": &self.scope,
             "error": err_detail,
-            "key_prefix": auth.map(|a| token_suffix(&a.key).to_owned()),
+            "has_access_token": auth.map(|a| !a.key.is_empty()),
             "has_refresh_token": auth.map(|a| a.refresh_token.is_some()),
             "is_expired": auth.map(is_expired),
         });
@@ -1442,7 +1436,7 @@ impl AuthManager {
             "auth: devbox recovery succeeded",
             None,
             Some(serde_json::json!({
-                "user_id": auth.user_id,
+                "has_user_id": !auth.user_id.is_empty(),
                 "has_refresh_token": auth.refresh_token.is_some(),
                 "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
             })),
@@ -1744,19 +1738,18 @@ impl AuthManager {
         attempted_key: Option<String>,
         _lock: &AuthFileLock,
     ) -> Result<GrokAuth, AuthError> {
-        let pre_key_prefix = attempted_key.as_deref().map(token_suffix);
         match outcome {
             RefreshOutcome::Success(new_auth) => match self.update(*new_auth).await {
                 Ok(auth) => {
-                    let new_prefix = token_suffix(&auth.key);
+                    let key_changed = attempted_key.as_deref() != Some(auth.key.as_str());
                     xai_grok_telemetry::unified_log::info(
                         "auth.refresh.success",
                         None,
                         Some(serde_json::json!({
                             "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-                            "old_key_prefix": pre_key_prefix,
-                            "new_key_prefix": new_prefix,
-                            "key_changed": pre_key_prefix != Some(new_prefix),
+                            "key_changed": key_changed,
+                            "has_access_token": !auth.key.is_empty(),
+                            "has_refresh_token": auth.refresh_token.is_some(),
                         })),
                     );
                     tracing::info!(expires_at = ?auth.expires_at, "auth.refresh.success");
@@ -1833,9 +1826,9 @@ impl AuthManager {
                 "auth: pick_up_sibling_token adopted",
                 None,
                 Some(serde_json::json!({
-                    "adopted_key_prefix": token_suffix(&a.key),
+                    "has_access_token": !a.key.is_empty(),
                     "expires_at": a.expires_at.map(|e| e.to_rfc3339()),
-                    "rt_prefix": a.refresh_token.as_deref().map(token_suffix),
+                    "has_refresh_token": a.refresh_token.is_some(),
                 })),
             );
             self.with_inner_write(|inner| *inner = Some(a.clone()));
@@ -2086,7 +2079,6 @@ impl AuthManager {
                 // refreshes; later processes adopt the result here.
                 this.pick_up_sibling_token();
                 if this.current().is_some() {
-                    let adopted = this.current().map(|a| token_suffix(&a.key).to_owned());
                     let expires_at = this
                         .inner
                         .read()
@@ -2099,7 +2091,7 @@ impl AuthManager {
                         "auth: proactive refresh adopted sibling token",
                         None,
                         Some(serde_json::json!({
-                            "adopted_key_prefix": adopted,
+                            "has_access_token": true,
                             "expires_at": expires_at,
                         })),
                     );
@@ -2115,7 +2107,8 @@ impl AuthManager {
                             None,
                             Some(serde_json::json!({
                                 "result": "success",
-                                "key_prefix": token_suffix(&auth.key),
+                                "has_access_token": !auth.key.is_empty(),
+                                "has_refresh_token": auth.refresh_token.is_some(),
                                 "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
                             })),
                         );

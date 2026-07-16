@@ -4,6 +4,15 @@ use std::path::{Path, PathBuf};
 
 use super::model::{API_KEY_SCOPE, AuthMode, AuthStore, GrokAuth, lookup_auth};
 
+/// Resolve the credential file used by both xAI and provider-scoped Codex
+/// authentication. Keeping this in one place ensures the auth manager,
+/// filesystem watcher, and hot reloader all honor `GROK_AUTH_PATH` together.
+pub(crate) fn resolved_auth_path(grok_home: &Path) -> PathBuf {
+    std::env::var_os("GROK_AUTH_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| grok_home.join("auth.json"))
+}
+
 /// RAII guard for an exclusive advisory lock on `auth.json.lock`.
 /// The lock is released when the inner `File` is dropped (closing the FD).
 pub(crate) struct AuthFileLock {
@@ -70,13 +79,6 @@ pub fn read_auth_json(auth_file: &Path) -> std::io::Result<AuthStore> {
 /// sibling scopes).
 ///
 /// Kept for the test-only `persist_and_swap` and as a strict reader.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used from tests only; remove expect when wired in production"
-    )
-)]
 pub(crate) fn read_auth_json_or_empty(auth_file: &Path) -> std::io::Result<AuthStore> {
     match read_auth_json(auth_file) {
         Ok(map) => Ok(map),
@@ -225,8 +227,8 @@ fn write_auth_json_with(
 }
 
 /// Serialize `auth_store` to `path` (truncate + rewrite), owner-only (0o600)
-/// and `fsync`'d. Shared core of the atomic path (which targets the temp
-/// file) and the in-place fallback (which targets `auth.json` directly).
+/// and `fsync`'d. Used by the in-place fallback and rollback path; the atomic
+/// path writes through a collision-resistant `NamedTempFile` cleanup guard.
 ///
 /// Uses streaming `to_writer_pretty` through a `BufWriter` to avoid
 /// allocating the entire JSON string in memory — eliminates OOM risk under
@@ -237,7 +239,15 @@ fn write_store_to(path: &Path, auth_store: &AuthStore) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let file = open_secure_file(path)?;
+    let mut file = open_secure_file(path)?;
+    write_store_to_open_file(&mut file, auth_store)
+}
+
+/// Serialize to an already-open, already-hardened file. Keeping the permission
+/// boundary outside this function makes it impossible for the atomic writer to
+/// place credential bytes in its Windows temp file before the protected DACL
+/// has been installed.
+fn write_store_to_open_file(file: &mut File, auth_store: &AuthStore) -> std::io::Result<()> {
     let mut writer = std::io::BufWriter::new(file);
     serde_json::to_writer_pretty(&mut writer, auth_store)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -246,24 +256,60 @@ fn write_store_to(path: &Path, auth_store: &AuthStore) -> std::io::Result<()> {
         .into_inner()
         .map_err(|e| e.into_error())?
         .sync_all()?;
-    #[cfg(windows)]
-    {
-        crate::util::secure_file::set_windows_secure_permissions(path)?;
-    }
     Ok(())
 }
 
-/// Atomic write: tmp + rename. Unix `rename(2)` replaces atomically;
-/// Windows `rename` requires removing the target first.
+/// Atomic write through a randomly named `create_new` temp file in the target
+/// directory. `NamedTempFile` owns cleanup across every early return and panic;
+/// explicit close-on-error lets ordinary failure paths verify cleanup as well.
+/// Its cross-platform `persist` atomically replaces the destination, including
+/// on Windows, without a delete-before-rename gap.
 fn write_auth_json_atomic(auth_file: &Path, auth_store: &AuthStore) -> std::io::Result<()> {
-    let tmp = auth_file.with_extension(format!("json.{}.tmp", std::process::id()));
-    write_store_to(&tmp, auth_store)?;
-    #[cfg(windows)]
-    {
-        let _ = std::fs::remove_file(auth_file);
+    write_auth_json_atomic_with(auth_file, auth_store, write_store_to_open_file)
+}
+
+fn write_auth_json_atomic_with(
+    auth_file: &Path,
+    auth_store: &AuthStore,
+    write: fn(&mut File, &AuthStore) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let parent = auth_file.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+
+    // `tempfile` uses randomized names plus create-new semantics. Harden the
+    // empty file before handing its descriptor to the serializer, then retain
+    // the NamedTempFile guard until persistence succeeds.
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".grok-auth-")
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
+    if let Err(error) = crate::util::secure_file::ensure_secure_file_permissions(
+        temporary.as_file(),
+        temporary.path(),
+    ) {
+        return Err(close_temporary_after_error(temporary, error));
     }
-    std::fs::rename(&tmp, auth_file)?;
-    Ok(())
+    if let Err(error) = write(temporary.as_file_mut(), auth_store) {
+        return Err(close_temporary_after_error(temporary, error));
+    }
+
+    match temporary.persist(auth_file) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(close_temporary_after_error(error.file, error.error)),
+    }
+}
+
+fn close_temporary_after_error(
+    temporary: tempfile::NamedTempFile,
+    source: std::io::Error,
+) -> std::io::Error {
+    match temporary.close() {
+        Ok(()) => source,
+        Err(cleanup) => std::io::Error::new(
+            source.kind(),
+            format!("{source}; failed to remove secure auth temporary file: {cleanup}"),
+        ),
+    }
 }
 
 /// Non-atomic fallback: truncate and rewrite `auth.json` in place.
@@ -317,10 +363,6 @@ fn restore_prior_bytes(auth_file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = open_secure_file(auth_file)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    #[cfg(windows)]
-    {
-        crate::util::secure_file::set_windows_secure_permissions(auth_file)?;
-    }
     Ok(())
 }
 
@@ -406,6 +448,25 @@ mod write_fallback_tests {
         Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
     }
 
+    fn fake_partial_temp_write(file: &mut File, _: &AuthStore) -> std::io::Result<()> {
+        file.write_all(b"partial credential bytes")?;
+        file.sync_all()?;
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+
+    fn auth_temp_files(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".grok-auth-") && name.ends_with(".tmp"))
+            })
+            .collect()
+    }
+
     /// Simulates an in-place write that truncates the file (destroying the
     /// old content, as `open_secure_file` does) and then fails partway — the
     /// torn-write case the rollback must recover from.
@@ -465,6 +526,65 @@ mod write_fallback_tests {
         let path = dir.path().join("auth.json");
         write_auth_json(&path, &sample_store()).unwrap();
         assert_eq!(read_key(&path).as_deref(), Some("secret-key"));
+        assert!(auth_temp_files(dir.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        write_auth_json(&path, &sample_store()).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "atomic write must stay 0o600");
+    }
+
+    #[test]
+    fn atomic_write_cleans_partially_written_temp_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+
+        let error = write_auth_json_atomic_with(&path, &sample_store(), fake_partial_temp_write)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!path.exists());
+        assert!(
+            auth_temp_files(dir.path()).is_empty(),
+            "credential-bearing temp file must be removed after a writer failure"
+        );
+    }
+
+    #[test]
+    fn atomic_write_cleans_temp_when_persist_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::create_dir(&path).unwrap();
+
+        write_auth_json_atomic(&path, &sample_store()).unwrap_err();
+
+        assert!(path.is_dir());
+        assert!(
+            auth_temp_files(dir.path()).is_empty(),
+            "temp file must be removed when atomic replacement fails"
+        );
+    }
+
+    #[test]
+    fn atomic_write_does_not_reuse_predictable_legacy_temp_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let legacy = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        std::fs::write(&legacy, b"unrelated sentinel").unwrap();
+
+        write_auth_json(&path, &sample_store()).unwrap();
+
+        assert_eq!(std::fs::read(&legacy).unwrap(), b"unrelated sentinel");
+        assert_eq!(read_key(&path).as_deref(), Some("secret-key"));
+        assert!(auth_temp_files(dir.path()).is_empty());
     }
 
     /// A fallback write that truncates then fails must roll back to the prior

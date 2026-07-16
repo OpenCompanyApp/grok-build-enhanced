@@ -10,8 +10,8 @@ use futures_util::StreamExt;
 use futures_util::stream::{BoxStream, Stream};
 
 use xai_grok_sampling_types::{
-    ConversationItem, ConversationResponse, ResponseModelMetadata, SamplingError, StopReason,
-    TokenUsage, rs,
+    ConversationItem, ConversationResponse, ProviderId, ResponseModelMetadata, SamplingError,
+    StopReason, TokenUsage, rs,
 };
 
 use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
@@ -78,6 +78,51 @@ pub(crate) fn responses_event_has_meaningful_content(event: &rs::ResponseStreamE
     }
 }
 
+/// Static, non-retryable failure for a Codex custom/freeform call.
+///
+/// The message deliberately excludes the tool name, call identifiers, and raw
+/// input. Custom input can contain generated code or data returned by another
+/// tool and must not escape into logs through an error string.
+fn unsupported_codex_custom_tool_call() -> SamplingError {
+    SamplingError::Api {
+        status: reqwest::StatusCode::BAD_REQUEST,
+        message: "OpenAI Codex returned a custom/freeform tool call, but this build is using the Grok direct-function compatibility loop".to_string(),
+        model_metadata: None,
+        retry_after_secs: None,
+        should_retry: Some(false),
+    }
+}
+
+/// Return the suffix of an authoritative done value that has not already been
+/// streamed for this output/content slot.
+///
+/// Done events can repeat the complete value after zero or more deltas. Only a
+/// true prefix can be completed safely: if the wire values disagree, keep the
+/// already displayed text and let the authoritative output item determine the
+/// persisted response rather than duplicating or rewriting visible content.
+fn take_unstreamed_suffix(
+    streamed: &mut BTreeMap<(u32, u32), String>,
+    key: (u32, u32),
+    authoritative: &str,
+) -> Option<String> {
+    if authoritative.is_empty() {
+        return None;
+    }
+
+    let already_streamed = streamed.entry(key).or_default();
+    if !authoritative.starts_with(already_streamed.as_str()) {
+        return None;
+    }
+
+    let suffix = authoritative[already_streamed.len()..].to_string();
+    if suffix.is_empty() {
+        return None;
+    }
+
+    already_streamed.push_str(&suffix);
+    Some(suffix)
+}
+
 /// Transform a raw Responses API event stream into a stream of
 /// [`SamplingEvent`]s.
 ///
@@ -97,6 +142,7 @@ pub fn stream_responses<'a>(
     request_id: RequestId,
     idle_timeout: Duration,
     doom_loop: Option<crate::doom_loop::DoomLoopSignalCollector>,
+    provider: ProviderId,
 ) -> impl Stream<Item = SamplingEvent> + Send + 'a {
     async_stream::stream! {
         use rs::{ResponseStreamEvent, Status};
@@ -120,6 +166,24 @@ pub fn stream_responses<'a>(
         let mut chunk_index: u64 = 0;
         let mut message_chunk_count: u64 = 0;
         let mut first_token_emitted = false;
+        // ChatGPT's Codex Responses stream may keep the terminal
+        // `response.completed.response.output` sparse and deliver assistant
+        // text only through output-text delta/done events. Keep a per-content
+        // accumulator so the completed ConversationResponse still contains
+        // the text that was already shown to the user. Without this fallback
+        // the actor classifies a visibly successful turn as empty and retries
+        // the prompt, duplicating the answer in the TUI.
+        let mut text_acc: BTreeMap<(u32, u32), String> = BTreeMap::new();
+        let mut streamed_text: BTreeMap<(u32, u32), String> = BTreeMap::new();
+        // Summary text follows the same delta/full-done pattern as assistant
+        // text, but belongs on the reasoning channel and is persisted through
+        // the completed Reasoning output item.
+        let mut streamed_reasoning_summary: BTreeMap<(u32, u32), String> = BTreeMap::new();
+        // Codex Responses Lite treats `response.output_item.done` as the
+        // authoritative item stream and may leave `response.completed.output`
+        // empty. Keep the completed items indexed in wire order so the normal
+        // Grok conversation converter and tool loop receive them.
+        let mut completed_output: BTreeMap<u32, rs::OutputItem> = BTreeMap::new();
         let mut reasoning_acc = String::new();
         let mut last_content_chunk_at = Instant::now();
 
@@ -177,14 +241,20 @@ pub fn stream_responses<'a>(
 
             let event_has_content = responses_event_has_meaningful_content(&event);
 
-            // Track whether ResponseIncomplete should break the loop
-            // after the content-aware idle check below.
+            // A terminal response frame ends the stream after the
+            // content-aware idle check below; never wait for transport EOF.
             let mut should_break = false;
 
             match event {
                 ResponseStreamEvent::ResponseOutputTextDelta(text_delta_event) => {
+                    let text_key = (
+                        text_delta_event.output_index,
+                        text_delta_event.content_index,
+                    );
                     let delta = text_delta_event.delta;
                     if !delta.is_empty() {
+                        text_acc.entry(text_key).or_default().push_str(&delta);
+                        streamed_text.entry(text_key).or_default().push_str(&delta);
                         if !first_token_emitted {
                             first_token_emitted = true;
                             yield SamplingEvent::FirstToken {
@@ -203,9 +273,46 @@ pub fn stream_responses<'a>(
                     }
                 }
 
+                ResponseStreamEvent::ResponseOutputTextDone(text_done_event) => {
+                    let text_key = (
+                        text_done_event.output_index,
+                        text_done_event.content_index,
+                    );
+                    let text = text_done_event.text;
+                    if !text.is_empty() {
+                        // The done event is authoritative for this content
+                        // part and protects against a missed/partial delta.
+                        text_acc.insert(text_key, text.clone());
+                        if let Some(suffix) =
+                            take_unstreamed_suffix(&mut streamed_text, text_key, &text)
+                        {
+                            if !first_token_emitted {
+                                first_token_emitted = true;
+                                yield SamplingEvent::FirstToken {
+                                    request_id: request_id.clone(),
+                                };
+                            }
+                            chunk_timestamps.push(Instant::now());
+                            chunk_index += 1;
+                            message_chunk_count += 1;
+                            yield SamplingEvent::ChannelToken {
+                                request_id: request_id.clone(),
+                                channel: SamplingChannel::Text,
+                                text: suffix,
+                                chunk_index,
+                            };
+                        }
+                    }
+                }
+
                 ResponseStreamEvent::ResponseReasoningSummaryTextDelta(summary_event) => {
+                    let summary_key = (summary_event.output_index, summary_event.summary_index);
                     let delta = summary_event.delta;
                     if !delta.is_empty() {
+                        streamed_reasoning_summary
+                            .entry(summary_key)
+                            .or_default()
+                            .push_str(&delta);
                         if !first_token_emitted {
                             first_token_emitted = true;
                             yield SamplingEvent::FirstToken {
@@ -217,6 +324,29 @@ pub fn stream_responses<'a>(
                             request_id: request_id.clone(),
                             channel: SamplingChannel::Reasoning,
                             text: delta,
+                            chunk_index,
+                        };
+                    }
+                }
+
+                ResponseStreamEvent::ResponseReasoningSummaryTextDone(summary_event) => {
+                    let summary_key = (summary_event.output_index, summary_event.summary_index);
+                    if let Some(suffix) = take_unstreamed_suffix(
+                        &mut streamed_reasoning_summary,
+                        summary_key,
+                        &summary_event.text,
+                    ) {
+                        if !first_token_emitted {
+                            first_token_emitted = true;
+                            yield SamplingEvent::FirstToken {
+                                request_id: request_id.clone(),
+                            };
+                        }
+                        chunk_index += 1;
+                        yield SamplingEvent::ChannelToken {
+                            request_id: request_id.clone(),
+                            channel: SamplingChannel::Reasoning,
+                            text: suffix,
                             chunk_index,
                         };
                     }
@@ -245,18 +375,29 @@ pub fn stream_responses<'a>(
                 // Start of a Responses FunctionCall — emit initial id+name
                 // and remember the output_index → tool_index mapping.
                 ResponseStreamEvent::ResponseOutputItemAdded(added_event) => {
-                    if let rs::OutputItem::FunctionCall(fc) = added_event.item {
-                        let tool_index = next_tool_index;
-                        next_tool_index += 1;
-                        output_to_tool_index.insert(added_event.output_index, tool_index);
+                    match added_event.item {
+                        rs::OutputItem::FunctionCall(fc) => {
+                            let tool_index = next_tool_index;
+                            next_tool_index += 1;
+                            output_to_tool_index.insert(added_event.output_index, tool_index);
 
-                        yield SamplingEvent::ToolCallDelta {
-                            request_id: request_id.clone(),
-                            tool_index,
-                            id: Some(fc.call_id),
-                            name: Some(fc.name),
-                            arguments_delta: None,
-                        };
+                            yield SamplingEvent::ToolCallDelta {
+                                request_id: request_id.clone(),
+                                tool_index,
+                                id: Some(fc.call_id),
+                                name: Some(fc.name),
+                                arguments_delta: None,
+                            };
+                        }
+                        rs::OutputItem::CustomToolCall(_) if provider.is_openai_codex() => {
+                            let err = unsupported_codex_custom_tool_call();
+                            yield SamplingEvent::Failed {
+                                request_id: request_id.clone(),
+                                error: SamplingErrorInfo::from(&err),
+                            };
+                            return;
+                        }
+                        _ => {}
                     }
                 }
 
@@ -280,6 +421,7 @@ pub fn stream_responses<'a>(
 
                 ResponseStreamEvent::ResponseCompleted(completed_event) => {
                     final_response = Some(completed_event.response);
+                    should_break = true;
                 }
 
                 ResponseStreamEvent::ResponseIncomplete(incomplete_event) => {
@@ -347,7 +489,88 @@ pub fn stream_responses<'a>(
                 // For WebSearchCall this includes the query and source URLs.
                 // For CustomToolCall this includes x_search results.
                 ResponseStreamEvent::ResponseOutputItemDone(done_event) => {
-                    match &done_event.item {
+                    let output_index = done_event.output_index;
+                    let item = done_event.item;
+                    match &item {
+                        rs::OutputItem::Message(message) => {
+                            for (content_index, content) in message.content.iter().enumerate() {
+                                let rs::OutputMessageContent::OutputText(output_text) = content else {
+                                    continue;
+                                };
+                                let text_key = (output_index, content_index as u32);
+                                if output_text.text.is_empty() {
+                                    continue;
+                                }
+
+                                text_acc.insert(text_key, output_text.text.clone());
+                                if let Some(suffix) = take_unstreamed_suffix(
+                                    &mut streamed_text,
+                                    text_key,
+                                    &output_text.text,
+                                ) {
+                                    if !first_token_emitted {
+                                        first_token_emitted = true;
+                                        yield SamplingEvent::FirstToken {
+                                            request_id: request_id.clone(),
+                                        };
+                                    }
+                                    chunk_timestamps.push(Instant::now());
+                                    chunk_index += 1;
+                                    message_chunk_count += 1;
+                                    yield SamplingEvent::ChannelToken {
+                                        request_id: request_id.clone(),
+                                        channel: SamplingChannel::Text,
+                                        text: suffix,
+                                        chunk_index,
+                                    };
+                                }
+                            }
+                        }
+                        rs::OutputItem::FunctionCall(fc) => {
+                            // Current Codex streams commonly omit
+                            // output_item.added and argument deltas. Emit one
+                            // complete delta so the existing TUI/headless tool
+                            // presentation sees the call exactly once.
+                            if let std::collections::btree_map::Entry::Vacant(entry) =
+                                output_to_tool_index.entry(output_index)
+                            {
+                                let tool_index = next_tool_index;
+                                next_tool_index += 1;
+                                entry.insert(tool_index);
+                                yield SamplingEvent::ToolCallDelta {
+                                    request_id: request_id.clone(),
+                                    tool_index,
+                                    id: Some(fc.call_id.clone()),
+                                    name: Some(fc.name.clone()),
+                                    arguments_delta: Some(fc.arguments.clone()),
+                                };
+                            }
+                        }
+                        rs::OutputItem::Reasoning(reasoning) => {
+                            for (summary_index, summary_part) in reasoning.summary.iter().enumerate() {
+                                let rs::SummaryPart::SummaryText(summary) = summary_part;
+                                let summary_key = (output_index, summary_index as u32);
+                                if let Some(suffix) = take_unstreamed_suffix(
+                                    &mut streamed_reasoning_summary,
+                                    summary_key,
+                                    &summary.text,
+                                ) {
+                                    if !first_token_emitted {
+                                        first_token_emitted = true;
+                                        yield SamplingEvent::FirstToken {
+                                            request_id: request_id.clone(),
+                                        };
+                                    }
+                                    chunk_index += 1;
+                                    yield SamplingEvent::ChannelToken {
+                                        request_id: request_id.clone(),
+                                        channel: SamplingChannel::Reasoning,
+                                        text: suffix,
+                                        chunk_index,
+                                    };
+                                }
+                            }
+                        }
                         rs::OutputItem::WebSearchCall(ws) => {
                             let result = serde_json::to_value(ws).ok();
                             yield SamplingEvent::BackendToolCallCompleted {
@@ -362,7 +585,7 @@ pub fn stream_responses<'a>(
                         // Use "x_search" consistently (matching the Started event);
                         // the specific sub-type is in the serialized result payload
                         // and extracted by the pager from raw_output.name.
-                        rs::OutputItem::CustomToolCall(ct) => {
+                        rs::OutputItem::CustomToolCall(ct) if !provider.is_openai_codex() => {
                             let result = serde_json::to_value(ct).ok();
                             yield SamplingEvent::BackendToolCallCompleted {
                                 request_id: request_id.clone(),
@@ -373,10 +596,31 @@ pub fn stream_responses<'a>(
                         }
                         _ => {}
                     }
+                    completed_output.insert(output_index, item);
                 }
 
                 // CustomToolCallInputDelta is x_search in-progress streaming.
                 // Emit a started event on first delta per item_id.
+                ResponseStreamEvent::ResponseCustomToolCallInputDone(_)
+                    if provider.is_openai_codex() =>
+                {
+                    let err = unsupported_codex_custom_tool_call();
+                    yield SamplingEvent::Failed {
+                        request_id: request_id.clone(),
+                        error: SamplingErrorInfo::from(&err),
+                    };
+                    return;
+                }
+                ResponseStreamEvent::ResponseCustomToolCallInputDelta(_)
+                    if provider.is_openai_codex() =>
+                {
+                    let err = unsupported_codex_custom_tool_call();
+                    yield SamplingEvent::Failed {
+                        request_id: request_id.clone(),
+                        error: SamplingErrorInfo::from(&err),
+                    };
+                    return;
+                }
                 ResponseStreamEvent::ResponseCustomToolCallInputDone(ev) => {
                     yield SamplingEvent::BackendToolCallStarted {
                         request_id: request_id.clone(),
@@ -429,6 +673,43 @@ pub fn stream_responses<'a>(
             }
         };
 
+        // Codex's terminal frame can be empty or contain only a prefix of the
+        // output. Merge it by output index, with each completed item replacing
+        // the terminal copy at the same index. This preserves terminal-only
+        // items while making `response.output_item.done` authoritative for all
+        // message, function-call, and reasoning items it delivered.
+        if provider.is_openai_codex() && !completed_output.is_empty() {
+            let mut merged_output: BTreeMap<u32, rs::OutputItem> = std::mem::take(&mut response.output)
+                .into_iter()
+                .enumerate()
+                .map(|(index, item)| (index as u32, item))
+                .collect();
+            merged_output.extend(completed_output);
+            response.output = merged_output.into_values().collect();
+        } else if response.output.is_empty() && !completed_output.is_empty() {
+            response.output = completed_output.into_values().collect();
+        }
+
+        // The official Codex client currently represents code-mode `exec` as a
+        // custom/freeform call. Grok Build intentionally keeps its existing
+        // direct-function tool loop, which cannot safely execute raw JavaScript.
+        // Fail closed before the generic converter can misclassify the call as
+        // xAI's backend-hosted x_search. Never include the custom input in the
+        // error or logs.
+        if provider.is_openai_codex()
+            && response
+                .output
+                .iter()
+                .any(|item| matches!(item, rs::OutputItem::CustomToolCall(_)))
+        {
+            let err = unsupported_codex_custom_tool_call();
+            yield SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&err),
+            };
+            return;
+        }
+
         // Billing fields (`prompt_tokens`, `completion_tokens`,
         // `cached_prompt_tokens`, `reasoning_tokens`) are the cumulative
         // wire values — they sum across every server-side turn of the
@@ -454,6 +735,18 @@ pub fn stream_responses<'a>(
             .as_mut()
             .and_then(|m| m.remove(crate::client::COST_USD_TICKS_METADATA_KEY))
             .and_then(|s| s.parse::<i64>().ok());
+        let provider_end_turn = provider
+            .is_openai_codex()
+            .then(|| {
+                response
+                    .metadata
+                    .as_mut()
+                    .and_then(|metadata| {
+                        metadata.remove(crate::client::CODEX_END_TURN_METADATA_KEY)
+                    })
+                    .and_then(|value| value.parse::<bool>().ok())
+            })
+            .flatten();
 
         let status = response.status.clone();
 
@@ -462,6 +755,20 @@ pub fn stream_responses<'a>(
         // `summary` (the streaming deltas may have arrived out of band).
         // Splice policy lives in `inject_streaming_reasoning_fallback`.
         let mut items = xai_grok_sampling_types::response_to_conversation_items(response);
+        let streaming_text = text_acc
+            .into_values()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !streaming_text.is_empty()
+            && let Some(ConversationItem::Assistant(assistant)) = items
+                .iter_mut()
+                .rev()
+                .find(|item| matches!(item, ConversationItem::Assistant(_)))
+            && assistant.content.is_empty()
+        {
+            assistant.content = streaming_text.into();
+        }
         xai_grok_sampling_types::inject_streaming_reasoning_fallback(&mut items, reasoning_acc);
 
         let has_tool_calls = items.iter().any(|i| match i {
@@ -505,6 +812,7 @@ pub fn stream_responses<'a>(
             message_chunks_emitted: message_chunk_count,
             doom_loop_signals,
             stop_message: None, // not reported on the Responses API
+            provider_end_turn,
         };
 
         yield SamplingEvent::Completed {
@@ -521,6 +829,25 @@ mod tests {
     use async_openai::types::responses as rs_types;
     use futures_util::stream;
     use std::pin::pin;
+
+    /// Existing response-transform tests exercise the historical xAI path.
+    /// Provider-specific tests call `super::stream_responses` directly.
+    fn stream_responses<'a>(
+        raw_stream: BoxStream<'a, Result<rs::ResponseStreamEvent, SamplingError>>,
+        model_metadata: Option<ResponseModelMetadata>,
+        request_id: RequestId,
+        idle_timeout: Duration,
+        doom_loop: Option<crate::doom_loop::DoomLoopSignalCollector>,
+    ) -> impl Stream<Item = SamplingEvent> + Send + 'a {
+        super::stream_responses(
+            raw_stream,
+            model_metadata,
+            request_id,
+            idle_timeout,
+            doom_loop,
+            ProviderId::Xai,
+        )
+    }
 
     fn rid() -> RequestId {
         RequestId::from("resp-test")
@@ -585,6 +912,29 @@ mod tests {
             delta: delta.into(),
             logprobs: None,
         })
+    }
+
+    fn text_done_event(text: &str) -> rs::ResponseStreamEvent {
+        rs::ResponseStreamEvent::ResponseOutputTextDone(rs_types::ResponseTextDoneEvent {
+            sequence_number: 1,
+            item_id: "item-1".into(),
+            output_index: 0,
+            content_index: 0,
+            text: text.into(),
+            logprobs: None,
+        })
+    }
+
+    fn reasoning_summary_done_event(text: &str) -> rs::ResponseStreamEvent {
+        rs::ResponseStreamEvent::ResponseReasoningSummaryTextDone(
+            rs_types::ResponseReasoningSummaryTextDoneEvent {
+                sequence_number: 1,
+                item_id: "reasoning-1".into(),
+                output_index: 0,
+                summary_index: 0,
+                text: text.into(),
+            },
+        )
     }
 
     fn completed_event() -> rs::ResponseStreamEvent {
@@ -653,6 +1003,109 @@ mod tests {
         match events.last().unwrap() {
             SamplingEvent::Completed { response, .. } => {
                 assert_eq!(response.stop_reason, Some(StopReason::Stop));
+                assert_eq!(response.assistant_text(), "hello");
+                assert_eq!(response.message_chunks_emitted, 1);
+                assert!(response.empty_reason().is_none());
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn text_done_fills_sparse_codex_completed_response() {
+        let raw = stream::iter(vec![
+            Ok(text_done_event("complete text")),
+            Ok(completed_event()),
+        ])
+        .boxed();
+        let events = collect(super::stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+            ProviderId::OpenAiCodex,
+        ))
+        .await;
+
+        match events.last().unwrap() {
+            SamplingEvent::Completed { response, .. } => {
+                assert_eq!(response.assistant_text(), "complete text");
+                assert_eq!(response.message_chunks_emitted, 1);
+                assert_eq!(response.fallback_text(), None);
+                assert!(response.empty_reason().is_none());
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_end_turn_false_requests_agent_follow_up_without_empty_retry() {
+        let mut terminal = empty_completed_response();
+        terminal.metadata = Some(std::collections::HashMap::from([(
+            crate::client::CODEX_END_TURN_METADATA_KEY.to_string(),
+            "false".to_string(),
+        )]));
+        let raw = stream::iter(vec![Ok(rs::ResponseStreamEvent::ResponseCompleted(
+            rs_types::ResponseCompletedEvent {
+                response: terminal,
+                sequence_number: 0,
+            },
+        ))])
+        .boxed();
+
+        let events = collect(super::stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+            ProviderId::OpenAiCodex,
+        ))
+        .await;
+
+        match events.last().unwrap() {
+            SamplingEvent::Completed { response, .. } => {
+                assert_eq!(response.provider_end_turn, Some(false));
+                assert!(response.requires_provider_follow_up());
+                assert!(response.empty_reason().is_none());
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_response_text_wins_over_streaming_fallback() {
+        let output = rs_types::OutputItem::Message(rs_types::OutputMessage {
+            content: vec![rs_types::OutputMessageContent::OutputText(
+                rs_types::OutputTextContent {
+                    text: "terminal text".into(),
+                    annotations: vec![],
+                    logprobs: None,
+                },
+            )],
+            id: "msg-1".into(),
+            role: rs_types::AssistantRole::Assistant,
+            status: rs_types::OutputStatus::Completed,
+        });
+        let raw = stream::iter(vec![
+            Ok(text_delta_event("streamed text")),
+            Ok(completed_event_with_output(output)),
+        ])
+        .boxed();
+        let events = collect(super::stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+            ProviderId::OpenAiCodex,
+        ))
+        .await;
+
+        match events.last().unwrap() {
+            SamplingEvent::Completed { response, .. } => {
+                assert_eq!(response.assistant_text(), "terminal text");
             }
             other => panic!("expected Completed, got {other:?}"),
         }
@@ -735,6 +1188,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn response_completed_terminates_without_waiting_for_stream_eof() {
+        let raw = stream::iter(vec![Ok(completed_event())])
+            .chain(stream::pending::<
+                Result<rs::ResponseStreamEvent, SamplingError>,
+            >())
+            .boxed();
+
+        let events = tokio::time::timeout(
+            Duration::from_millis(100),
+            collect(stream_responses(
+                raw,
+                None,
+                rid(),
+                Duration::from_secs(60),
+                None,
+            )),
+        )
+        .await
+        .expect("ResponseCompleted must terminate without waiting for EOF");
+
+        assert!(matches!(
+            events.last(),
+            Some(SamplingEvent::Completed { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn model_metadata_yielded_after_stream_started() {
         let raw = stream::iter(vec![Ok(completed_event())]).boxed();
         let metadata = ResponseModelMetadata {
@@ -795,6 +1275,80 @@ mod tests {
         )
     }
 
+    fn completed_event_with_output(item: rs_types::OutputItem) -> rs::ResponseStreamEvent {
+        completed_event_with_outputs(vec![item])
+    }
+
+    fn completed_event_with_outputs(items: Vec<rs_types::OutputItem>) -> rs::ResponseStreamEvent {
+        let mut response = empty_completed_response();
+        response.output = items;
+        rs::ResponseStreamEvent::ResponseCompleted(rs_types::ResponseCompletedEvent {
+            response,
+            sequence_number: 0,
+        })
+    }
+
+    fn message_item(id: &str, text: &str) -> rs_types::OutputItem {
+        rs_types::OutputItem::Message(rs_types::OutputMessage {
+            content: vec![rs_types::OutputMessageContent::OutputText(
+                rs_types::OutputTextContent {
+                    text: text.into(),
+                    annotations: vec![],
+                    logprobs: None,
+                },
+            )],
+            id: id.into(),
+            role: rs_types::AssistantRole::Assistant,
+            status: rs_types::OutputStatus::Completed,
+        })
+    }
+
+    fn reasoning_item(id: &str, summary: &str) -> rs_types::OutputItem {
+        rs_types::OutputItem::Reasoning(rs_types::ReasoningItem {
+            id: id.into(),
+            summary: vec![rs_types::SummaryPart::SummaryText(
+                rs_types::SummaryTextContent {
+                    text: summary.into(),
+                },
+            )],
+            content: None,
+            encrypted_content: None,
+            status: Some(rs_types::OutputStatus::Completed),
+        })
+    }
+
+    fn function_call_item(call_id: &str, name: &str, arguments: &str) -> rs_types::OutputItem {
+        rs_types::OutputItem::FunctionCall(rs_types::FunctionToolCall {
+            arguments: arguments.into(),
+            call_id: call_id.into(),
+            name: name.into(),
+            id: None,
+            status: None,
+        })
+    }
+
+    fn custom_tool_call_item(input: &str) -> rs_types::OutputItem {
+        serde_json::from_value(serde_json::json!({
+            "type": "custom_tool_call",
+            "id": "ct_1",
+            "call_id": "call_custom_1",
+            "name": "exec",
+            "input": input,
+        }))
+        .expect("custom tool call fixture should deserialize")
+    }
+
+    fn output_item_done_event(
+        output_index: u32,
+        item: rs_types::OutputItem,
+    ) -> rs::ResponseStreamEvent {
+        rs::ResponseStreamEvent::ResponseOutputItemDone(rs_types::ResponseOutputItemDoneEvent {
+            sequence_number: 0,
+            output_index,
+            item,
+        })
+    }
+
     type Delta = (u32, Option<String>, Option<String>, Option<String>);
 
     /// Extract all ToolCallDelta events as (tool_index, id, name, arguments_delta).
@@ -847,6 +1401,303 @@ mod tests {
         assert_eq!(deltas[1].2, None);
         assert_eq!(deltas[1].3.as_deref(), Some("{\"x\":"));
         assert_eq!(deltas[2].3.as_deref(), Some("1}"));
+    }
+
+    #[tokio::test]
+    async fn codex_function_call_uses_normal_grok_tool_call_response() {
+        let function_call = function_call_item("call_read", "read_file", r#"{"path":"README.md"}"#);
+        // Match the current Codex wire contract: the full call is delivered
+        // by output_item.done and response.completed has a sparse output.
+        let raw = stream::iter(vec![
+            Ok(output_item_done_event(0, function_call)),
+            Ok(completed_event()),
+        ])
+        .boxed();
+
+        let events = collect(super::stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+            ProviderId::OpenAiCodex,
+        ))
+        .await;
+
+        assert_eq!(tool_call_deltas(&events).len(), 1);
+        match events.last().expect("terminal event") {
+            SamplingEvent::Completed { response, .. } => {
+                assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
+                let call = response
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        ConversationItem::Assistant(assistant) => assistant.tool_calls.first(),
+                        _ => None,
+                    })
+                    .expect("Codex function call should remain client executable");
+                assert_eq!(call.id.as_ref(), "call_read");
+                assert_eq!(call.name, "read_file");
+                assert_eq!(call.arguments.as_ref(), r#"{"path":"README.md"}"#);
+            }
+            other => panic!("expected completed tool-call response, got {other:?}"),
+        }
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            SamplingEvent::BackendToolCallStarted { name, .. }
+                | SamplingEvent::BackendToolCallCompleted { name, .. }
+                if name == "x_search"
+        )));
+    }
+
+    #[tokio::test]
+    async fn codex_custom_tool_call_fails_closed_without_x_search_or_input_leak() {
+        const SECRET_INPUT: &str = "secret-custom-input-sentinel";
+        let custom = custom_tool_call_item(SECRET_INPUT);
+        let raw = stream::iter(vec![
+            Ok(output_item_done_event(0, custom)),
+            Ok(completed_event()),
+        ])
+        .boxed();
+
+        let events = collect(super::stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+            ProviderId::OpenAiCodex,
+        ))
+        .await;
+
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            SamplingEvent::BackendToolCallStarted { .. }
+                | SamplingEvent::BackendToolCallCompleted { .. }
+        )));
+        match events.last().expect("terminal event") {
+            SamplingEvent::Failed { error, .. } => {
+                assert_eq!(error.kind, crate::events::SamplingErrorKind::Api);
+                assert_eq!(error.status_code, Some(400));
+                assert!(!error.is_retryable);
+                assert!(!error.message.contains(SECRET_INPUT));
+                assert!(!error.message.contains("call_custom_1"));
+            }
+            other => panic!("expected sanitized Codex custom-tool failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_done_items_override_and_complete_partial_terminal_output() {
+        let done_reasoning = reasoning_item("reasoning-done", "done summary");
+        let function_call = function_call_item("call_read", "read_file", r#"{"path":"README.md"}"#);
+        let message = message_item("message-done", "done answer");
+        let stale_terminal_reasoning = reasoning_item("reasoning-stale", "stale summary");
+
+        let raw = stream::iter(vec![
+            Ok(output_item_done_event(0, done_reasoning)),
+            Ok(output_item_done_event(1, function_call)),
+            Ok(output_item_done_event(2, message)),
+            Ok(completed_event_with_outputs(vec![stale_terminal_reasoning])),
+        ])
+        .boxed();
+
+        let events = collect(super::stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+            ProviderId::OpenAiCodex,
+        ))
+        .await;
+
+        let streamed_text: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::ChannelToken {
+                    channel: SamplingChannel::Text,
+                    text,
+                    ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let streamed_summary: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::ChannelToken {
+                    channel: SamplingChannel::Reasoning,
+                    text,
+                    ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed_text, vec!["done answer"]);
+        assert_eq!(streamed_summary, vec!["done summary"]);
+        assert_eq!(tool_call_deltas(&events).len(), 1);
+
+        match events.last().expect("terminal event") {
+            SamplingEvent::Completed { response, .. } => {
+                assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
+                assert_eq!(response.assistant_text(), "done answer");
+                assert_eq!(response.message_chunks_emitted, 1);
+
+                let reasoning = response
+                    .reasoning_items()
+                    .next()
+                    .expect("done reasoning item should be preserved");
+                let rs_types::SummaryPart::SummaryText(summary) = &reasoning.summary[0];
+                assert_eq!(summary.text, "done summary");
+                assert_eq!(reasoning.id, "reasoning-done");
+
+                let call = response
+                    .tool_calls()
+                    .first()
+                    .expect("done function call should be preserved");
+                assert_eq!(call.id.as_ref(), "call_read");
+                assert_eq!(call.name, "read_file");
+                assert_eq!(call.arguments.as_ref(), r#"{"path":"README.md"}"#);
+            }
+            other => panic!("expected completed merged response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn authoritative_text_done_streams_only_missing_suffix_once() {
+        let raw = stream::iter(vec![
+            Ok(text_delta_event("partial")),
+            Ok(text_done_event("partial completion")),
+            Ok(output_item_done_event(
+                0,
+                message_item("message-done", "partial completion"),
+            )),
+            Ok(completed_event()),
+        ])
+        .boxed();
+
+        let events = collect(super::stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+            ProviderId::OpenAiCodex,
+        ))
+        .await;
+        let streamed_text: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::ChannelToken {
+                    channel: SamplingChannel::Text,
+                    text,
+                    ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed_text, vec!["partial", " completion"]);
+
+        match events.last().expect("terminal event") {
+            SamplingEvent::Completed { response, .. } => {
+                assert_eq!(response.assistant_text(), "partial completion");
+                assert_eq!(response.message_chunks_emitted, 2);
+                assert_eq!(response.fallback_text(), None);
+            }
+            other => panic!("expected completed response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reasoning_summary_done_and_item_done_stream_summary_once() {
+        let raw = stream::iter(vec![
+            Ok(reasoning_summary_done_event("done summary")),
+            Ok(output_item_done_event(
+                0,
+                reasoning_item("reasoning-1", "done summary"),
+            )),
+            Ok(completed_event()),
+        ])
+        .boxed();
+
+        let events = collect(super::stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+            ProviderId::OpenAiCodex,
+        ))
+        .await;
+        let streamed_summary: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::ChannelToken {
+                    channel: SamplingChannel::Reasoning,
+                    text,
+                    ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed_summary, vec!["done summary"]);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SamplingEvent::FirstToken { .. }))
+                .count(),
+            1
+        );
+
+        match events.last().expect("terminal event") {
+            SamplingEvent::Completed { response, .. } => {
+                let reasoning = response
+                    .reasoning_items()
+                    .next()
+                    .expect("done reasoning item should be preserved");
+                let rs_types::SummaryPart::SummaryText(summary) = &reasoning.summary[0];
+                assert_eq!(summary.text, "done summary");
+            }
+            other => panic!("expected completed reasoning response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn xai_custom_tool_call_preserves_backend_x_search_behavior() {
+        let custom = custom_tool_call_item("x-search fixture");
+        let raw = stream::iter(vec![
+            Ok(output_item_done_event(0, custom.clone())),
+            Ok(completed_event_with_output(custom)),
+        ])
+        .boxed();
+
+        let events = collect(super::stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+            ProviderId::Xai,
+        ))
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SamplingEvent::BackendToolCallCompleted { name, .. } if name == "x_search"
+        )));
+        match events.last().expect("terminal event") {
+            SamplingEvent::Completed { response, .. } => {
+                assert_eq!(response.stop_reason, Some(StopReason::Stop));
+                assert!(
+                    response
+                        .items
+                        .iter()
+                        .any(|item| matches!(item, ConversationItem::BackendToolCall(_)))
+                );
+            }
+            other => panic!("expected completed xAI backend-tool response, got {other:?}"),
+        }
     }
 
     #[tokio::test]
