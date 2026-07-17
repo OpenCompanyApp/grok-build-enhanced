@@ -11,7 +11,9 @@
 
 use crate::app::actions::Action;
 use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
-use crate::theme::{Theme, ThemeKind, cache as theme_cache};
+#[cfg(test)]
+use crate::theme::Theme;
+use crate::theme::{ThemeKind, ThemeSelection, cache as theme_cache};
 
 /// Switch the pager color theme.
 pub struct ThemeCommand;
@@ -55,89 +57,82 @@ impl SlashCommand for ThemeCommand {
     }
 
     fn preview_state(&self) -> Option<String> {
-        Some(Theme::current_kind().display_name().to_string())
+        Some(theme_cache::current_selection().canonical().into_owned())
     }
 
     fn preview_arg(&self, arg: &str) {
-        if let Some(kind) = ThemeKind::from_name(arg) {
-            if kind.is_auto() {
-                // Preview the theme that auto mode would resolve to.
-                let resolved = theme_cache::resolve_auto();
-                Theme::apply_kind(resolved);
-            } else {
-                Theme::apply_kind(kind);
-            }
+        if let Some(selection) = ThemeSelection::from_name(arg) {
+            let resolved = theme_cache::resolve_selection_for_display(
+                selection,
+                crate::theme::system_appearance::detect(),
+            );
+            theme_cache::install_resolved(resolved);
+            crate::theme::apply_cursor_color();
         }
     }
 
     fn cancel_preview(&self, previous: &str) {
-        if let Some(kind) = ThemeKind::from_name(previous) {
-            Theme::apply_kind(kind);
-        }
+        self.preview_arg(previous);
     }
 
     fn suggest_args(&self, _ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
-        let current = Theme::current_kind();
-        let is_auto = theme_cache::is_auto_mode();
-        let available = ThemeKind::available();
-
-        // Prepend "auto" (follow system appearance) as the first option.
-        let auto_active = if is_auto { " (active)" } else { "" };
-        let mut items = vec![ArgItem {
-            display: "auto".to_string(),
-            match_text: "auto".to_string(),
-            insert_text: "auto".to_string(),
-            description: format!("auto (follow system){auto_active}"),
-        }];
-
-        // Concrete themes — only show "(active)" when not in auto mode.
-        items.extend(available.iter().map(|kind| {
-            let active = if *kind == current && !is_auto {
-                " (active)"
-            } else {
-                ""
-            };
-            ArgItem {
-                display: kind.display_name().to_string(),
-                match_text: kind.display_name().to_string(),
-                insert_text: kind.display_name().to_string(),
-                description: format!("{}{active}", kind.display_name()),
-            }
-        }));
-
-        Some(items)
+        let current = theme_cache::current_selection().canonical().into_owned();
+        Some(
+            crate::theme::theme_choices(true)
+                .into_iter()
+                .map(|choice| {
+                    let active = if choice.canonical == current {
+                        " (active)"
+                    } else {
+                        ""
+                    };
+                    ArgItem {
+                        display: choice.display.clone(),
+                        match_text: format!("{} {}", choice.display, choice.canonical),
+                        insert_text: choice.canonical,
+                        description: format!("{}{active}", choice.description),
+                    }
+                })
+                .collect(),
+        )
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         let trimmed = args.trim();
-        let available = ThemeKind::available();
 
-        // No args: toggle between available themes.
+        // No args: cycle only the curated set, never the 340-theme catalog.
         if trimmed.is_empty() {
-            let current = Theme::current_kind();
-            let current_idx = available.iter().position(|k| *k == current).unwrap_or(0);
-            let next = available[(current_idx + 1) % available.len()];
-
-            return CommandResult::Action(Action::SetTheme(next.display_name().to_string()));
+            let mut cycle = vec![
+                ThemeSelection::TerminalNative,
+                ThemeSelection::BuiltIn(ThemeKind::GrokNight),
+                ThemeSelection::BuiltIn(ThemeKind::GrokDay),
+            ];
+            cycle.extend(
+                ThemeKind::available()
+                    .iter()
+                    .copied()
+                    .filter(|kind| !matches!(kind, ThemeKind::GrokNight | ThemeKind::GrokDay))
+                    .map(ThemeSelection::BuiltIn),
+            );
+            if crate::theme::warp::settings::is_local_warp() {
+                cycle.insert(0, ThemeSelection::WarpSync);
+            }
+            let current = theme_cache::current_selection();
+            let current_idx = cycle
+                .iter()
+                .position(|selection| *selection == current)
+                .unwrap_or(0);
+            let next = &cycle[(current_idx + 1) % cycle.len()];
+            return CommandResult::Action(Action::SetTheme(next.canonical().into_owned()));
         }
 
-        // Named theme (including "auto"): parse and dispatch.
-        // Truecolor-only themes are accepted regardless of terminal —
-        // `Theme::apply_kind` clamps the live visual as needed.
-        match ThemeKind::from_name(trimmed) {
-            Some(kind) => {
-                // Normalise alias to canonical display_name.
-                CommandResult::Action(Action::SetTheme(kind.display_name().to_string()))
+        match ThemeSelection::from_name(trimmed) {
+            Some(selection) => {
+                CommandResult::Action(Action::SetTheme(selection.canonical().into_owned()))
             }
-            None => {
-                let all_names: Vec<&str> =
-                    ThemeKind::ALL.iter().map(|k| k.display_name()).collect();
-                CommandResult::Error(format!(
-                    "Unknown theme: {}. Available: auto, {}",
-                    trimmed,
-                    all_names.join(", ")
-                ))
-            }
+            None => CommandResult::Error(format!(
+                "Unknown theme: {trimmed}. Run /theme to search built-in, installed, and official Warp themes."
+            )),
         }
     }
 }
@@ -183,16 +178,15 @@ mod tests {
             };
             let items = cmd.suggest_args(&ctx, "").expect("should return items");
             assert_eq!(items[0].insert_text, "auto");
-            assert!(items[0].description.contains("follow system"));
-            // auto + all available concrete themes
-            assert_eq!(items.len(), ThemeKind::available().len() + 1);
+            assert!(items[0].description.contains("system dark/light"));
+            assert_eq!(items.len(), crate::theme::theme_choices(true).len());
         });
     }
 
     #[test]
     fn suggest_args_auto_active_when_auto_mode() {
         with_test_env(|| {
-            theme_cache::set_auto_mode(true);
+            theme_cache::apply_selection(ThemeSelection::Auto, system_appearance::detect());
             let cmd = ThemeCommand;
             let models = crate::acp::model_state::ModelState::default();
             let ctx = AppCtx {
@@ -260,8 +254,7 @@ mod tests {
     #[test]
     fn suggest_args_no_explicit_active_when_auto() {
         with_test_env(|| {
-            theme_cache::set_auto_mode(true);
-            theme_cache::set(ThemeKind::GrokNight);
+            theme_cache::apply_selection(ThemeSelection::Auto, system_appearance::detect());
             let cmd = ThemeCommand;
             let models = crate::acp::model_state::ModelState::default();
             let ctx = AppCtx {
@@ -510,7 +503,14 @@ mod tests {
             };
             let result = cmd.run(&mut ctx, "nonexistent");
             if let CommandResult::Error(msg) = result {
-                assert!(msg.contains("auto"), "error should list auto: {msg}");
+                assert!(
+                    msg.contains("Run /theme"),
+                    "error should point to /theme: {msg}"
+                );
+                assert!(
+                    msg.contains("official Warp themes"),
+                    "error should describe the searchable catalog: {msg}"
+                );
             } else {
                 panic!("expected Error, got: {result:?}");
             }
