@@ -105,3 +105,45 @@ pub fn get_syntect() -> &'static Syntect {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    const CANONICAL_MARKERS: [&str; 16] = [
+        "#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
+        "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff",
+    ];
+
+    #[test]
+    fn terminal_ansi_theme_uses_only_canonical_marker_values() {
+        let theme = include_str!("../assets/terminal-ansi.tmTheme");
+        let color_entry =
+            regex::Regex::new(r"(?s)<key>(foreground|background)</key>\s*<string>([^<]*)</string>")
+                .unwrap();
+        let expected_entry_count = ["foreground", "background"]
+            .into_iter()
+            .map(|key| {
+                let marker = format!("<key>{key}</key>");
+                theme.matches(marker.as_str()).count()
+            })
+            .sum::<usize>();
+        let entries = color_entry.captures_iter(theme).collect::<Vec<_>>();
+
+        assert!(
+            expected_entry_count > 0,
+            "terminal-ansi.tmTheme contains no foreground/background entries"
+        );
+        assert_eq!(
+            entries.len(),
+            expected_entry_count,
+            "every foreground/background key must contain one plain string value"
+        );
+        for entry in entries {
+            let key = &entry[1];
+            let value = entry[2].trim();
+            assert!(
+                CANONICAL_MARKERS.contains(&value),
+                "terminal-ansi.tmTheme {key} value {value:?} is not a canonical lowercase #rrggbb marker"
+            );
+        }
+    }
+}

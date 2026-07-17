@@ -11,13 +11,26 @@ use anstyle::{Ansi256Color, AnsiColor, Color, RgbColor};
 /// How syntect marker colors are translated before terminal quantization.
 ///
 /// Terminal-native themes use named ANSI slots so the terminal owns the
-/// concrete palette. Pinned Warp themes use the selected theme's declared
-/// 16-color palette. Built-in themes leave syntect colors untouched.
+/// concrete palette. RGB ANSI-palette themes map those slots through a
+/// declared 16-color palette. Built-in themes leave syntect colors untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxColorPolicy {
     Passthrough,
     NamedAnsi,
+    /// Map the canonical ANSI marker slots through a concrete RGB palette.
+    ///
+    /// The provider-specific variant name is retained so existing public API
+    /// construction, imports, pattern matches, and exhaustive matches remain
+    /// source-compatible. New callers should construct this policy with
+    /// [`Self::rgb_ansi_palette`].
     WarpPalette([[u8; 3]; 16]),
+}
+
+impl SyntaxColorPolicy {
+    /// Construct a provider-neutral RGB mapping for the 16 ANSI marker slots.
+    pub const fn rgb_ansi_palette(palette: [[u8; 3]; 16]) -> Self {
+        Self::WarpPalette(palette)
+    }
 }
 
 static SYNTAX_COLOR_POLICY: LazyLock<RwLock<SyntaxColorPolicy>> =
@@ -26,7 +39,7 @@ static SYNTAX_COLOR_POLICY: LazyLock<RwLock<SyntaxColorPolicy>> =
 /// The marker palette used by `terminal-ansi.tmTheme`.
 ///
 /// These values are identities, not colors we expect the terminal to render.
-/// They are replaced with named ANSI slots or a Warp RGB palette before output.
+/// They are replaced with named ANSI slots or an RGB ANSI palette before output.
 const SYNTAX_MARKERS: [[u8; 3]; 16] = [
     [0, 0, 0],
     [205, 49, 49],
@@ -411,33 +424,70 @@ mod tests {
     }
 
     #[test]
-    fn syntax_named_ansi_maps_marker_slots() {
-        assert_eq!(
-            map_syntax_color_with_policy(
-                Color::Rgb(RgbColor(36, 114, 200)),
-                SyntaxColorPolicy::NamedAnsi,
-            ),
-            Color::Ansi(AnsiColor::Blue)
-        );
-        assert_eq!(
-            map_syntax_color_with_policy(
-                Color::Rgb(RgbColor(59, 142, 234)),
-                SyntaxColorPolicy::NamedAnsi,
-            ),
-            Color::Ansi(AnsiColor::BrightBlue)
-        );
+    fn syntax_named_ansi_maps_all_marker_slots() {
+        const ANSI_SLOTS: [AnsiColor; 16] = [
+            AnsiColor::Black,
+            AnsiColor::Red,
+            AnsiColor::Green,
+            AnsiColor::Yellow,
+            AnsiColor::Blue,
+            AnsiColor::Magenta,
+            AnsiColor::Cyan,
+            AnsiColor::White,
+            AnsiColor::BrightBlack,
+            AnsiColor::BrightRed,
+            AnsiColor::BrightGreen,
+            AnsiColor::BrightYellow,
+            AnsiColor::BrightBlue,
+            AnsiColor::BrightMagenta,
+            AnsiColor::BrightCyan,
+            AnsiColor::BrightWhite,
+        ];
+
+        for (index, (marker, ansi)) in SYNTAX_MARKERS.iter().zip(ANSI_SLOTS).enumerate() {
+            let [r, g, b] = *marker;
+            assert_eq!(
+                map_syntax_color_with_policy(
+                    Color::Rgb(RgbColor(r, g, b)),
+                    SyntaxColorPolicy::NamedAnsi,
+                ),
+                Color::Ansi(ansi),
+                "marker slot {index}"
+            );
+        }
     }
 
     #[test]
-    fn syntax_warp_palette_maps_marker_slots_to_rgb() {
-        let mut palette = [[0; 3]; 16];
-        palette[13] = [12, 34, 56];
-        assert_eq!(
-            map_syntax_color_with_policy(
-                Color::Rgb(RgbColor(214, 112, 214)),
-                SyntaxColorPolicy::WarpPalette(palette),
-            ),
-            Color::Rgb(RgbColor(12, 34, 56))
-        );
+    fn syntax_rgb_ansi_palette_maps_all_marker_slots() {
+        let palette = std::array::from_fn(|index| {
+            let index = index as u8;
+            [index, 255 - index, index.wrapping_mul(17)]
+        });
+
+        for (index, marker) in SYNTAX_MARKERS.iter().enumerate() {
+            let [r, g, b] = *marker;
+            let [expected_r, expected_g, expected_b] = palette[index];
+            assert_eq!(
+                map_syntax_color_with_policy(
+                    Color::Rgb(RgbColor(r, g, b)),
+                    SyntaxColorPolicy::rgb_ansi_palette(palette),
+                ),
+                Color::Rgb(RgbColor(expected_r, expected_g, expected_b)),
+                "marker slot {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_warp_palette_variant_remains_pattern_compatible() {
+        use SyntaxColorPolicy::{NamedAnsi, Passthrough, WarpPalette};
+
+        let palette = [[7; 3]; 16];
+        let policy = SyntaxColorPolicy::rgb_ansi_palette(palette);
+        assert_eq!(policy, WarpPalette(palette));
+        match policy {
+            WarpPalette(actual) => assert_eq!(actual, palette),
+            Passthrough | NamedAnsi => panic!("RGB ANSI constructor returned the wrong policy"),
+        }
     }
 }

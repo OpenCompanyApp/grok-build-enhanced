@@ -181,12 +181,16 @@ pub fn refresh_current(appearance: Option<system_appearance::SystemAppearance>) 
     }
     let selection = current_selection();
     let candidate = resolve_selection_for_display(selection.clone(), appearance);
+    install_refresh_candidate(&selection, candidate)
+}
+
+fn install_refresh_candidate(selection: &ThemeSelection, candidate: ResolvedTheme) -> bool {
     let previous = current_resolved();
 
     // A settings file is commonly replaced through rename, producing a short
     // missing/partial-read window. Keep the last good visual result while still
     // publishing the warning status; a later successful event replaces it.
-    if let Some(retained) = retain_last_good(&previous, &candidate, &selection) {
+    if let Some(retained) = retain_last_good(&previous, &candidate, selection) {
         ACTIVE.store(Arc::new(retained));
         return false;
     }
@@ -201,9 +205,13 @@ fn retain_last_good(
     candidate: &ResolvedTheme,
     selection: &ThemeSelection,
 ) -> Option<ResolvedTheme> {
+    // Successfully loaded Warp visuals carry a source hash. A retained visual
+    // keeps that hash when its status is replaced with a transient warning, so
+    // repeated watcher events must continue retaining it. Initial fallbacks do
+    // not have a source hash and therefore never become "last known good."
     if previous.selection != *selection
         || !matches!(previous.status, super::ThemeStatus::Warp { .. })
-        || previous.warp_fallback_reason().is_some()
+        || previous.source_hash.is_none()
         || candidate.warp_fallback_reason().is_none()
     {
         return None;
@@ -938,41 +946,88 @@ mod tests {
     }
 
     #[test]
-    fn transient_warp_failure_retains_last_good_visuals_and_publishes_warning() {
+    fn repeated_warp_failures_retain_palette_until_installed_recovery() {
         with_test_env(|| {
-            let selection = ThemeSelection::WarpSync;
-            let mut previous = ResolvedTheme::terminal(
-                selection.clone(),
-                "Warp Sync — Fixture",
-                super::super::ThemePolarity::Dark,
-            );
-            previous.status = super::super::ThemeStatus::Warp {
-                channel: None,
-                selected_name: Some("Fixture".to_owned()),
-                settings_path: None,
-                selected_theme_path: None,
-                system_theme: false,
-                fallback_reason: None,
-            };
-            let mut candidate = previous.clone();
-            candidate.status = super::super::ThemeStatus::Warp {
-                channel: None,
-                selected_name: Some("Fixture".to_owned()),
-                settings_path: None,
-                selected_theme_path: None,
-                system_theme: false,
-                fallback_reason: Some("partial settings write".to_owned()),
+            let selection = ThemeSelection::WarpFile("warp-file:stable/fixture.yaml".to_owned());
+            let fallback = |reason: &str| {
+                let mut candidate = ResolvedTheme::terminal(
+                    selection.clone(),
+                    "Unavailable Warp theme — Terminal Native",
+                    super::super::ThemePolarity::Dark,
+                );
+                candidate.kind = ThemeKind::WarpCustom;
+                candidate.status = super::super::ThemeStatus::Warp {
+                    channel: None,
+                    selected_name: Some("Fixture".to_owned()),
+                    settings_path: None,
+                    selected_theme_path: None,
+                    system_theme: false,
+                    fallback_reason: Some(reason.to_owned()),
+                };
+                assert!(candidate.source_hash.is_none());
+                candidate
             };
 
-            let retained = retain_last_good(&previous, &candidate, &selection).unwrap();
-            assert_eq!(retained.fingerprint, previous.fingerprint);
-            assert_eq!(retained.theme.bg_base, previous.theme.bg_base);
-            assert_eq!(retained.theme.accent_user, previous.theme.accent_user);
+            let initial_palette = [[0x11; 3]; 16];
+            let initial_policy =
+                xai_grok_markdown::SyntaxColorPolicy::rgb_ansi_palette(initial_palette);
+            let initial_source_hash = [0x42; 32];
+            let previous = super::super::resolved::pinned_fixture_for_test(
+                selection.clone(),
+                initial_palette,
+                initial_source_hash,
+            );
+            assert_eq!(previous.source_hash, Some(initial_source_hash));
+            assert!(install_resolved(previous));
+            let revision = current_revision();
+            assert_eq!(xai_grok_markdown::syntax_color_policy(), initial_policy);
+
+            assert!(!install_refresh_candidate(
+                &selection,
+                fallback("partial settings write"),
+            ));
+            let retained = current_resolved();
             assert_eq!(
                 retained.warp_fallback_reason(),
                 Some("partial settings write")
             );
-            assert!(retain_last_good(&previous, &previous, &selection).is_none());
+            assert_eq!(retained.syntax_policy, initial_policy);
+            assert_eq!(retained.source_hash, Some(initial_source_hash));
+            assert_eq!(xai_grok_markdown::syntax_color_policy(), initial_policy);
+            assert_eq!(current_revision(), revision);
+
+            assert!(!install_refresh_candidate(
+                &selection,
+                fallback("settings file still incomplete"),
+            ));
+            let retained_again = current_resolved();
+            assert_eq!(
+                retained_again.warp_fallback_reason(),
+                Some("settings file still incomplete")
+            );
+            assert_eq!(retained_again.syntax_policy, initial_policy);
+            assert_eq!(retained_again.source_hash, Some(initial_source_hash));
+            assert_eq!(xai_grok_markdown::syntax_color_policy(), initial_policy);
+            assert_eq!(current_revision(), revision);
+
+            let mut recovered_palette = initial_palette;
+            recovered_palette[15] = [0xaa, 0xbb, 0xcc];
+            let recovered_policy =
+                xai_grok_markdown::SyntaxColorPolicy::rgb_ansi_palette(recovered_palette);
+            let recovered_source_hash = [0x84; 32];
+            let recovered = super::super::resolved::pinned_fixture_for_test(
+                selection.clone(),
+                recovered_palette,
+                recovered_source_hash,
+            );
+            assert!(install_refresh_candidate(&selection, recovered));
+
+            let installed = current_resolved();
+            assert!(installed.warp_fallback_reason().is_none());
+            assert_eq!(installed.syntax_policy, recovered_policy);
+            assert_eq!(installed.source_hash, Some(recovered_source_hash));
+            assert_eq!(xai_grok_markdown::syntax_color_policy(), recovered_policy);
+            assert_eq!(current_revision(), revision + 1);
         });
     }
 

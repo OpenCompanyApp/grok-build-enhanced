@@ -493,7 +493,7 @@ fn syntax_policy_for_warp(
     {
         palette[index] = [color.r, color.g, color.b];
     }
-    xai_grok_markdown::SyntaxColorPolicy::WarpPalette(palette)
+    xai_grok_markdown::SyntaxColorPolicy::rgb_ansi_palette(palette)
 }
 
 fn theme_for_kind(kind: ThemeKind) -> Theme {
@@ -510,6 +510,23 @@ fn theme_for_kind(kind: ThemeKind) -> Theme {
     }
 }
 
+fn hash_syntax_policy(hasher: &mut blake3::Hasher, policy: xai_grok_markdown::SyntaxColorPolicy) {
+    match policy {
+        xai_grok_markdown::SyntaxColorPolicy::Passthrough => {
+            hasher.update(&[0]);
+        }
+        xai_grok_markdown::SyntaxColorPolicy::NamedAnsi => {
+            hasher.update(&[1]);
+        }
+        xai_grok_markdown::SyntaxColorPolicy::WarpPalette(palette) => {
+            hasher.update(&[2]);
+            for rgb in palette {
+                hasher.update(&rgb);
+            }
+        }
+    }
+}
+
 fn fingerprint(
     selection: &ThemeSelection,
     display_name: &str,
@@ -520,7 +537,13 @@ fn fingerprint(
     source_hash: Option<[u8; 32]>,
 ) -> ThemeFingerprint {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(format!("warp-theme-v2|{selection:?}|{display_name}|{theme:?}|{polarity:?}|{render_mode:?}|{syntax_policy:?}").as_bytes());
+    hasher.update(
+        format!(
+            "warp-theme-v2|{selection:?}|{display_name}|{theme:?}|{polarity:?}|{render_mode:?}|syntax-policy|"
+        )
+        .as_bytes(),
+    );
+    hash_syntax_policy(&mut hasher, syntax_policy);
     if let Some(source_hash) = source_hash {
         hasher.update(&source_hash);
     }
@@ -528,4 +551,65 @@ fn fingerprint(
     let mut fingerprint = [0; 16];
     fingerprint.copy_from_slice(&hash.as_bytes()[..16]);
     ThemeFingerprint(fingerprint)
+}
+
+#[cfg(test)]
+pub(super) fn pinned_fixture_for_test(
+    selection: ThemeSelection,
+    palette: [[u8; 3]; 16],
+    source_hash: [u8; 32],
+) -> ResolvedTheme {
+    let theme = Theme::groknight();
+    ResolvedTheme::finish(
+        selection,
+        ThemeKind::WarpCustom,
+        "Pinned palette fixture".to_owned(),
+        theme,
+        ThemePolarity::Dark,
+        ThemeRenderMode::Opaque,
+        CursorPolicy::ThemeColor(theme.accent_user),
+        xai_grok_markdown::SyntaxColorPolicy::rgb_ansi_palette(palette),
+        ThemeStatus::Warp {
+            channel: None,
+            selected_name: Some("Pinned palette fixture".to_owned()),
+            settings_path: None,
+            selected_theme_path: None,
+            system_theme: false,
+            fallback_reason: None,
+        },
+        Some(source_hash),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switching_pinned_rgb_ansi_palettes_invalidates_fingerprint_and_revision() {
+        let _guard = super::super::cache::test_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        super::super::cache::reset_for_test();
+
+        let selection = ThemeSelection::WarpCatalog("fixture/palette".to_owned());
+        let palette = [[0x11; 3]; 16];
+        let source_hash = [0x42; 32];
+        let first = pinned_fixture_for_test(selection.clone(), palette, source_hash);
+        let identical = pinned_fixture_for_test(selection.clone(), palette, source_hash);
+        let mut changed_palette = palette;
+        changed_palette[15] = [0xaa, 0xbb, 0xcc];
+        let changed = pinned_fixture_for_test(selection, changed_palette, source_hash);
+
+        assert_eq!(first.fingerprint, identical.fingerprint);
+        assert_ne!(first.fingerprint, changed.fingerprint);
+        assert!(super::super::cache::install_resolved(first));
+        let revision = super::super::cache::current_revision();
+        assert!(!super::super::cache::install_resolved(identical));
+        assert_eq!(super::super::cache::current_revision(), revision);
+        assert!(super::super::cache::install_resolved(changed));
+        assert_eq!(super::super::cache::current_revision(), revision + 1);
+
+        super::super::cache::reset_for_test();
+    }
 }
