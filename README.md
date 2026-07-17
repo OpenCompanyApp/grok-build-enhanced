@@ -119,6 +119,12 @@ The user guide ships with the pager crate:
 — getting started, keyboard shortcuts, slash commands, configuration, theming,
 MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
 
+Fork-specific provider references and candidate-integration research live under
+[`docs/providers/`](docs/providers/). Each document declares whether it covers
+implemented experimental behavior or research for an unimplemented provider.
+The candidate documents do not add runtime provider identities: those remain
+xAI, experimental OpenAI Codex, and the existing generic custom-provider path.
+
 ## Repository layout
 
 | Path | Contents |
