@@ -577,8 +577,8 @@ fn render_tab_bar(
                 if state.tabs_focused && !is_embedded {
                     Style::default()
                         .fg(theme.text_primary)
-                        .bg(theme.bg_visual)
                         .add_modifier(Modifier::BOLD)
+                        .patch(theme.selected_row_style())
                 } else {
                     Style::default()
                         .fg(theme.accent_user)
@@ -774,12 +774,13 @@ pub fn render_modal_shortcuts(
             let visible_w = display.width() as u16;
             let is_hovered = hovered == Some(shortcut_idx);
 
-            // Underlay: fill cell bg with bg_highlight on hover.
+            // Underlay: use an opaque hover fill or a terminal-native
+            // underline overlay, depending on the active render mode.
+            let hover_overlay = theme.hovered_row_style();
             if is_hovered {
-                let hover_bg = Style::default().bg(theme.bg_highlight);
                 for x in cur_x..cur_x + visible_w {
                     if let Some(cell) = buf.cell_mut((x, y)) {
-                        cell.set_style(hover_bg);
+                        cell.set_style(hover_overlay);
                     }
                 }
             }
@@ -794,7 +795,7 @@ pub fn render_modal_shortcuts(
                 .fg(theme.text_secondary)
                 .add_modifier(Modifier::BOLD);
             if is_hovered {
-                key_style = key_style.bg(theme.bg_highlight);
+                key_style = key_style.patch(hover_overlay);
             }
             buf.set_string(cur_x, y, key_part, key_style);
 
@@ -802,7 +803,7 @@ pub fn render_modal_shortcuts(
                 let key_w = key_part.width() as u16;
                 let mut label_style = Style::default().fg(theme.gray);
                 if is_hovered {
-                    label_style = label_style.bg(theme.bg_highlight);
+                    label_style = label_style.patch(hover_overlay);
                 }
                 buf.set_string(cur_x + key_w, y, label_part, label_style);
             }

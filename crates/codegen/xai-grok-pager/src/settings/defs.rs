@@ -29,50 +29,6 @@ pub(crate) const MAX_THOUGHTS_WIDTH_MAX: i64 = 500;
 pub(crate) const MAX_THOUGHTS_WIDTH_KEY: &str = "max_thoughts_width";
 
 // ---------------------------------------------------------------------------
-// Theme choice catalogs.
-//
-// Canonical names MUST match `ThemeKind::display_name()`.
-// Shared by `theme`, `auto_dark_theme`, and `auto_light_theme`;
-// auto-* sub-pickers drop "auto" to avoid circular reference.
-// Bounded by `MAX_PICKER_CHOICES`.
-// ---------------------------------------------------------------------------
-
-/// Full theme catalog including the "auto" meta-variant. Used by `theme` only.
-const THEME_CHOICES: &[EnumChoice] = &[
-    EnumChoice {
-        canonical: "auto",
-        display: "Auto",
-        description: "Follow system dark/light appearance.",
-    },
-    EnumChoice {
-        canonical: "groknight",
-        display: "Grok Night",
-        description: "Neutral dark with magenta accent.",
-    },
-    EnumChoice {
-        canonical: "grokday",
-        display: "Grok Day",
-        description: "Light theme for bright environments.",
-    },
-    EnumChoice {
-        canonical: "tokyonight",
-        display: "Tokyo Night",
-        description: "Dark + blue-tinted; needs truecolor.",
-    },
-    // ASCII "Rose Pine Moon" (not "Rosé") for cross-terminal compatibility.
-    EnumChoice {
-        canonical: "rosepine-moon",
-        display: "Rose Pine Moon",
-        description: "Muted dark with mauve accents; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "oscura-midnight",
-        display: "Oscura Midnight",
-        description: "Deep dark with warm accents; needs truecolor.",
-    },
-];
-
-// ---------------------------------------------------------------------------
 // Permission-mode catalog.
 //
 // Persisted values map onto runtime flags:
@@ -457,37 +413,6 @@ const VOICE_STT_LANGUAGE_CHOICES: &[EnumChoice] = &[
     },
 ];
 
-/// Concrete-only theme catalog (excludes "auto"). Used by both
-/// `auto_dark_theme` and `auto_light_theme`. No dark/light filtering —
-/// the user can pair any theme with any system-appearance bucket.
-const CONCRETE_THEME_CHOICES: &[EnumChoice] = &[
-    EnumChoice {
-        canonical: "groknight",
-        display: "Grok Night",
-        description: "Neutral dark with magenta accent.",
-    },
-    EnumChoice {
-        canonical: "grokday",
-        display: "Grok Day",
-        description: "Light theme for bright environments.",
-    },
-    EnumChoice {
-        canonical: "tokyonight",
-        display: "Tokyo Night",
-        description: "Dark + blue-tinted; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "rosepine-moon",
-        display: "Rose Pine Moon",
-        description: "Muted dark with mauve accents; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "oscura-midnight",
-        display: "Oscura Midnight",
-        description: "Deep dark with warm accents; needs truecolor.",
-    },
-];
-
 /// Child settings shown inside the "Show contextual hints" group sub-sheet.
 /// Keys match the `[ui.contextual_hints]` serde fields (namespaced so they stay
 /// globally unique — bare `plan_mode` collides with the plan-mode enum row).
@@ -609,10 +534,11 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "dark",
                 "light",
             ],
-            kind: SettingKind::Enum {
-                // `Option<String>` — `None` resolved to "groknight".
+            kind: SettingKind::DynamicEnum {
+                // `Option<String>` — startup may choose Warp Sync when unset,
+                // while the registry's reset default remains Grok Night.
                 default: "groknight",
-                choices: THEME_CHOICES,
+                source: DynamicEnumSource::ThemeCatalog,
                 supports_preview: true,
             },
             restart_required: false,
@@ -625,10 +551,10 @@ pub fn default_settings() -> Vec<SettingMeta> {
             label: "Auto dark theme",
             description: "Theme to use when the system is in dark mode (only with theme=auto).",
             keywords: &["auto", "dark", "theme", "system", "appearance", "night"],
-            kind: SettingKind::Enum {
+            kind: SettingKind::DynamicEnum {
                 // `Option<String>` — `None` falls back to "groknight".
                 default: "groknight",
-                choices: CONCRETE_THEME_CHOICES,
+                source: DynamicEnumSource::ConcreteThemeCatalog,
                 supports_preview: true,
             },
             restart_required: false,
@@ -641,10 +567,10 @@ pub fn default_settings() -> Vec<SettingMeta> {
             label: "Auto light theme",
             description: "Theme to use when the system is in light mode (only with theme=auto).",
             keywords: &["auto", "light", "theme", "system", "appearance", "day"],
-            kind: SettingKind::Enum {
+            kind: SettingKind::DynamicEnum {
                 // `Option<String>` — `None` falls back to "grokday".
                 default: "grokday",
-                choices: CONCRETE_THEME_CHOICES,
+                source: DynamicEnumSource::ConcreteThemeCatalog,
                 supports_preview: true,
             },
             restart_required: false,

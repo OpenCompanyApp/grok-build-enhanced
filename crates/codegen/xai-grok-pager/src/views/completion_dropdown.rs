@@ -100,7 +100,8 @@ pub fn render_dropdown(
         let is_selected = item_idx == selected;
         let is_hovered = hovered == Some(item_idx) && !is_selected;
 
-        let row_bg = match crate::views::modal_window::embedded_row_style(theme, is_selected) {
+        let embedded = crate::views::modal_window::embedded_row_style(theme, is_selected);
+        let row_bg = match embedded {
             Some(e) => e.bg,
             None if is_selected => theme.bg_visual,
             None if is_hovered => theme.bg_hover,
@@ -120,7 +121,17 @@ pub fn render_dropdown(
             width: clamped_w,
             height: 1,
         };
-        buf.set_style(row_rect, Style::default().bg(row_bg));
+        let mut row_style = Style::default().bg(row_bg);
+        if embedded.is_none() {
+            row_style = if is_selected {
+                row_style.patch(theme.selected_row_style())
+            } else if is_hovered {
+                row_style.patch(theme.hovered_row_style())
+            } else {
+                row_style
+            };
+        }
+        buf.set_style(row_rect, row_style);
         buf.set_line_safe(area.x, y, &line, row_w as u16);
     }
 

@@ -1051,19 +1051,12 @@ fn save_theme_toast(label: &str, value: &str) -> String {
     format!("\u{2713} {label}: {value}")
 }
 
-/// Apply a (non-auto) theme to the live display.
-///
-/// Centralised so `set_theme_inner` and `preview_theme_inner` share the
-/// same visual-mutation path. Resolves `Auto` via `theme::cache::resolve_auto`
-/// (does NOT toggle `AUTO_MODE`); concrete kinds go through
-/// `Theme::apply_kind` directly.
-fn apply_theme_kind_for_display(kind: crate::theme::ThemeKind) {
-    if kind.is_auto() {
-        let resolved = crate::theme::cache::resolve_auto();
-        crate::theme::Theme::apply_kind(resolved);
-    } else {
-        crate::theme::Theme::apply_kind(kind);
-    }
+/// Resolve and apply a theme selection without changing commit-only mode flags.
+fn apply_theme_selection_for_display(selection: crate::theme::ThemeSelection) {
+    let appearance = crate::theme::system_appearance::detect();
+    let resolved = crate::theme::cache::resolve_selection_for_display(selection, appearance);
+    crate::theme::cache::install_resolved(resolved);
+    crate::theme::apply_cursor_color();
 }
 
 /// Whether the system is in the appearance mode matching the given
@@ -1091,6 +1084,18 @@ fn auto_theme_setting_is_live(key: &str) -> bool {
     crate::theme::cache::is_auto_mode() && system_is_in_matching_mode(key)
 }
 
+fn sync_auto_theme_cache_from_ui(app: &AppView) {
+    let parse = |value: Option<&str>| {
+        value
+            .and_then(crate::theme::ThemeSelection::from_name)
+            .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+    };
+    crate::theme::cache::set_auto_theme_config(crate::theme::cache::AutoThemeConfig {
+        dark_theme: parse(app.current_ui.auto_dark_theme.as_deref()),
+        light_theme: parse(app.current_ui.auto_light_theme.as_deref()),
+    });
+}
+
 // ── theme (commit path) ─────────────────────────────────────────────
 
 /// State + cache + visual mutation for `theme`. **Commit path.**
@@ -1103,7 +1108,7 @@ fn auto_theme_setting_is_live(key: &str) -> bool {
 /// at `warn` (defensive — a malformed `rollback_value` is a softer
 /// failure mode than an unknown commit-time value) and no-op.
 pub(super) fn set_theme_inner(app: &mut AppView, value: &str) {
-    let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
+    let Some(selection) = crate::theme::ThemeSelection::from_name(value) else {
         tracing::warn!(
             target: "settings",
             key = "theme",
@@ -1112,33 +1117,35 @@ pub(super) fn set_theme_inner(app: &mut AppView, value: &str) {
         );
         return;
     };
-    let canonical = kind.display_name();
-    app.current_ui.theme = Some(canonical.to_string());
-    crate::theme::cache::set_auto_mode(kind.is_auto());
-    apply_theme_kind_for_display(kind);
+    let canonical = selection.canonical().into_owned();
+    app.current_ui.theme = Some(canonical);
+    crate::theme::cache::apply_selection(selection, crate::theme::system_appearance::detect());
 }
 
 /// State + cache + persist for `theme` commits.
 pub(in crate::app::dispatch) fn set_theme(app: &mut AppView, new: String) -> Vec<Effect> {
-    let prev_canonical: &'static str = app
+    let prev_canonical = app
         .current_ui
         .theme
         .as_deref()
-        .and_then(crate::theme::canonical_name)
-        .unwrap_or_else(|| crate::theme::cache::current_kind().display_name());
-    let new_canonical = match crate::theme::canonical_name(&new) {
-        Some(c) => c,
-        None => {
-            tracing::error!(
-                target: "settings",
-                key = "theme",
-                value = %new,
-                "Action::SetTheme dispatched with unknown name — no-op",
-            );
-            return vec![];
-        }
+        .and_then(crate::theme::canonical_selection_name)
+        .unwrap_or_else(|| {
+            crate::theme::cache::current_selection()
+                .canonical()
+                .into_owned()
+        });
+    let Some(selection) = crate::theme::ThemeSelection::from_name(&new) else {
+        tracing::error!(
+            target: "settings",
+            key = "theme",
+            value = %new,
+            "Action::SetTheme dispatched with unknown name — no-op",
+        );
+        return vec![];
     };
-    set_theme_inner(app, &new);
+    let new_canonical = selection.canonical().into_owned();
+    let display_name = selection.display_name();
+    set_theme_inner(app, &new_canonical);
     refresh_open_settings_modals(app);
     tracing::info!(
         target: "settings",
@@ -1146,14 +1153,11 @@ pub(in crate::app::dispatch) fn set_theme(app: &mut AppView, new: String) -> Vec
         value = %new_canonical,
         "setting changed",
     );
-    app.show_toast(&save_theme_toast(
-        "Theme",
-        crate::theme::display_name_for_canonical(new_canonical),
-    ));
+    app.show_toast(&save_theme_toast("Theme", &display_name));
     vec![Effect::PersistSetting {
         key: "theme",
-        value: crate::settings::SettingValue::Enum(new_canonical),
-        rollback_value: crate::settings::SettingValue::Enum(prev_canonical),
+        value: crate::settings::SettingValue::String(new_canonical),
+        rollback_value: crate::settings::SettingValue::String(prev_canonical),
     }]
 }
 
@@ -1164,7 +1168,7 @@ pub(in crate::app::dispatch) fn set_theme(app: &mut AppView, new: String) -> Vec
 /// For `"auto"`, resolves and applies the theme but does NOT toggle
 /// `AUTO_MODE` (commit-only side effect).
 fn preview_theme_inner(value: &str) {
-    let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
+    let Some(selection) = crate::theme::ThemeSelection::from_name(value) else {
         tracing::warn!(
             target: "settings",
             key = "theme",
@@ -1173,11 +1177,11 @@ fn preview_theme_inner(value: &str) {
         );
         return;
     };
-    apply_theme_kind_for_display(kind);
+    apply_theme_selection_for_display(selection);
 }
 
 pub(in crate::app::dispatch) fn preview_theme(_app: &mut AppView, new: String) -> Vec<Effect> {
-    if crate::theme::canonical_name(&new).is_none() {
+    if crate::theme::ThemeSelection::from_name(&new).is_none() {
         tracing::error!(
             target: "settings",
             key = "theme",
@@ -1196,7 +1200,7 @@ pub(in crate::app::dispatch) fn preview_theme(_app: &mut AppView, new: String) -
 /// Applies visually only when the setting is live (auto mode + dark).
 /// Rejects `"auto"` as an invalid value (log + no-op).
 pub(super) fn set_auto_dark_theme_inner(app: &mut AppView, value: &str) {
-    let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
+    let Some(selection) = crate::theme::ThemeSelection::from_name(value) else {
         tracing::warn!(
             target: "settings",
             key = "auto_dark_theme",
@@ -1205,59 +1209,52 @@ pub(super) fn set_auto_dark_theme_inner(app: &mut AppView, value: &str) {
         );
         return;
     };
-    if kind.is_auto() {
+    if !selection.is_concrete_for_auto() {
         tracing::warn!(
             target: "settings",
             key = "auto_dark_theme",
-            "Auto is not a valid auto_dark_theme value — no-op",
+            "meta themes are not valid auto_dark_theme values — no-op",
         );
         return;
     }
-    let canonical = kind.display_name();
-    app.current_ui.auto_dark_theme = Some(canonical.to_string());
-    crate::theme::cache::invalidate_auto_theme_config();
+    app.current_ui.auto_dark_theme = Some(selection.canonical().into_owned());
+    sync_auto_theme_cache_from_ui(app);
     if auto_theme_setting_is_live("auto_dark_theme") {
-        crate::theme::Theme::apply_kind(kind);
+        crate::theme::cache::apply_selection(
+            crate::theme::ThemeSelection::Auto,
+            crate::theme::system_appearance::detect(),
+        );
     }
 }
 
 pub(in crate::app::dispatch) fn set_auto_dark_theme(app: &mut AppView, new: String) -> Vec<Effect> {
-    let prev_canonical: &'static str = app
+    let prev_canonical = app
         .current_ui
         .auto_dark_theme
         .as_deref()
-        .and_then(crate::theme::canonical_name)
-        .filter(|s| *s != "auto")
-        // No prior config: fall back to GrokNight (the default).
-        .unwrap_or_else(|| crate::theme::ThemeKind::GrokNight.display_name());
-    let new_canonical = match crate::theme::canonical_name(&new) {
-        Some(c) if c != crate::theme::ThemeKind::Auto.display_name() => c,
-        _ => {
-            tracing::error!(
-                target: "settings",
-                key = "auto_dark_theme",
-                value = %new,
-                "Action::SetAutoDarkTheme dispatched with invalid name — no-op",
-            );
-            return vec![];
-        }
+        .and_then(crate::theme::canonical_selection_name)
+        .unwrap_or_else(|| "groknight".to_owned());
+    let Some(selection) = crate::theme::ThemeSelection::from_name(&new)
+        .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+    else {
+        tracing::error!(
+            target: "settings",
+            key = "auto_dark_theme",
+            value = %new,
+            "Action::SetAutoDarkTheme dispatched with invalid name — no-op",
+        );
+        return vec![];
     };
-    set_auto_dark_theme_inner(app, &new);
+    let new_canonical = selection.canonical().into_owned();
+    let display_name = selection.display_name();
+    set_auto_dark_theme_inner(app, &new_canonical);
     refresh_open_settings_modals(app);
-    tracing::info!(
-        target: "settings",
-        key = "auto_dark_theme",
-        value = %new_canonical,
-        "setting changed",
-    );
-    app.show_toast(&save_theme_toast(
-        "Auto dark theme",
-        crate::theme::display_name_for_canonical(new_canonical),
-    ));
+    tracing::info!(target: "settings", key = "auto_dark_theme", value = %new_canonical, "setting changed");
+    app.show_toast(&save_theme_toast("Auto dark theme", &display_name));
     vec![Effect::PersistSetting {
         key: "auto_dark_theme",
-        value: crate::settings::SettingValue::Enum(new_canonical),
-        rollback_value: crate::settings::SettingValue::Enum(prev_canonical),
+        value: crate::settings::SettingValue::String(new_canonical),
+        rollback_value: crate::settings::SettingValue::String(prev_canonical),
     }]
 }
 
@@ -1265,20 +1262,17 @@ pub(in crate::app::dispatch) fn set_auto_dark_theme(app: &mut AppView, new: Stri
 
 /// Preview-only mutation for `auto_dark_theme`. Visual only when live.
 fn preview_auto_dark_theme_inner(value: &str) {
-    let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
-        tracing::warn!(
-            target: "settings",
-            key = "auto_dark_theme",
-            value = value,
-            "unknown theme name — preview_auto_dark_theme_inner no-op",
-        );
+    let Some(selection) = crate::theme::ThemeSelection::from_name(value)
+        .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+    else {
+        tracing::warn!(target: "settings", key = "auto_dark_theme", value, "invalid auto dark theme preview");
         return;
     };
-    if kind.is_auto() {
-        return;
-    }
     if auto_theme_setting_is_live("auto_dark_theme") {
-        crate::theme::Theme::apply_kind(kind);
+        crate::theme::cache::apply_auto_mapping_preview(
+            selection,
+            crate::theme::system_appearance::detect(),
+        );
     }
 }
 
@@ -1286,18 +1280,13 @@ pub(in crate::app::dispatch) fn preview_auto_dark_theme(
     _app: &mut AppView,
     new: String,
 ) -> Vec<Effect> {
-    match crate::theme::canonical_name(&new) {
-        Some(c) if c != crate::theme::ThemeKind::Auto.display_name() => {}
-        _ => {
-            tracing::error!(
-                target: "settings",
-                key = "auto_dark_theme",
-                value = %new,
-                "Action::PreviewAutoDarkTheme dispatched with invalid name — no-op",
-            );
-            return vec![];
-        }
-    };
+    if crate::theme::ThemeSelection::from_name(&new)
+        .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+        .is_none()
+    {
+        tracing::error!(target: "settings", key = "auto_dark_theme", value = %new, "invalid auto dark theme preview");
+        return vec![];
+    }
     preview_auto_dark_theme_inner(&new);
     vec![]
 }
@@ -1307,28 +1296,21 @@ pub(in crate::app::dispatch) fn preview_auto_dark_theme(
 /// State + cache + visual mutation for `auto_light_theme`. Commit path.
 /// Mirror of `set_auto_dark_theme_inner` for the light bucket.
 pub(super) fn set_auto_light_theme_inner(app: &mut AppView, value: &str) {
-    let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
-        tracing::warn!(
-            target: "settings",
-            key = "auto_light_theme",
-            value = value,
-            "unknown theme name — set_auto_light_theme_inner no-op",
-        );
+    let Some(selection) = crate::theme::ThemeSelection::from_name(value) else {
+        tracing::warn!(target: "settings", key = "auto_light_theme", value, "unknown auto light theme");
         return;
     };
-    if kind.is_auto() {
-        tracing::warn!(
-            target: "settings",
-            key = "auto_light_theme",
-            "Auto is not a valid auto_light_theme value — no-op",
-        );
+    if !selection.is_concrete_for_auto() {
+        tracing::warn!(target: "settings", key = "auto_light_theme", "meta themes are not valid auto light themes");
         return;
     }
-    let canonical = kind.display_name();
-    app.current_ui.auto_light_theme = Some(canonical.to_string());
-    crate::theme::cache::invalidate_auto_theme_config();
+    app.current_ui.auto_light_theme = Some(selection.canonical().into_owned());
+    sync_auto_theme_cache_from_ui(app);
     if auto_theme_setting_is_live("auto_light_theme") {
-        crate::theme::Theme::apply_kind(kind);
+        crate::theme::cache::apply_selection(
+            crate::theme::ThemeSelection::Auto,
+            crate::theme::system_appearance::detect(),
+        );
     }
 }
 
@@ -1336,41 +1318,28 @@ pub(in crate::app::dispatch) fn set_auto_light_theme(
     app: &mut AppView,
     new: String,
 ) -> Vec<Effect> {
-    let prev_canonical: &'static str = app
+    let prev_canonical = app
         .current_ui
         .auto_light_theme
         .as_deref()
-        .and_then(crate::theme::canonical_name)
-        .filter(|s| *s != "auto")
-        .unwrap_or_else(|| crate::theme::ThemeKind::GrokDay.display_name());
-    let new_canonical = match crate::theme::canonical_name(&new) {
-        Some(c) if c != crate::theme::ThemeKind::Auto.display_name() => c,
-        _ => {
-            tracing::error!(
-                target: "settings",
-                key = "auto_light_theme",
-                value = %new,
-                "Action::SetAutoLightTheme dispatched with invalid name — no-op",
-            );
-            return vec![];
-        }
+        .and_then(crate::theme::canonical_selection_name)
+        .unwrap_or_else(|| "grokday".to_owned());
+    let Some(selection) = crate::theme::ThemeSelection::from_name(&new)
+        .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+    else {
+        tracing::error!(target: "settings", key = "auto_light_theme", value = %new, "invalid auto light theme");
+        return vec![];
     };
-    set_auto_light_theme_inner(app, &new);
+    let new_canonical = selection.canonical().into_owned();
+    let display_name = selection.display_name();
+    set_auto_light_theme_inner(app, &new_canonical);
     refresh_open_settings_modals(app);
-    tracing::info!(
-        target: "settings",
-        key = "auto_light_theme",
-        value = %new_canonical,
-        "setting changed",
-    );
-    app.show_toast(&save_theme_toast(
-        "Auto light theme",
-        crate::theme::display_name_for_canonical(new_canonical),
-    ));
+    tracing::info!(target: "settings", key = "auto_light_theme", value = %new_canonical, "setting changed");
+    app.show_toast(&save_theme_toast("Auto light theme", &display_name));
     vec![Effect::PersistSetting {
         key: "auto_light_theme",
-        value: crate::settings::SettingValue::Enum(new_canonical),
-        rollback_value: crate::settings::SettingValue::Enum(prev_canonical),
+        value: crate::settings::SettingValue::String(new_canonical),
+        rollback_value: crate::settings::SettingValue::String(prev_canonical),
     }]
 }
 
@@ -1379,20 +1348,17 @@ pub(in crate::app::dispatch) fn set_auto_light_theme(
 /// Preview-only mutation for `auto_light_theme`. Mirror of
 /// `preview_auto_dark_theme_inner` for the light bucket.
 fn preview_auto_light_theme_inner(value: &str) {
-    let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
-        tracing::warn!(
-            target: "settings",
-            key = "auto_light_theme",
-            value = value,
-            "unknown theme name — preview_auto_light_theme_inner no-op",
-        );
+    let Some(selection) = crate::theme::ThemeSelection::from_name(value)
+        .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+    else {
+        tracing::warn!(target: "settings", key = "auto_light_theme", value, "invalid auto light theme preview");
         return;
     };
-    if kind.is_auto() {
-        return;
-    }
     if auto_theme_setting_is_live("auto_light_theme") {
-        crate::theme::Theme::apply_kind(kind);
+        crate::theme::cache::apply_auto_mapping_preview(
+            selection,
+            crate::theme::system_appearance::detect(),
+        );
     }
 }
 
@@ -1400,18 +1366,13 @@ pub(in crate::app::dispatch) fn preview_auto_light_theme(
     _app: &mut AppView,
     new: String,
 ) -> Vec<Effect> {
-    match crate::theme::canonical_name(&new) {
-        Some(c) if c != crate::theme::ThemeKind::Auto.display_name() => {}
-        _ => {
-            tracing::error!(
-                target: "settings",
-                key = "auto_light_theme",
-                value = %new,
-                "Action::PreviewAutoLightTheme dispatched with invalid name — no-op",
-            );
-            return vec![];
-        }
-    };
+    if crate::theme::ThemeSelection::from_name(&new)
+        .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+        .is_none()
+    {
+        tracing::error!(target: "settings", key = "auto_light_theme", value = %new, "invalid auto light theme preview");
+        return vec![];
+    }
     preview_auto_light_theme_inner(&new);
     vec![]
 }

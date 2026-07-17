@@ -367,25 +367,23 @@ pub fn render_persona_detail(
         let label = field.label();
         let value = state.field_value(field);
 
-        // Background highlight for selected row.
-        let row_bg = if is_selected {
-            Some(theme.bg_highlight)
-        } else {
-            None
-        };
+        let row_overlay = is_selected.then(|| theme.selected_row_style());
+        let apply_row = |style: Style| row_overlay.map_or(style, |overlay| style.patch(overlay));
 
         // Label
         let label_style = if is_selected {
-            Style::default()
-                .fg(theme.accent_user)
-                .add_modifier(Modifier::BOLD)
+            apply_row(
+                Style::default()
+                    .fg(theme.accent_user)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             Style::default().fg(theme.gray)
         };
-        if let Some(bg) = row_bg {
-            // Fill the row background.
+        if let Some(overlay) = row_overlay {
+            // Fill the row with an opaque band or native reverse-video cue.
             let blank: String = " ".repeat(w);
-            buf.set_string(content_area.x, y, &blank, Style::default().bg(bg));
+            buf.set_string(content_area.x, y, &blank, overlay);
         }
         buf.set_string(content_area.x, y, label, label_style);
 
@@ -400,11 +398,7 @@ pub fn render_persona_detail(
         {
             // Render inline editor.
             let display: String = buffer.chars().take(value_w).collect();
-            let field_style = if let Some(bg) = row_bg {
-                Style::default().fg(theme.text_primary).bg(bg)
-            } else {
-                Style::default().fg(theme.text_primary)
-            };
+            let field_style = apply_row(Style::default().fg(theme.text_primary));
             buf.set_string(value_x, y, &display, field_style);
             // Cursor
             let cursor_x = value_x + buffer[..cursor.min(buffer.len())].width() as u16;
@@ -416,11 +410,7 @@ pub fn render_persona_detail(
         } else if field == PersonaField::Instructions {
             // Multi-line instructions with expand/collapse and scroll.
             if value.is_empty() {
-                let empty_style = if let Some(bg) = row_bg {
-                    Style::default().fg(theme.gray_dim).bg(bg)
-                } else {
-                    Style::default().fg(theme.gray_dim)
-                };
+                let empty_style = apply_row(Style::default().fg(theme.gray_dim));
                 buf.set_string(value_x, y, "(empty)", empty_style);
             } else {
                 let lines = word_wrap_lines(value, value_w);
@@ -436,11 +426,7 @@ pub fn render_persona_detail(
                     avail_lines
                 };
 
-                let val_style = if let Some(bg) = row_bg {
-                    Style::default().fg(theme.text_secondary).bg(bg)
-                } else {
-                    Style::default().fg(theme.text_secondary)
-                };
+                let val_style = apply_row(Style::default().fg(theme.text_secondary));
 
                 if !state.instructions_expanded {
                     // Collapsed: show first max_collapsed lines (no scroll).
@@ -505,27 +491,15 @@ pub fn render_persona_detail(
                 }
             }
         } else if value.is_empty() {
-            let empty_style = if let Some(bg) = row_bg {
-                Style::default().fg(theme.gray_dim).bg(bg)
-            } else {
-                Style::default().fg(theme.gray_dim)
-            };
+            let empty_style = apply_row(Style::default().fg(theme.gray_dim));
             buf.set_string(value_x, y, "\u{2014}", empty_style);
         } else if value.width() <= value_w {
             // Fits on one line.
-            let val_style = if let Some(bg) = row_bg {
-                Style::default().fg(theme.text_primary).bg(bg)
-            } else {
-                Style::default().fg(theme.text_primary)
-            };
+            let val_style = apply_row(Style::default().fg(theme.text_primary));
             buf.set_string(value_x, y, value, val_style);
         } else {
             // Word-wrap long values.
-            let val_style = if let Some(bg) = row_bg {
-                Style::default().fg(theme.text_primary).bg(bg)
-            } else {
-                Style::default().fg(theme.text_primary)
-            };
+            let val_style = apply_row(Style::default().fg(theme.text_primary));
             let lines = word_wrap_lines(value, value_w);
             for (i, line) in lines.iter().enumerate() {
                 if y + i as u16 >= max_y {

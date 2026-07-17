@@ -80,6 +80,7 @@ impl SlashCommand for TerminalSetupCommand {
         ));
         out.push_str(&crate::diagnostics::format_color_env_line(color_level));
         out.push_str(&crate::diagnostics::format_themes_env_line(color_level));
+        out.push_str(&crate::diagnostics::format_warp_env_lines());
 
         let kb = ctx.keyboard_capabilities();
         if kb.modifier_delivery.benefits_from_rescue() || kb.enter_needs_rescue() {

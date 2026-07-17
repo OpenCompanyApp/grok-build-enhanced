@@ -534,13 +534,19 @@ fn render_file_list(buf: &mut Buffer, area: Rect, state: &mut MemoryModalState, 
             let line = Line::from(Span::styled(&entry.label, header_style));
             buf.set_line(area.x, y, &line, content_width);
         } else {
-            let bg = if is_selected {
-                theme.bg_visual
+            let row_overlay = if is_selected {
+                theme.selected_row_style()
             } else {
-                theme.bg_base
+                Style::default()
             };
-            let label_style = Style::default().fg(theme.text_primary).bg(bg);
-            let meta_style = Style::default().fg(theme.gray).bg(bg);
+            let label_style = Style::default()
+                .fg(theme.text_primary)
+                .bg(theme.bg_base)
+                .patch(row_overlay);
+            let meta_style = Style::default()
+                .fg(theme.gray)
+                .bg(theme.bg_base)
+                .patch(row_overlay);
 
             let row_rect = Rect {
                 x: area.x,
@@ -548,7 +554,10 @@ fn render_file_list(buf: &mut Buffer, area: Rect, state: &mut MemoryModalState, 
                 width: content_width,
                 height: 1,
             };
-            buf.set_style(row_rect, Style::default().bg(bg));
+            buf.set_style(
+                row_rect,
+                Style::default().bg(theme.bg_base).patch(row_overlay),
+            );
 
             let max_label_w = content_width.saturating_sub(2) as usize;
             let truncated_label: Cow<str> = if entry.label.width() > max_label_w {
@@ -573,7 +582,13 @@ fn render_file_list(buf: &mut Buffer, area: Rect, state: &mut MemoryModalState, 
                 buf.set_span(
                     hint_x,
                     y,
-                    &Span::styled(hint, Style::default().fg(theme.accent_error).bg(bg)),
+                    &Span::styled(
+                        hint,
+                        Style::default()
+                            .fg(theme.accent_error)
+                            .bg(theme.bg_base)
+                            .patch(row_overlay),
+                    ),
                     hint_w,
                 );
             } else {

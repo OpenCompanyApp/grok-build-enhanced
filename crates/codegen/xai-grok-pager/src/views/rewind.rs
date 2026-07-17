@@ -656,10 +656,10 @@ pub fn render_rewind_overlay(buf: &mut Buffer, area: Rect, phase: &RewindPhase, 
                     break;
                 }
                 let is_cursor = i == *selected;
-                let row_bg = if is_cursor && focused {
-                    theme.bg_visual
+                let row_overlay = if is_cursor && focused {
+                    theme.selected_row_style()
                 } else {
-                    bg
+                    Style::default()
                 };
                 let row_rect = Rect {
                     x: content_x.saturating_sub(1),
@@ -667,9 +667,9 @@ pub fn render_rewind_overlay(buf: &mut Buffer, area: Rect, phase: &RewindPhase, 
                     width: content_w + 2,
                     height: 1,
                 };
-                buf.set_style(row_rect, Style::default().bg(row_bg));
+                buf.set_style(row_rect, Style::default().bg(bg).patch(row_overlay));
 
-                let dot_style = Style::default().fg(theme.gray).bg(row_bg);
+                let dot_style = Style::default().fg(theme.gray).bg(bg).patch(row_overlay);
                 let preview: String = point
                     .prompt_preview
                     .as_deref()
@@ -679,13 +679,14 @@ pub fn render_rewind_overlay(buf: &mut Buffer, area: Rect, phase: &RewindPhase, 
                     .collect();
                 let text_style = Style::default()
                     .fg(theme.text_primary)
-                    .bg(row_bg)
+                    .bg(bg)
                     .add_modifier(if is_cursor {
                         Modifier::BOLD
                     } else {
                         Modifier::empty()
-                    });
-                let meta_style = Style::default().fg(theme.gray).bg(row_bg);
+                    })
+                    .patch(row_overlay);
+                let meta_style = Style::default().fg(theme.gray).bg(bg).patch(row_overlay);
 
                 let file_info = if point.has_file_changes {
                     format!(" \u{00B7} {} files", point.num_file_snapshots)
@@ -1099,11 +1100,12 @@ fn render_radio_row(
     panel_focused: bool,
     theme: &Theme,
 ) {
-    let bg = if is_cursor && panel_focused {
-        theme.bg_visual
+    let row_overlay = if is_cursor && panel_focused {
+        theme.selected_row_style()
     } else {
-        theme.bg_light
+        Style::default()
     };
+    let apply_row = |style: Style| style.bg(theme.bg_light).patch(row_overlay);
 
     let row_rect = Rect {
         x: x.saturating_sub(1),
@@ -1111,10 +1113,10 @@ fn render_radio_row(
         width: w + 2,
         height: 1,
     };
-    buf.set_style(row_rect, Style::default().bg(bg));
+    buf.set_style(row_rect, apply_row(Style::default()));
 
     if !enabled {
-        let dim_style = Style::default().fg(theme.gray_dim).bg(bg);
+        let dim_style = apply_row(Style::default().fg(theme.gray_dim));
         let key_display = key_label(key);
         let line = Line::from(vec![
             Span::styled(format!("{key_display:<4}"), dim_style),
@@ -1135,20 +1137,19 @@ fn render_radio_row(
     };
     let key_display = key_label(key);
 
-    let num_style = Style::default().fg(theme.accent_user).bg(bg);
+    let num_style = apply_row(Style::default().fg(theme.accent_user));
     let marker_style = if is_cursor {
-        Style::default().fg(theme.accent_user).bg(bg)
+        apply_row(Style::default().fg(theme.accent_user))
     } else {
-        Style::default().fg(theme.gray).bg(bg)
+        apply_row(Style::default().fg(theme.gray))
     };
-    let label_style = Style::default()
-        .fg(theme.text_primary)
-        .bg(bg)
-        .add_modifier(if is_cursor {
+    let label_style = apply_row(Style::default().fg(theme.text_primary).add_modifier(
+        if is_cursor {
             Modifier::BOLD
         } else {
             Modifier::empty()
-        });
+        },
+    ));
 
     let line = Line::from(vec![
         Span::styled(format!("{key_display:<4}"), num_style),

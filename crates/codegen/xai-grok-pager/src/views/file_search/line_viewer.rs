@@ -226,9 +226,9 @@ impl ListItem for SourceLine {
         let text_x = area.x + prefix_w;
         let text_w = area.width.saturating_sub(prefix_w);
 
-        // Apply commented background tint to the full item area.
+        // Keep commented rows visible even when the terminal owns the canvas.
         if self.commented {
-            buf.set_style(area, Style::default().bg(theme.bg_visual));
+            buf.set_style(area, theme.highlighted_row_style());
         }
 
         // Render prefix on the first visual line (brighter when commented).

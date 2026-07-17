@@ -5222,7 +5222,7 @@ pub(crate) mod tests {
             voice_state: VoiceState::Idle,
         }
     }
-    fn test_app_with_agent() -> AppView {
+    pub(crate) fn test_app_with_agent() -> AppView {
         let mut app = test_app();
         let id = super::super::agent::AgentId(0);
         let mut agent = AgentView::new(

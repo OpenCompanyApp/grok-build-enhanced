@@ -209,7 +209,9 @@ impl AgentView {
         let connect_x = area.x + area.width - right_w;
         let connect_w = connect_label.width() as u16 + hint_w;
         let connect_style = if self.plugin_cta.hit_connect.hovered {
-            Style::default().fg(theme.link_fg).bg(theme.bg_hover)
+            Style::default()
+                .fg(theme.link_fg)
+                .patch(theme.hovered_row_style())
         } else {
             Style::default().fg(theme.text_secondary)
         };
@@ -232,7 +234,9 @@ impl AgentView {
 
         let dismiss_x = connect_x + connect_w + 1;
         let dismiss_style = if self.plugin_cta.hit_dismiss.hovered {
-            Style::default().fg(theme.text_secondary).bg(theme.bg_hover)
+            Style::default()
+                .fg(theme.text_secondary)
+                .patch(theme.hovered_row_style())
         } else {
             Style::default().fg(theme.gray)
         };

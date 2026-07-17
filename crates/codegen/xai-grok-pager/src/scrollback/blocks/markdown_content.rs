@@ -18,7 +18,7 @@ use super::quote_bar::QuoteBarStrip;
 
 pub(crate) const MARKDOWN_BODY_RANGE: u16 = 0;
 use crate::syntax::get_syntect;
-use crate::theme::{ThemeKind, cache as theme_cache, md_style};
+use crate::theme::{cache as theme_cache, md_style};
 use xai_grok_markdown::StreamingMarkdownRenderer;
 
 /// Mutable rendering state behind a single `RefCell`.
@@ -32,7 +32,7 @@ struct RenderState {
     /// Cached word-wrap result keyed on `(width, generation, theme)`.
     cache_width: usize,
     cache_generation: u64,
-    cache_theme: ThemeKind,
+    cache_theme_revision: u64,
     cache_lines: Vec<Line<'static>>,
     cache_joiners: Vec<Option<String>>,
     /// Number of pre-wrap (renderer output) lines that were frozen at the time
@@ -124,7 +124,7 @@ impl MarkdownContent {
                 renderer,
                 cache_width: 0,
                 cache_generation: 0,
-                cache_theme: theme_cache::current_kind(),
+                cache_theme_revision: theme_cache::current_revision(),
                 cache_lines: Vec::new(),
                 cache_joiners: Vec::new(),
                 frozen_pre_wrap_count: 0,
@@ -142,7 +142,7 @@ impl MarkdownContent {
                 renderer: StreamingMarkdownRenderer::new(md_style::style(), true),
                 cache_width: 0,
                 cache_generation: 0,
-                cache_theme: theme_cache::current_kind(),
+                cache_theme_revision: theme_cache::current_revision(),
                 cache_lines: Vec::new(),
                 cache_joiners: Vec::new(),
                 frozen_pre_wrap_count: 0,
@@ -314,14 +314,13 @@ impl MarkdownContent {
     /// This turns streaming from O(N^2) total wrapping to ~O(N).
     fn ensure_wrapped(&self, width: usize) {
         let mut state = self.state.borrow_mut();
-        let current_theme = theme_cache::current_kind();
+        let current_theme_revision = theme_cache::current_revision();
 
-        // If the theme changed, update the renderer's style so the re-render
-        // below picks up the new colors. Resetting cache_generation forces
-        // the cache to rebuild even if width and content haven't changed.
-        if state.cache_theme != current_theme {
+        // If the resolved theme changed, update the renderer's style and
+        // syntax policy so already-colored streaming spans are rebuilt.
+        if state.cache_theme_revision != current_theme_revision {
             state.renderer.set_style(md_style::style());
-            state.cache_theme = current_theme;
+            state.cache_theme_revision = current_theme_revision;
             state.cache_generation = u64::MAX; // force cache miss
             // set_style resets renderer frozen state, so our tracking is stale
             state.frozen_pre_wrap_count = 0;

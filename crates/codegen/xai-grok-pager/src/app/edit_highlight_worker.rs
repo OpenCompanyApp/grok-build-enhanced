@@ -54,8 +54,8 @@ pub enum EditHlOutcome {
     /// Full-file styles for new-side lines (hunk text verified equal to disk).
     Ready {
         by_new_line: Arc<HashMap<usize, EditLineStyles>>,
-        /// Theme the styles were baked under (paint skips a mismatched map).
-        theme: crate::theme::ThemeKind,
+        /// Resolved theme revision the styles were baked under.
+        theme_revision: u64,
     },
     /// Cap, I/O, non-UTF8, mismatch, or missing syntax — stay hunk-only.
     Failed,
@@ -157,14 +157,24 @@ fn run_job(job: &EditHlJob) -> EditHlOutcome {
     }
 
     let path = std::path::Path::new(&job.path);
-    // Read the theme beside the syntect walk so the result is labeled with the
-    // kind its foregrounds were actually baked under.
-    let theme = crate::theme::cache::current_kind();
+    // Label the result with the exact resolved revision used by syntect. If a
+    // live theme switch races the walk, discard the potentially mixed map.
+    let theme_revision = crate::theme::cache::current_revision();
     match compute_file_scoped_styles(path, &file_text, &job.hunks) {
-        Some(by_new_line) => EditHlOutcome::Ready {
-            by_new_line: Arc::new(by_new_line),
-            theme,
-        },
+        Some(by_new_line) if crate::theme::cache::current_revision() == theme_revision => {
+            EditHlOutcome::Ready {
+                by_new_line: Arc::new(by_new_line),
+                theme_revision,
+            }
+        }
+        Some(_) => {
+            tracing::debug!(
+                target: EDIT_HL_TRACING_TARGET,
+                path = %job.abs_path.display(),
+                "edit HL skipped (theme changed during highlight)"
+            );
+            EditHlOutcome::Failed
+        }
         None => {
             tracing::debug!(
                 target: EDIT_HL_TRACING_TARGET,
@@ -323,8 +333,14 @@ impl AgentView {
             }
 
             match result.outcome {
-                EditHlOutcome::Ready { by_new_line, theme } => {
-                    edit.highlight = EditHighlightPhase::FileScoped { by_new_line, theme };
+                EditHlOutcome::Ready {
+                    by_new_line,
+                    theme_revision,
+                } => {
+                    edit.highlight = EditHighlightPhase::FileScoped {
+                        by_new_line,
+                        theme_revision,
+                    };
                     entry.invalidate_cache();
                     redraw = true;
                     tracing::debug!(
@@ -490,9 +506,12 @@ mod tests {
             hunks: sample_hunks(),
         };
         match run_job(&job) {
-            EditHlOutcome::Ready { by_new_line, theme } => {
+            EditHlOutcome::Ready {
+                by_new_line,
+                theme_revision,
+            } => {
                 assert!(by_new_line.contains_key(&1));
-                assert_eq!(theme, crate::theme::cache::current_kind());
+                assert_eq!(theme_revision, crate::theme::cache::current_revision());
             }
             EditHlOutcome::Failed => panic!("expected Ready for temp python file"),
         }
@@ -552,7 +571,7 @@ mod tests {
                 path: "probe.py".into(),
                 outcome: EditHlOutcome::Ready {
                     by_new_line: Arc::new(HashMap::new()),
-                    theme: crate::theme::cache::current_kind(),
+                    theme_revision: crate::theme::cache::current_revision(),
                 },
             })
             .unwrap();

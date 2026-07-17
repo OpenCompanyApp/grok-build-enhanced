@@ -1,6 +1,7 @@
 //! `/model` (alias `/m`) — switch model + (optionally) reasoning effort.
 //! Chained autocomplete: pick a reasoning-supported model → trailing space
-//! re-opens the dropdown into a `low|medium|high|xhigh` sub-menu.
+//! re-opens the dropdown into the selected model's catalog-advertised effort
+//! menu (currently through `max`, or `ultra` where supported).
 
 use agent_client_protocol as acp;
 use xai_grok_shell::sampling::types::supports_reasoning_effort_meta;

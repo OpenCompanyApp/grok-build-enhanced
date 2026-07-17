@@ -2163,6 +2163,15 @@ impl AgentView {
                             cell.set_style(track_bg);
                         }
                     }
+                    buf.set_style(
+                        Rect {
+                            x: layout.prompt.x + 1,
+                            y: iarea.y,
+                            width: track_x.saturating_sub(layout.prompt.x + 1),
+                            height: prompt_h,
+                        },
+                        theme.selected_row_style(),
+                    );
                 }
             }
         } else if question_view_h > 0 {
@@ -2339,6 +2348,15 @@ impl AgentView {
                         cell.set_style(Style::default().fg(question_accent).bg(row_bg));
                     }
                 }
+                buf.set_style(
+                    Rect {
+                        x: content_x,
+                        y: row_y,
+                        width: content_w,
+                        height: inline_prompt_h,
+                    },
+                    theme.selected_row_style(),
+                );
             }
             if !is_input_mode {
                 self.inline_prompt_area = None;
@@ -2797,6 +2815,13 @@ impl AgentView {
                         } else {
                             theme.bg_light
                         };
+                        let row_overlay = if is_selected {
+                            theme.selected_row_style()
+                        } else if is_hovered {
+                            theme.hovered_row_style()
+                        } else {
+                            Style::default()
+                        };
                         let bold = if is_selected {
                             Modifier::BOLD
                         } else {
@@ -2873,6 +2898,15 @@ impl AgentView {
                             }
                             col += cw;
                         }
+                        buf.set_style(
+                            Rect {
+                                x: items_x,
+                                y: row_y,
+                                width: fill_width,
+                                height: 1,
+                            },
+                            row_overlay,
+                        );
                     }
                     if needs_scrollbar {
                         let sb_area = Rect {

@@ -22,7 +22,7 @@ use crate::app::subagent::{SubagentInfo, format_context_badge, format_subagent_l
 use crate::appearance::LayoutConfig;
 use crate::scrollback::layout::HorizontalLayout;
 use crate::syntax::get_syntect;
-use crate::theme::{Theme, ThemeKind};
+use crate::theme::Theme;
 use crate::util::format_duration;
 use chrono::{DateTime, Utc};
 
@@ -688,7 +688,7 @@ pub struct TasksPane {
     prev_running_count: usize,
     opened_by_auto: bool,
     highlight_cache: HashMap<String, Vec<Span<'static>>>,
-    last_theme: ThemeKind,
+    last_theme_revision: u64,
 }
 
 impl Default for TasksPane {
@@ -789,7 +789,7 @@ impl TasksPane {
             prev_running_count: 0,
             opened_by_auto: false,
             highlight_cache: HashMap::new(),
-            last_theme: Theme::current_kind(),
+            last_theme_revision: crate::theme::cache::current_revision(),
         }
     }
 
@@ -805,9 +805,9 @@ impl TasksPane {
         queued_cron_ids: &std::collections::HashSet<&str>,
     ) {
         // Detect theme switch and refresh caches.
-        let current_theme = Theme::current_kind();
-        if current_theme != self.last_theme {
-            self.last_theme = current_theme;
+        let current_theme_revision = crate::theme::cache::current_revision();
+        if current_theme_revision != self.last_theme_revision {
+            self.last_theme_revision = current_theme_revision;
             self.list_style = ListPaneStyle {
                 show_corner_indicators: false,
                 ..ListPaneStyle::default()

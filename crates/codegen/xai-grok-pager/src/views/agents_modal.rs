@@ -1206,16 +1206,13 @@ fn render_agents_tab(
                 state.row_map.push((row_y, *idx));
                 let entry = &state.agents[*idx];
                 let is_selected = *idx == state.selected;
-                let bg = if is_selected {
-                    Some(theme.bg_highlight)
-                } else {
-                    None
-                };
-                if let Some(bg_color) = bg {
-                    let bg_style = Style::default().bg(bg_color);
+                let selected_overlay = is_selected.then(|| theme.selected_row_style());
+                let apply_selected =
+                    |style: Style| selected_overlay.map_or(style, |overlay| style.patch(overlay));
+                if let Some(overlay) = selected_overlay {
                     for x in content_area.x..content_area.x + content_area.width {
                         if let Some(cell) = buf.cell_mut((x, row_y)) {
-                            cell.set_style(bg_style);
+                            cell.set_style(overlay);
                         }
                     }
                 }
@@ -1225,12 +1222,7 @@ fn render_agents_tab(
                 } else {
                     "\u{25b6} "
                 };
-                let ind_style = Style::default().fg(theme.gray_dim);
-                let ind_style = if let Some(bg_color) = bg {
-                    ind_style.bg(bg_color)
-                } else {
-                    ind_style
-                };
+                let ind_style = apply_selected(Style::default().fg(theme.gray_dim));
                 buf.set_string(x, row_y, indicator, ind_style);
                 x += 2;
                 let status = if entry.enabled {
@@ -1243,23 +1235,17 @@ fn render_agents_tab(
                 } else {
                     theme.gray_dim
                 };
-                let status_style = Style::default().fg(status_fg);
-                let status_style = if let Some(bg_color) = bg {
-                    status_style.bg(bg_color)
-                } else {
-                    status_style
-                };
+                let status_style = apply_selected(Style::default().fg(status_fg));
                 buf.set_string(x, row_y, status, status_style);
                 x += 2;
                 let name_w = entry.name.width();
                 let remaining = (content_area.x + content_area.width).saturating_sub(x) as usize;
                 let name_display: String = entry.name.chars().take(remaining).collect();
-                let mut name_style = Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD);
-                if let Some(bg_color) = bg {
-                    name_style = name_style.bg(bg_color);
-                }
+                let name_style = apply_selected(
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                );
                 buf.set_string(x, row_y, &name_display, name_style);
                 x += name_w.min(remaining) as u16;
                 let is_active = state
@@ -1271,12 +1257,11 @@ fn render_agents_tab(
                     let active_remaining =
                         (content_area.x + content_area.width).saturating_sub(x) as usize;
                     if active_remaining >= active_label.width() {
-                        let mut active_style = Style::default()
-                            .fg(theme.accent_success)
-                            .add_modifier(Modifier::BOLD);
-                        if let Some(bg_color) = bg {
-                            active_style = active_style.bg(bg_color);
-                        }
+                        let active_style = apply_selected(
+                            Style::default()
+                                .fg(theme.accent_success)
+                                .add_modifier(Modifier::BOLD),
+                        );
                         buf.set_string(x, row_y, active_label, active_style);
                         x += active_label.width() as u16;
                     }
@@ -1287,12 +1272,11 @@ fn render_agents_tab(
                     let default_remaining =
                         (content_area.x + content_area.width).saturating_sub(x) as usize;
                     if default_remaining >= default_label.width() {
-                        let mut default_style = Style::default()
-                            .fg(theme.text_primary)
-                            .add_modifier(Modifier::DIM | Modifier::BOLD);
-                        if let Some(bg_color) = bg {
-                            default_style = default_style.bg(bg_color);
-                        }
+                        let default_style = apply_selected(
+                            Style::default()
+                                .fg(theme.text_primary)
+                                .add_modifier(Modifier::DIM | Modifier::BOLD),
+                        );
                         buf.set_string(x, row_y, default_label, default_style);
                         x += default_label.width() as u16;
                     }
@@ -1302,18 +1286,13 @@ fn render_agents_tab(
                     let off_remaining =
                         (content_area.x + content_area.width).saturating_sub(x) as usize;
                     if off_remaining >= off_label.len() {
-                        let mut off_style = Style::default().fg(theme.gray_dim);
-                        if let Some(bg_color) = bg {
-                            off_style = off_style.bg(bg_color);
-                        }
+                        let off_style = apply_selected(Style::default().fg(theme.gray_dim));
                         buf.set_string(x, row_y, off_label, off_style);
                         x += off_label.len() as u16;
                     }
                 }
-                let (badge_text, mut badge_style) = scope_badge(entry.scope, theme);
-                if let Some(bg_color) = bg {
-                    badge_style = badge_style.bg(bg_color);
-                }
+                let (badge_text, badge_style) = scope_badge(entry.scope, theme);
+                let badge_style = apply_selected(badge_style);
                 let badge_remaining =
                     (content_area.x + content_area.width).saturating_sub(x + 1) as usize;
                 if badge_remaining >= badge_text.width() {
@@ -1323,19 +1302,14 @@ fn render_agents_tab(
             FlatRow::Description(idx, line) => {
                 state.row_map.push((row_y, *idx));
                 let is_selected = *idx == state.selected;
-                let bg = if is_selected {
-                    Some(theme.bg_highlight)
-                } else {
-                    None
-                };
+                let selected_overlay = is_selected.then(|| theme.selected_row_style());
                 let indent = 6u16;
                 let desc_x = content_area.x + indent;
                 let mut desc_style = Style::default().fg(theme.gray);
-                if let Some(bg_color) = bg {
-                    desc_style = desc_style.bg(bg_color);
-                    let fill = Style::default().bg(bg_color);
+                if let Some(overlay) = selected_overlay {
+                    desc_style = desc_style.patch(overlay);
                     for cx in content_area.x..content_area.x + content_area.width {
-                        buf[(cx, row_y)].set_style(fill);
+                        buf[(cx, row_y)].set_style(overlay);
                     }
                 }
                 buf.set_string(desc_x, row_y, line, desc_style);
@@ -1481,16 +1455,13 @@ fn render_personas_tab(
                 state.row_map.push((row_y, *idx));
                 let is_selected = *idx == state.persona_selected;
                 let is_expanded = state.persona_expanded.contains(idx);
-                let bg = if is_selected {
-                    Some(theme.bg_highlight)
-                } else {
-                    None
-                };
-                if let Some(bg_color) = bg {
-                    let bg_style = Style::default().bg(bg_color);
+                let selected_overlay = is_selected.then(|| theme.selected_row_style());
+                let apply_selected =
+                    |style: Style| selected_overlay.map_or(style, |overlay| style.patch(overlay));
+                if let Some(overlay) = selected_overlay {
                     for x in content_area.x..content_area.x + content_area.width {
                         if let Some(cell) = buf.cell_mut((x, row_y)) {
-                            cell.set_style(bg_style);
+                            cell.set_style(overlay);
                         }
                     }
                 }
@@ -1500,29 +1471,22 @@ fn render_personas_tab(
                 } else {
                     "\u{25b6} "
                 };
-                let mut ind_style = Style::default().fg(theme.gray_dim);
-                if let Some(bg_color) = bg {
-                    ind_style = ind_style.bg(bg_color);
-                }
+                let ind_style = apply_selected(Style::default().fg(theme.gray_dim));
                 buf.set_string(x, row_y, indicator, ind_style);
                 x += 2;
                 let persona = &state.personas[*idx];
                 let remaining = (content_area.x + content_area.width).saturating_sub(x) as usize;
                 let name_display: String = persona.name.chars().take(remaining).collect();
-                let mut name_style = Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD);
-                if let Some(bg_color) = bg {
-                    name_style = name_style.bg(bg_color);
-                }
+                let name_style = apply_selected(
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                );
                 buf.set_string(x, row_y, &name_display, name_style);
                 x += name_display.width() as u16;
                 if let Some(ref scope) = persona.scope_label {
                     let badge = format!(" {scope} ");
-                    let mut scope_style = Style::default().fg(theme.accent_user);
-                    if let Some(bg_color) = bg {
-                        scope_style = scope_style.bg(bg_color);
-                    }
+                    let scope_style = apply_selected(Style::default().fg(theme.accent_user));
                     buf.set_string(x, row_y, &badge, scope_style);
                     x += badge.width() as u16;
                 }
@@ -1534,10 +1498,7 @@ fn render_personas_tab(
                     let desc_remaining =
                         (content_area.x + content_area.width).saturating_sub(x) as usize;
                     if desc_remaining > sep.width() + 3 {
-                        let mut desc_style = Style::default().fg(theme.gray);
-                        if let Some(bg_color) = bg {
-                            desc_style = desc_style.bg(bg_color);
-                        }
+                        let desc_style = apply_selected(Style::default().fg(theme.gray));
                         buf.set_string(x, row_y, sep, desc_style);
                         x += sep.width() as u16;
                         let max_desc =
@@ -1550,20 +1511,15 @@ fn render_personas_tab(
             PersonaFlatRow::Description(idx, line) => {
                 state.row_map.push((row_y, *idx));
                 let is_selected = *idx == state.persona_selected;
-                let bg = if is_selected {
-                    Some(theme.bg_highlight)
-                } else {
-                    None
-                };
+                let selected_overlay = is_selected.then(|| theme.selected_row_style());
                 let indent = 4u16;
                 let desc_x = content_area.x + indent;
                 let mut desc_style = Style::default().fg(theme.gray);
-                if let Some(bg_color) = bg {
-                    desc_style = desc_style.bg(bg_color);
-                    let fill = Style::default().bg(bg_color);
+                if let Some(overlay) = selected_overlay {
+                    desc_style = desc_style.patch(overlay);
                     for cx in content_area.x..content_area.x + content_area.width {
                         if let Some(cell) = buf.cell_mut((cx, row_y)) {
-                            cell.set_style(fill);
+                            cell.set_style(overlay);
                         }
                     }
                 }
@@ -1572,20 +1528,15 @@ fn render_personas_tab(
             PersonaFlatRow::Tags(idx, tags) => {
                 state.row_map.push((row_y, *idx));
                 let is_selected = *idx == state.persona_selected;
-                let bg = if is_selected {
-                    Some(theme.bg_highlight)
-                } else {
-                    None
-                };
+                let selected_overlay = is_selected.then(|| theme.selected_row_style());
                 let indent = 4u16;
                 let tag_x = content_area.x + indent;
                 let mut tag_style = Style::default().fg(theme.gray_dim);
-                if let Some(bg_color) = bg {
-                    tag_style = tag_style.bg(bg_color);
-                    let fill = Style::default().bg(bg_color);
+                if let Some(overlay) = selected_overlay {
+                    tag_style = tag_style.patch(overlay);
                     for cx in content_area.x..content_area.x + content_area.width {
                         if let Some(cell) = buf.cell_mut((cx, row_y)) {
-                            cell.set_style(fill);
+                            cell.set_style(overlay);
                         }
                     }
                 }
@@ -1595,20 +1546,15 @@ fn render_personas_tab(
             PersonaFlatRow::Hint(idx, text) => {
                 state.row_map.push((row_y, *idx));
                 let is_selected = *idx == state.persona_selected;
-                let bg = if is_selected {
-                    Some(theme.bg_highlight)
-                } else {
-                    None
-                };
+                let selected_overlay = is_selected.then(|| theme.selected_row_style());
                 let indent = 4u16;
                 let hint_x = content_area.x + indent;
                 let mut hint_style = Style::default().fg(theme.gray_dim);
-                if let Some(bg_color) = bg {
-                    hint_style = hint_style.bg(bg_color);
-                    let fill = Style::default().bg(bg_color);
+                if let Some(overlay) = selected_overlay {
+                    hint_style = hint_style.patch(overlay);
                     for cx in content_area.x..content_area.x + content_area.width {
                         if let Some(cell) = buf.cell_mut((cx, row_y)) {
-                            cell.set_style(fill);
+                            cell.set_style(overlay);
                         }
                     }
                 }

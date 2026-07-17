@@ -13,8 +13,9 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::appearance::ConfigWatcher;
 use crate::client_identity::{PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
-use crate::theme::system_appearance::{self, SystemAppearanceWatcher};
-use crate::theme::{Theme, ThemeKind, cache as theme_cache};
+use crate::theme::system_appearance::SystemAppearanceWatcher;
+use crate::theme::warp::watcher::WarpThemeWatcher;
+use crate::theme::{ThemeKind, ThemeSelection, cache as theme_cache};
 
 use agent_client_protocol as acp;
 use xai_acp_lib::acp_send;
@@ -1454,8 +1455,14 @@ pub(crate) async fn run(
     // fails loudly in debug builds rather than silently regressing the
     // initial cursor color.
     debug_assert_eq!(term_state.initial_theme, theme_cache::current_kind());
-    let mut appearance_watcher =
-        SystemAppearanceWatcher::start_if_auto(theme_cache::is_auto_mode());
+    let mut appearance_watcher = None;
+    let mut warp_theme_watcher = None;
+    let mut warp_watch_paths = Vec::new();
+    sync_theme_watchers(
+        &mut appearance_watcher,
+        &mut warp_theme_watcher,
+        &mut warp_watch_paths,
+    );
 
     // Registered so the signal handler can request a graceful quit; see signal_handler.
     let quit_notify = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -1860,8 +1867,12 @@ pub(crate) async fn run(
                     }
                 }
 
-                // Sync appearance watcher when auto-mode toggles.
-                sync_appearance_watcher(&mut appearance_watcher);
+                // Theme previews/commits can change watcher requirements.
+                sync_theme_watchers(
+                    &mut appearance_watcher,
+                    &mut warp_theme_watcher,
+                    &mut warp_watch_paths,
+                );
             }
 
             // Debounced resize: draw once the terminal size has stabilized.
@@ -1930,6 +1941,10 @@ pub(crate) async fn run(
                 if let ActiveView::Agent(id) = app.active_view {
                     let effs = vec![Effect::FetchBilling {
                         agent_id: id,
+                        session_id: app
+                            .agents
+                            .get(&id)
+                            .and_then(|agent| agent.session.session_id.clone()),
                         silent: true,
                     }];
                     if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
@@ -2020,7 +2035,7 @@ pub(crate) async fn run(
                 draw_scheduled_at = None;
             }
 
-            // System appearance changed (auto-theme mode).
+            // System appearance changed (Grok Auto or Warp system theme).
             Ok(()) = async {
                 if let Some(ref mut w) = appearance_watcher {
                     w.changed().await
@@ -2031,26 +2046,73 @@ pub(crate) async fn run(
                 if let Some(ref w) = appearance_watcher
                     && let Some(appearance) = w.current()
                 {
-                    let config = theme_cache::auto_theme_config();
-                    let new_kind = system_appearance::to_theme_kind(
-                        appearance,
-                        config.dark_theme,
-                        config.light_theme,
-                    );
-                    let current = Theme::current_kind();
-                    let effective = Theme::apply_kind(new_kind);
-                    if effective != current {
+                    let previous = theme_cache::current_resolved();
+                    let changed = if theme_cache::is_auto_mode() {
+                        theme_cache::apply_selection(ThemeSelection::Auto, Some(appearance))
+                    } else {
+                        theme_cache::refresh_current(Some(appearance))
+                    };
+                    if changed {
+                        let current = theme_cache::current_resolved();
                         tracing::info!(
                             ?appearance,
-                            new_theme = %effective.display_name(),
-                            previous_theme = %current.display_name(),
+                            new_theme = %current.display_name,
+                            previous_theme = %previous.display_name,
                             "system appearance changed, switching theme"
                         );
+                        // Named ANSI cells compare equal even when Warp changed
+                        // the host palette, so force a complete terminal repaint.
+                        let _ = terminal.clear();
                         app.draw(terminal);
                         last_draw_at = Instant::now();
                         draw_scheduled_at = None;
                     }
+                    sync_theme_watchers(
+                        &mut appearance_watcher,
+                        &mut warp_theme_watcher,
+                        &mut warp_watch_paths,
+                    );
                 }
+            }
+
+            // Warp settings or installed theme files changed.
+            Ok(()) = async {
+                if let Some(ref mut watcher) = warp_theme_watcher {
+                    watcher.changed().await
+                } else {
+                    std::future::pending::<Result<(), _>>().await
+                }
+            } => {
+                let appearance = appearance_watcher
+                    .as_ref()
+                    .and_then(SystemAppearanceWatcher::current)
+                    .or_else(crate::theme::system_appearance::detect);
+                let previous = theme_cache::current_resolved();
+                let changed = theme_cache::refresh_current(appearance);
+                let current = theme_cache::current_resolved();
+                if let Some(reason) = current.warp_fallback_reason() {
+                    tracing::warn!(%reason, "Warp theme refresh kept the last known good palette");
+                }
+                if changed {
+                    tracing::info!(
+                        new_theme = %current.display_name,
+                        previous_theme = %previous.display_name,
+                        "Warp theme changed, repainting"
+                    );
+                    let _ = terminal.clear();
+                    app.draw(terminal);
+                    last_draw_at = Instant::now();
+                    draw_scheduled_at = None;
+                }
+                // Recreate the watcher after every filesystem event so paths
+                // that were missing at startup can upgrade from a parent watch
+                // to a recursive theme-directory watch once created.
+                warp_watch_paths.clear();
+                sync_theme_watchers(
+                    &mut appearance_watcher,
+                    &mut warp_theme_watcher,
+                    &mut warp_watch_paths,
+                );
             }
 
             // Leader connection status changes (reconnect lifecycle).
@@ -2526,12 +2588,46 @@ fn schedule_tick(tick_at: &mut Option<Instant>, app: &AppView, interval: Duratio
     }
 }
 
-/// Sync `appearance_watcher` with the current `AUTO_MODE` flag.
-/// Starts or stops the watcher as needed; no-op when consistent.
-fn sync_appearance_watcher(watcher: &mut Option<SystemAppearanceWatcher>) {
-    let should_auto = theme_cache::is_auto_mode();
-    if should_auto != watcher.is_some() {
-        *watcher = SystemAppearanceWatcher::start_if_auto(should_auto);
+/// Keep system-appearance and Warp filesystem watchers aligned with the
+/// currently resolved selection. Watchers only emit invalidations; all theme
+/// resolution and global state mutation stays on the main event loop.
+fn sync_theme_watchers(
+    appearance_watcher: &mut Option<SystemAppearanceWatcher>,
+    warp_watcher: &mut Option<WarpThemeWatcher>,
+    current_warp_paths: &mut Vec<std::path::PathBuf>,
+) {
+    let resolved = theme_cache::current_resolved();
+    let needs_appearance =
+        theme_cache::is_auto_mode() || resolved.requires_system_appearance_watcher();
+    if needs_appearance != appearance_watcher.is_some() {
+        *appearance_watcher = SystemAppearanceWatcher::start_if_auto(needs_appearance);
+    }
+
+    let selection = theme_cache::current_selection();
+    let needs_warp_files = matches!(
+        selection,
+        ThemeSelection::WarpSync | ThemeSelection::WarpFile(_)
+    ) || matches!(
+        (&selection, &resolved.status),
+        (ThemeSelection::Auto, crate::theme::ThemeStatus::Warp { .. })
+    );
+
+    let mut desired = if needs_warp_files {
+        let mut paths = resolved.warp_watch_paths();
+        for installation in crate::theme::warp::settings::installations() {
+            paths.push(installation.settings_path);
+            paths.push(installation.themes_dir);
+        }
+        paths
+    } else {
+        Vec::new()
+    };
+    desired.sort();
+    desired.dedup();
+
+    if desired != *current_warp_paths {
+        *warp_watcher = WarpThemeWatcher::start(desired.iter().cloned());
+        *current_warp_paths = desired;
     }
 }
 

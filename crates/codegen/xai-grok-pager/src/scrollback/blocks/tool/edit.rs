@@ -42,7 +42,7 @@ use crate::scrollback::types::{
     SelectionBoundaryEntry,
 };
 use crate::syntax::{Syntect, get_syntect};
-use crate::theme::{Theme, ThemeKind};
+use crate::theme::Theme;
 
 /// Skip full-file HL when the post-edit file exceeds this size (2 MiB).
 ///
@@ -70,9 +70,9 @@ pub enum EditHighlightPhase {
     /// Precomputed full-file styles keyed by 1-based new-file line.
     FileScoped {
         by_new_line: Arc<HashMap<usize, EditLineStyles>>,
-        /// Theme the styles were baked under; paint falls back to hunk-only
-        /// on mismatch so a runtime theme flip never mixes palettes.
-        theme: ThemeKind,
+        /// Resolved theme revision the styles were baked under; paint falls
+        /// back to hunk-only on mismatch so dynamic theme reloads stay safe.
+        theme_revision: u64,
     },
 }
 
@@ -935,15 +935,17 @@ impl EditToolCallBlock {
         match &self.highlight {
             EditHighlightPhase::FileScoped {
                 by_new_line,
-                theme: baked,
-            } if *baked == crate::theme::cache::current_kind() => render_diff_hunks_with_styles(
-                &self.hunks,
-                path,
-                by_new_line.as_ref(),
-                theme,
-                width,
-                config,
-            ),
+                theme_revision: baked,
+            } if *baked == crate::theme::cache::current_revision() => {
+                render_diff_hunks_with_styles(
+                    &self.hunks,
+                    path,
+                    by_new_line.as_ref(),
+                    theme,
+                    width,
+                    config,
+                )
+            }
             _ => render_diff_hunks_highlighted(&self.hunks, path, theme, width, config),
         }
     }
@@ -2456,7 +2458,7 @@ class ProcessQueueItem(BaseModel):
         let mut block = EditToolCallBlock::new("queue_item.py", vec![hunk]);
         block.highlight = EditHighlightPhase::FileScoped {
             by_new_line: Arc::new(map),
-            theme: crate::theme::cache::current_kind(),
+            theme_revision: crate::theme::cache::current_revision(),
         };
         let out = block.output(&test_ctx());
         let joined: String = out
@@ -2515,7 +2517,7 @@ class ProcessQueueItem(BaseModel):
         // spilled field line, so the stale assert below cannot go vacuous.
         block.highlight = EditHighlightPhase::FileScoped {
             by_new_line: Arc::clone(&by_new_line),
-            theme: crate::theme::cache::current_kind(),
+            theme_revision: crate::theme::cache::current_revision(),
         };
         let fresh_out = block.output(&test_ctx());
         assert_ne!(
@@ -2525,11 +2527,10 @@ class ProcessQueueItem(BaseModel):
         );
 
         // Stale: the SAME paintable map baked under another theme is skipped.
-        let stale = ThemeKind::GrokDay;
-        assert_ne!(stale, crate::theme::cache::current_kind());
+        let stale_revision = crate::theme::cache::current_revision().wrapping_add(1);
         block.highlight = EditHighlightPhase::FileScoped {
             by_new_line,
-            theme: stale,
+            theme_revision: stale_revision,
         };
         let stale_out = block.output(&test_ctx());
         assert_eq!(

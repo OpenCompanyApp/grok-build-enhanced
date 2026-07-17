@@ -140,6 +140,8 @@ impl CommandRegistry {
         hidden.insert("voice".to_string());
         // `/auto` is fail-closed: hidden until `set_auto_mode_available(true)`.
         hidden.insert("auto".to_string());
+        // `/fast` is fail-closed until the shell advertises the feature.
+        hidden.insert("fast".to_string());
         let mut reg = Self {
             commands: builtins,
             sources,
@@ -450,6 +452,15 @@ impl CommandRegistry {
     }
 
     fn apply_acp_commands(&mut self, commands: &[agent_client_protocol::AvailableCommand]) {
+        if commands
+            .iter()
+            .any(|command| command.name.eq_ignore_ascii_case("fast"))
+        {
+            self.hidden.remove("fast");
+        } else {
+            self.hidden.insert("fast".to_string());
+        }
+
         // Remove old ACP-sourced commands.
         let mut i = 0;
         while i < self.commands.len() {

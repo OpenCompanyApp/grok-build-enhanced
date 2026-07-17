@@ -676,10 +676,10 @@ pub fn render_import_claude_modal(
         let is_focused = i == state.focus;
         let is_blank = matches!(row, Row::Blank);
         if is_focused && !is_blank {
-            let hover_bg = Style::default().bg(theme.bg_highlight);
+            let focused_overlay = theme.selected_row_style();
             for x in content_area.x..content_area.x + content_area.width {
                 if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_style(hover_bg);
+                    cell.set_style(focused_overlay);
                 }
             }
         }
@@ -947,13 +947,11 @@ fn render_header_line<'a>(
     };
     let label_style = with_bg(label_base, focused, theme);
     let pad = " ".repeat(indent);
-    let fold_bg = if focused {
-        Some(theme.bg_highlight)
-    } else {
-        None
-    };
-    let fold_span =
-        crate::views::modal_window::fold_indicator_span(collapsed, fold_hovered, fold_bg, theme);
+    let mut fold_span =
+        crate::views::modal_window::fold_indicator_span(collapsed, fold_hovered, None, theme);
+    if focused {
+        fold_span.style = fold_span.style.patch(theme.selected_row_style());
+    }
     Line::from(vec![
         Span::raw(pad),
         fold_span,
@@ -1005,7 +1003,7 @@ fn render_item_line<'a>(
 /// reads as a continuous bar across the full row width.
 fn with_bg(style: Style, focused: bool, theme: &Theme) -> Style {
     if focused {
-        style.bg(theme.bg_highlight)
+        style.patch(theme.selected_row_style())
     } else {
         style
     }

@@ -459,7 +459,9 @@ pub(crate) fn render_follow_ups(
     }
     const MAX_CHIP_LABEL: usize = 48;
     let chip_style = Style::default().fg(theme.link_fg);
-    let hover_style = Style::default().fg(theme.text_primary).bg(theme.bg_hover);
+    let hover_style = Style::default()
+        .fg(theme.text_primary)
+        .patch(theme.hovered_row_style());
     let row_end = area.x + area.width;
     let mut x = area.x;
     for (i, label) in suggestions.iter().enumerate() {

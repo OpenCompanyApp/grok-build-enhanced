@@ -1234,6 +1234,7 @@ pub fn build_flat_option_lines(
             None => theme.bg_light,
         };
 
+        let first_line = all_lines.len();
         build_single_option_lines(
             &mut all_lines,
             i,
@@ -1248,6 +1249,18 @@ pub fn build_flat_option_lines(
             theme,
             is_cursor_item,
         );
+        if embed.is_none() {
+            let overlay = if is_cursor_item && panel_focused {
+                theme.selected_row_style()
+            } else if is_hovered_item {
+                theme.hovered_row_style()
+            } else {
+                Style::default()
+            };
+            for line in &mut all_lines[first_line..] {
+                line.style = line.style.patch(overlay);
+            }
+        }
     }
 
     // Freeform row — hidden in InputMode (prompt widget below replaces it).
@@ -1568,7 +1581,17 @@ fn build_freeform_line(
     }
     spans.push(Span::styled(label, label_style));
 
-    Line::from(spans).style(Style::default().bg(row_bg))
+    let mut line_style = Style::default().bg(row_bg);
+    if embed.is_none() {
+        line_style = if is_cursor && panel_focused {
+            line_style.patch(theme.selected_row_style())
+        } else if is_hovered {
+            line_style.patch(theme.hovered_row_style())
+        } else {
+            line_style
+        };
+    }
+    Line::from(spans).style(line_style)
 }
 
 /// Render the complete question view into the given area.
