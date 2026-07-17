@@ -1,0 +1,332 @@
+name: Fork GitHub Release
+run-name: Grok Build Enhanced release ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing fork tag to build (vX.Y.Z or vX.Y.Z-prerelease)
+        required: true
+        type: string
+      confirm_release:
+        description: Build, attest, and publish a new fork GitHub Release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_REPOSITORY: OpenCompanyApp/grok-build-enhanced
+
+jobs:
+  prepare:
+    if: >-
+      github.repository == 'OpenCompanyApp/grok-build-enhanced' &&
+      (github.event_name == 'push' || inputs.confirm_release == true)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.release.outputs.matrix }}
+      source_commit: ${{ steps.release.outputs.source_commit }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check out the requested immutable tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Validate fork release contract
+        id: release
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag=$REQUESTED_TAG
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "release tag must be vX.Y.Z or vX.Y.Z-prerelease" >&2
+            exit 1
+          fi
+          version=${tag#v}
+          source_commit=$(git rev-parse "${tag}^{commit}")
+          if [[ "$(git rev-parse HEAD)" != "$source_commit" ]]; then
+            echo "checked-out commit does not match requested tag" >&2
+            exit 1
+          fi
+          python3 scripts/release/release_contract.py contract \
+            --version "$version" \
+            --repository "$RELEASE_REPOSITORY"
+          matrix=$(python3 scripts/release/release_contract.py matrix)
+          {
+            echo "matrix=$matrix"
+            echo "source_commit=$source_commit"
+            echo "tag=$tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    if: >-
+      github.repository == 'OpenCompanyApp/grok-build-enhanced' &&
+      (github.event_name == 'push' || inputs.confirm_release == true)
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: '0'
+      GROK_VERSION: ${{ needs.prepare.outputs.version }}
+      LC_ALL: C
+      TZ: UTC
+    steps:
+      - name: Check out the frozen source commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_commit }}
+
+      - name: Confirm native Rust target
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          set -euo pipefail
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [[ "$host" != "$RUST_TARGET" ]]; then
+            echo "runner host $host does not match required native target $RUST_TARGET" >&2
+            exit 1
+          fi
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build distribution binary
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          TARGET_RUSTFLAGS: ${{ matrix.rustflags }}
+        run: |
+          set -euo pipefail
+          if [[ "$RUST_TARGET" == aarch64-unknown-linux-gnu ]]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$TARGET_RUSTFLAGS"
+          elif [[ -n "$TARGET_RUSTFLAGS" ]]; then
+            echo "unexpected target-specific distribution flags for $RUST_TARGET" >&2
+            exit 1
+          fi
+          cargo build --locked --profile release-dist \
+            --package xai-grok-pager-bin \
+            --features release-dist \
+            --target "$RUST_TARGET"
+
+      - name: Strip, smoke test, and package updater asset
+        shell: bash
+        env:
+          ASSET_ARCH: ${{ matrix.arch }}
+          ASSET_OS: ${{ matrix.os }}
+          RUST_TARGET: ${{ matrix.rust_target }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          binary="target/${RUST_TARGET}/release-dist/xai-grok-pager"
+          case "$ASSET_OS" in
+            macos)
+              strip -S "$binary"
+              codesign --force --sign - --timestamp=none "$binary"
+              ;;
+            linux) strip --strip-debug "$binary" ;;
+            *) echo "unsupported release OS: $ASSET_OS" >&2; exit 1 ;;
+          esac
+          "$binary" --version | grep -F -- "$VERSION" >/dev/null
+          scripts/release/package_asset.sh \
+            "$VERSION" "$ASSET_OS" "$ASSET_ARCH" "$RUST_TARGET" \
+            "$binary" packaged "$SOURCE_COMMIT" "$RELEASE_REPOSITORY"
+
+      - name: Upload isolated native asset
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            packaged/grok-*
+            packaged/asset-metadata-*.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
+
+  attest:
+    if: >-
+      github.repository == 'OpenCompanyApp/grok-build-enhanced' &&
+      (github.event_name == 'push' || inputs.confirm_release == true)
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out release verification code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_commit }}
+
+      - name: Download all native assets
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: release-*
+          path: staged
+          merge-multiple: true
+
+      - name: Assemble and verify deterministic release set
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release/release_contract.py assemble \
+            --version "$VERSION" \
+            --repository "$RELEASE_REPOSITORY" \
+            --source-commit "$SOURCE_COMMIT" \
+            --input-dir staged \
+            --output-dir release
+          python3 scripts/release/release_contract.py verify \
+            --version "$VERSION" \
+            --repository "$RELEASE_REPOSITORY" \
+            --source-commit "$SOURCE_COMMIT" \
+            --release-dir release \
+            --require-modes
+
+      - name: Attest release provenance with GitHub OIDC
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: release/*
+
+      - name: Upload verified release set
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: verified-release
+          path: release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
+
+  release:
+    if: >-
+      github.repository == 'OpenCompanyApp/grok-build-enhanced' &&
+      (github.event_name == 'push' || inputs.confirm_release == true)
+    needs: [prepare, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Download only the attested release set
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: verified-release
+          path: release
+
+      - name: Recheck fixed release allowlist and checksums
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected=(
+            "grok-${VERSION}-linux-aarch64"
+            "grok-${VERSION}-linux-x86_64"
+            "grok-${VERSION}-macos-aarch64"
+            "grok-${VERSION}-macos-x86_64"
+            "RELEASE-PROVENANCE.json"
+            "SHA256SUMS"
+          )
+          if [[ $(find release -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ') -ne ${#expected[@]} ]]; then
+            echo "verified artifact has an unexpected release file count" >&2
+            exit 1
+          fi
+          for name in "${expected[@]}"; do
+            if [[ ! -f "release/$name" || -L "release/$name" ]]; then
+              echo "missing or unsafe release file: $name" >&2
+              exit 1
+            fi
+          done
+          (cd release && sha256sum --check SHA256SUMS)
+
+      - name: Create a new fork release without replacing existing assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          object=$(gh api "repos/${RELEASE_REPOSITORY}/git/ref/tags/${TAG}")
+          object_type=$(jq -r '.object.type' <<<"$object")
+          object_sha=$(jq -r '.object.sha' <<<"$object")
+          for _ in 1 2 3 4; do
+            [[ "$object_type" == tag ]] || break
+            object=$(gh api "repos/${RELEASE_REPOSITORY}/git/tags/${object_sha}")
+            object_type=$(jq -r '.object.type' <<<"$object")
+            object_sha=$(jq -r '.object.sha' <<<"$object")
+          done
+          if [[ "$object_type" != commit || "$object_sha" != "$SOURCE_COMMIT" ]]; then
+            echo "release tag moved or does not resolve to the built commit" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
+            echo "refusing to alter existing release $TAG" >&2
+            exit 1
+          fi
+
+          notes="$RUNNER_TEMP/grok-build-enhanced-release-notes.txt"
+          cat > "$notes" <<EOF
+          Grok Build Enhanced ${VERSION} is an unofficial OpenCompanyApp fork release.
+
+          These assets are separate from the official xAI/SpaceXAI release channels,
+          npm packages, and x.ai installer. SHA256SUMS and RELEASE-PROVENANCE.json are
+          attached; GitHub artifact attestations bind the files to this workflow run.
+          EOF
+
+          create_args=(
+            release create "$TAG"
+            --repo "$RELEASE_REPOSITORY"
+            --verify-tag
+            --draft
+            --title "Grok Build Enhanced ${VERSION}"
+            --notes-file "$notes"
+          )
+          if [[ "$VERSION" == *-* ]]; then
+            create_args+=(--prerelease)
+          fi
+          gh "${create_args[@]}"
+
+          release_files=(
+            "release/grok-${VERSION}-linux-aarch64"
+            "release/grok-${VERSION}-linux-x86_64"
+            "release/grok-${VERSION}-macos-aarch64"
+            "release/grok-${VERSION}-macos-x86_64"
+            "release/RELEASE-PROVENANCE.json"
+            "release/SHA256SUMS"
+          )
+          if ! gh release upload "$TAG" --repo "$RELEASE_REPOSITORY" "${release_files[@]}"; then
+            echo "upload failed; draft release was intentionally left unpublished for review" >&2
+            exit 1
+          fi
+          gh release edit "$TAG" --repo "$RELEASE_REPOSITORY" --draft=false

@@ -54,7 +54,19 @@ grok --version
 ```
 
 See the [changelog](https://x.ai/build/changelog) for the latest fixes,
-features, and improvements in each release.
+features, and improvements in each release. Those installers, packages, and
+release notes are official upstream channels and do not install Grok Build
+Enhanced.
+
+### Unofficial fork releases
+
+Fork release assets, when published, are hosted only under
+[`OpenCompanyApp/grok-build-enhanced`](https://github.com/OpenCompanyApp/grok-build-enhanced/releases).
+The fork-owned pipeline builds native macOS and Linux binaries for Arm64 and
+x86-64, names the installed executable `grok`, and attaches SHA-256 checksums
+and GitHub provenance attestations. Adding the workflow does not itself publish
+a release; a version tag or an explicitly confirmed manual run is required.
+Until a reviewed fork release exists, build this repository from source.
 
 ## Building from source
 

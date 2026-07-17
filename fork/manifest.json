@@ -546,6 +546,29 @@
       ]
     },
     {
+      "id": "fork-release-pipeline",
+      "description": "Fork-owned native macOS/Linux GitHub Release packaging, provenance, ownership checks, and local contract tests.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        ".github/workflows/release.yml",
+        "README.md",
+        "scripts/release/package_asset.sh",
+        "scripts/release/release_contract.py",
+        "scripts/release/tests/test_release_pipeline.py"
+      ],
+      "integration_paths": [
+        ".github/workflows/release.yml",
+        "scripts/release/package_asset.sh",
+        "scripts/release/release_contract.py"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES"
+      ]
+    },
+    {
       "id": "openai-codex-provider-reference",
       "description": "Implemented experimental OpenAI Codex subscription provider contract reference.",
       "source_ids": [
