@@ -190,6 +190,31 @@ impl Agent {
         self.backend_search_enabled
     }
 
+    /// Recompute provider-bound hosted search state after an in-session model
+    /// switch. Function-tool resources live in `ToolBridge`; this method owns
+    /// the parallel native Responses tool list so stale xAI hosted tools never
+    /// survive a switch to a Codex subscription route.
+    pub fn refresh_backend_search_config(
+        &mut self,
+        backend_search_enabled: bool,
+        hosted_web_search_enabled: bool,
+        codex_subscription_search: bool,
+    ) {
+        self.backend_search_enabled = backend_search_enabled;
+        let mut hosted_tools = Vec::new();
+        if backend_search_enabled {
+            if hosted_web_search_enabled && self.definition.hosted_tool_allowed("web_search") {
+                hosted_tools.push(HostedTool::WebSearch {
+                    allowed_domains: None,
+                });
+            }
+            if !codex_subscription_search && self.definition.hosted_tool_allowed("x_search") {
+                hosted_tools.push(HostedTool::XSearch);
+            }
+        }
+        self.hosted_tools = hosted_tools;
+    }
+
     /// Built-in tool definitions only (excludes MCP tools).
     pub async fn tool_definitions_builtins_only(&self) -> Vec<ToolDefinition> {
         self.tool_bridge.tool_definitions_builtins_only().await

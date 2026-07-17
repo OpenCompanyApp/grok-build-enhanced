@@ -64,4 +64,4 @@ pub use video_gen::{
     imagine_video_usage_message,
 };
 pub use web_fetch::{WebFetchClient, WebFetchConfig, WebFetchParams, WebFetchTool};
-pub use web_search::WebSearchTool;
+pub use web_search::{CodexWebSearchTool, WebSearchTool};

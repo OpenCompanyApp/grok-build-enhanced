@@ -1,5 +1,69 @@
 use indexmap::IndexMap;
 
+/// Reserved dispatch-only field used by the shell to pass a trusted snapshot
+/// of the current Codex turn to the standalone search extension. It is never
+/// advertised in the model-facing tool schema.
+pub const CODEX_WEB_SEARCH_CONTEXT_FIELD: &str = "_grok_codex_context";
+
+/// A visible conversation message supplied to the standalone Codex search
+/// extension. Only user and assistant text is representable: images, tool
+/// results, reasoning payloads, and provider-owned response state have no
+/// representation in this type.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexWebSearchMessage {
+    pub role: CodexWebSearchMessageRole,
+    pub text: String,
+}
+
+impl CodexWebSearchMessage {
+    pub fn user(text: impl Into<String>) -> Self {
+        Self {
+            role: CodexWebSearchMessageRole::User,
+            text: text.into(),
+        }
+    }
+
+    pub fn assistant(text: impl Into<String>) -> Self {
+        Self {
+            role: CodexWebSearchMessageRole::Assistant,
+            text: text.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CodexWebSearchMessageRole {
+    User,
+    Assistant,
+}
+
+/// Grok-owned correlation metadata projected into the current public Codex
+/// `x-codex-turn-metadata` shape. This deliberately contains no installation
+/// identifier, credential/account data, arbitrary client metadata, or opaque
+/// `x-codex-turn-state` returned by the provider.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexWebSearchTurnMetadata {
+    pub session_id: String,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+/// Trusted per-call context attached by the shell after model arguments have
+/// been parsed and validated. Keeping this snapshot on the call avoids shared
+/// mutable state and preserves correctness for parallel web-search calls.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexWebSearchContext {
+    pub input: Vec<CodexWebSearchMessage>,
+    pub turn_metadata: CodexWebSearchTurnMetadata,
+}
+
 /// Configuration for the web search tool.
 ///
 /// Use `Disabled` when no API key is available or web search should be turned off.
@@ -18,12 +82,33 @@ pub enum WebSearchConfig {
         #[serde(skip_serializing_if = "Option::is_none")]
         alpha_test_key: Option<String>,
     },
+    /// ChatGPT Codex subscription search through the provider-owned
+    /// `alpha/search` endpoint. Authentication is resolved dynamically from
+    /// the scoped [`crate::types::SharedApiKeyProvider`] for every request;
+    /// no bearer or account identifier is stored in this configuration.
+    CodexSubscription {
+        base_url: String,
+        model: String,
+        session_id: String,
+    },
 }
 
 impl WebSearchConfig {
     /// Returns `true` when the config is the `Enabled` variant.
     pub fn is_enabled(&self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    /// Whether the main Responses request may advertise the provider-hosted
+    /// `web_search` tool. Responses Lite subscription sessions instead use a
+    /// client-executed function backed by `alpha/search`, matching the current
+    /// public Codex client.
+    pub fn allows_hosted_responses_tool(&self) -> bool {
         matches!(self, Self::Enabled { .. })
+    }
+
+    pub fn is_codex_subscription(&self) -> bool {
+        matches!(self, Self::CodexSubscription { .. })
     }
 
     /// Return a copy safe for returning to clients.
@@ -44,6 +129,15 @@ impl WebSearchConfig {
                 model: model.clone(),
                 extra_headers: extra_headers.clone(),
                 alpha_test_key: None,
+            },
+            Self::CodexSubscription {
+                base_url,
+                model,
+                session_id,
+            } => Self::CodexSubscription {
+                base_url: base_url.clone(),
+                model: model.clone(),
+                session_id: session_id.clone(),
             },
         }
     }
@@ -69,6 +163,21 @@ mod tests {
             alpha_test_key: None,
         };
         assert!(config.is_enabled());
+        assert!(config.allows_hosted_responses_tool());
+        assert!(!config.is_codex_subscription());
+    }
+
+    #[test]
+    fn codex_subscription_is_enabled_without_static_credentials() {
+        let config = WebSearchConfig::CodexSubscription {
+            base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+            model: "gpt-5.6-luna".to_string(),
+            session_id: "session-public-id".to_string(),
+        };
+
+        assert!(config.is_enabled());
+        assert!(!config.allows_hosted_responses_tool());
+        assert!(config.is_codex_subscription());
     }
 
     #[test]

@@ -676,7 +676,10 @@ impl ToolRegistryBuilder {
         b.register::<grok_build::GetTerminalCommandOutputTool>();
         b.register::<grok_build::WaitTasksTool>();
         b.register::<grok_build::TaskTool>();
-        b.register::<grok_build::WebSearchTool>();
+        b.register_with_params::<
+            grok_build::WebSearchTool,
+            grok_build::web_search::WebSearchParams,
+        >();
         b.register_with_params::<grok_build::WebFetchTool, grok_build::web_fetch::WebFetchParams>();
         b.register::<grok_build::LspTool>();
         b.register::<grok_build::ImageGenTool>();
@@ -993,6 +996,7 @@ impl ToolRegistryBuilder {
         if let Some(auth_provider) = ctx.auth_provider.clone() {
             resources.insert(auth_provider);
         }
+        let is_codex_subscription = ctx.web_search_config.is_codex_subscription();
         if let Ok(client) = crate::implementations::web_search::client::WebSearchClient::new(
             &ctx.web_search_config,
             ctx.api_key_provider.clone(),
@@ -1031,8 +1035,9 @@ impl ToolRegistryBuilder {
                 }
             }
         }
-        if let crate::implementations::grok_build::web_fetch::WebFetchConfig::Enabled { params } =
-            &ctx.web_fetch_config
+        if let Some(params) = ctx
+            .web_fetch_config
+            .params_for_codex_subscription(is_codex_subscription)
         {
             match crate::implementations::grok_build::web_fetch::WebFetchClient::new(params) {
                 Ok(client) => {
@@ -1299,6 +1304,12 @@ impl FinalizedToolset {
     }
     pub async fn update_resource<T: Send + Sync + 'static>(&self, resource: T) {
         self.resources.lock().await.insert(resource);
+    }
+    /// Remove a typed runtime resource. This is used when a model/provider
+    /// switch disables a capability so a client holding credentials for the
+    /// previous provider cannot remain callable.
+    pub async fn remove_resource<T: Send + Sync + 'static>(&self) -> Option<T> {
+        self.resources.lock().await.remove::<T>()
     }
     /// Clone a typed resource out of this toolset, if present.
     ///

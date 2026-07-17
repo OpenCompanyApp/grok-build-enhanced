@@ -217,6 +217,22 @@ impl xai_tool_runtime::Tool for CodexReadFileTool {
             }
         };
 
+        // Images must enter the conversation as multimodal content, not as a
+        // lossy UTF-8 rendering with an empty attachment list. Reuse the Grok
+        // image validation/compression path so malformed, oversized, or
+        // truncated inputs receive the same safety treatment as other read
+        // tool profiles.
+        if let Ok(meta) =
+            crate::implementations::grok_build::read_file::bytes_to_metadata(&file_bytes)
+            && meta.is_image()
+        {
+            return Ok(crate::implementations::read_file::image::image_read_output(
+                file_bytes,
+                meta.mime_type,
+            )
+            .await);
+        }
+
         // 3. Branch on mode. Out-of-range / empty-file reads return a structured
         // `FileReadError` (see note above) instead of a hard `Err`.
         let collected = match input.mode {
@@ -279,6 +295,48 @@ mod tests {
     use crate::types::tool_metadata::test_ctx;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn image_file_is_returned_as_multimodal_content() {
+        use base64::Engine as _;
+
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("photo.png");
+        let image: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
+            image::ImageBuffer::from_pixel(32, 32, image::Rgba([1, 2, 3, 255]));
+        let mut png = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(&file_path, &png).unwrap();
+
+        let result = xai_tool_runtime::Tool::run(
+            &CodexReadFileTool,
+            test_ctx(test_resources(tmp.path()).into_shared()),
+            CodexReadFileInput {
+                file_path: file_path.to_string_lossy().into_owned(),
+                offset: 1,
+                limit: 2000,
+                mode: ReadMode::Slice,
+                indentation: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        match result {
+            ReadFileOutput::ImageContent(image) => {
+                assert_eq!(image.mime_type, "image/png");
+                assert_eq!(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(image.data)
+                        .unwrap(),
+                    png
+                );
+            }
+            other => panic!("expected ImageContent, got {other:?}"),
+        }
+    }
 
     /// Set up Resources with real filesystem for tests.
     fn test_resources(cwd: &std::path::Path) -> Resources {

@@ -92,7 +92,18 @@ pub(crate) struct AgentRebuildSpec {
     pub memory_global_path: Option<String>,
     pub memory_workspace_path: Option<String>,
     pub memory_backend: Option<Arc<dyn MemoryBackend>>,
+    /// Original vector embedding configuration retained so a provider switch
+    /// can rebuild the live memory backend. Codex routes deliberately suppress
+    /// this config and use FTS-only search.
+    pub memory_embedding_config: Option<crate::config::MemoryEmbeddingConfig>,
     pub web_search_config: WebSearchConfig,
+    /// Explicit user/managed kill-switch provenance. `WebSearchConfig::Disabled`
+    /// is ambiguous because it may also mean credentials were unavailable at
+    /// spawn; only this flag is allowed to suppress a later entitled provider.
+    pub web_search_disabled: bool,
+    /// Provider that owns `web_search_config`. Keep this explicit so a later
+    /// model switch never guesses credential or endpoint identity from a URL.
+    pub web_search_provider: Option<xai_grok_sampling_types::ProviderId>,
     pub backend_search: bool,
     pub web_fetch_config: WebFetchConfig,
     pub image_gen_config: ImageGenConfig,
@@ -188,7 +199,10 @@ impl AgentRebuildSpec {
             memory_global_path,
             memory_workspace_path,
             memory_backend,
+            memory_embedding_config,
             web_search_config,
+            web_search_disabled,
+            web_search_provider,
             backend_search,
             web_fetch_config,
             image_gen_config,
@@ -226,6 +240,9 @@ impl AgentRebuildSpec {
             parent_scheduler_handle,
         } = self.as_ref();
         let _ = mcp_state;
+        let _ = memory_embedding_config;
+        let _ = web_search_disabled;
+        let _ = web_search_provider;
         #[allow(unused_variables)]
         let is_cursor_template =
             crate::session::is_cursor_system_template(&definition.system_prompt);
@@ -390,7 +407,10 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         memory_global_path: None,
         memory_workspace_path: None,
         memory_backend: None,
+        memory_embedding_config: None,
         web_search_config: WebSearchConfig::default(),
+        web_search_disabled: false,
+        web_search_provider: None,
         backend_search: false,
         web_fetch_config: WebFetchConfig::Disabled,
         image_gen_config: ImageGenConfig::default(),

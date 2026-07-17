@@ -7,6 +7,228 @@
 //! the parent module's private helpers.
 use super::*;
 use futures::StreamExt;
+use xai_grok_tools::implementations::web_search::{
+    CODEX_WEB_SEARCH_CONTEXT_FIELD, CodexWebSearchContext, CodexWebSearchMessage,
+    CodexWebSearchTurnMetadata,
+};
+
+/// Generated media is trusted tool output, but still cap the source read
+/// before embedding it into conversation history. The normalizer below
+/// reduces the on-wire copy to the regular conversation image budget; the
+/// original file remains on disk for lossless follow-up edits.
+const MAX_MEDIA_GEN_INLINE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+
+// Mirrors the current first-party Codex standalone-search history window:
+// the last two visible user turns, assistant text between them, and nothing
+// after the latest user turn. Byte caps are a deterministic local safety
+// boundary around the upstream 1k-token assistant budget.
+const CODEX_SEARCH_MAX_MESSAGES: usize = 8;
+const CODEX_SEARCH_ONE_USER_BYTES: usize = 16 * 1024;
+const CODEX_SEARCH_TWO_USER_BYTES: usize = 14 * 1024;
+const CODEX_SEARCH_ASSISTANT_BYTES: usize = 4 * 1024;
+const CODEX_SEARCH_ELISION_MARKER: &str = "\n\n[... middle truncated for web search ...]\n\n";
+
+/// Project tool input onto the representation permitted to leave the dispatch
+/// boundary through ACP updates or hooks. WebFetch still receives the original
+/// URL internally, but userinfo/path/query/fragment never reach those external
+/// surfaces.
+fn external_tool_input(
+    tool_kind: Option<xai_grok_tools::types::tool::ToolKind>,
+    input: &serde_json::Value,
+) -> serde_json::Value {
+    if tool_kind != Some(xai_grok_tools::types::tool::ToolKind::WebFetch) {
+        return input.clone();
+    }
+
+    let origin = input
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .map(xai_grok_tools::implementations::grok_build::web_fetch::safe_url_origin)
+        .unwrap_or_else(|| "<redacted-url>".to_owned());
+    serde_json::json!({ "url": origin })
+}
+
+fn bound_codex_search_user_text(text: &str, max_bytes: usize) -> String {
+    let text = text.trim();
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    if max_bytes <= CODEX_SEARCH_ELISION_MARKER.len() {
+        return truncate_bytes(text, max_bytes).to_string();
+    }
+
+    let content_budget = max_bytes - CODEX_SEARCH_ELISION_MARKER.len();
+    let head_budget = content_budget / 2;
+    let tail_budget = content_budget - head_budget;
+    let head = truncate_bytes(text, head_budget);
+    let mut tail_start = text.len().saturating_sub(tail_budget);
+    while tail_start < text.len() && !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    format!("{head}{CODEX_SEARCH_ELISION_MARKER}{}", &text[tail_start..])
+}
+
+fn is_codex_search_contextual_user_text(text: &str) -> bool {
+    let text = text.trim_start();
+    [
+        "<environment_context>",
+        "<user_info>",
+        "<project_layout>",
+        "<git_status>",
+        "<system-reminder>",
+        "<system_reminder>",
+        "<agent-memory>",
+    ]
+    .iter()
+    .any(|tag| text.starts_with(tag))
+}
+
+/// Project only the visible dialogue accepted by the current public Codex
+/// standalone-search client. System/developer context, synthetic user items,
+/// images, reasoning, tool traffic, backend-tool records, and assistant output
+/// after the current user turn are intentionally unrepresentable here.
+fn codex_search_recent_input(conversation: &[ConversationItem]) -> Vec<CodexWebSearchMessage> {
+    let visible_users = conversation
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            if !xai_chat_state::compaction_utils::is_real_user_turn(item) {
+                return None;
+            }
+            let text = extract_user_query(&item.text_content());
+            (!xai_chat_state::compaction_utils::is_synthetic_extracted_query(&text)
+                && !is_codex_search_contextual_user_text(&text))
+            .then_some((index, text))
+        })
+        .filter(|(_, text)| !text.trim().is_empty())
+        .rev()
+        .take(2)
+        .collect::<Vec<_>>();
+
+    let Some((latest_index, latest_text)) = visible_users.first() else {
+        return Vec::new();
+    };
+    let previous = visible_users.get(1);
+    let user_budget = if previous.is_some() {
+        CODEX_SEARCH_TWO_USER_BYTES
+    } else {
+        CODEX_SEARCH_ONE_USER_BYTES
+    };
+    let mut messages = Vec::with_capacity(CODEX_SEARCH_MAX_MESSAGES);
+
+    if let Some((previous_index, previous_text)) = previous {
+        messages.push(CodexWebSearchMessage::user(bound_codex_search_user_text(
+            previous_text,
+            user_budget,
+        )));
+
+        let mut assistant_bytes = 0usize;
+        for item in &conversation[previous_index.saturating_add(1)..*latest_index] {
+            let ConversationItem::Assistant(assistant) = item else {
+                continue;
+            };
+            let text = assistant.content.trim();
+            if text.is_empty()
+                || assistant_bytes >= CODEX_SEARCH_ASSISTANT_BYTES
+                || messages.len() >= CODEX_SEARCH_MAX_MESSAGES - 1
+            {
+                continue;
+            }
+            let remaining = CODEX_SEARCH_ASSISTANT_BYTES - assistant_bytes;
+            let bounded = truncate_bytes(text, remaining);
+            if bounded.is_empty() {
+                break;
+            }
+            assistant_bytes += bounded.len();
+            messages.push(CodexWebSearchMessage::assistant(bounded));
+        }
+    }
+
+    messages.push(CodexWebSearchMessage::user(bound_codex_search_user_text(
+        latest_text,
+        user_budget,
+    )));
+    messages
+}
+
+async fn media_gen_inline_image(
+    output: &ToolsToolOutput,
+    is_cursor_harness: bool,
+) -> Option<ContentPart> {
+    if is_cursor_harness {
+        return None;
+    }
+    let media = match output {
+        ToolsToolOutput::ImageGen(media) | ToolsToolOutput::ImageEdit(media) => media,
+        _ => return None,
+    };
+    if media.path.as_os_str().is_empty() {
+        return None;
+    }
+
+    let metadata = match tokio::fs::metadata(&media.path).await {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) => {
+            tracing::warn!("generated image output path is not a regular file");
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "generated image output could not be inspected");
+            return None;
+        }
+    };
+    if metadata.len() > MAX_MEDIA_GEN_INLINE_SOURCE_BYTES {
+        tracing::warn!(
+            bytes = metadata.len(),
+            "generated image output exceeded inline source limit"
+        );
+        return None;
+    }
+    use tokio::io::AsyncReadExt as _;
+    let file = match tokio::fs::File::open(&media.path).await {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::warn!(%error, "generated image output could not be read for history");
+            return None;
+        }
+    };
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut limited = file.take(MAX_MEDIA_GEN_INLINE_SOURCE_BYTES + 1);
+    if let Err(error) = limited.read_to_end(&mut bytes).await {
+        tracing::warn!(%error, "generated image output could not be read for history");
+        return None;
+    }
+    if bytes.len() as u64 > MAX_MEDIA_GEN_INLINE_SOURCE_BYTES {
+        tracing::warn!("generated image output grew beyond inline source limit");
+        return None;
+    }
+    let mime = match infer::get(&bytes).map(|kind| kind.mime_type()) {
+        Some(mime @ ("image/png" | "image/jpeg" | "image/webp" | "image/gif")) => mime,
+        _ => {
+            tracing::warn!("generated image output has an unsupported inline format");
+            return None;
+        }
+    };
+
+    use base64::Engine as _;
+    let image = agent_client_protocol::ImageContent::new(
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+        mime,
+    );
+    let mut normalized =
+        crate::session::image_normalize::normalize_images(vec![image], is_cursor_harness).await;
+    if !normalized.dropped.is_empty() {
+        tracing::warn!(
+            count = normalized.dropped.len(),
+            "generated image output was not attached to conversation history"
+        );
+    }
+    let image = normalized.images.pop()?;
+    Some(ContentPart::Image {
+        url: std::sync::Arc::<str>::from(format!("data:{};base64,{}", image.mime_type, image.data)),
+    })
+}
+
 /// Whether a tool name is an MCP `create_pull_request` (qualified
 /// `server__create_pull_request` or bare).
 fn is_mcp_create_pull_request(tool_name: &str) -> bool {
@@ -823,7 +1045,7 @@ impl SessionActor {
         );
         let parse_result = serde_json::from_str::<serde_json::Value>(args_str);
         let mut concatenated_json_count: usize = 0;
-        let raw_input = match &parse_result {
+        let mut raw_input = match &parse_result {
             Ok(value) => value.clone(),
             Err(e) => {
                 if let Some(objects) = crate::session::helpers::tool_input_parsing::try_extract_concatenated_json_objects(
@@ -869,6 +1091,23 @@ impl SessionActor {
                 }
             }
         };
+        let tool_kind = self
+            .agent
+            .borrow()
+            .tool_bridge()
+            .tool_kind(&call.function.name);
+        if tool_kind == Some(xai_grok_tools::types::tool::ToolKind::WebSearch)
+            && let serde_json::Value::Object(arguments) = &mut raw_input
+        {
+            // The reserved field is never model-controlled. Strip any value
+            // supplied outside the trusted dispatch boundary before parsing,
+            // permissions, UI updates, and pre-tool hooks observe the call.
+            arguments.remove(CODEX_WEB_SEARCH_CONTEXT_FIELD);
+        }
+        let external_input = external_tool_input(tool_kind, &raw_input);
+        let external_arguments = (tool_kind
+            == Some(xai_grok_tools::types::tool::ToolKind::WebFetch))
+        .then(|| serde_json::to_string(&external_input).expect("tool input is JSON-serializable"));
         let tool_input = match self
             .agent
             .borrow()
@@ -883,7 +1122,9 @@ impl SessionActor {
                     &call.id,
                     &call.function.name,
                     err,
-                    &call.function.arguments,
+                    external_arguments
+                        .as_deref()
+                        .unwrap_or(&call.function.arguments),
                     &model_id_str,
                 )
                 .await?;
@@ -906,7 +1147,12 @@ impl SessionActor {
             return Ok(Err(ToolLoop::Continue));
         }
         let tool_call_display = self
-            .send_tool_call_start(&tool_call_id, &call.function.name, tool_input.clone())
+            .send_tool_call_start(
+                &tool_call_id,
+                &call.function.name,
+                tool_input.clone(),
+                external_input.clone(),
+            )
             .await;
         let _recovered_raw_input = if concatenated_json_count > 0 {
             Some(raw_input.clone())
@@ -919,7 +1165,7 @@ impl SessionActor {
             .unwrap_or_else(|| call.function.name.clone());
         if self.hook_event_active(xai_grok_hooks::event::HookEventName::PreToolUse) {
             let (hook_tool_input, hook_tool_input_truncated) =
-                xai_grok_hooks::event::truncate_payload(raw_input.clone());
+                xai_grok_hooks::event::truncate_payload(external_input.clone());
             let envelope = self.make_hook_envelope(
                 xai_grok_hooks::event::HookEventName::PreToolUse,
                 None,
@@ -1153,7 +1399,7 @@ impl SessionActor {
                     self.handle_tool_not_executed(&call.id, &tool_call_id, message)
                         .await?;
                     let (tool_input_value, tool_input_truncated) =
-                        xai_grok_hooks::event::truncate_payload(raw_input.clone());
+                        xai_grok_hooks::event::truncate_payload(external_input.clone());
                     self.dispatch_hook(
                         xai_grok_hooks::event::HookEventName::PermissionDenied,
                         xai_grok_hooks::event::HookPayload::PermissionDenied {
@@ -1315,11 +1561,7 @@ impl SessionActor {
                 "[exit_plan_mode] cursor SwitchMode(agent) with empty plan — skipping intercept"
             );
         }
-        let is_read_only = self
-            .agent
-            .borrow()
-            .tool_bridge()
-            .tool_kind(&call.function.name)
+        let is_read_only = tool_kind
             .map(|k| {
                 use xai_grok_tools::types::tool::ToolKind;
                 matches!(
@@ -1339,12 +1581,50 @@ impl SessionActor {
                 )
             })
             .unwrap_or(false);
+        let mut dispatch_args = raw_input.clone();
+        if tool_kind == Some(xai_grok_tools::types::tool::ToolKind::WebSearch)
+            && let Some(sampling_config) = self.chat_state_handle.get_sampling_config().await
+            && sampling_config.provider.is_openai_codex()
+        {
+            let input = codex_search_recent_input(&self.chat_state_handle.get_conversation().await);
+            if !input.is_empty()
+                && let serde_json::Value::Object(arguments) = &mut dispatch_args
+            {
+                let session_id = self.session_id_string();
+                let turn_id = self
+                    .current_prompt_id
+                    .lock()
+                    .ok()
+                    .and_then(|prompt_id| prompt_id.clone())
+                    .filter(|prompt_id| !prompt_id.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        format!("{session_id}:turn:{}", self.current_turn_number.get())
+                    });
+                let context = CodexWebSearchContext {
+                    input,
+                    turn_metadata: CodexWebSearchTurnMetadata {
+                        session_id: session_id.clone(),
+                        thread_id: session_id,
+                        turn_id,
+                        model: sampling_config.model,
+                        reasoning_effort: sampling_config
+                            .reasoning_effort
+                            .map(|effort| effort.as_str().to_string()),
+                    },
+                };
+                arguments.insert(
+                    CODEX_WEB_SEARCH_CONTEXT_FIELD.to_string(),
+                    serde_json::to_value(context)
+                        .expect("Codex web-search context is JSON-serializable"),
+                );
+            }
+        }
         let prepared = PreparedToolCall {
             call_id: call.id.clone(),
             tool_call_id,
             tool_name: call.function.name.clone(),
-            raw_arguments: call.function.arguments.clone(),
-            parsed_args: raw_input.clone(),
+            raw_arguments: external_arguments.unwrap_or_else(|| call.function.arguments.clone()),
+            parsed_args: dispatch_args,
             model_id: model_id_str,
             concatenated_json_count,
             dispatch_target_name,
@@ -1532,7 +1812,7 @@ impl SessionActor {
     /// Refine the initial (minimal) ToolCall that was registered during
     /// tool preparation.  Now that we have a fully parsed `ToolInput`
     /// we can send a `ToolCallUpdate` with a human-readable title, the correct
-    /// kind, file locations, and the serialised raw input.
+    /// kind, file locations, and the serialised external-safe input.
     ///
     /// Returns `(title, kind, raw_input)` so callers can reuse them (e.g. in
     /// the permission-request update for subagent sessions whose prior
@@ -1542,9 +1822,8 @@ impl SessionActor {
         tool_call_id: &acp::ToolCallId,
         wire_name: &str,
         tool_call_input: ToolInput,
+        raw_input: serde_json::Value,
     ) -> Result<(String, acp::ToolKind, serde_json::Value), acp::Error> {
-        #[allow(unused_mut)]
-        let mut raw_input = serde_json::to_value(&tool_call_input)?;
         let canonical_meta = self.stamp_tool_meta(None, wire_name, Some(&tool_call_input));
         let (title, kind, locations, content) = match tool_call_input {
             ToolInput::ListDir(list_dir) => (
@@ -1759,7 +2038,12 @@ impl SessionActor {
                 (title, acp::ToolKind::Other, vec![], vec![])
             }
             ToolInput::WebFetch(wf) => (
-                format!("Fetch: {}", wf.url),
+                format!(
+                    "Fetch: {}",
+                    xai_grok_tools::implementations::grok_build::web_fetch::safe_url_origin(
+                        &wf.url
+                    )
+                ),
                 acp::ToolKind::Fetch,
                 vec![],
                 vec![],
@@ -2132,6 +2416,7 @@ impl SessionActor {
             let path = tool_parsed_args
                 .get("target_file")
                 .or_else(|| tool_parsed_args.get("path"))
+                .or_else(|| tool_parsed_args.get("file_path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             use crate::session::image_normalize::{InlineAttachVerdict, inline_attach_verdict};
@@ -2170,6 +2455,7 @@ impl SessionActor {
             let path = tool_parsed_args
                 .get("target_file")
                 .or_else(|| tool_parsed_args.get("path"))
+                .or_else(|| tool_parsed_args.get("file_path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             prompt_text = format!(
@@ -2177,6 +2463,10 @@ impl SessionActor {
                 pdf.pages.len(),
                 pdf.total_pages,
             );
+        }
+        if let Some(image) = media_gen_inline_image(&result.output, self.is_cursor_harness()).await
+        {
+            inline_images.push(image);
         }
         let tool_chat = if inline_images.is_empty() {
             ConversationItem::tool_result(call_id.to_string(), prompt_text)
@@ -2610,6 +2900,51 @@ fn execute_tool_call_parts(
     )
 }
 #[cfg(test)]
+mod web_fetch_external_input_tests {
+    use super::external_tool_input;
+    use xai_grok_tools::types::tool::ToolKind;
+
+    #[test]
+    fn external_web_fetch_input_exposes_only_origin() {
+        let input = serde_json::json!({
+            "url": "https://user:password@example.com:8443/private?token=super-secret#fragment",
+            "unexpected": "must-not-cross-boundary",
+        });
+        let external = external_tool_input(Some(ToolKind::WebFetch), &input);
+        assert_eq!(
+            external,
+            serde_json::json!({ "url": "https://example.com:8443" })
+        );
+        let rendered = external.to_string();
+        for secret in [
+            "user",
+            "password",
+            "private",
+            "token",
+            "super-secret",
+            "fragment",
+            "unexpected",
+        ] {
+            assert!(
+                !rendered.contains(secret),
+                "external input leaked {secret}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_web_fetch_input_fails_closed() {
+        assert_eq!(
+            external_tool_input(
+                Some(ToolKind::WebFetch),
+                &serde_json::json!({ "raw": "secret" })
+            ),
+            serde_json::json!({ "url": "<redacted-url>" })
+        );
+    }
+}
+
+#[cfg(test)]
 mod execute_tool_call_parts_tests {
     use super::execute_tool_call_parts;
     use std::path::Path;
@@ -3011,5 +3346,137 @@ mod wait_interrupt_tests {
         task.abort();
         let _ = task.await;
         assert_eq!(depth.load(Ordering::SeqCst), 0, "abort must not leak");
+    }
+}
+
+#[cfg(test)]
+mod codex_search_context_tests {
+    use super::{
+        CODEX_SEARCH_ASSISTANT_BYTES, CODEX_SEARCH_MAX_MESSAGES, CODEX_SEARCH_TWO_USER_BYTES,
+        CodexWebSearchMessage, ConversationItem, codex_search_recent_input,
+    };
+    use xai_grok_tools::implementations::web_search::CodexWebSearchMessageRole;
+
+    #[test]
+    fn recent_input_matches_visible_codex_search_history_contract() {
+        let mut previous =
+            ConversationItem::user("<user_query>\nprevious user with image\n</user_query>");
+        previous.add_image("data:image/png;base64,not-forwarded");
+        let conversation = vec![
+            ConversationItem::system("system instructions"),
+            ConversationItem::user("<user_info>private runtime context</user_info>"),
+            ConversationItem::user("<user_query>old user</user_query>"),
+            ConversationItem::assistant("old assistant"),
+            previous,
+            ConversationItem::tool_result("call-1", "tool result must not be forwarded"),
+            ConversationItem::assistant("previous assistant one"),
+            ConversationItem::system_reminder(
+                "<system-reminder>synthetic reminder</system-reminder>",
+            ),
+            ConversationItem::assistant("previous assistant two"),
+            ConversationItem::user(
+                "<environment_context>\n<cwd>/private/workspace</cwd>\n</environment_context>",
+            ),
+            ConversationItem::user("<user_query>\ncurrent user\n</user_query>"),
+            ConversationItem::assistant("current commentary must not be forwarded"),
+        ];
+
+        assert_eq!(
+            codex_search_recent_input(&conversation),
+            vec![
+                CodexWebSearchMessage::user("previous user with image"),
+                CodexWebSearchMessage::assistant("previous assistant one"),
+                CodexWebSearchMessage::assistant("previous assistant two"),
+                CodexWebSearchMessage::user("current user"),
+            ]
+        );
+    }
+
+    #[test]
+    fn recent_input_is_utf8_safe_and_strictly_bounded() {
+        let mut conversation = vec![ConversationItem::user(format!(
+            "<user_query>{}</user_query>",
+            "α".repeat(20_000)
+        ))];
+        for index in 0..10 {
+            conversation.push(ConversationItem::assistant(format!(
+                "assistant-{index}-{}",
+                "β".repeat(1_000)
+            )));
+        }
+        conversation.push(ConversationItem::user(format!(
+            "<user_query>{}</user_query>",
+            "γ".repeat(20_000)
+        )));
+
+        let context = codex_search_recent_input(&conversation);
+        assert!(context.len() <= CODEX_SEARCH_MAX_MESSAGES);
+        assert_eq!(
+            context.first().unwrap().role,
+            CodexWebSearchMessageRole::User
+        );
+        assert_eq!(
+            context.last().unwrap().role,
+            CodexWebSearchMessageRole::User
+        );
+        assert!(context.first().unwrap().text.len() <= CODEX_SEARCH_TWO_USER_BYTES);
+        assert!(context.last().unwrap().text.len() <= CODEX_SEARCH_TWO_USER_BYTES);
+        let assistant_bytes = context[1..context.len() - 1]
+            .iter()
+            .map(|message| message.text.len())
+            .sum::<usize>();
+        assert!(assistant_bytes <= CODEX_SEARCH_ASSISTANT_BYTES);
+        assert!(
+            context
+                .iter()
+                .map(|message| message.text.len())
+                .sum::<usize>()
+                <= 32 * 1024
+        );
+    }
+}
+
+#[cfg(test)]
+mod media_gen_inline_image_tests {
+    use super::{ContentPart, ToolsToolOutput, media_gen_inline_image};
+    use base64::Engine as _;
+    use xai_grok_tools::types::output::MediaGenOutput;
+
+    #[tokio::test]
+    async fn generated_image_output_becomes_multimodal_history_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("generated.png");
+        let image = image::DynamicImage::new_rgba8(64, 64);
+        let mut encoded = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut encoded),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        std::fs::write(&path, encoded).unwrap();
+
+        let output = ToolsToolOutput::ImageGen(MediaGenOutput::new(path));
+        let content = media_gen_inline_image(&output, false)
+            .await
+            .expect("generated image should be attached to tool history");
+        let ContentPart::Image { url } = content else {
+            panic!("expected inline image content");
+        };
+        let payload = url
+            .strip_prefix("data:image/png;base64,")
+            .expect("PNG data URL");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .unwrap();
+        assert_eq!(
+            image::guess_format(&bytes).unwrap(),
+            image::ImageFormat::Png
+        );
+
+        assert!(
+            media_gen_inline_image(&output, true).await.is_none(),
+            "external harnesses retain their existing path-only contract"
+        );
     }
 }
