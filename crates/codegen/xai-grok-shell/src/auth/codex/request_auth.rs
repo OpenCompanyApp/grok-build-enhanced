@@ -186,7 +186,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(snapshot.credential_binding(), &expected);
+        assert!(
+            snapshot.credential_binding() == &expected,
+            "snapshot must preserve the exact credential binding"
+        );
         let headers = snapshot.request_headers();
         for name in [AUTHORIZATION, CHATGPT_ACCOUNT_ID, OPENAI_FEDRAMP] {
             assert!(headers[&name].is_sensitive(), "{name} must be sensitive");

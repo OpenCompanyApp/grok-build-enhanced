@@ -6,7 +6,8 @@ This crate contains modified adaptations of public client behavior from the
 - `src/auth/codex/`, adapted from `codex-rs/login/` for browser PKCE,
   device-code login, token refresh/revocation, account identity, and secure
   storage.
-- `src/remote/openai_codex_catalog.rs`, adapted from
+- `src/remote/openai_codex_catalog.rs` and
+  `src/agent/models/codex_catalog.rs`, adapted from
   `codex-rs/model-provider/` and `codex-rs/model-provider-info/` for
   authenticated account-scoped model discovery.
 - `src/agent/models.rs` and `src/session/acp_session_impl/turn.rs`, adapted

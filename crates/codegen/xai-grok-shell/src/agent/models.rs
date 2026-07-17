@@ -1,5 +1,7 @@
 //! Model fetching, resolution, and management.
 
+mod codex_catalog;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -13,6 +15,9 @@ use crate::agent::config::{self, ModelEntry, resolve_credentials, sampling_confi
 use crate::auth::{AuthManager, AuthMode, GrokAuth, GrokComConfig};
 use crate::remote::{FetchModelsResult, fetch_models_blocking};
 use crate::sampling::SamplerConfig as SamplingConfig;
+#[cfg(test)]
+use codex_catalog::CodexCatalogIdentity;
+use codex_catalog::{CodexCatalogController, current_identity};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use xai_grok_sampling_types::{ProviderId, ReasoningEffort, ReasoningEffortOption};
 
@@ -212,24 +217,14 @@ pub struct ModelsManager {
 
 struct Inner {
     prefetched: RwLock<Option<IndexMap<String, ModelEntry>>>,
-    /// Authenticated ChatGPT Codex catalog, independent from xAI's cache and
-    /// identity lifecycle. Entries are provider-authoritative and are merged
-    /// into `models` only after xAI/custom model resolution.
-    codex_models: RwLock<IndexMap<String, ModelEntry>>,
-    has_codex_catalog: RwLock<bool>,
-    /// Exact non-secret credential/account scope that produced
-    /// `codex_models`. Token refreshes preserve this identity; login,
-    /// logout, and account switches do not.
-    codex_catalog_identity: RwLock<Option<CodexCatalogIdentity>>,
-    /// A cached fallback may remain usable while the current credential
-    /// generation's entitlement catalog is revalidated online. This prevents
-    /// same-account relogin/plan changes from being mistaken for recovery.
-    codex_catalog_needs_revalidation: AtomicBool,
+    /// Provider-local authenticated ChatGPT Codex catalog lifecycle. Its
+    /// cache, identity, ETag, generation, and retry state are independent from
+    /// xAI and are merged into `models` only after xAI/custom resolution.
+    codex_catalog: CodexCatalogController,
     models: RwLock<IndexMap<String, ModelEntry>>,
     current_model_id: RwLock<acp::ModelId>,
     current_reasoning_effort: RwLock<Option<ReasoningEffort>>,
     etag: RwLock<Option<String>>,
-    codex_etag: RwLock<Option<String>>,
     /// Set once a real catalog has been fetched; gates whether
     /// `apply_refresh_result` calls `reselect_default_model` (first
     /// time) or `reselect_current_model_if_missing` (subsequent).
@@ -260,15 +255,6 @@ struct Inner {
     /// request/cache snapshot may publish, preventing an older endpoint/auth
     /// response from winning after a config reload or newer fetch.
     xai_fetch_generation: AtomicU64,
-    /// Codex counterpart to `xai_fetch_generation`. Every accepted config
-    /// reload invalidates in-flight provider catalog operations.
-    codex_fetch_generation: AtomicU64,
-    /// Runtime-applied remote-fetch policy, read only while paired with the
-    /// Codex generation or under `catalog_write_gate`.
-    codex_remote_fetch_enabled: AtomicBool,
-    codex_refresh_gate: tokio::sync::Mutex<()>,
-    /// Guard to prevent overlapping provider-local Codex catalog retry loops.
-    codex_retry_in_flight: AtomicBool,
     /// Guard to prevent overlapping retry loops.
     retry_in_flight: AtomicBool,
     /// `allowed_models` matched nothing in the fetched catalog; the prompt path
@@ -297,16 +283,6 @@ struct Inner {
     model_switch_watch: tokio::sync::watch::Sender<u64>,
 }
 
-/// In-memory scope for an entitled Codex catalog. This is deliberately never
-/// logged or persisted; the disk cache uses its own one-way account binding.
-#[derive(Clone, PartialEq, Eq)]
-struct CodexCatalogIdentity {
-    credential_id: String,
-    account_id: String,
-    user_id: Option<String>,
-    is_fedramp: bool,
-}
-
 #[derive(Clone)]
 struct XaiCatalogSnapshot {
     generation: u64,
@@ -319,95 +295,6 @@ struct XaiCatalogSnapshot {
 struct XaiNetworkCatalog {
     models: IndexMap<String, ModelEntry>,
     etag: Option<String>,
-}
-
-impl CodexCatalogIdentity {
-    fn from_credentials(credentials: &crate::auth::codex::CodexCredentials) -> Self {
-        Self {
-            credential_id: credentials.credential_id().to_owned(),
-            account_id: credentials.account_id().to_owned(),
-            user_id: credentials.user_id().map(ToOwned::to_owned),
-            is_fedramp: credentials.is_fedramp,
-        }
-    }
-}
-
-impl std::fmt::Debug for CodexCatalogIdentity {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Preserve safe structural diagnostics without exposing identity or
-        // routing metadata, including presence bits.
-        formatter
-            .debug_struct("CodexCatalogIdentity")
-            .field("credential_id", &"<redacted>")
-            .field("account_id", &"<redacted>")
-            .field("user_id", &"<redacted>")
-            .finish()
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CodexCatalogRefreshOutcome {
-    Updated,
-    CachedFallback,
-    TransientFailure,
-    TerminalFailure,
-    NotAuthenticated,
-    Disabled,
-}
-
-impl CodexCatalogRefreshOutcome {
-    fn updated(self) -> bool {
-        matches!(self, Self::Updated | Self::CachedFallback)
-    }
-}
-
-fn codex_catalog_error_is_transient(error: &crate::remote::CodexCatalogError) -> bool {
-    matches!(
-        error,
-        crate::remote::CodexCatalogError::AuthenticationTransient
-            | crate::remote::CodexCatalogError::Timeout
-            | crate::remote::CodexCatalogError::Transport
-            | crate::remote::CodexCatalogError::HttpStatus(408 | 429 | 500..=599)
-    )
-}
-
-fn codex_catalog_lock_error_is_transient(error: &crate::auth::codex::CodexAuthError) -> bool {
-    matches!(
-        error,
-        crate::auth::codex::CodexAuthError::AccountChanged
-            | crate::auth::codex::CodexAuthError::LockTimeout
-    ) || matches!(
-        error,
-        crate::auth::codex::CodexAuthError::Storage(source)
-            if matches!(
-                source.kind(),
-                std::io::ErrorKind::Interrupted
-                    | std::io::ErrorKind::WouldBlock
-                    | std::io::ErrorKind::TimedOut
-            )
-    )
-}
-
-fn codex_catalog_auth_failure_outcome(
-    error: &crate::auth::codex::CodexAuthError,
-    credentials_still_exist: bool,
-) -> CodexCatalogRefreshOutcome {
-    if codex_catalog_lock_error_is_transient(error) {
-        CodexCatalogRefreshOutcome::TransientFailure
-    } else if credentials_still_exist {
-        CodexCatalogRefreshOutcome::TerminalFailure
-    } else {
-        CodexCatalogRefreshOutcome::NotAuthenticated
-    }
-}
-
-fn current_openai_codex_identity() -> Option<CodexCatalogIdentity> {
-    let manager =
-        crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home()).ok()?;
-    manager
-        .current()
-        .as_ref()
-        .map(CodexCatalogIdentity::from_credentials)
 }
 
 impl Default for ModelsManager {
@@ -440,18 +327,18 @@ impl ModelsManager {
             .filter(|(_, entry)| entry.info.provider == ProviderId::OpenAiCodex)
             .map(|(id, entry)| (id.clone(), entry.clone()))
             .collect();
+        let codex_catalog = CodexCatalogController::new(
+            codex_models,
+            crate::util::config::resolve_remote_fetch_enabled(),
+        );
         Self {
             inner: Arc::new(Inner {
                 prefetched: RwLock::new(prefetched),
-                codex_models: RwLock::new(codex_models),
-                has_codex_catalog: RwLock::new(false),
-                codex_catalog_identity: RwLock::new(None),
-                codex_catalog_needs_revalidation: AtomicBool::new(false),
+                codex_catalog,
                 models: RwLock::new(models),
                 current_model_id: RwLock::new(current_model_id),
                 current_reasoning_effort: RwLock::new(current_reasoning_effort),
                 etag: RwLock::new(None),
-                codex_etag: RwLock::new(None),
                 has_fetched_real_catalog: RwLock::new(false),
                 has_xai_catalog: RwLock::new(false),
                 xai_catalog_credential_scope: RwLock::new(None),
@@ -463,12 +350,6 @@ impl ModelsManager {
                 cache: ModelsCacheManager::new(),
                 catalog_write_gate: parking_lot::Mutex::new(()),
                 xai_fetch_generation: AtomicU64::new(1),
-                codex_fetch_generation: AtomicU64::new(1),
-                codex_remote_fetch_enabled: AtomicBool::new(
-                    crate::util::config::resolve_remote_fetch_enabled(),
-                ),
-                codex_refresh_gate: tokio::sync::Mutex::new(()),
-                codex_retry_in_flight: AtomicBool::new(false),
                 retry_in_flight: AtomicBool::new(false),
                 allowlist_excludes_all: AtomicBool::new(false),
                 model_switch_watch: tokio::sync::watch::channel(0u64).0,
@@ -538,7 +419,7 @@ impl ModelsManager {
                 (None, None) => (None, None, None),
             };
         let has_prefetched = prefetched_models.is_some();
-        let codex_prefetch = prefetch_openai_codex_models_blocking()
+        let codex_prefetch = CodexCatalogController::prefetch_blocking()
             .filter(|_| crate::util::config::resolve_remote_fetch_enabled());
         let has_codex_catalog = codex_prefetch.is_some();
         let codex_etag = codex_prefetch
@@ -567,7 +448,7 @@ impl ModelsManager {
                 | ModelFetchAuth::Deployment
                 | ModelFetchAuth::CustomEndpoint => true,
             };
-            let codex_expected = current_openai_codex_identity().is_some();
+            let codex_expected = current_identity().is_some();
             let provider_pending = remote_fetch_enabled
                 && ((xai_expected && !has_prefetched)
                     || (codex_expected
@@ -606,12 +487,12 @@ impl ModelsManager {
         *mgr.inner.xai_catalog_cache_fetched_at.write() =
             has_prefetched.then_some(xai_cache_fetched_at).flatten();
         *mgr.inner.etag.write() = has_prefetched.then_some(xai_cache_etag).flatten();
-        *mgr.inner.has_codex_catalog.write() = has_codex_catalog;
-        *mgr.inner.codex_etag.write() = codex_etag;
-        *mgr.inner.codex_catalog_identity.write() = codex_catalog_identity;
-        mgr.inner
-            .codex_catalog_needs_revalidation
-            .store(codex_catalog_needs_revalidation, Ordering::Release);
+        mgr.inner.codex_catalog.initialize_prefetch(
+            codex_etag,
+            codex_catalog_identity,
+            codex_catalog_needs_revalidation,
+            has_codex_catalog,
+        );
         mgr.inner.allowlist_excludes_all.store(
             allowlist_matches_nothing(cfg, &mgr.inner.models.read()),
             Ordering::Release,
@@ -682,23 +563,13 @@ impl ModelsManager {
         let has_real_catalog = *self.inner.has_fetched_real_catalog.read();
         let xai_expected = new_fetch_auth != ModelFetchAuth::Session || has_session;
         let start_xai_recovery = xai_expected && (!had_xai_catalog || xai_scope_changed);
-        let codex_expected = current_openai_codex_identity().is_some();
+        let codex_expected = current_identity().is_some();
         let remote_fetch_enabled = crate::util::config::resolve_remote_fetch_enabled();
-        let start_codex_recovery = remote_fetch_enabled
-            && codex_expected
-            && (!*self.inner.has_codex_catalog.read()
-                || self
-                    .inner
-                    .codex_catalog_needs_revalidation
-                    .load(Ordering::Acquire));
+        let start_codex_recovery =
+            remote_fetch_enabled && codex_expected && self.inner.codex_catalog.recovery_needed();
         let provider_pending = remote_fetch_enabled
             && ((xai_expected && (!had_xai_catalog || xai_scope_changed))
-                || (codex_expected
-                    && (!*self.inner.has_codex_catalog.read()
-                        || self
-                            .inner
-                            .codex_catalog_needs_revalidation
-                            .load(Ordering::Acquire))));
+                || (codex_expected && self.inner.codex_catalog.recovery_needed()));
         if has_real_catalog
             && let Err(e) = validate_selectable(&new_config, &new_catalog)
             && !(provider_pending && allowlist_matches_nothing(&new_config, &new_catalog))
@@ -730,17 +601,14 @@ impl ModelsManager {
             .xai_fetch_generation
             .fetch_add(1, Ordering::AcqRel);
         self.inner
-            .codex_fetch_generation
-            .fetch_add(1, Ordering::AcqRel);
-        self.inner
-            .codex_remote_fetch_enabled
-            .store(remote_fetch_enabled, Ordering::Release);
+            .codex_catalog
+            .advance_config_generation(remote_fetch_enabled);
         if xai_scope_changed {
             *self.inner.prefetched.write() = None;
             *self.inner.has_xai_catalog.write() = false;
             *self.inner.xai_catalog_credential_scope.write() = None;
             *self.inner.etag.write() = None;
-            *self.inner.has_fetched_real_catalog.write() = *self.inner.has_codex_catalog.read();
+            *self.inner.has_fetched_real_catalog.write() = self.inner.codex_catalog.has_catalog();
             self.inner.cache.invalidate();
         }
         *self.inner.fetch_auth.write() = new_fetch_auth;
@@ -1189,322 +1057,14 @@ impl ModelsManager {
     }
 
     fn codex_models_snapshot(&self) -> IndexMap<String, ModelEntry> {
-        self.inner.codex_models.read().clone()
+        self.inner.codex_catalog.models_snapshot()
     }
 
     /// Refresh the authenticated ChatGPT account's entitled Codex catalog.
     /// Failures retain the last in-memory catalog; only an authoritative
     /// network/cache result replaces it. This path never consults xAI auth.
     pub async fn refresh_openai_codex_models(&self) -> bool {
-        self.refresh_openai_codex_models_inner(None).await.updated()
-    }
-
-    async fn lock_openai_codex_catalog_binding(
-        &self,
-        manager: &crate::auth::codex::CodexAuthManager,
-        expected: &xai_grok_sampling_types::CredentialBinding,
-    ) -> Result<
-        (
-            crate::auth::codex::CodexCredentials,
-            crate::auth::codex::CodexCatalogIdentityLease,
-        ),
-        CodexCatalogRefreshOutcome,
-    > {
-        match manager.lock_catalog_binding(expected).await {
-            Ok(locked) => Ok(locked),
-            Err(error) => {
-                // Account changes and logout are expected races; storage/lock
-                // failures fail closed because the prior account scope can no
-                // longer be proven current.
-                let current = manager.reload().ok().flatten();
-                self.reconcile_openai_codex_identity(None);
-                tracing::warn!(error = %error, "OpenAI Codex catalog identity verification failed");
-                Err(codex_catalog_auth_failure_outcome(
-                    &error,
-                    current.is_some(),
-                ))
-            }
-        }
-    }
-
-    async fn attest_current_openai_codex_identity_after_failure(
-        &self,
-        manager: &crate::auth::codex::CodexAuthManager,
-    ) -> Result<(), CodexCatalogRefreshOutcome> {
-        let current = match manager.current_verified() {
-            Ok(current) => current,
-            Err(error) => {
-                let credentials_still_exist = manager.reload().ok().flatten().is_some();
-                self.reconcile_openai_codex_identity(None);
-                return Err(codex_catalog_auth_failure_outcome(
-                    &error,
-                    credentials_still_exist,
-                ));
-            }
-        };
-        let (_credentials, _lease) = self
-            .lock_openai_codex_catalog_binding(manager, &current.credential_binding())
-            .await?;
-        Ok(())
-    }
-
-    fn codex_config_rejection_outcome(&self) -> CodexCatalogRefreshOutcome {
-        if self
-            .inner
-            .codex_remote_fetch_enabled
-            .load(Ordering::Acquire)
-        {
-            CodexCatalogRefreshOutcome::TransientFailure
-        } else {
-            CodexCatalogRefreshOutcome::Disabled
-        }
-    }
-
-    async fn refresh_openai_codex_models_inner(
-        &self,
-        observed: Option<(String, xai_grok_sampling_types::CredentialBinding)>,
-    ) -> CodexCatalogRefreshOutcome {
-        let _refresh = self.inner.codex_refresh_gate.lock().await;
-        let operation_generation = self.inner.codex_fetch_generation.load(Ordering::Acquire);
-        let grok_home = crate::util::grok_home::grok_home();
-        let manager = match crate::auth::codex::CodexAuthManager::new(&grok_home) {
-            Ok(manager) => manager,
-            Err(error) => {
-                self.reconcile_openai_codex_identity(None);
-                tracing::warn!(error = %error, "could not load OpenAI Codex credentials for model refresh");
-                return CodexCatalogRefreshOutcome::TerminalFailure;
-            }
-        };
-        let credentials = match manager.current() {
-            Some(credentials) => credentials,
-            None => {
-                self.reconcile_openai_codex_identity(None);
-                tracing::debug!("OpenAI Codex model refresh skipped: not logged in");
-                return CodexCatalogRefreshOutcome::NotAuthenticated;
-            }
-        };
-        let identity = CodexCatalogIdentity::from_credentials(&credentials);
-
-        // Invalidate account A before attempting account B's network request.
-        // A failed B refresh must never leave A's entitlements visible.
-        self.reconcile_openai_codex_identity(Some(&identity));
-
-        if !self
-            .inner
-            .codex_remote_fetch_enabled
-            .load(Ordering::Acquire)
-        {
-            let _identity_lease = match self
-                .lock_openai_codex_catalog_binding(&manager, &credentials.credential_binding())
-                .await
-            {
-                Ok((_credentials, lease)) => lease,
-                Err(outcome) => return outcome,
-            };
-            tracing::debug!("OpenAI Codex model refresh skipped: remote_fetch disabled");
-            return CodexCatalogRefreshOutcome::Disabled;
-        }
-        let config = match crate::remote::CodexCatalogClientConfig::new(grok_home.join("cache")) {
-            Ok(config) => config,
-            Err(error) => {
-                let _ = self
-                    .lock_openai_codex_catalog_binding(&manager, &credentials.credential_binding())
-                    .await;
-                tracing::warn!(error = %error, "could not configure OpenAI Codex model refresh");
-                return CodexCatalogRefreshOutcome::TerminalFailure;
-            }
-        };
-        let client = match crate::remote::CodexCatalogClient::new(config) {
-            Ok(client) => client,
-            Err(error) => {
-                let _ = self
-                    .lock_openai_codex_catalog_binding(&manager, &credentials.credential_binding())
-                    .await;
-                tracing::warn!(error = %error, "could not create OpenAI Codex model client");
-                return CodexCatalogRefreshOutcome::TerminalFailure;
-            }
-        };
-
-        if let Some((observed_etag, observed_binding)) = observed.as_ref()
-            && observed_binding == &credentials.credential_binding()
-            && *self.inner.has_codex_catalog.read()
-            && self.inner.codex_catalog_identity.read().as_ref() == Some(&identity)
-            && self.inner.codex_etag.read().as_deref() == Some(observed_etag.as_str())
-            && !self
-                .inner
-                .codex_catalog_needs_revalidation
-                .load(Ordering::Acquire)
-        {
-            // The matching ETag came from a live authenticated Codex response,
-            // so it is authoritative for the current account. Renew only that
-            // account's disk cache, then hold the identity lease through the
-            // in-memory validation marker update.
-            let auth = crate::remote::CodexCatalogAuthSnapshot::new(
-                credentials.access_token(),
-                credentials.account_id(),
-                credentials.user_id(),
-                credentials.credential_binding(),
-                credentials.is_fedramp,
-            );
-            let renewed_binding = match auth {
-                Ok(auth) => match client.renew_cached(&auth, observed_etag).await {
-                    Ok(binding) => binding,
-                    Err(error) => {
-                        tracing::debug!(error = %error, "could not renew OpenAI Codex catalog cache TTL");
-                        observed_binding.clone()
-                    }
-                },
-                Err(_) => return CodexCatalogRefreshOutcome::TerminalFailure,
-            };
-            let (_locked_credentials, _identity_lease) = match self
-                .lock_openai_codex_catalog_binding(&manager, &renewed_binding)
-                .await
-            {
-                Ok(locked) => locked,
-                Err(outcome) => return outcome,
-            };
-            let _catalog_write = self.inner.catalog_write_gate.lock();
-            if self.inner.codex_fetch_generation.load(Ordering::Acquire) != operation_generation
-                || !self
-                    .inner
-                    .codex_remote_fetch_enabled
-                    .load(Ordering::Acquire)
-            {
-                return self.codex_config_rejection_outcome();
-            }
-            self.inner
-                .codex_catalog_needs_revalidation
-                .store(false, Ordering::Release);
-            return CodexCatalogRefreshOutcome::Updated;
-        }
-
-        let (catalog, etag, authoritative, request_binding) = match client.fetch(&manager).await {
-            Ok(fetched) => (
-                fetched.catalog,
-                fetched.etag,
-                true,
-                fetched.credential_binding,
-            ),
-            Err(error) if codex_catalog_error_is_transient(&error) => {
-                match client.load_cached(&manager).await {
-                    Ok(cached) => (
-                        cached.catalog,
-                        cached.etag,
-                        false,
-                        cached.credential_binding,
-                    ),
-                    Err(_) => {
-                        if let Err(outcome) = self
-                            .attest_current_openai_codex_identity_after_failure(&manager)
-                            .await
-                        {
-                            return outcome;
-                        }
-                        tracing::warn!(error = %error, "OpenAI Codex model refresh failed");
-                        return CodexCatalogRefreshOutcome::TransientFailure;
-                    }
-                }
-            }
-            Err(error) => {
-                if let Err(outcome) = self
-                    .attest_current_openai_codex_identity_after_failure(&manager)
-                    .await
-                {
-                    return outcome;
-                }
-                tracing::warn!(error = %error, "OpenAI Codex model refresh failed");
-                return CodexCatalogRefreshOutcome::TerminalFailure;
-            }
-        };
-
-        // Serialize the final identity check and publication with all shipped
-        // login/logout/refresh writers. This closes the last account-switch
-        // window between a post-request reload and in-memory installation.
-        let (locked_credentials, _identity_lease) = match self
-            .lock_openai_codex_catalog_binding(&manager, &request_binding)
-            .await
-        {
-            Ok(locked) => locked,
-            Err(outcome) => return outcome,
-        };
-        let identity = CodexCatalogIdentity::from_credentials(&locked_credentials);
-        let etag = etag.or_else(|| {
-            observed.and_then(|(etag, binding)| (binding == request_binding).then_some(etag))
-        });
-        if !self.try_apply_openai_codex_catalog(
-            catalog,
-            etag,
-            identity,
-            authoritative,
-            operation_generation,
-        ) {
-            return self.codex_config_rejection_outcome();
-        }
-        if authoritative {
-            CodexCatalogRefreshOutcome::Updated
-        } else {
-            CodexCatalogRefreshOutcome::CachedFallback
-        }
-    }
-
-    fn try_apply_openai_codex_catalog(
-        &self,
-        catalog: crate::remote::CodexModelCatalog,
-        etag: Option<String>,
-        identity: CodexCatalogIdentity,
-        authoritative: bool,
-        operation_generation: u64,
-    ) -> bool {
-        let catalog_write = self.inner.catalog_write_gate.lock();
-        if self.inner.codex_fetch_generation.load(Ordering::Acquire) != operation_generation
-            || !self
-                .inner
-                .codex_remote_fetch_enabled
-                .load(Ordering::Acquire)
-        {
-            return false;
-        }
-        let count =
-            self.apply_openai_codex_catalog_unlocked(catalog, etag, identity, authoritative);
-        drop(catalog_write);
-        tracing::info!(count, "OpenAI Codex model catalog refreshed");
-        self.notify_models_updated();
-        true
-    }
-
-    fn apply_openai_codex_catalog_unlocked(
-        &self,
-        catalog: crate::remote::CodexModelCatalog,
-        etag: Option<String>,
-        identity: CodexCatalogIdentity,
-        authoritative: bool,
-    ) -> usize {
-        let mapped = map_openai_codex_catalog(catalog);
-        let count = mapped.len();
-        let first_codex_catalog = !*self.inner.has_codex_catalog.read();
-        *self.inner.codex_models.write() = mapped;
-        *self.inner.codex_etag.write() = etag;
-        *self.inner.codex_catalog_identity.write() = Some(identity);
-        *self.inner.has_codex_catalog.write() = true;
-        self.inner
-            .codex_catalog_needs_revalidation
-            .store(!authoritative, Ordering::Release);
-
-        *self.inner.has_fetched_real_catalog.write() = true;
-        let config = self.inner.cfg.read().clone();
-        let prefetched = self.inner.prefetched.read().clone();
-        self.rebuild_unlocked(&config, prefetched);
-
-        let excludes_all = allowlist_matches_nothing(&config, &self.inner.models.read());
-        self.inner
-            .allowlist_excludes_all
-            .store(excludes_all, Ordering::Relaxed);
-        if first_codex_catalog {
-            self.reselect_default_model(&config);
-        } else {
-            self.reselect_current_model_if_missing(&config);
-        }
-        count
+        self.inner.codex_catalog.refresh_models(self).await
     }
 
     #[cfg(test)]
@@ -1515,51 +1075,21 @@ impl ModelsManager {
         identity: CodexCatalogIdentity,
         authoritative: bool,
     ) {
-        let catalog_write = self.inner.catalog_write_gate.lock();
-        let count =
-            self.apply_openai_codex_catalog_unlocked(catalog, etag, identity, authoritative);
-        drop(catalog_write);
-        tracing::info!(count, "OpenAI Codex model catalog refreshed");
-        self.notify_models_updated();
+        self.inner.codex_catalog.apply_catalog_for_test(
+            self,
+            catalog,
+            etag,
+            identity,
+            authoritative,
+        );
     }
 
     /// Clear only Codex provider state when its current credential/account no
     /// longer matches the catalog producer. xAI models and credentials remain
     /// untouched. Returns whether visible state changed.
+    #[cfg(test)]
     fn reconcile_openai_codex_identity(&self, current: Option<&CodexCatalogIdentity>) -> bool {
-        let catalog_write = self.inner.catalog_write_gate.lock();
-        let has_state = *self.inner.has_codex_catalog.read()
-            || !self.inner.codex_models.read().is_empty()
-            || self.inner.codex_etag.read().is_some()
-            || self.inner.codex_catalog_identity.read().is_some();
-        if !has_state
-            || (self.inner.codex_catalog_identity.read().as_ref() == current && current.is_some())
-        {
-            return false;
-        }
-
-        self.inner.codex_models.write().clear();
-        *self.inner.codex_etag.write() = None;
-        *self.inner.codex_catalog_identity.write() = None;
-        *self.inner.has_codex_catalog.write() = false;
-        self.inner
-            .codex_catalog_needs_revalidation
-            .store(false, Ordering::Release);
-
-        let config = self.inner.cfg.read().clone();
-        let prefetched = self.inner.prefetched.read().clone();
-        let has_xai_catalog = *self.inner.has_xai_catalog.read();
-        *self.inner.has_fetched_real_catalog.write() = has_xai_catalog;
-        self.rebuild_unlocked(&config, prefetched);
-        let excludes_all = allowlist_matches_nothing(&config, &self.inner.models.read());
-        self.inner
-            .allowlist_excludes_all
-            .store(excludes_all, Ordering::Relaxed);
-        self.reselect_current_model_if_missing(&config);
-        drop(catalog_write);
-        tracing::info!("OpenAI Codex model catalog cleared after auth identity change");
-        self.notify_models_updated();
-        true
+        self.inner.codex_catalog.reconcile_identity(self, current)
     }
 
     /// Route response-header model ETags to the provider that produced them.
@@ -1579,22 +1109,10 @@ impl ModelsManager {
         credential_binding: Option<xai_grok_sampling_types::CredentialBinding>,
     ) {
         if provider == ProviderId::OpenAiCodex {
-            tracing::info!(etag = %etag, "OpenAI Codex models etag changed, refreshing");
-            let outcome = self
-                .refresh_openai_codex_models_inner(
-                    credential_binding.map(|binding| (etag, binding)),
-                )
+            self.inner
+                .codex_catalog
+                .refresh_if_new_etag(self, etag, credential_binding)
                 .await;
-            if matches!(
-                outcome,
-                CodexCatalogRefreshOutcome::TransientFailure
-                    | CodexCatalogRefreshOutcome::CachedFallback
-            ) {
-                self.inner
-                    .codex_catalog_needs_revalidation
-                    .store(true, Ordering::Release);
-                self.start_openai_codex_catalog_recovery();
-            }
         } else {
             self.refresh_if_new_etag(etag).await;
         }
@@ -1883,175 +1401,13 @@ impl ModelsManager {
     /// entitlement catalog, and retry transient discovery failures without
     /// disturbing xAI authentication.
     pub async fn on_openai_codex_auth_changed(&self) -> bool {
-        // A same-account record rotation may carry a new plan/workspace
-        // entitlement even though its stable identity is unchanged.
-        self.inner
-            .codex_catalog_needs_revalidation
-            .store(true, Ordering::Release);
-        let outcome = self.refresh_openai_codex_models_inner(None).await;
-        let needs_revalidation =
-            outcome != CodexCatalogRefreshOutcome::Updated && *self.inner.has_codex_catalog.read();
-        self.inner
-            .codex_catalog_needs_revalidation
-            .store(needs_revalidation, Ordering::Release);
-        if matches!(
-            outcome,
-            CodexCatalogRefreshOutcome::TransientFailure
-                | CodexCatalogRefreshOutcome::CachedFallback
-        ) {
-            self.start_openai_codex_catalog_recovery();
-        }
-        outcome.updated()
+        self.inner.codex_catalog.on_auth_changed(self).await
     }
 
     /// Start provider-local startup recovery when credentials exist but the
     /// initial Codex prefetch did not produce an account-bound catalog.
     pub fn start_openai_codex_catalog_recovery(&self) {
-        let Some(identity) = current_openai_codex_identity() else {
-            self.reconcile_openai_codex_identity(None);
-            return;
-        };
-        // Reconcile the installed account even when remote discovery is
-        // disabled. Disabling network access must never leave another
-        // account's entitled models visible.
-        self.reconcile_openai_codex_identity(Some(&identity));
-        if !self
-            .inner
-            .codex_remote_fetch_enabled
-            .load(Ordering::Acquire)
-        {
-            return;
-        }
-        if *self.inner.has_codex_catalog.read()
-            && self.inner.codex_catalog_identity.read().as_ref() == Some(&identity)
-            && !self
-                .inner
-                .codex_catalog_needs_revalidation
-                .load(Ordering::Acquire)
-        {
-            return;
-        }
-        self.spawn_openai_codex_catalog_retry(identity);
-    }
-
-    fn spawn_openai_codex_catalog_retry(&self, expected_identity: CodexCatalogIdentity) {
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            // Constructors and config reloads are also used by synchronous
-            // embedders. A missing runtime must not panic the caller; the next
-            // authenticated runtime hook or ETag notification will retry.
-            tracing::debug!("OpenAI Codex model catalog retry deferred: no Tokio runtime");
-            return;
-        };
-        if self
-            .inner
-            .codex_retry_in_flight
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            tracing::debug!("OpenAI Codex model catalog retry already in flight");
-            return;
-        }
-
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        enum RetryCompletion {
-            Updated,
-            IdentityChanged,
-            Stopped,
-        }
-
-        let mgr = self.clone();
-        runtime.spawn(async move {
-            let backoff = crate::tools::retry::BackoffConfig::new(5, 5_000, 60_000);
-            let result = crate::tools::retry::execute_with_backoff(
-                &backoff,
-                || {
-                    let mgr = mgr.clone();
-                    let expected_identity = expected_identity.clone();
-                    async move {
-                        if current_openai_codex_identity().as_ref() != Some(&expected_identity) {
-                            return Ok(RetryCompletion::IdentityChanged);
-                        }
-                        if *mgr.inner.has_codex_catalog.read()
-                            && mgr.inner.codex_catalog_identity.read().as_ref()
-                                == Some(&expected_identity)
-                            && !mgr
-                                .inner
-                                .codex_catalog_needs_revalidation
-                                .load(Ordering::Acquire)
-                        {
-                            return Ok(RetryCompletion::Updated);
-                        }
-
-                        match mgr.refresh_openai_codex_models_inner(None).await {
-                            CodexCatalogRefreshOutcome::Updated => Ok(RetryCompletion::Updated),
-                            CodexCatalogRefreshOutcome::CachedFallback => {
-                                Err("cached OpenAI Codex model catalog fallback")
-                            }
-                            CodexCatalogRefreshOutcome::TransientFailure => {
-                                Err("transient OpenAI Codex model catalog failure")
-                            }
-                            CodexCatalogRefreshOutcome::NotAuthenticated => {
-                                Ok(RetryCompletion::IdentityChanged)
-                            }
-                            CodexCatalogRefreshOutcome::TerminalFailure => {
-                                if current_openai_codex_identity().as_ref()
-                                    != Some(&expected_identity)
-                                {
-                                    Ok(RetryCompletion::IdentityChanged)
-                                } else {
-                                    Ok(RetryCompletion::Stopped)
-                                }
-                            }
-                            CodexCatalogRefreshOutcome::Disabled => Ok(RetryCompletion::Stopped),
-                        }
-                    }
-                },
-                |attempt, max_retries, delay| async move {
-                    xai_grok_telemetry::unified_log::warn(
-                        "OpenAI Codex model catalog: retry scheduled",
-                        None,
-                        Some(serde_json::json!({
-                            "attempt": attempt,
-                            "max_retries": max_retries,
-                            "delay_ms": delay.as_millis() as u64,
-                        })),
-                    );
-                },
-            )
-            .await;
-
-            mgr.inner
-                .codex_retry_in_flight
-                .store(false, Ordering::Release);
-            match result {
-                Ok(RetryCompletion::Updated) => {
-                    xai_grok_telemetry::unified_log::info(
-                        "OpenAI Codex model catalog: retry succeeded",
-                        None,
-                        Some(serde_json::json!({
-                            "model_count": mgr.inner.codex_models.read().len(),
-                        })),
-                    );
-                }
-                Ok(RetryCompletion::IdentityChanged) => {
-                    tracing::debug!("OpenAI Codex model catalog retry stopped after auth change");
-                    // A new account may have arrived while its immediate
-                    // refresh was blocked by this retry guard. Re-evaluate it
-                    // only after releasing the guard.
-                    mgr.start_openai_codex_catalog_recovery();
-                }
-                Ok(RetryCompletion::Stopped) => {
-                    tracing::debug!("OpenAI Codex model catalog retry stopped");
-                }
-                Err(error) => {
-                    xai_grok_telemetry::unified_log::warn(
-                        "OpenAI Codex model catalog: all retries exhausted",
-                        None,
-                        Some(serde_json::json!({ "error": error })),
-                    );
-                }
-            }
-        });
+        self.inner.codex_catalog.start_recovery(self);
     }
 
     /// Retry model catalog fetch in the background with exponential backoff.
@@ -2266,7 +1622,7 @@ impl ModelsManager {
         *self.inner.xai_catalog_credential_scope.write() = None;
         *self.inner.xai_catalog_cache_fetched_at.write() = None;
         *self.inner.etag.write() = None;
-        let has_codex_catalog = *self.inner.has_codex_catalog.read();
+        let has_codex_catalog = self.inner.codex_catalog.has_catalog();
         *self.inner.has_fetched_real_catalog.write() = has_codex_catalog;
         let config = self.inner.cfg.read().clone();
         // xAI identity changes must not erase the independent ChatGPT Codex
@@ -3059,221 +2415,11 @@ pub(crate) fn prefetch_models_and_settings_blocking(
     (models, settings)
 }
 
-/// Fetch the current ChatGPT account's entitled Codex models without sharing
-/// any state with xAI model discovery. The async OAuth/catalog client runs on
-/// a short-lived thread so this startup seam remains safe when called from an
-/// existing Tokio runtime.
-struct CodexPrefetchResult {
-    models: IndexMap<String, ModelEntry>,
-    etag: Option<String>,
-    identity: CodexCatalogIdentity,
-    authoritative: bool,
-    _identity_lease: crate::auth::codex::CodexCatalogIdentityLease,
-}
-
-fn prefetch_openai_codex_models_blocking() -> Option<CodexPrefetchResult> {
-    if !crate::util::config::resolve_remote_fetch_enabled() {
-        return None;
-    }
-    let grok_home = crate::util::grok_home::grok_home();
-    let worker = std::thread::Builder::new()
-        .name("openai-codex-models".to_owned())
-        .spawn(move || {
-            let manager = crate::auth::codex::CodexAuthManager::new(&grok_home).ok()?;
-            manager.current()?;
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .ok()?;
-            runtime.block_on(async move {
-                let config =
-                    crate::remote::CodexCatalogClientConfig::new(grok_home.join("cache")).ok()?;
-                let client = crate::remote::CodexCatalogClient::new(config).ok()?;
-                let (catalog, etag, authoritative, request_binding) =
-                    match client.fetch(&manager).await {
-                        Ok(fetched) => (
-                            fetched.catalog,
-                            fetched.etag,
-                            true,
-                            fetched.credential_binding,
-                        ),
-                        Err(error) if codex_catalog_error_is_transient(&error) => {
-                            let cached = client.load_cached(&manager).await.ok()?;
-                            (
-                                cached.catalog,
-                                cached.etag,
-                                false,
-                                cached.credential_binding,
-                            )
-                        }
-                        Err(error) => {
-                            tracing::warn!(error = %error, "OpenAI Codex model discovery failed");
-                            return None;
-                        }
-                    };
-                // Serialize the final identity check with login/logout and
-                // keep the lease alive through installation in `from_config`.
-                let (locked_credentials, identity_lease) =
-                    manager.lock_catalog_binding(&request_binding).await.ok()?;
-                if !crate::util::config::resolve_remote_fetch_enabled() {
-                    return None;
-                }
-                let identity = CodexCatalogIdentity::from_credentials(&locked_credentials);
-                Some(CodexPrefetchResult {
-                    models: map_openai_codex_catalog(catalog),
-                    etag,
-                    identity,
-                    authoritative,
-                    _identity_lease: identity_lease,
-                })
-            })
-        })
-        .ok()?;
-    worker.join().ok().flatten()
-}
-
+#[cfg(test)]
 fn map_openai_codex_catalog(
     catalog: crate::remote::CodexModelCatalog,
 ) -> IndexMap<String, ModelEntry> {
-    catalog
-        .models
-        .into_iter()
-        .filter_map(|model| {
-            let context_window = model
-                .context_window
-                .or(model.max_context_window)
-                .and_then(|value| u64::try_from(value).ok())
-                .and_then(std::num::NonZeroU64::new)
-                .unwrap_or_else(|| {
-                    std::num::NonZeroU64::new(crate::remote::DEFAULT_CONTEXT_WINDOW)
-                        .expect("default context window is non-zero")
-                });
-            let default_effort = model
-                .default_reasoning_level
-                .as_deref()
-                .and_then(|value| value.parse::<ReasoningEffort>().ok());
-            // Grok's session gate is percentage-based while the Codex catalog
-            // publishes an absolute auto-compact token limit. Derive the
-            // earliest safe whole-percent threshold so each entitled model
-            // follows its live catalog budget instead of silently falling back
-            // to the fork-wide default. The effective-window percentage is a
-            // hard cap, not a replacement when the catalog omits a limit.
-            let effective_context_percent = u8::try_from(model.effective_context_window_percent)
-                .ok()
-                .filter(|value| (1..=100).contains(value));
-            let auto_compact_threshold_percent = model
-                .auto_compact_token_limit
-                .and_then(|value| u64::try_from(value).ok())
-                .filter(|value| *value > 0)
-                .map(|limit| {
-                    let percent = limit
-                        .saturating_mul(100)
-                        .checked_div(context_window.get())
-                        .unwrap_or(1)
-                        .clamp(1, 100) as u8;
-                    effective_context_percent.map_or(percent, |cap| percent.min(cap))
-                });
-            let reasoning_efforts: Vec<ReasoningEffortOption> = model
-                .supported_reasoning_levels
-                .iter()
-                .filter_map(|preset| {
-                    let value = preset.effort.parse::<ReasoningEffort>().ok()?;
-                    Some(ReasoningEffortOption {
-                        id: preset.effort.clone(),
-                        value,
-                        label: preset.effort.clone(),
-                        description: (!preset.description.is_empty())
-                            .then(|| preset.description.clone()),
-                        default: Some(value) == default_effort,
-                    })
-                })
-                .collect();
-            // `hide` models remain explicitly addressable (for `-m` and
-            // persisted sessions) but stay out of the picker. `none` and
-            // unknown visibility values fail closed and are not addressable.
-            let (hidden, addressable) = match model.visibility.as_deref() {
-                Some("list") => (false, true),
-                Some("hide") => (true, true),
-                _ => (true, false),
-            };
-            let id = model.id.clone();
-            let display_name = if model.display_name.trim().is_empty() {
-                model.slug.clone()
-            } else {
-                model.display_name.clone()
-            };
-            let mut extra_headers = IndexMap::new();
-            if model.use_responses_lite {
-                extra_headers.insert(
-                    xai_grok_sampling_types::OPENAI_CODEX_RESPONSES_LITE_HEADER.to_owned(),
-                    "true".to_owned(),
-                );
-            }
-            let multi_agent_version = model
-                .multi_agent_version
-                .as_ref()
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_ascii_lowercase);
-            let supports_image_input = model.accepts_images();
-            Some((
-                id.clone(),
-                ModelEntry {
-                    info: config::ModelInfo {
-                        id: Some(id),
-                        provider: ProviderId::OpenAiCodex,
-                        model: model.slug,
-                        base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
-                        name: Some(display_name),
-                        description: model.description,
-                        max_completion_tokens: None,
-                        temperature: None,
-                        top_p: None,
-                        api_backend: xai_grok_sampling_types::ApiBackend::Responses,
-                        auth_scheme: xai_grok_sampler::AuthScheme::Bearer,
-                        extra_headers,
-                        context_window,
-                        auto_compact_threshold_percent,
-                        system_prompt_label: None,
-                        use_concise: false,
-                        // Preserve Grok Build's agent loop and system prompt;
-                        // Codex is a provider, not a replacement agent profile.
-                        agent_type: config::default_agent_type(),
-                        inference_idle_timeout_secs: None,
-                        max_retries: None,
-                        hidden,
-                        user_selectable: addressable,
-                        supported_in_api: model.supported_in_api,
-                        reasoning_effort: default_effort,
-                        supports_reasoning_effort: !reasoning_efforts.is_empty(),
-                        reasoning_efforts,
-                        service_tiers: model
-                            .service_tiers
-                            .into_iter()
-                            .map(|tier| config::ModelServiceTier {
-                                id: tier.id,
-                                name: tier.name,
-                                description: tier.description,
-                            })
-                            .collect(),
-                        default_service_tier: model.default_service_tier,
-                        service_tier: None,
-                        multi_agent_version,
-                        supports_image_input,
-                        // Grok's hosted backend-search extension is xAI-only.
-                        supports_backend_search: false,
-                        compactions_remaining: None,
-                        compaction_at_tokens: None,
-                        show_model_fingerprint: false,
-                        stream_tool_calls: None,
-                        laziness_detector: config::LazinessDetectorPerModelConfig::default(),
-                    },
-                    api_key: None,
-                    env_key: None,
-                    api_base_url: None,
-                },
-            ))
-        })
-        .collect()
+    CodexCatalogController::map_catalog(catalog)
 }
 
 /// `remote_fetch_enabled` is a parameter so the pair helper above resolves the
@@ -4477,30 +3623,32 @@ mod tests {
     }
 
     #[test]
-    fn codex_catalog_identity_debug_is_useful_but_routing_opaque() {
-        let identity = CodexCatalogIdentity {
-            credential_id: "private-credential".to_owned(),
-            account_id: "private-account".to_owned(),
-            user_id: Some("private-user".to_owned()),
-            is_fedramp: false,
-        };
-        let mut alternate_routing = identity.clone();
-        alternate_routing.is_fedramp = !alternate_routing.is_fedramp;
+    fn codex_catalog_identity_debug_is_fixed_shape_and_routing_opaque() {
+        let identity = CodexCatalogIdentity::for_test(
+            "private-credential",
+            "private-account",
+            Some("private-user"),
+            false,
+        );
+        let alternate_routing = CodexCatalogIdentity::for_test(
+            "private-credential",
+            "private-account",
+            Some("private-user"),
+            true,
+        );
         let rendered = format!("{identity:?}");
         let alternate = format!("{alternate_routing:?}");
 
-        assert!(
-            rendered == alternate,
-            "catalog identity debug changed with private routing metadata"
-        );
-        assert!(rendered.starts_with("CodexCatalogIdentity"));
-        assert!(rendered.contains("credential_id: \"<redacted>\""));
-        assert!(rendered.contains("account_id: \"<redacted>\""));
-        assert!(rendered.contains("user_id: \"<redacted>\""));
-        assert!(!rendered.to_ascii_lowercase().contains("fedramp"));
-        assert!(!rendered.contains("private-credential"));
-        assert!(!rendered.contains("private-account"));
-        assert!(!rendered.contains("private-user"));
+        assert_eq!(rendered, "CodexCatalogIdentity { .. }");
+        assert_eq!(rendered, alternate);
+        for private in [
+            "fedramp",
+            "private-credential",
+            "private-account",
+            "private-user",
+        ] {
+            assert!(!rendered.to_ascii_lowercase().contains(private));
+        }
     }
 
     #[test]
@@ -4522,18 +3670,13 @@ mod tests {
                 }],
             },
             Some("codex-etag".to_owned()),
-            CodexCatalogIdentity {
-                credential_id: "credential-a".to_owned(),
-                account_id: "account-a".to_owned(),
-                user_id: Some("user-a".to_owned()),
-                is_fedramp: false,
-            },
+            CodexCatalogIdentity::for_test("credential-a", "account-a", Some("user-a"), false),
             true,
         );
 
         assert_eq!(manager.inner.etag.read().as_deref(), Some("xai-etag"));
         assert_eq!(
-            manager.inner.codex_etag.read().as_deref(),
+            manager.inner.codex_catalog.etag().as_deref(),
             Some("codex-etag")
         );
         assert!(manager.models().contains_key("openai-codex/account-model"));
@@ -4541,7 +3684,7 @@ mod tests {
         manager.clear();
         assert_eq!(manager.inner.etag.read().as_deref(), None);
         assert_eq!(
-            manager.inner.codex_etag.read().as_deref(),
+            manager.inner.codex_catalog.etag().as_deref(),
             Some("codex-etag")
         );
         assert!(manager.models().contains_key("openai-codex/account-model"));
@@ -4561,18 +3704,10 @@ mod tests {
         *manager.inner.prefetched.write() = Some(xai_models.clone());
         manager.rebuild(&config::Config::default(), Some(xai_models));
 
-        let account_a = CodexCatalogIdentity {
-            credential_id: "credential-a".to_owned(),
-            account_id: "account-a".to_owned(),
-            user_id: Some("user-a".to_owned()),
-            is_fedramp: false,
-        };
-        let account_b = CodexCatalogIdentity {
-            credential_id: "credential-b".to_owned(),
-            account_id: "account-b".to_owned(),
-            user_id: Some("user-b".to_owned()),
-            is_fedramp: false,
-        };
+        let account_a =
+            CodexCatalogIdentity::for_test("credential-a", "account-a", Some("user-a"), false);
+        let account_b =
+            CodexCatalogIdentity::for_test("credential-b", "account-b", Some("user-b"), false);
         let catalog = || CodexModelCatalog {
             models: vec![CodexCatalogModel {
                 id: "openai-codex/account-model".to_owned(),
@@ -4597,8 +3732,8 @@ mod tests {
         assert!(manager.reconcile_openai_codex_identity(Some(&account_b)));
         assert!(!manager.models().contains_key("openai-codex/account-model"));
         assert!(manager.models().contains_key("xai-model"));
-        assert!(manager.inner.codex_etag.read().is_none());
-        assert!(manager.inner.codex_catalog_identity.read().is_none());
+        assert!(manager.inner.codex_catalog.etag().is_none());
+        assert!(manager.inner.codex_catalog.identity_is_none());
 
         manager.apply_openai_codex_catalog(catalog(), None, account_b, true);
         assert!(manager.reconcile_openai_codex_identity(None));

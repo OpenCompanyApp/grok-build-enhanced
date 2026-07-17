@@ -78,9 +78,15 @@ mod tests {
         let manager = Arc::new(CodexAuthManager::from_store(store).unwrap());
 
         let snapshot = manager.catalog_auth().await.unwrap();
-        assert_eq!(snapshot.credential_binding(), &expected);
+        assert!(
+            snapshot.credential_binding() == &expected,
+            "catalog adapter must preserve the exact credential binding"
+        );
         let rendered = format!("{snapshot:?}");
-        assert_eq!(rendered, "CodexAuthSnapshot { .. }");
+        assert!(
+            rendered == "CodexAuthSnapshot { .. }",
+            "catalog snapshot debug must be strictly redacted"
+        );
         assert!(!rendered.contains("sentinel-account-id"));
         assert!(!rendered.contains("sentinel-refresh-token"));
     }
