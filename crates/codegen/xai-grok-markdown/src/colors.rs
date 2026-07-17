@@ -3,10 +3,48 @@
 //! This module provides functionality to detect the terminal's color capabilities
 //! and downgrade RGB colors to the appropriate level when needed.
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{LazyLock, OnceLock, RwLock};
 
 use anstyle::{Ansi256Color, AnsiColor, Color, RgbColor};
+
+/// How syntect marker colors are translated before terminal quantization.
+///
+/// Terminal-native themes use named ANSI slots so the terminal owns the
+/// concrete palette. Pinned Warp themes use the selected theme's declared
+/// 16-color palette. Built-in themes leave syntect colors untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxColorPolicy {
+    Passthrough,
+    NamedAnsi,
+    WarpPalette([[u8; 3]; 16]),
+}
+
+static SYNTAX_COLOR_POLICY: LazyLock<RwLock<SyntaxColorPolicy>> =
+    LazyLock::new(|| RwLock::new(SyntaxColorPolicy::Passthrough));
+
+/// The marker palette used by `terminal-ansi.tmTheme`.
+///
+/// These values are identities, not colors we expect the terminal to render.
+/// They are replaced with named ANSI slots or a Warp RGB palette before output.
+const SYNTAX_MARKERS: [[u8; 3]; 16] = [
+    [0, 0, 0],
+    [205, 49, 49],
+    [13, 188, 121],
+    [229, 229, 16],
+    [36, 114, 200],
+    [188, 63, 188],
+    [17, 168, 205],
+    [229, 229, 229],
+    [102, 102, 102],
+    [241, 76, 76],
+    [35, 209, 139],
+    [245, 245, 67],
+    [59, 142, 234],
+    [214, 112, 214],
+    [41, 184, 219],
+    [255, 255, 255],
+];
 
 /// The level of color support detected for the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -162,6 +200,84 @@ pub fn set_color_level(level: ColorLevel) -> Result<(), ColorLevel> {
     COLOR_LEVEL.set(level)
 }
 
+/// Replace the process-wide syntax color translation policy.
+pub fn set_syntax_color_policy(policy: SyntaxColorPolicy) {
+    *SYNTAX_COLOR_POLICY
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = policy;
+}
+
+/// Return the current syntax color translation policy.
+pub fn syntax_color_policy() -> SyntaxColorPolicy {
+    *SYNTAX_COLOR_POLICY
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+/// Map a syntect style's marker foreground through the active syntax policy.
+///
+/// Font effects and the source theme's background are preserved. Renderers can
+/// still remove or replace the background before calling [`adapt_style`].
+pub fn map_syntect_style(style: syntect::highlighting::Style) -> anstyle::Style {
+    let converted = anstyle_syntect::to_anstyle(style);
+    let Some(foreground) = converted.get_fg_color() else {
+        return converted;
+    };
+    converted.fg_color(Some(map_syntax_color(foreground)))
+}
+
+fn map_syntax_color(color: Color) -> Color {
+    map_syntax_color_with_policy(color, syntax_color_policy())
+}
+
+fn map_syntax_color_with_policy(color: Color, policy: SyntaxColorPolicy) -> Color {
+    let Color::Rgb(rgb) = color else {
+        return color;
+    };
+    match policy {
+        SyntaxColorPolicy::Passthrough => color,
+        SyntaxColorPolicy::NamedAnsi => Color::Ansi(ansi_color_for_index(marker_index(rgb))),
+        SyntaxColorPolicy::WarpPalette(palette) => {
+            let [r, g, b] = palette[marker_index(rgb)];
+            Color::Rgb(RgbColor(r, g, b))
+        }
+    }
+}
+
+fn marker_index(rgb: RgbColor) -> usize {
+    SYNTAX_MARKERS
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, marker)| {
+            let dr = i32::from(rgb.0) - i32::from(marker[0]);
+            let dg = i32::from(rgb.1) - i32::from(marker[1]);
+            let db = i32::from(rgb.2) - i32::from(marker[2]);
+            dr * dr + dg * dg + db * db
+        })
+        .map_or(7, |(index, _)| index)
+}
+
+const fn ansi_color_for_index(index: usize) -> AnsiColor {
+    match index {
+        0 => AnsiColor::Black,
+        1 => AnsiColor::Red,
+        2 => AnsiColor::Green,
+        3 => AnsiColor::Yellow,
+        4 => AnsiColor::Blue,
+        5 => AnsiColor::Magenta,
+        6 => AnsiColor::Cyan,
+        7 => AnsiColor::White,
+        8 => AnsiColor::BrightBlack,
+        9 => AnsiColor::BrightRed,
+        10 => AnsiColor::BrightGreen,
+        11 => AnsiColor::BrightYellow,
+        12 => AnsiColor::BrightBlue,
+        13 => AnsiColor::BrightMagenta,
+        14 => AnsiColor::BrightCyan,
+        _ => AnsiColor::BrightWhite,
+    }
+}
+
 /// Convert an `anstyle::Color` to the appropriate level based on terminal support.
 ///
 /// This will downgrade colors as needed:
@@ -283,5 +399,45 @@ mod tests {
         assert!(ColorLevel::None < ColorLevel::Basic);
         assert!(ColorLevel::Basic < ColorLevel::Ansi256);
         assert!(ColorLevel::Ansi256 < ColorLevel::TrueColor);
+    }
+
+    #[test]
+    fn syntax_passthrough_preserves_rgb() {
+        let marker = Color::Rgb(RgbColor(36, 114, 200));
+        assert_eq!(
+            map_syntax_color_with_policy(marker, SyntaxColorPolicy::Passthrough),
+            marker
+        );
+    }
+
+    #[test]
+    fn syntax_named_ansi_maps_marker_slots() {
+        assert_eq!(
+            map_syntax_color_with_policy(
+                Color::Rgb(RgbColor(36, 114, 200)),
+                SyntaxColorPolicy::NamedAnsi,
+            ),
+            Color::Ansi(AnsiColor::Blue)
+        );
+        assert_eq!(
+            map_syntax_color_with_policy(
+                Color::Rgb(RgbColor(59, 142, 234)),
+                SyntaxColorPolicy::NamedAnsi,
+            ),
+            Color::Ansi(AnsiColor::BrightBlue)
+        );
+    }
+
+    #[test]
+    fn syntax_warp_palette_maps_marker_slots_to_rgb() {
+        let mut palette = [[0; 3]; 16];
+        palette[13] = [12, 34, 56];
+        assert_eq!(
+            map_syntax_color_with_policy(
+                Color::Rgb(RgbColor(214, 112, 214)),
+                SyntaxColorPolicy::WarpPalette(palette),
+            ),
+            Color::Rgb(RgbColor(12, 34, 56))
+        );
     }
 }
