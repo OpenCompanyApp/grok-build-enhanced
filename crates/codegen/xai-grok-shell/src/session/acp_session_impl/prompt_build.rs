@@ -694,12 +694,15 @@ impl SessionActor {
                 self.client_identifier.clone(),
                 Some(self.max_retries),
             );
+        self.mark_codex_auxiliary_usage_incomplete(sampler_config.provider)
+            .await;
         let client = xai_grok_sampler::SamplingClient::new(sampler_config).map_err(|e| {
             acp::Error::internal_error().data(format!(
                 "failed to build image-describe sampling client: {e}"
             ))
         })?;
         let model = &describe_model;
+        let describe_session_id = self.session_info.id.to_string();
         let limit = crate::session::image_describe::IMAGE_DESCRIPTION_PROCESSING_LIMIT;
         let skip_count = persisted.len().saturating_sub(limit);
         if skip_count > 0 {
@@ -718,6 +721,7 @@ impl SessionActor {
                     .get_or_describe(
                         client.clone(),
                         model,
+                        &describe_session_id,
                         &p.raw_bytes,
                         &p.mime_type,
                         outline.as_deref(),

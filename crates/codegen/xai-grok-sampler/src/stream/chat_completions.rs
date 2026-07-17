@@ -292,6 +292,7 @@ pub fn stream_chat_completions<'a>(
             message_chunks_emitted: message_chunk_count,
             doom_loop_signals: Vec::new(),
             stop_message: None,
+            provider_end_turn: None,
         };
 
         yield SamplingEvent::Completed {
@@ -634,7 +635,13 @@ mod tests {
     #[tokio::test]
     async fn model_metadata_yielded_after_stream_started() {
         let raw = stream::iter(Vec::<Result<ChatCompletionChunk, SamplingError>>::new()).boxed();
+        let mut binding = xai_grok_sampling_types::CredentialBinding::openai_codex(Some(
+            "credential-record".to_owned(),
+        ));
+        binding.generation = 7;
         let metadata = ResponseModelMetadata {
+            provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            credential_binding: Some(binding.clone()),
             context_window: Some(8192),
             max_completion_tokens: Some(4096),
             models_etag: None,
@@ -650,6 +657,8 @@ mod tests {
         assert!(matches!(events[0], SamplingEvent::StreamStarted { .. }));
         match &events[1] {
             SamplingEvent::ModelMetadata { metadata: m, .. } => {
+                assert_eq!(m.provider, xai_grok_sampling_types::ProviderId::OpenAiCodex);
+                assert_eq!(m.credential_binding.as_ref(), Some(&binding));
                 assert_eq!(m.context_window, Some(8192));
                 assert_eq!(m.max_completion_tokens, Some(4096));
             }

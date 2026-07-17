@@ -263,6 +263,12 @@ pub fn format_sampling_error(err: &SamplingError, retry_count: Option<u32>) -> S
                 retry_prefix, msg
             )
         }
+        SamplingError::ProviderAuthRejected { provider, .. } => {
+            format!(
+                "{}{} authentication was rejected. Sign in to that provider again if the problem persists.",
+                retry_prefix, provider
+            )
+        }
         SamplingError::InvalidConfiguration(msg) => {
             format!(
                 "{}Invalid configuration: {}. Please check your model settings.",
@@ -384,6 +390,13 @@ pub fn format_sampling_error(err: &SamplingError, retry_count: Option<u32>) -> S
 pub(crate) fn clone_error(err: &SamplingError) -> SamplingError {
     match err {
         SamplingError::Auth(msg) => SamplingError::Auth(msg.clone()),
+        SamplingError::ProviderAuthRejected {
+            provider,
+            credential,
+        } => SamplingError::ProviderAuthRejected {
+            provider: *provider,
+            credential: credential.clone(),
+        },
         SamplingError::InvalidConfiguration(msg) => SamplingError::InvalidConfiguration(msg),
         SamplingError::Http(e) => {
             // reqwest::Error is not Clone; preserve the rendered message
@@ -519,6 +532,33 @@ mod tests {
             RetryDecision::EmitToSession(SamplingError::Auth(_)) => {}
             other => panic!("expected EmitToSession(Auth), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn codex_usage_limit_stream_error_is_fatal_on_the_first_failure() {
+        let err = SamplingError::StreamError {
+            error_type: "usage_limit_reached".into(),
+            message: "ChatGPT Codex stream rejected (usage limit reached)".into(),
+        };
+        assert!(matches!(
+            classify_error(&err, 0, 15, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::Fatal(SamplingError::StreamError { .. })
+        ));
+    }
+
+    #[test]
+    fn codex_usage_limit_http_hint_is_fatal_on_the_first_failure() {
+        let err = SamplingError::Api {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "ChatGPT Codex request rejected (usage limit reached)".into(),
+            model_metadata: None,
+            retry_after_secs: Some(60),
+            should_retry: Some(false),
+        };
+        assert!(matches!(
+            classify_error(&err, 0, 15, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::Fatal(SamplingError::Api { .. })
+        ));
     }
 
     #[test]

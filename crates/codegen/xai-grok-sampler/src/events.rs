@@ -188,7 +188,9 @@ impl From<&SamplingError> for SamplingErrorInfo {
         let message = err.to_string();
 
         let (kind, status_code, retry_after_secs, model_metadata) = match err {
-            SamplingError::Auth(_) => (SamplingErrorKind::Auth, None, None, None),
+            SamplingError::Auth(_) | SamplingError::ProviderAuthRejected { .. } => {
+                (SamplingErrorKind::Auth, None, None, None)
+            }
             SamplingError::InvalidConfiguration(_) => (SamplingErrorKind::Api, None, None, None),
             SamplingError::Http(_) => (SamplingErrorKind::Http, None, None, None),
             SamplingError::Serialization(_) => (SamplingErrorKind::Serialization, None, None, None),

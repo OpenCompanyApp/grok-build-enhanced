@@ -117,11 +117,13 @@ impl SamplerActor {
                     .unwrap_or_else(|| self.state.config.clone());
                 let event_tx = self.event_tx.clone();
                 let retry_policy = self.state.retry_policy.clone();
+                let codex_turn_state = self.state.codex_turn_state.clone();
                 let request_inner = *request;
                 self.tasks.spawn(request_task::run_request_task(
                     request_id,
                     request_inner,
                     effective_config,
+                    codex_turn_state,
                     retry_policy,
                     event_tx,
                     cancel_token,

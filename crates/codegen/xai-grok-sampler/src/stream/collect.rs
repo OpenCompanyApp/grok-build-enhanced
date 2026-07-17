@@ -171,6 +171,7 @@ mod tests {
                 message_chunks_emitted: 1,
                 doom_loop_signals: Vec::new(),
                 stop_message: None,
+                provider_end_turn: None,
             }),
             metrics: InferenceLatencyStats::default(),
         };
