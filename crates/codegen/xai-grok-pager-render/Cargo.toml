@@ -3,6 +3,14 @@ name = "xai-grok-pager-render"
 version = "0.1.0"
 edition.workspace = true
 license = "Apache-2.0"
+# Keep the build-validated Warp corpus and its notices in every crate archive.
+include = [
+    "Cargo.toml",
+    "build.rs",
+    "src/**",
+    "assets/**",
+    "THIRD_PARTY_NOTICES.md",
+]
 
 [dependencies]
 # TTY safety
@@ -99,10 +107,23 @@ libc = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi"] }
 
+[build-dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
 [dev-dependencies]
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
+
+# Cargo does not test build scripts automatically. Compile this file under the
+# test harness as well so the audited-manifest and portable-path tests run.
+[[test]]
+name = "warp_vendor_build_validation"
+path = "build.rs"
 
 [features]
 # Downstream pager tests exercise render-owned state and platform probes. Keep

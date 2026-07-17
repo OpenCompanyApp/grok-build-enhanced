@@ -1,0 +1,1720 @@
+{
+  "schema_version": 1,
+  "source": "https://github.com/warpdotdev/themes.git",
+  "revision": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4",
+  "theme_count": 340,
+  "category_counts": {
+    "base16": 178,
+    "standard": 134,
+    "special_edition": 8,
+    "stradicat": 1,
+    "warp_bundled": 19
+  },
+  "license": {
+    "path": "LICENSE",
+    "bytes": 11357,
+    "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  "files": [
+    {
+      "path": "base16/base16_3024.yaml",
+      "bytes": 449,
+      "sha256": "4191743b9ff5354a2a53427b51a2ea78fe63d53949b144a665e8f5742ddf43d9"
+    },
+    {
+      "path": "base16/base16_apathy.yaml",
+      "bytes": 449,
+      "sha256": "b731c7341c40a41508b970bece5e7682c3dcfd6140b15258c2f7d05adfe2d66b"
+    },
+    {
+      "path": "base16/base16_apprentice.yaml",
+      "bytes": 449,
+      "sha256": "97646f1801e36e8dbffaab969eaba73cb2da354de93e38e894d44aadeca79b95"
+    },
+    {
+      "path": "base16/base16_asam.yaml",
+      "bytes": 449,
+      "sha256": "0e1916fd222f614ff6c51ce5f329fd91c47b51f6a5fc124cfa32639280d72bcf"
+    },
+    {
+      "path": "base16/base16_ashes.yaml",
+      "bytes": 449,
+      "sha256": "9ef031f5d197219badab96fdb4641248c47d8127988201223ddbecefd5a83bb8"
+    },
+    {
+      "path": "base16/base16_atelier_cave.yaml",
+      "bytes": 449,
+      "sha256": "d720bf38f84699b603bf2e30c3c6cc05b9844ec3439ec01f8e7b52a98c2c7ec9"
+    },
+    {
+      "path": "base16/base16_atelier_cave_light.yaml",
+      "bytes": 450,
+      "sha256": "9e472eeea50af3bc4713a72d05f566cb2871d6aae4112ac131a43b581356e188"
+    },
+    {
+      "path": "base16/base16_atelier_dune.yaml",
+      "bytes": 449,
+      "sha256": "00cfa1116c27528053f90b88d84c2f078159eb4d7debd2d82903ed55d13c4b1b"
+    },
+    {
+      "path": "base16/base16_atelier_dune_light.yaml",
+      "bytes": 450,
+      "sha256": "8e637f5ba68ee1e8d289a6c6892110fec9f2138d7cd5d18d9190093a49c9f756"
+    },
+    {
+      "path": "base16/base16_atelier_estuary.yaml",
+      "bytes": 449,
+      "sha256": "498e9d849f3c9345a3bbb38ad718555504c33549db4894d23324ba0c5198fb42"
+    },
+    {
+      "path": "base16/base16_atelier_estuary_light.yaml",
+      "bytes": 450,
+      "sha256": "d1789b9c58c11a9bafcdce620fbbc4f9674a47e7a1165358fe2bf79c68569e8e"
+    },
+    {
+      "path": "base16/base16_atelier_forest.yaml",
+      "bytes": 449,
+      "sha256": "0a3f5ebf994b7fe396642f2cd9ab6c19a8ca5547bc18cc5357eabe266175902b"
+    },
+    {
+      "path": "base16/base16_atelier_forest_light.yaml",
+      "bytes": 450,
+      "sha256": "681baa500e48bccf97d79e04412356d43a98693c8f4a0965fcb7679ee3c9bf8d"
+    },
+    {
+      "path": "base16/base16_atelier_heath.yaml",
+      "bytes": 449,
+      "sha256": "dfe36a75cf759c84d67498e45e7db98ef54adc19dddee8eff53af2be64a9d527"
+    },
+    {
+      "path": "base16/base16_atelier_heath_light.yaml",
+      "bytes": 450,
+      "sha256": "fe6aaf08e021b8c6438e8f675b322ec260d363b72a291e4cc1fbef7781875eab"
+    },
+    {
+      "path": "base16/base16_atelier_lakeside.yaml",
+      "bytes": 449,
+      "sha256": "e5881743ab7c3c3a8f26b66f052329a463c49b34f03502f147a6d7eabe07c7fb"
+    },
+    {
+      "path": "base16/base16_atelier_lakeside_light.yaml",
+      "bytes": 450,
+      "sha256": "96ad8df4b5fc67273a12182dd8fa4fb39f8698bba1dabeed7028044f5c138a4f"
+    },
+    {
+      "path": "base16/base16_atelier_plateau.yaml",
+      "bytes": 449,
+      "sha256": "44a78c27fdd6d39c21b2c6bd49f74a4868f1627bea205ced9049448464e8ea95"
+    },
+    {
+      "path": "base16/base16_atelier_plateau_light.yaml",
+      "bytes": 450,
+      "sha256": "164335d4e54696786da3108a9020c75fda4d36c1797b0d11f3f00ee79b38633e"
+    },
+    {
+      "path": "base16/base16_atelier_savanna.yaml",
+      "bytes": 449,
+      "sha256": "39cc3727ae9a85e691df460aedcf8d4f320754848aa514e2afcb0683bf05c66f"
+    },
+    {
+      "path": "base16/base16_atelier_savanna_light.yaml",
+      "bytes": 450,
+      "sha256": "705a22d3286c1e6d2e0c0249c6fdd4abd747fc7527c59de55a9520518999ecf8"
+    },
+    {
+      "path": "base16/base16_atelier_seaside.yaml",
+      "bytes": 449,
+      "sha256": "60816cc57af17291f94ba0aa569716ca06d923d01d66ee00bb62dc24cec562be"
+    },
+    {
+      "path": "base16/base16_atelier_seaside_light.yaml",
+      "bytes": 450,
+      "sha256": "f6c466e80ab664cf7d5d4642abeb905ac8475956ab801223c7c64452eeafde90"
+    },
+    {
+      "path": "base16/base16_atelier_sulphurpool.yaml",
+      "bytes": 449,
+      "sha256": "682fa5c21e6195aee60cc494c175a77afe91e7ecb21a672c56ca769f669a9cc4"
+    },
+    {
+      "path": "base16/base16_atelier_sulphurpool_light.yaml",
+      "bytes": 450,
+      "sha256": "2dc6da79feed712b2231504ae9d306c67616f0aac4080163b6da480bf8bf2c4e"
+    },
+    {
+      "path": "base16/base16_atlas.yaml",
+      "bytes": 449,
+      "sha256": "3c772a83e055d2639a3421d9f3269e2208e665e85bdcfa51fe0ba6cc2d9ce567"
+    },
+    {
+      "path": "base16/base16_bespin.yaml",
+      "bytes": 449,
+      "sha256": "100b81a7419f723a6a14b16fa46e529c0823dbf6b7233d15168be0d2899b765b"
+    },
+    {
+      "path": "base16/base16_black_metal.yaml",
+      "bytes": 449,
+      "sha256": "278ea2aa66bf0fa5362631cf60dd21ebecb0407a9d9dc904ef1df8d9ee404dbb"
+    },
+    {
+      "path": "base16/base16_black_metal_bathory.yaml",
+      "bytes": 449,
+      "sha256": "79800e8122ca03d66a905ed87ebe58368de3b3fa2bd6b0dcb94a0014f1e5f9d3"
+    },
+    {
+      "path": "base16/base16_black_metal_burzum.yaml",
+      "bytes": 449,
+      "sha256": "3a9e7ea4d22a5921723a3033779c10f1191f97d936365b05cbcbf186b05ab10e"
+    },
+    {
+      "path": "base16/base16_black_metal_dark_funeral.yaml",
+      "bytes": 449,
+      "sha256": "3ba2a80457ad2a6012dd4498ef45714c15b6f896b230df247baac24fafc7d387"
+    },
+    {
+      "path": "base16/base16_black_metal_gorgoroth.yaml",
+      "bytes": 449,
+      "sha256": "e747c9099e963319076af8a3bb44e36cef02fbba02edc06dc4fef6dee7213bab"
+    },
+    {
+      "path": "base16/base16_black_metal_immortal.yaml",
+      "bytes": 449,
+      "sha256": "805e1abab689f29baa8eb85758a9fa591a399ea2060cc79a13b1f14b27112d01"
+    },
+    {
+      "path": "base16/base16_black_metal_khold.yaml",
+      "bytes": 449,
+      "sha256": "97d922fcccd186637236a579e73020b8c913e32c69255776cfbf008a21b22c93"
+    },
+    {
+      "path": "base16/base16_black_metal_marduk.yaml",
+      "bytes": 449,
+      "sha256": "618e3ac3ed9b3deabe451b388fd054714ca8a58519c9324967ec215ce44f3e3a"
+    },
+    {
+      "path": "base16/base16_black_metal_mayhem.yaml",
+      "bytes": 449,
+      "sha256": "39c74b273886042cdb3a0cbc41c52b8b04dc03d3a9f0eb099489c415703e67c1"
+    },
+    {
+      "path": "base16/base16_black_metal_nile.yaml",
+      "bytes": 449,
+      "sha256": "3e7804946d4bb2251d7348b08554a12845232acfefca54231aeff21efdf69a27"
+    },
+    {
+      "path": "base16/base16_black_metal_venom.yaml",
+      "bytes": 449,
+      "sha256": "c8138e53de3ec9adb972d70b3682f07605f64f192eb34a0654cb93f8d92799f8"
+    },
+    {
+      "path": "base16/base16_brewer.yaml",
+      "bytes": 449,
+      "sha256": "5fd3559e91a4f1ce9d7a3f1aedf975a7d9b4439e9dbfbae380af811a840c587e"
+    },
+    {
+      "path": "base16/base16_bright.yaml",
+      "bytes": 449,
+      "sha256": "102828d98df9936f03ef647f064f971173dbc84f89b902bc9ccfe6e09548d9b3"
+    },
+    {
+      "path": "base16/base16_brogrammer.yaml",
+      "bytes": 449,
+      "sha256": "2f3e25d34c633496a1ada71e23745e19057fced05fc263454590e4e454d322ae"
+    },
+    {
+      "path": "base16/base16_brushtrees.yaml",
+      "bytes": 449,
+      "sha256": "137a9c21cfda9caf321f81254e77089184541b514baa714d41a30e24fc615170"
+    },
+    {
+      "path": "base16/base16_brushtrees_dark.yaml",
+      "bytes": 449,
+      "sha256": "2ad5287cdf3d1d5bdd583c324addb0b3316309b46afcd3f63c2aefd995376b4b"
+    },
+    {
+      "path": "base16/base16_chalk.yaml",
+      "bytes": 449,
+      "sha256": "f719083055c6c1d9d5a309d8202e5ba0dbd3c9637281099832d2d9eaaf33d989"
+    },
+    {
+      "path": "base16/base16_circus.yaml",
+      "bytes": 449,
+      "sha256": "c557467c80aa1944ee90562e7e9529fd0a864a84ced62c98126e1f09d83ddc37"
+    },
+    {
+      "path": "base16/base16_classic_dark.yaml",
+      "bytes": 449,
+      "sha256": "abaefd9719c9c1f9571cf248a6aa022d162d13f61e39642b0640b3e9ff1c1c54"
+    },
+    {
+      "path": "base16/base16_classic_light.yaml",
+      "bytes": 450,
+      "sha256": "f33669d087291c1d5e8cf2cd062469b39e7a67a368c0ba641164a2c14ebd892c"
+    },
+    {
+      "path": "base16/base16_codeschool.yaml",
+      "bytes": 449,
+      "sha256": "f2607ab1d9f336695949c567ca971a3c58c2e954c3da5d8af496a9da971a7e45"
+    },
+    {
+      "path": "base16/base16_cupcake.yaml",
+      "bytes": 449,
+      "sha256": "26b2348bc3a0d17e7b00d3cca9583397354079daff15c5b44048bf557ff4d253"
+    },
+    {
+      "path": "base16/base16_cupertino.yaml",
+      "bytes": 449,
+      "sha256": "88f7e6e1b85cb15d67a54421567d1594c0789f5583ca503113f18f627b4d98f0"
+    },
+    {
+      "path": "base16/base16_danqing.yaml",
+      "bytes": 449,
+      "sha256": "97f4518bd0ea7e854accbb9c20a402c35affc27c6c75e7ccc8cf9b2bc8551150"
+    },
+    {
+      "path": "base16/base16_darcula.yaml",
+      "bytes": 449,
+      "sha256": "db1dad8d5e0807aa74ab4f615926d4f2ef9384cd7f1838b9e97d12476e934c5a"
+    },
+    {
+      "path": "base16/base16_darkmoss.yaml",
+      "bytes": 449,
+      "sha256": "8e5ce3b88ead23ec4dffec9cbad498f77860a38be0f969c780746584495ddf67"
+    },
+    {
+      "path": "base16/base16_darktooth.yaml",
+      "bytes": 449,
+      "sha256": "58b566809425c2d7d357dc6d934a43d42cc06a45b6ed09b62348f5499ebe1431"
+    },
+    {
+      "path": "base16/base16_darkviolet.yaml",
+      "bytes": 449,
+      "sha256": "23e4299e11af47eefc8c21bd126bae61cb731064363b7c956208e73cf20402c0"
+    },
+    {
+      "path": "base16/base16_decaf.yaml",
+      "bytes": 449,
+      "sha256": "519820e41f4e6f12f114576d22c57d4ea4a24b1c7b7eec0dc81c8da1a8a13d03"
+    },
+    {
+      "path": "base16/base16_default_dark.yaml",
+      "bytes": 449,
+      "sha256": "1d532659d51b4aef8a652e83fee64293821cc826e164215ca8588eaf34edbfa5"
+    },
+    {
+      "path": "base16/base16_default_light.yaml",
+      "bytes": 450,
+      "sha256": "ad9e9318f1076abcc7d7b941a26e8beece3ecec3627618ac07565790c5a5b1ad"
+    },
+    {
+      "path": "base16/base16_dirtysea.yaml",
+      "bytes": 449,
+      "sha256": "15e3780f8275964fb2b17b71a2a0cc3361aa4b2e25bd230daf266596f492cf08"
+    },
+    {
+      "path": "base16/base16_dracula.yaml",
+      "bytes": 449,
+      "sha256": "9563f47eb53713c5ff4a1d39aeb16c5c141545f6b9e4cb9b6dcc1365e94663a6"
+    },
+    {
+      "path": "base16/base16_edge_dark.yaml",
+      "bytes": 449,
+      "sha256": "f0121d7adcf7e480e168c9c47f786b73c0a4b9e566fe74a66dc09dcd05f5b124"
+    },
+    {
+      "path": "base16/base16_edge_light.yaml",
+      "bytes": 450,
+      "sha256": "5b34fcbb71392dc0eed138d223e401bb11ae4c90cd1df4ee8b3d9fe966b7b1bb"
+    },
+    {
+      "path": "base16/base16_eighties.yaml",
+      "bytes": 449,
+      "sha256": "08ff04bd439b05e2bd320ae679a405b1f47dd00c6a9732c061f8b164d57e322c"
+    },
+    {
+      "path": "base16/base16_embers.yaml",
+      "bytes": 449,
+      "sha256": "2a6f1b558c4aaa1cfc47146dd3b0958db262ae2bd1b7900761fdfd3c52162b0e"
+    },
+    {
+      "path": "base16/base16_equilibrium_dark.yaml",
+      "bytes": 449,
+      "sha256": "3599307ad41f3a4dea06490a94c9bee47909ab29ef3862061200850e8f2dc8ca"
+    },
+    {
+      "path": "base16/base16_equilibrium_gray_dark.yaml",
+      "bytes": 449,
+      "sha256": "0596af08e67b0c8949175a1167d88244c4ec789f6029fa16d515868b84d39fd7"
+    },
+    {
+      "path": "base16/base16_equilibrium_gray_light.yaml",
+      "bytes": 450,
+      "sha256": "e766e8b49ff82792ea6f1c1c6382fbb3575b6c27d34ea960bbd53b96088efb72"
+    },
+    {
+      "path": "base16/base16_equilibrium_light.yaml",
+      "bytes": 450,
+      "sha256": "0de3c255b18f0d35e61e4a55f6bee1693d8c4e1c52ebaf3f313abe5e00bbacde"
+    },
+    {
+      "path": "base16/base16_espresso.yaml",
+      "bytes": 449,
+      "sha256": "24ef3a331ed848eec6b4ee9a5f57bbd1e29bb9ed30d71fdc60e045227e449b8c"
+    },
+    {
+      "path": "base16/base16_eva.yaml",
+      "bytes": 449,
+      "sha256": "a9bc652314784e60f9949cfa18e63f70cf0f2a71ad65dbffecae5d7724825b65"
+    },
+    {
+      "path": "base16/base16_eva_dim.yaml",
+      "bytes": 449,
+      "sha256": "cc56cc0692e670ca3732a39fa13c85a8b365c2191691987cf108ce8503f62a04"
+    },
+    {
+      "path": "base16/base16_flat.yaml",
+      "bytes": 449,
+      "sha256": "d92732dc8c9c4594c20fab042dea560ac512b021594aa04a78f16bc0415b47ca"
+    },
+    {
+      "path": "base16/base16_framer.yaml",
+      "bytes": 449,
+      "sha256": "a7e358260d2855a7630d9a8a63eff504572acbee3f7090a56d9d35a857e13417"
+    },
+    {
+      "path": "base16/base16_fruit_soda.yaml",
+      "bytes": 449,
+      "sha256": "627f5a82e31133b218d9443ece130fb4c7bb46dcc1e297d3fe27422eb20ab08c"
+    },
+    {
+      "path": "base16/base16_gigavolt.yaml",
+      "bytes": 449,
+      "sha256": "fa98a04574bc1655e8a992e3d7dde446ae7500dedc04232a95ab8537aca044d3"
+    },
+    {
+      "path": "base16/base16_github.yaml",
+      "bytes": 449,
+      "sha256": "3ca8adfa1a7b4a19bceabd7412991db51b00038da548b08b770fc022ab980db8"
+    },
+    {
+      "path": "base16/base16_google_dark.yaml",
+      "bytes": 449,
+      "sha256": "d1ed21364f24d183783d72267196c4da9c4ab495447b58671ae1aa4477d74f69"
+    },
+    {
+      "path": "base16/base16_google_light.yaml",
+      "bytes": 450,
+      "sha256": "e2aa94d201c482d3c3805a32e1ffc01542a207abde67f19aa7abcee3e3924c63"
+    },
+    {
+      "path": "base16/base16_grayscale_dark.yaml",
+      "bytes": 449,
+      "sha256": "fa00beaa4a695ca7c016b9ca9091bb284c02e89de16c2e5aa8e52173712d92d6"
+    },
+    {
+      "path": "base16/base16_grayscale_light.yaml",
+      "bytes": 450,
+      "sha256": "0755f9058fe222366ac0e29dc4e361cde647d3970c87e650ecd8d98789bb7ba7"
+    },
+    {
+      "path": "base16/base16_greenscreen.yaml",
+      "bytes": 449,
+      "sha256": "01c4537b913c02655d21dc4ef68e0dd2e6cec62cbdabc79adb3527fb940f84d5"
+    },
+    {
+      "path": "base16/base16_gruvbox_dark_hard.yaml",
+      "bytes": 449,
+      "sha256": "ba9c13879b0afc95654733227b72c8f3ef7e2a7f5cc9d63016dbc4e36bac0c11"
+    },
+    {
+      "path": "base16/base16_gruvbox_dark_medium.yaml",
+      "bytes": 449,
+      "sha256": "84470d2eb8f9a83477e51c40e109ecac4352e1312f29bbb95356eeb77fa8016f"
+    },
+    {
+      "path": "base16/base16_gruvbox_dark_pale.yaml",
+      "bytes": 449,
+      "sha256": "aad89e85e95bc5db299d06bce8f2b65c6b4c3ba77360977be0dbf65cf3357a2b"
+    },
+    {
+      "path": "base16/base16_gruvbox_dark_soft.yaml",
+      "bytes": 449,
+      "sha256": "43ec3a5bb035832f5efe70dff66638dd07f342a87709b25bcacfed571d387daa"
+    },
+    {
+      "path": "base16/base16_gruvbox_light_hard.yaml",
+      "bytes": 450,
+      "sha256": "d809941258d2ca336f65bf1dbb077e8293b40b1c0505cf1814d15e653a0188ae"
+    },
+    {
+      "path": "base16/base16_gruvbox_light_medium.yaml",
+      "bytes": 450,
+      "sha256": "03a85615fe924e16c2e743b0d9e10700fb4838eccd116442b9df88b7e23b06cd"
+    },
+    {
+      "path": "base16/base16_gruvbox_light_soft.yaml",
+      "bytes": 450,
+      "sha256": "cc58c8ce4f5da770c40adfaaff68e0ab997757b8ba2233b9e87e33abeb317257"
+    },
+    {
+      "path": "base16/base16_hardcore.yaml",
+      "bytes": 449,
+      "sha256": "828ee877e87b19cea7e7748c9274aa44bad3a30528a56086d41f19ed32729d02"
+    },
+    {
+      "path": "base16/base16_harmonic_dark.yaml",
+      "bytes": 449,
+      "sha256": "754688cc6adac4aaf37d5d94927342192ef6fc25ce9777957a276135ad9ef021"
+    },
+    {
+      "path": "base16/base16_harmonic_light.yaml",
+      "bytes": 450,
+      "sha256": "001079688633338e640bab89eb92c7e0059de3abc2065271d4191b0e085e147a"
+    },
+    {
+      "path": "base16/base16_heetch.yaml",
+      "bytes": 449,
+      "sha256": "e13c4a85551232183abd2da2db72fae0bd419734f1c0b40af40ac7e844577e5e"
+    },
+    {
+      "path": "base16/base16_heetch_light.yaml",
+      "bytes": 450,
+      "sha256": "e380fad8e1d94cc987456834f1b150abef9cf31fe47fd03f8c87ec8f714d1ab8"
+    },
+    {
+      "path": "base16/base16_helios.yaml",
+      "bytes": 449,
+      "sha256": "d9ce14dcf13a232f3995d05bad3613a4209adcec94da8a0eab8fc7135ac85917"
+    },
+    {
+      "path": "base16/base16_hopscotch.yaml",
+      "bytes": 449,
+      "sha256": "b9327412c9e43ccf7afea8225baccb220ac992b8aaf265d7eef23473beecba0f"
+    },
+    {
+      "path": "base16/base16_horizon_dark.yaml",
+      "bytes": 449,
+      "sha256": "dc3e1250b694efcfa0ccfb012088f31be79f979959ac3862016eb8c86f0d6971"
+    },
+    {
+      "path": "base16/base16_horizon_light.yaml",
+      "bytes": 450,
+      "sha256": "4683695272acf3f8e9d70736b7da9cbba1bbc50b519eeba6813c417ec0a262c6"
+    },
+    {
+      "path": "base16/base16_horizon_terminal_dark.yaml",
+      "bytes": 449,
+      "sha256": "0e44f02effd9514286c4ab7515611aef8aa43a6b3abd7d89a4f6ff1a5732c374"
+    },
+    {
+      "path": "base16/base16_horizon_terminal_light.yaml",
+      "bytes": 450,
+      "sha256": "9152b3c522f769a86ce51718d0b84b426d68231a96c05b4d574f33d22f09ceb7"
+    },
+    {
+      "path": "base16/base16_humanoid_dark.yaml",
+      "bytes": 449,
+      "sha256": "8b52102678f11370d4fb736c47607003ff8c7735e810472cf90f6951ad335de6"
+    },
+    {
+      "path": "base16/base16_humanoid_light.yaml",
+      "bytes": 450,
+      "sha256": "35a5ab4ddd447b653d29d0c8e1f56ba2b53e34ae3360bc4d1192932b06842ba8"
+    },
+    {
+      "path": "base16/base16_ia_dark.yaml",
+      "bytes": 449,
+      "sha256": "2df9f31406ebdc3760f0bdeb288b390d35173031b453a6201b3110a8e7ca0a78"
+    },
+    {
+      "path": "base16/base16_ia_light.yaml",
+      "bytes": 450,
+      "sha256": "c642f3983270031c1012856b363259527d00df97e61b81fd17cd5fc38e689b92"
+    },
+    {
+      "path": "base16/base16_icy.yaml",
+      "bytes": 449,
+      "sha256": "4d9dd82bb88f9e4956edae9684b3ce09d277467d8a9978663485b33f698754ad"
+    },
+    {
+      "path": "base16/base16_irblack.yaml",
+      "bytes": 449,
+      "sha256": "3bbf220754a5d4823945a113dd9f1871aba6e1ef1b12ff6fcbbb68fa5b0fa536"
+    },
+    {
+      "path": "base16/base16_isotope.yaml",
+      "bytes": 449,
+      "sha256": "1bb36b0c54939a262822616c1f07624e76ea1e76739259e76ed839ba51b6c3d1"
+    },
+    {
+      "path": "base16/base16_kimber.yaml",
+      "bytes": 449,
+      "sha256": "42cc91e613a269921cdcb5feb73a70b9b05e6be29e72832237197bd761686980"
+    },
+    {
+      "path": "base16/base16_macintosh.yaml",
+      "bytes": 449,
+      "sha256": "b428291f586543269b953f8abdc83b0788273c9df64fefe57fb6a6f7aa54bd80"
+    },
+    {
+      "path": "base16/base16_marrakesh.yaml",
+      "bytes": 449,
+      "sha256": "79bf084fe57ca21e4b3adfe27898bf5c52acb6f84374cca5e6df4fd3bc008c15"
+    },
+    {
+      "path": "base16/base16_materia.yaml",
+      "bytes": 449,
+      "sha256": "38b6acbc91f324fb5a46521a601eb627d656334eda46100496d3976d056f90ab"
+    },
+    {
+      "path": "base16/base16_material.yaml",
+      "bytes": 449,
+      "sha256": "8f1a6c62ad9cbc265b2a68221d114d30d939d743d4dc144de773780a4fd07d15"
+    },
+    {
+      "path": "base16/base16_material_darker.yaml",
+      "bytes": 449,
+      "sha256": "8d8bd0bf1af515190a389965e5366e09baaa23c9d30db407a24d6729c7cf9bec"
+    },
+    {
+      "path": "base16/base16_material_lighter.yaml",
+      "bytes": 450,
+      "sha256": "2b465c23c955ba019c036a5bdbf6abf67e1dbea4ee85d255ba335f56074c4e59"
+    },
+    {
+      "path": "base16/base16_material_palenight.yaml",
+      "bytes": 449,
+      "sha256": "763bfa76183e060805f633cedb95fc6ce93a96a4fb00b1d7feada3dd27c492da"
+    },
+    {
+      "path": "base16/base16_material_vivid.yaml",
+      "bytes": 449,
+      "sha256": "3e4cfff8c661e00ebc011c68890e77d3468f3c64fb377dfcca5cb6da7b71dac3"
+    },
+    {
+      "path": "base16/base16_mellow_purple.yaml",
+      "bytes": 449,
+      "sha256": "61d17c18c7f2105c304048429c6abc9fddfb6a520a6cc05a423d0c743704035c"
+    },
+    {
+      "path": "base16/base16_mexico_light.yaml",
+      "bytes": 450,
+      "sha256": "97f1b0dd1a446dfdcbcc04adc81364685e44a0c2465310fe6ccea4dba34da8ca"
+    },
+    {
+      "path": "base16/base16_mocha.yaml",
+      "bytes": 449,
+      "sha256": "e1d500d2264cff9b251016ff096e33ce82007e3c3879015c36edc690c1d06f5f"
+    },
+    {
+      "path": "base16/base16_monokai.yaml",
+      "bytes": 449,
+      "sha256": "3ff717c5479d01c8b2475d38480097fbbdb67534a6263a9996e273ed7351578b"
+    },
+    {
+      "path": "base16/base16_nebula.yaml",
+      "bytes": 449,
+      "sha256": "ecae461ceb721d513e8531776758286782f77c256bdb853a9826079258e185ff"
+    },
+    {
+      "path": "base16/base16_nord.yaml",
+      "bytes": 449,
+      "sha256": "e51c32b98fcec4d3225e72a9e099d819da4a217dfca23e5373266f7f302c1f25"
+    },
+    {
+      "path": "base16/base16_nova.yaml",
+      "bytes": 449,
+      "sha256": "aee448e8ec9b3bbb9760f7fdea656dbe0ec6873484c5f1107f5b0445346653d2"
+    },
+    {
+      "path": "base16/base16_ocean.yaml",
+      "bytes": 449,
+      "sha256": "eec12b0b71fd2dbc3d7f3788ac9092361905ee03b60cbd964db6346ac124a648"
+    },
+    {
+      "path": "base16/base16_oceanicnext.yaml",
+      "bytes": 449,
+      "sha256": "42d97d42bc1c511af247494900679960ecea36ac4d3ccf602cedf8c0a7255480"
+    },
+    {
+      "path": "base16/base16_one_light.yaml",
+      "bytes": 450,
+      "sha256": "e5c3a58d84b184906e1b8dd5fd2ce2a1d5f1c859516beb2f1ac1cdf1e40060ed"
+    },
+    {
+      "path": "base16/base16_onedark.yaml",
+      "bytes": 449,
+      "sha256": "b9f15664daf28765374c7c2e30605d1a2dbdffd09c2797929e1dcd1400aeb2da"
+    },
+    {
+      "path": "base16/base16_outrun_dark.yaml",
+      "bytes": 449,
+      "sha256": "412cb8c720c032512c186ec1b4dd44ac681bff26fadd5db5ccd86e9b70ed03e3"
+    },
+    {
+      "path": "base16/base16_papercolor_dark.yaml",
+      "bytes": 449,
+      "sha256": "d46eb7b9eb5225ac425cbcb173b037b2be5a303629060ee6becfb9465678757a"
+    },
+    {
+      "path": "base16/base16_papercolor_light.yaml",
+      "bytes": 450,
+      "sha256": "4123b60725c61f68ce647eb849c9a394101fe1b6b46e0f2d34395e32da51ca3c"
+    },
+    {
+      "path": "base16/base16_paraiso.yaml",
+      "bytes": 449,
+      "sha256": "a388375eb8ac6ae2619d8555cd548f044e4587bc1c495495bbccd3ebb0199a16"
+    },
+    {
+      "path": "base16/base16_pasque.yaml",
+      "bytes": 449,
+      "sha256": "78f12366037ea96bfad9463353abbb7acd2e5cb6aadb02a064611c56a87837e1"
+    },
+    {
+      "path": "base16/base16_phd.yaml",
+      "bytes": 449,
+      "sha256": "27a5148c727cecff67e625c705ac0bf8e87206fb7ca4fd173def24ed7540807a"
+    },
+    {
+      "path": "base16/base16_pico.yaml",
+      "bytes": 449,
+      "sha256": "83e8052356aa1e59fb02d9ae99f57cb59112efbc38e1a7ea433547e69b62e0e3"
+    },
+    {
+      "path": "base16/base16_pop.yaml",
+      "bytes": 449,
+      "sha256": "01e4a0cc6efbaca54c9a7a824f10888a8fd1056d25f207c72d46f5a4d862728f"
+    },
+    {
+      "path": "base16/base16_porple.yaml",
+      "bytes": 449,
+      "sha256": "96841c5d4c28edb94fdfe36b5a042f0a0133eea2966da4811b3f453212172c37"
+    },
+    {
+      "path": "base16/base16_railscasts.yaml",
+      "bytes": 449,
+      "sha256": "bb3e8fed53173313054b550f0e927e3943cfd675a3f04f770f293ac6a5e54259"
+    },
+    {
+      "path": "base16/base16_rebecca.yaml",
+      "bytes": 449,
+      "sha256": "e92f6e1158a6ef390f536a15fbc38cc48cae326d4164bc8bdf9f90fe98547276"
+    },
+    {
+      "path": "base16/base16_rose_pine.yaml",
+      "bytes": 449,
+      "sha256": "45bdb4054c3e26c0a10493387ab0ad7f029a44693bca1b2934568f9d442b5fa7"
+    },
+    {
+      "path": "base16/base16_rose_pine_dawn.yaml",
+      "bytes": 449,
+      "sha256": "8db03a58c166e130ec138f8984cd5bcf1e1bc2ce8320b86bb765eb0a004c16e9"
+    },
+    {
+      "path": "base16/base16_rose_pine_moon.yaml",
+      "bytes": 449,
+      "sha256": "cc9dc7e0702d45477dcc9d0830907f87f84803bfd45881f72589a924dac31bf3"
+    },
+    {
+      "path": "base16/base16_sagelight.yaml",
+      "bytes": 450,
+      "sha256": "29ae6c7cd176088c6da5d4e5438129533941648535807d6f3f488e09344cc6e8"
+    },
+    {
+      "path": "base16/base16_sandcastle.yaml",
+      "bytes": 449,
+      "sha256": "b505d2d40544ad4970811555031ad7634ae90d615f2b855a3fb26eaf3bd85340"
+    },
+    {
+      "path": "base16/base16_seti.yaml",
+      "bytes": 449,
+      "sha256": "e1f5c0470a02cef35a1edcef7b8519ed550f2a35b71bd65907b82e68a75c17c9"
+    },
+    {
+      "path": "base16/base16_shapeshifter.yaml",
+      "bytes": 449,
+      "sha256": "88e979ef558f04b23758c5442d994efbd972c7d30582f163647b1c34406edca9"
+    },
+    {
+      "path": "base16/base16_silk_dark.yaml",
+      "bytes": 449,
+      "sha256": "e986ef5c8d028ea5df6f2684e87462f3c99d87d3d02149b7af4b4f429deb0de2"
+    },
+    {
+      "path": "base16/base16_silk_light.yaml",
+      "bytes": 450,
+      "sha256": "fed9d1cc42ee7cd3fcb55c360113e979f5c01a71e211c5c89edd19bbe9cd9a0a"
+    },
+    {
+      "path": "base16/base16_snazzy.yaml",
+      "bytes": 449,
+      "sha256": "ac26c50e9afe71b58f5a0862e976108db80cf3bcd17ed15c4e50a34378efdf40"
+    },
+    {
+      "path": "base16/base16_solarflare.yaml",
+      "bytes": 449,
+      "sha256": "7dd35d9d9a6b4a884d248556ff3739faf068269017cfd7aa8d0b3eca66ffe716"
+    },
+    {
+      "path": "base16/base16_solarflare_light.yaml",
+      "bytes": 450,
+      "sha256": "7dea1b8954a8717b599aee3eda15a948847e8af223c7a70434cc7b70e18e8be0"
+    },
+    {
+      "path": "base16/base16_solarized_dark.yaml",
+      "bytes": 449,
+      "sha256": "13b3f87548df26e1d08842f1d9605e4f60c02b429dea06ed5637d289a26f72a0"
+    },
+    {
+      "path": "base16/base16_solarized_light.yaml",
+      "bytes": 450,
+      "sha256": "402c8cf32308d71a44666a9d94412a388c9ca42a52e6db21224581945fb52127"
+    },
+    {
+      "path": "base16/base16_spacemacs.yaml",
+      "bytes": 449,
+      "sha256": "e83c3148c948f740a6ac8175bd1b9b0dcd642e9e8f088df2e5aa324d4df90a24"
+    },
+    {
+      "path": "base16/base16_summercamp.yaml",
+      "bytes": 449,
+      "sha256": "dc30d15cf4dbe6a21cd0e750ddbf28351c7551a5f1a128e98299a338882eac15"
+    },
+    {
+      "path": "base16/base16_summerfruit_dark.yaml",
+      "bytes": 449,
+      "sha256": "f28196b6ef4be029464e271d9f867de047f55980cee82b87eb1cd28815976c8f"
+    },
+    {
+      "path": "base16/base16_summerfruit_light.yaml",
+      "bytes": 450,
+      "sha256": "d86df4f8542318106737bb309221785341af63372840bf6617393fa6c6d90629"
+    },
+    {
+      "path": "base16/base16_synth_midnight_dark.yaml",
+      "bytes": 449,
+      "sha256": "952fe8ca664c971de30d5ada7a24fd94eceeb6c650303a19b4c181130601d631"
+    },
+    {
+      "path": "base16/base16_synth_midnight_light.yaml",
+      "bytes": 450,
+      "sha256": "1525e5ba9b86908d08aa442ff3a3254882ba991facf9313233804f7669b36b59"
+    },
+    {
+      "path": "base16/base16_tango.yaml",
+      "bytes": 449,
+      "sha256": "f17e7d129abae80b248ab994c79dc2fe7de7ea2c6a61a8b9aecc12957ad6060c"
+    },
+    {
+      "path": "base16/base16_tender.yaml",
+      "bytes": 449,
+      "sha256": "680146656c929e3a8166eca0ac5f3e0ca214689b18e8b8e4303bced503949be0"
+    },
+    {
+      "path": "base16/base16_tomorrow.yaml",
+      "bytes": 449,
+      "sha256": "629b7ce6d876e11ed41b1d37458c94ea4019f09e80d30bf639a45edcb745759e"
+    },
+    {
+      "path": "base16/base16_tomorrow_night.yaml",
+      "bytes": 449,
+      "sha256": "19ac963e6eb08e3ffc19ed41ead5d6ee7d8639f0ca47bc4a5a6eb1fda1110bfa"
+    },
+    {
+      "path": "base16/base16_tomorrow_night_eighties.yaml",
+      "bytes": 449,
+      "sha256": "688029f46d74964d79be9a5a6cd36e816e42d0d7735322cb2a112c1608bf05f7"
+    },
+    {
+      "path": "base16/base16_tube.yaml",
+      "bytes": 449,
+      "sha256": "c551d1886db2a4bc5adb8b4e617d378dd9656de475786313cdd8020484986fbd"
+    },
+    {
+      "path": "base16/base16_twilight.yaml",
+      "bytes": 450,
+      "sha256": "8fbb2c0f1955add9e2a70124d76f9b505728de5fd20c3552b1367c6418fd9f02"
+    },
+    {
+      "path": "base16/base16_unikitty_dark.yaml",
+      "bytes": 449,
+      "sha256": "c51321fedcef655e4127b0dc721009cfa2032a6a85758207ed7892fc2ddfc98c"
+    },
+    {
+      "path": "base16/base16_unikitty_light.yaml",
+      "bytes": 450,
+      "sha256": "98b0c491023754bb5a808e6ce830a186c030dc48edf8329818952a1750318474"
+    },
+    {
+      "path": "base16/base16_vulcan.yaml",
+      "bytes": 449,
+      "sha256": "802d36cbce20f17c3b05fe980b4de5896cc40663ea155f57544f7991ebcd2f73"
+    },
+    {
+      "path": "base16/base16_windows_10.yaml",
+      "bytes": 449,
+      "sha256": "77f782d5be4253eed2836c90543fb0f85026a890f1b839c8c2b1232a4f56f2d1"
+    },
+    {
+      "path": "base16/base16_windows_10_light.yaml",
+      "bytes": 450,
+      "sha256": "3fb492597d64700837d4a7e074549f9a50e54def52e1b60fdff5744173d8d8ad"
+    },
+    {
+      "path": "base16/base16_windows_95.yaml",
+      "bytes": 449,
+      "sha256": "eeaeba83f450220ac501b6d2370c5185f187e7056799d5c5dca27b41b88df893"
+    },
+    {
+      "path": "base16/base16_windows_95_light.yaml",
+      "bytes": 450,
+      "sha256": "11cbfa1d5de90a89329118481a9077b1db9247069cc5bb08b16b3f6c1dae2d2a"
+    },
+    {
+      "path": "base16/base16_windows_highcontrast.yaml",
+      "bytes": 449,
+      "sha256": "e907fe2e9be3dd48d214d3e23a831163a71ceb76b6f631b252be11d2b0e31b0e"
+    },
+    {
+      "path": "base16/base16_windows_highcontrast_light.yaml",
+      "bytes": 450,
+      "sha256": "c1c8c005768a7acd3265fbfa7a1b910a1a8e21ff42045010e0333b0aa49ff641"
+    },
+    {
+      "path": "base16/base16_windows_nt.yaml",
+      "bytes": 449,
+      "sha256": "ac32c40200bfb279dc77fb3dd7bf0c8b4a60805207c947000fbc833a801de4d5"
+    },
+    {
+      "path": "base16/base16_windows_nt_light.yaml",
+      "bytes": 450,
+      "sha256": "6fd25d071af477b44f5846bb37e4c1006dca69321157e5ed81c5bb6fb56a84a6"
+    },
+    {
+      "path": "base16/base16_woodland.yaml",
+      "bytes": 449,
+      "sha256": "b0bf0e21bbedf548865479166bc87bc66755fc3250f388ad6c2ca1419d041ef3"
+    },
+    {
+      "path": "base16/base16_xcode_dusk.yaml",
+      "bytes": 449,
+      "sha256": "489e5aea8172cfa141e0c99a6d4f0ca7d0c4e9298971d81776d046b23605d215"
+    },
+    {
+      "path": "base16/base16_zenburn.yaml",
+      "bytes": 449,
+      "sha256": "d158ce0922ab4e953dffbaaf5808abeda0d69a0c57ebe9c60234217e45856a72"
+    },
+    {
+      "path": "special_edition/asteroid_city.yaml",
+      "bytes": 609,
+      "sha256": "880a6b5713feeddb4e6faf404235195c7befae83ab026b33acffdbd05f53e9b9"
+    },
+    {
+      "path": "special_edition/barbie.yaml",
+      "bytes": 576,
+      "sha256": "fa4e69253ce4a59d27e2d3d9310cdc526fe64e0eedde35fb90e7e74945387d84"
+    },
+    {
+      "path": "special_edition/grafbase.yaml",
+      "bytes": 510,
+      "sha256": "70bc3e2f2705b4d017ff5d62ceb0c72b5f1a0ec7bea4b992d69aadf4136ef76b"
+    },
+    {
+      "path": "special_edition/lumon.yaml",
+      "bytes": 500,
+      "sha256": "21718b810a4a4c6e6ad017c0ab105378d3b1804d25263296380c00901c81dbea"
+    },
+    {
+      "path": "special_edition/oppenheimer.yaml",
+      "bytes": 579,
+      "sha256": "63acdfca1e3f016818c57c5781d3e64e3e7f75d25e3d2202e872f781bc74c2d6"
+    },
+    {
+      "path": "special_edition/pride.yaml",
+      "bytes": 569,
+      "sha256": "02ed055b5d8bf72e55df3b3c5c0f40e3d33254209319c73091aba4b6837700fb"
+    },
+    {
+      "path": "special_edition/thanksgiving.yaml",
+      "bytes": 594,
+      "sha256": "3315dc1da0467a7660d3849e7105940a541178e0a1d1de61e32b2ed3d371dd35"
+    },
+    {
+      "path": "special_edition/winter.yaml",
+      "bytes": 590,
+      "sha256": "99963164bf38ef9cddfdef617166e9952dcc51e54a15d48a4acfccae6448bc0d"
+    },
+    {
+      "path": "standard/afterglow.yaml",
+      "bytes": 449,
+      "sha256": "3c585944569aba767329fc9a94148cc863075a0e1a46a444ad6caee16db61a0e"
+    },
+    {
+      "path": "standard/apple_dark.yaml",
+      "bytes": 1408,
+      "sha256": "c20bdf423537c148a1de59eca2d70cb752ce40094fb664e5a2a722d1dcbb3f31"
+    },
+    {
+      "path": "standard/apple_light.yaml",
+      "bytes": 1448,
+      "sha256": "5ab0ed9b5f8e1ce00b5d41f7484063a5221098548fd8aa5b955747d81415b068"
+    },
+    {
+      "path": "standard/arc_dark.yaml",
+      "bytes": 449,
+      "sha256": "9387cde4bb9f0f0891ded068f1a117dc94ccd123a8277f1c4f139fa03e19c791"
+    },
+    {
+      "path": "standard/argonaut.yaml",
+      "bytes": 449,
+      "sha256": "868a2db28349ab494d569c0c35fa44a4402101b24dc5a380885429f327a6d9f2"
+    },
+    {
+      "path": "standard/avirage.yaml",
+      "bytes": 596,
+      "sha256": "a97cd9815b166bf3b7c1cfc70dd251c2f95897b57407fc566c0f3c066fcebc02"
+    },
+    {
+      "path": "standard/ayu_dark.yaml",
+      "bytes": 449,
+      "sha256": "c72933cab604a99bc2986c101156977005e21d8e530c5c45b75f464e27cf393b"
+    },
+    {
+      "path": "standard/ayu_light.yaml",
+      "bytes": 450,
+      "sha256": "acf16e4bba44f9b580ea79d6eb85272c278f5da8bd077d907157ca434a842962"
+    },
+    {
+      "path": "standard/ayu_mirage.yaml",
+      "bytes": 449,
+      "sha256": "3cfa0d346914f74bd353f30139af853a930664d1b09720567dce9b48ff878e75"
+    },
+    {
+      "path": "standard/azuki.yaml",
+      "bytes": 475,
+      "sha256": "31aaf23618bf60d0f5380853e402ff2a72fbbde288261a293a3823d59637d7dd"
+    },
+    {
+      "path": "standard/bilibili_dark.yaml",
+      "bytes": 449,
+      "sha256": "b91bcd38ad0bfe26f5913864a80654eeaa731d0cff92e9ede51ec33cda77a9af"
+    },
+    {
+      "path": "standard/blood_moon.yaml",
+      "bytes": 449,
+      "sha256": "94e400a907ba448356ebb6fa414d0cdc893d452468340d222f551c9717bee76e"
+    },
+    {
+      "path": "standard/blue_monday.yaml",
+      "bytes": 513,
+      "sha256": "a68de9a9c3b851b5728f00f79deae0e8be23a6ef1ece76b90547453ab1bd3f1f"
+    },
+    {
+      "path": "standard/breeze.yaml",
+      "bytes": 449,
+      "sha256": "79b0cc4dd775b944ea565e246c043ff94849bb689cd0db2e5cd8d0bad90f34ae"
+    },
+    {
+      "path": "standard/campbell.yaml",
+      "bytes": 449,
+      "sha256": "f4c6ad6883832fe3a7e321e79d3086e7157ba866f9c078ad70db02df82d05238"
+    },
+    {
+      "path": "standard/catppuccin.yaml",
+      "bytes": 596,
+      "sha256": "508034e7c5d8de8ab29a06d8d0598366ab34c372748bf7bbe386dd561b4fe8fb"
+    },
+    {
+      "path": "standard/challenger_deep.yaml",
+      "bytes": 449,
+      "sha256": "a0e1e7c5e262d5944bb46af6a14ea396a2fc58da43ba2fd69ef2cdc445b7955a"
+    },
+    {
+      "path": "standard/cherry.yaml",
+      "bytes": 723,
+      "sha256": "4a7e31e800594d165e98c6f4f085271e6454f178eacfb7bbc14555f00f3c7ffa"
+    },
+    {
+      "path": "standard/classic_vivid.yaml",
+      "bytes": 449,
+      "sha256": "ea74e46191c81489b06435b4ae4b56dd4fe053678b668e6b5370bf2f212d037e"
+    },
+    {
+      "path": "standard/cobalt_2.yaml",
+      "bytes": 449,
+      "sha256": "a37bb08e53778a870e0e603827fd6b03a12aeb7a70729c734204c220d778146d"
+    },
+    {
+      "path": "standard/cobalt_next.yaml",
+      "bytes": 449,
+      "sha256": "8afdca27e102209b04ccadd4ef51bc2d55b95d23007fa53a9f7aadc3ca9f09f4"
+    },
+    {
+      "path": "standard/cyberpunk-2077.yaml",
+      "bytes": 451,
+      "sha256": "27cc322615dad599805fe2bb85aaadefb2931c9105c7b643572082fffeefe02d"
+    },
+    {
+      "path": "standard/cyberpunk-neon.yaml",
+      "bytes": 449,
+      "sha256": "09f5918e8a72d2b09e5ec6e38c49b194979dde4d6b323f8e223a43a80e9c7719"
+    },
+    {
+      "path": "standard/cyberpunk-night_city.yaml",
+      "bytes": 718,
+      "sha256": "2e501abfc02880c68b969b91595e4d7b8a6ac9290e342f1bd7152b84b683a615"
+    },
+    {
+      "path": "standard/cyberpunk-v.yaml",
+      "bytes": 638,
+      "sha256": "bd5d4bafe3631f28c62b6466957d10e09098a94fdcf175db5a6606b851cc68b3"
+    },
+    {
+      "path": "standard/daobeam.yaml",
+      "bytes": 450,
+      "sha256": "d235018e7af0521787a08947d68407d09423bb2320b2edbdb0cb9f870e67c40a"
+    },
+    {
+      "path": "standard/darcula.yaml",
+      "bytes": 449,
+      "sha256": "1a6cdb8216775da82fb2655f77284422c2fa3252b79d99fd7feaed93759ab151"
+    },
+    {
+      "path": "standard/dark-pinkish.yaml",
+      "bytes": 625,
+      "sha256": "887c460a9d1e8dc48d3d81dd3de116ecf56139ede625ab190d8b165aafb2e38a"
+    },
+    {
+      "path": "standard/dark_castle.yml",
+      "bytes": 632,
+      "sha256": "18779fc413cc66e31b7c6712c0a080ff25feceff55f656025aae3dbf8474df5c"
+    },
+    {
+      "path": "standard/dark_pastels.yaml",
+      "bytes": 449,
+      "sha256": "2a87b7b5696ce1a5cece08bb4267af0885fd09335981fedf2a81f14854655447"
+    },
+    {
+      "path": "standard/deep_ocean.yaml",
+      "bytes": 593,
+      "sha256": "27a40fb21c68ce543ef21a90cac36a50bad97ca4a1635e5907d938e01face6de"
+    },
+    {
+      "path": "standard/default_dark.yaml",
+      "bytes": 449,
+      "sha256": "a093e0657c9c90d79f6c3736a3796ace6bb277c08d07995fa5ad744a20c37588"
+    },
+    {
+      "path": "standard/dracula.yaml",
+      "bytes": 449,
+      "sha256": "aa8fb1043c69027f53d53973bfe7469742afb9cf7cdc851b66436b70583f93fa"
+    },
+    {
+      "path": "standard/edgerunners-david.yaml",
+      "bytes": 624,
+      "sha256": "234ca4eab48fa55cfeb2d5491e830a68e0aa4f26cdda475ef498704177ea340d"
+    },
+    {
+      "path": "standard/edgerunners-lucy_and_david_jump.yaml",
+      "bytes": 665,
+      "sha256": "08f00cb17630e703874538b52514ec4fbf570b0e7654d2ad17d721abadd68d02"
+    },
+    {
+      "path": "standard/everforest_hard.yaml",
+      "bytes": 596,
+      "sha256": "6514ce5a675201de4bd851e1a080c03bbd597da99855d5d16675e1927a296105"
+    },
+    {
+      "path": "standard/everforest_light.yaml",
+      "bytes": 597,
+      "sha256": "4d0e83d059903dd90f11b3089c459c619d2eebf904ba9cadf6ecc79e4e999cfa"
+    },
+    {
+      "path": "standard/fairyfloss.yaml",
+      "bytes": 688,
+      "sha256": "ce9ff591f909f9838b7aa2ede1bf94181bc92108c6416e5c6595a4d1c1b85577"
+    },
+    {
+      "path": "standard/faithful_argonaut.yaml",
+      "bytes": 449,
+      "sha256": "4d9733e7a816c350ac0e7b930c5ecef33f4c62119109e4bb3fb33a764fb5c051"
+    },
+    {
+      "path": "standard/falcon.yaml",
+      "bytes": 449,
+      "sha256": "167bc746b85b707f2715e2b92e43af0f06c9e20660c1065d2cd2e1836f9faae3"
+    },
+    {
+      "path": "standard/flat_remix.yaml",
+      "bytes": 449,
+      "sha256": "b84343ccdb5a91b9b8f6abd1ec0abe9899aea8befc01cee3bda5e64294e3309f"
+    },
+    {
+      "path": "standard/github_dark.yaml",
+      "bytes": 596,
+      "sha256": "134cfce42e45842c9a3625228e596f83c83b7c1587e5d5c8123aa5f9914d9280"
+    },
+    {
+      "path": "standard/github_dark_dimmed.yaml",
+      "bytes": 596,
+      "sha256": "74fe262e3d25567748ba239c0a6425d50af99254744e03d4af90693bbc5f52b6"
+    },
+    {
+      "path": "standard/github_light.yaml",
+      "bytes": 597,
+      "sha256": "4e913d03f992ca1f10717ef1716eb6319b0206e601265d45d2d7922b69866523"
+    },
+    {
+      "path": "standard/gotham.yaml",
+      "bytes": 449,
+      "sha256": "be9e9f32f6fead5ed67e31a0954a0ff12a2b53206fb7ee0c2de31bd9232c0df2"
+    },
+    {
+      "path": "standard/green_geeko.yaml",
+      "bytes": 450,
+      "sha256": "dc0a69a1a76e65d07cb0c616d62bef00eac8c8fe8718a79d6b333581987d50a2"
+    },
+    {
+      "path": "standard/gruvbox_dark.yaml",
+      "bytes": 449,
+      "sha256": "685424708316191e3ad8150536e46d358727cd2218d3558c60fa65ec37700d31"
+    },
+    {
+      "path": "standard/gruvbox_light.yaml",
+      "bytes": 450,
+      "sha256": "08e59cef4930b012674fed40c3314e26f7b971b0c9792cd51dd226a90d1cfc32"
+    },
+    {
+      "path": "standard/gruvbox_material.yaml",
+      "bytes": 449,
+      "sha256": "54ac948799fd3394b7d13f0f14930d49ad463d9f1c776eeb7aae7b4c0c37f6ea"
+    },
+    {
+      "path": "standard/hackthebox.yaml",
+      "bytes": 451,
+      "sha256": "816844484dd26fc072021b115dc7980308658904345e27f94434796291448226"
+    },
+    {
+      "path": "standard/halcyon.yaml",
+      "bytes": 596,
+      "sha256": "fea2bc23a5b75c378a8a8c697171d93f641942b50ab08930022124a9b90e3e95"
+    },
+    {
+      "path": "standard/high_contrast.yaml",
+      "bytes": 449,
+      "sha256": "a0169de24565f423842581fe37e28e76aafe136ae6e72b21a22829549a055f26"
+    },
+    {
+      "path": "standard/horizon_dark.yaml",
+      "bytes": 449,
+      "sha256": "29369b44a69f007157915d59ab58b77f3060cd89bee7dc64eac3fcc2e893bc28"
+    },
+    {
+      "path": "standard/hyper.yaml",
+      "bytes": 449,
+      "sha256": "319e9379af8b5cba3028f8c20efee52089f7d260d7e45600b5665af2f7c487b4"
+    },
+    {
+      "path": "standard/iceberg.yaml",
+      "bytes": 596,
+      "sha256": "5f00b69eed0f3aeac87fd6289699de970ca60706f3c3f1d1867c51763d08a6cc"
+    },
+    {
+      "path": "standard/iterm.yaml",
+      "bytes": 449,
+      "sha256": "8ccd18c98aeb3013fa934287607fd353fc2c5ab6ec2b158b3f22a99f22ab67f8"
+    },
+    {
+      "path": "standard/jellybeans.yaml",
+      "bytes": 672,
+      "sha256": "36c72ca076fe15a98f38beddd8da7c0b62d7e3684a541e42f7e194c770475ee5"
+    },
+    {
+      "path": "standard/kanagawa.yaml",
+      "bytes": 451,
+      "sha256": "3e7e34911faf7e4f23025f58c066e58b8fa8b952266aee89d56079e8bac8493c"
+    },
+    {
+      "path": "standard/konsole_linux.yaml",
+      "bytes": 449,
+      "sha256": "76a90ae215273a44c573d853a82085a5ba283ea8319c787b3bf2aef06737c731"
+    },
+    {
+      "path": "standard/laser.yaml",
+      "bytes": 449,
+      "sha256": "22252a9ccac7b0a210fed08d662fe3215c1a5aaa1423c6fdca98fddb40a807dc"
+    },
+    {
+      "path": "standard/lcars.yaml",
+      "bytes": 467,
+      "sha256": "53803bce69c0833bb85945a8134d2cd9620ff10449ee5ffe6833d1dca7f13ee8"
+    },
+    {
+      "path": "standard/light-pinkish.yaml",
+      "bytes": 625,
+      "sha256": "4a60375cefd256eed39e4b09ff4f44efc66f06c60d52976aed1a31d65a756367"
+    },
+    {
+      "path": "standard/low_contrast.yaml",
+      "bytes": 449,
+      "sha256": "ef8c03b7aa17b9cafbdae06d02e3cd561248878d2bb805d6f3d8b5843ee4af48"
+    },
+    {
+      "path": "standard/lucario.yaml",
+      "bytes": 449,
+      "sha256": "03cb5c9988975bf2c92e0092717f883e8a84ff3b3663b4f710d0469deb32d7e3"
+    },
+    {
+      "path": "standard/material_theme.yaml",
+      "bytes": 449,
+      "sha256": "5aafb8618e797f0faa562c5545271abcd2be3bdd742d2dc557a9819ed05fb734"
+    },
+    {
+      "path": "standard/material_theme_mod.yaml",
+      "bytes": 449,
+      "sha256": "7b09b7e29c73806d7a7a3b268cc16f9c4075de6e7aae9d183333c87319a38b07"
+    },
+    {
+      "path": "standard/matrix_dracula.yaml",
+      "bytes": 451,
+      "sha256": "37db51f04219f076fb833e4f953fc1a57b0e8672722b2ad60fc55e895b804f47"
+    },
+    {
+      "path": "standard/matrix_dracula_switcheroo.yaml",
+      "bytes": 451,
+      "sha256": "03ae2b205805f749796ae949421f5ff32904ecd5a1d419ec87dd58bce488b5a3"
+    },
+    {
+      "path": "standard/monokai_pro.yaml",
+      "bytes": 596,
+      "sha256": "b2185bc5fbc568caf8891bef270ce51f6c87bf4f72c42997395dc19919e1d7c3"
+    },
+    {
+      "path": "standard/monokai_pro_classic.yaml",
+      "bytes": 596,
+      "sha256": "42f42328b1a59de1afe828ee31561c392cc41add55f0bd3e3da05151f8215a44"
+    },
+    {
+      "path": "standard/monokai_pro_machine.yaml",
+      "bytes": 596,
+      "sha256": "10a710ed7e89c1c9ca93639d25f0c1ec9fffe27c06ee4fc4deaee5d68e19ec7c"
+    },
+    {
+      "path": "standard/monokai_pro_octagon.yml",
+      "bytes": 596,
+      "sha256": "5ea6920d1ce99cc791626da8ef21e523ced162534637e15c0da4946b164d9b34"
+    },
+    {
+      "path": "standard/monokai_pro_ristretto.yml",
+      "bytes": 596,
+      "sha256": "0eecb1201ed6d1151fb1396b42bdcdf6ceaf8ad1a36c1fa1ee746c0c5ede3188"
+    },
+    {
+      "path": "standard/monokai_pro_spectrum.yml",
+      "bytes": 596,
+      "sha256": "984e82c5738a971ce67651042d99b42d80b25be80fae5dd2afb0c1924e543cf5"
+    },
+    {
+      "path": "standard/night_owl.yaml",
+      "bytes": 450,
+      "sha256": "4d7d4370ad9a3bf3f6ecf7c16c892c74ca2fb507410bdd4e761889be1d779c07"
+    },
+    {
+      "path": "standard/nightfly.yaml",
+      "bytes": 449,
+      "sha256": "2f0beb1cd91688ce8746c0a7b19096ee036fd452c21e93c56386d807525dc108"
+    },
+    {
+      "path": "standard/nord.yaml",
+      "bytes": 449,
+      "sha256": "bd3679b578d150cdbe03a88d2073b91ac06ab2c9c0e0a0003cd81c31b1c5efc6"
+    },
+    {
+      "path": "standard/oceanic_next.yaml",
+      "bytes": 449,
+      "sha256": "5f894c8b85abaa6903fa326ff3809b6b47be8bf731470af86a0b7b7b2e7c1426"
+    },
+    {
+      "path": "standard/omni.yaml",
+      "bytes": 449,
+      "sha256": "974fa9e4d33223bdfb9ce95bd3063b5ce993f1ef4005b63e23a7fd2117cc20a5"
+    },
+    {
+      "path": "standard/one_dark.yaml",
+      "bytes": 449,
+      "sha256": "6d6b1a8488c8a8374c8092f049cd4bc16a8e101af23d38ccac8edcfb2c33f085"
+    },
+    {
+      "path": "standard/one_monokai.yaml",
+      "bytes": 596,
+      "sha256": "7450e96ad093a27bea1a31bf49964bf96eb1ce47cc2ec642a0b72af2171a12a4"
+    },
+    {
+      "path": "standard/outrun.yaml",
+      "bytes": 1348,
+      "sha256": "8cf622340421ce6083e62377ad8066bef289a3ba049f8b839d754e684bc81a3b"
+    },
+    {
+      "path": "standard/palenight.yaml",
+      "bytes": 449,
+      "sha256": "0dec7b6c0531fcc3ed96db21553993ce21c6549e914fc77cbca5a24d986aebe1"
+    },
+    {
+      "path": "standard/panda_syntax.yaml",
+      "bytes": 596,
+      "sha256": "90e1a2a3e52d6760ee07ecaa029818a533a7a34564e1147feea730044a5ff0fb"
+    },
+    {
+      "path": "standard/papercolor_light.yaml",
+      "bytes": 450,
+      "sha256": "875e2a2c89ca4399dad022571f53504679460bd1463c38b73ff9eb5da8fce21a"
+    },
+    {
+      "path": "standard/pencil_dark.yaml",
+      "bytes": 449,
+      "sha256": "75b8b20047dadcaca293c866981bc30cd13654873c72f4826f8923c3b80e88dd"
+    },
+    {
+      "path": "standard/pencil_light.yaml",
+      "bytes": 450,
+      "sha256": "dfe3514c911f68ba90e7a26b80d8cf389c750e02f94a97d5dd5629ee487ce0fd"
+    },
+    {
+      "path": "standard/penumbra_dark.yaml",
+      "bytes": 596,
+      "sha256": "0bfda86382f31c70df6d2e8dc3d2e58fac638a1e1297c624297069ad7aeaf7c6"
+    },
+    {
+      "path": "standard/penumbra_light.yaml",
+      "bytes": 597,
+      "sha256": "c25cf8e4880f48c9f10cbd49486ff356dcf688eb0a5da546f3fcfd03b9a5d470"
+    },
+    {
+      "path": "standard/plastic.yaml",
+      "bytes": 596,
+      "sha256": "c728cd0d09653bb41b14a9381d7ba06935345cec9fe373e63af4973c6e4ea09a"
+    },
+    {
+      "path": "standard/poimandres.yaml",
+      "bytes": 449,
+      "sha256": "52f29e5cb15578284808215e38fd3c31fce4c3320eaafcef8c0ff373c4be4067"
+    },
+    {
+      "path": "standard/poimandres_alt.yaml",
+      "bytes": 449,
+      "sha256": "687ee44d954cf41f4100fc939a8af13f8ac70c2a930242669860b287a10cdfb1"
+    },
+    {
+      "path": "standard/popos_dark.yaml",
+      "bytes": 439,
+      "sha256": "074e1fc4435e425f0d5ba612aa37e4b36c89a5d1d5d3de28f7be4ad8465407f9"
+    },
+    {
+      "path": "standard/popos_light.yaml",
+      "bytes": 440,
+      "sha256": "98db0fbde4f6b403516f7cd75b739edd8407e2c859196f0a36498be8ad1181b3"
+    },
+    {
+      "path": "standard/remedy_dark.yaml",
+      "bytes": 449,
+      "sha256": "175eee629b4d7cd9c33c67de39b4bdd0551c41fe1a58aeb59da043a617c59880"
+    },
+    {
+      "path": "standard/seashells.yaml",
+      "bytes": 449,
+      "sha256": "b4602d6f2c083ff92ff32ec55b6369452d5620642262c692e62ef3ddbd15e044"
+    },
+    {
+      "path": "standard/shades_of_purple.yaml",
+      "bytes": 451,
+      "sha256": "df28812469d5279b2fbf68b5e5699f57c3b1ac08a30919bfd78bd45401ed9206"
+    },
+    {
+      "path": "standard/shades_of_purple_super_dark.yaml",
+      "bytes": 451,
+      "sha256": "bdc7995b8fac9ceb3cf89a2671f2be02b9b3cc2abe4f4b260c6181e6e953f929"
+    },
+    {
+      "path": "standard/simply_dark.yaml",
+      "bytes": 449,
+      "sha256": "8587a0fe0d7850837956dd703cd6d65c442d5c09e60cb75fb453c3b4195a9ffa"
+    },
+    {
+      "path": "standard/snazzy.yaml",
+      "bytes": 449,
+      "sha256": "b8489101b62d32cb728d1a94f4c9c650ea0618a7da5b189fd106e7e5857c4f9d"
+    },
+    {
+      "path": "standard/snazzy_blue.yaml",
+      "bytes": 449,
+      "sha256": "0e35cf3fc3445640951aa9e6ac6009b5bbf2f524efdb38a7afbf503e736d9bf3"
+    },
+    {
+      "path": "standard/snazzy_green.yaml",
+      "bytes": 449,
+      "sha256": "6bb2bb09d7a34a91237d829bc6cf34bf12398e2c1a10b5ba3edb273baac88c94"
+    },
+    {
+      "path": "standard/snazzy_red.yaml",
+      "bytes": 449,
+      "sha256": "5da12ebe8be97fc5b8c81d83d152b5f339de003d7f10f561c6537e08af664b49"
+    },
+    {
+      "path": "standard/soft_one_dark.yaml",
+      "bytes": 451,
+      "sha256": "07034f5e992ffddf9a0fb293c6ce0247c5ffbf793168527059953686ecb37794"
+    },
+    {
+      "path": "standard/soft_tactile_warp_cream.yaml",
+      "bytes": 819,
+      "sha256": "c4618c15f40dbe7f486edc887ba3584f0cd35ed4156f293d05221b4f3dd7714b"
+    },
+    {
+      "path": "standard/soft_tactile_warp_dark.yaml",
+      "bytes": 798,
+      "sha256": "3a4f51292e8fa10b9907efc752684d9d0e132cebd5ab3505e5aa173957e2fedb"
+    },
+    {
+      "path": "standard/soft_tactile_warp_light.yaml",
+      "bytes": 790,
+      "sha256": "2a2e843705e07239b063f66c8a38ff2b7062b1822a4a038f1c42105ffbd4a3f2"
+    },
+    {
+      "path": "standard/solarized_dark.yaml",
+      "bytes": 449,
+      "sha256": "7ac6ab0ced793093ce701a40d2813286233f0e573c0ba5372ba65032943c3305"
+    },
+    {
+      "path": "standard/solarized_light.yaml",
+      "bytes": 450,
+      "sha256": "1f7c6756e995611431b8e39a2a60355805aae641293976796a1d1708a8bc1c57"
+    },
+    {
+      "path": "standard/spaceduck.yaml",
+      "bytes": 449,
+      "sha256": "5bc3131d1e0ed2b06d18cf868b8fc61f8ee5897f7817641e274c146f13e0c1f7"
+    },
+    {
+      "path": "standard/synthwave_84.yaml",
+      "bytes": 519,
+      "sha256": "7e83a6809cf20bc24ca964fb1131fa62c7c715e49f2c4218dc7490a82578b5c6"
+    },
+    {
+      "path": "standard/taerminal.yaml",
+      "bytes": 449,
+      "sha256": "05685f5a1f76b507556d9032733460e7e12512af1d9e7bce833b8b9304717527"
+    },
+    {
+      "path": "standard/tango_dark.yaml",
+      "bytes": 449,
+      "sha256": "f17e7d129abae80b248ab994c79dc2fe7de7ea2c6a61a8b9aecc12957ad6060c"
+    },
+    {
+      "path": "standard/tender.yaml",
+      "bytes": 449,
+      "sha256": "52859f3a300cac4d1980717f3b98807f186bed903d969479403b4080770702e6"
+    },
+    {
+      "path": "standard/terminal_app.yaml",
+      "bytes": 449,
+      "sha256": "bffea1a97de246ef930aee83c9b730f116c8b5a3cb7d2f9791ac2ff3c0f16354"
+    },
+    {
+      "path": "standard/thelovelace.yaml",
+      "bytes": 449,
+      "sha256": "12a1561ca90e98c562494729f562a6144ddd897c34943f88b6dc2237a4b6ed93"
+    },
+    {
+      "path": "standard/tokyo_night.yaml",
+      "bytes": 449,
+      "sha256": "ba00776f6cb2eb00cec92f3c37fe54a26c7c185da2a3ff8d1bffe8636953019f"
+    },
+    {
+      "path": "standard/tokyo_night_storm.yaml",
+      "bytes": 449,
+      "sha256": "ae480575e939fd353caa9d844dff390d0c8e90be480a38bfcd439e652721bc15"
+    },
+    {
+      "path": "standard/tomorrow_night.yaml",
+      "bytes": 449,
+      "sha256": "d3d45a24da414fa850a03066d501543d9293227a8f4e3d568bffdd28ae9b38fa"
+    },
+    {
+      "path": "standard/tomorrow_night_bright.yaml",
+      "bytes": 449,
+      "sha256": "aff9274182fc50e6828ba36a3a8f22abfa6d0c60fcd33acbee32c8fbfff69fb8"
+    },
+    {
+      "path": "standard/vitesse_black.yaml",
+      "bytes": 446,
+      "sha256": "2eb5e5adefdc9a6129890394d2848bfe6a2ea3dfc6b0d4a5b8f5154b7c4981af"
+    },
+    {
+      "path": "standard/vitesse_dark.yaml",
+      "bytes": 449,
+      "sha256": "ae9f325a3b5e5fdf6fe1db63361541269461c6541ed60946b12b8945c61543c9"
+    },
+    {
+      "path": "standard/vitesse_dark_soft.yaml",
+      "bytes": 446,
+      "sha256": "f8bf6e3f67c3bd1ff8c4336842c2a5191c0224a4f96e90294f640f271551d726"
+    },
+    {
+      "path": "standard/vitesse_light.yaml",
+      "bytes": 450,
+      "sha256": "df29ad0fb830a18852fa185ccbae3372cf1e64585471ebc63112f12135695992"
+    },
+    {
+      "path": "standard/vitesse_light_soft.yaml",
+      "bytes": 450,
+      "sha256": "4e127256f636349e9b21b0300aabe571f24a7940d0e75ceabd529ed30706183c"
+    },
+    {
+      "path": "standard/vscode_default_dark_material.yml",
+      "bytes": 449,
+      "sha256": "461090e78a7fedf7686f8044f1eac9ab3f7d3c554f08828e376ae2c1f6452ad9"
+    },
+    {
+      "path": "standard/vuesion.yaml",
+      "bytes": 539,
+      "sha256": "b8edb882de5ba7eade2c3bf06ce30018d37fe996286b320b56765949edf46514"
+    },
+    {
+      "path": "standard/wombat.yaml",
+      "bytes": 449,
+      "sha256": "749363f985aadde4edd7a3d32909e4a6b4919034f7083d706a4594425d3b03a3"
+    },
+    {
+      "path": "standard/xterm.yaml",
+      "bytes": 449,
+      "sha256": "4e236745c53363f2eefc0a71a362a9a20b0886193e77b6449426f6cf7cd169b8"
+    },
+    {
+      "path": "standard/zenbones_dark.yaml",
+      "bytes": 596,
+      "sha256": "b380ac6cdb694e6018eaa1ee8394a6e966e135e5f6b744647082bf50c7bc18d1"
+    },
+    {
+      "path": "standard/zenbones_light.yaml",
+      "bytes": 597,
+      "sha256": "8ca210c88d214d34ba7ff690148be334d99c5e2074a463592c13ed445bafcdbf"
+    },
+    {
+      "path": "standard/zenburn.yaml",
+      "bytes": 481,
+      "sha256": "a8e25204d29d60261bdfd0252405a4f1a0fa1ae71047edce63f56e2f096a7bac"
+    },
+    {
+      "path": "standard/zenburn_colorblind.yaml",
+      "bytes": 492,
+      "sha256": "556db57d90c225c9394e3c9762d00341ddac7541863d14bdcefb3dc541fe5970"
+    },
+    {
+      "path": "standard/zenburn_colorblind_high_contrast.yaml",
+      "bytes": 506,
+      "sha256": "6b15931bfb765e9e72f3e082008ba16927186a6db13c6520b10fbd83c20ecbc3"
+    },
+    {
+      "path": "stradicat/elementarish.yaml",
+      "bytes": 449,
+      "sha256": "2700c8594f65049c952b61d7ffb33a3eb38969c325a035bbdfaf2e6dfdae66f2"
+    },
+    {
+      "path": "warp_bundled/cyber_wave.yaml",
+      "bytes": 503,
+      "sha256": "23aa921dd90d4f2698b2c7a16a833f66dc94ae5c3f37bde602e7cde9621486c7"
+    },
+    {
+      "path": "warp_bundled/dark_city.yaml",
+      "bytes": 615,
+      "sha256": "409b8ab5bceeba97518fe5c226daf4332887f14dffd3409dce3de0a9eccf3208"
+    },
+    {
+      "path": "warp_bundled/dracula.yaml",
+      "bytes": 449,
+      "sha256": "a084d180d23c6e3c193fefadc238cd40ec6a734b0ba243bea242cf52be577e7f"
+    },
+    {
+      "path": "warp_bundled/fancy_dracula.yaml",
+      "bytes": 503,
+      "sha256": "509f9432726d333ff780a285e6c6d641d32f3fc45caa1bb5035f1809ad982abb"
+    },
+    {
+      "path": "warp_bundled/gruvbox_dark.yaml",
+      "bytes": 449,
+      "sha256": "e150cba13c8e95196c164edc87e611d2aca3b2b8b6b25fc3e9ea612b6e55c117"
+    },
+    {
+      "path": "warp_bundled/gruvbox_light.yaml",
+      "bytes": 450,
+      "sha256": "84ecb5b0227b79e6788cdc73bc30f70a94b51cf3fb171aa20d1104a8e8b6837e"
+    },
+    {
+      "path": "warp_bundled/jellyfish.yaml",
+      "bytes": 588,
+      "sha256": "6179466789396c896f3ff8a8e924ef538b7949e2ea42eff767a1b1ba256a9da6"
+    },
+    {
+      "path": "warp_bundled/koi.yaml",
+      "bytes": 582,
+      "sha256": "87a549c227f1b407fb489403a6a5f1610696b31c1fde5131a2e1d36748753795"
+    },
+    {
+      "path": "warp_bundled/leafy.yaml",
+      "bytes": 584,
+      "sha256": "ccd37df62d20572591d381a8038a77fa1bc875f47ce1c3315b05fadc524cdb34"
+    },
+    {
+      "path": "warp_bundled/marble.yaml",
+      "bytes": 586,
+      "sha256": "286d9b98ca81604a63ada447fca12b5af8d1c26098dc5ce605ca7a4256b8eb02"
+    },
+    {
+      "path": "warp_bundled/pink_city.yaml",
+      "bytes": 1444,
+      "sha256": "73e906886cd26d9dd7095c3efc82df79f312fa9af10c62c36acff56c3a1a688f"
+    },
+    {
+      "path": "warp_bundled/red_rock.yaml",
+      "bytes": 614,
+      "sha256": "8ab300a1dbd75d4794c0639aa1b0acbc97bf3607236047ba903a9e208304e422"
+    },
+    {
+      "path": "warp_bundled/snowy.yaml",
+      "bytes": 612,
+      "sha256": "29d9411d4c8b19997387eda9c73c533dd293b7984bd848cd477fea61678e3de9"
+    },
+    {
+      "path": "warp_bundled/solarized_dark.yaml",
+      "bytes": 449,
+      "sha256": "64512334741d6b49ea1837815e7bb3d6e2412e278c9b6bacb99e7d91a35a9268"
+    },
+    {
+      "path": "warp_bundled/solarized_light.yaml",
+      "bytes": 450,
+      "sha256": "cf35f2874ca15a5e7af200d10900b7d7c32cb4a71eaa1197d8cc98a81f5cc0ce"
+    },
+    {
+      "path": "warp_bundled/warp.yaml",
+      "bytes": 512,
+      "sha256": "1526b2560bc2218f30691017b016aa88b31fa203e3064c0bab9fb0db91cfa523"
+    },
+    {
+      "path": "warp_bundled/warp_dark.yaml",
+      "bytes": 449,
+      "sha256": "2dfe0a615f2fc93c6dc02ec6705835b82dd01736bfe91085fe6d8bdc90c40a4b"
+    },
+    {
+      "path": "warp_bundled/warp_light.yaml",
+      "bytes": 450,
+      "sha256": "694087ac3af39bee154c5a5fc7ff0af70d62c4a9a762501cdf6968f09264cb99"
+    },
+    {
+      "path": "warp_bundled/willow_dream.yaml",
+      "bytes": 503,
+      "sha256": "1faae857d4586a19fa2e3572f8073c7babcb44f1ab80ff52ff9b9415eaaf87df"
+    }
+  ]
+}

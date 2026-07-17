@@ -873,7 +873,9 @@
         "crates/codegen/xai-grok-pager/npm/grok-win32-arm64/package.json",
         "crates/codegen/xai-grok-pager/npm/grok-win32-x64/.gitignore",
         "crates/codegen/xai-grok-pager/npm/grok-win32-x64/package.json",
+        "crates/codegen/xai-grok-pager/npm/grok/package.json",
         "crates/codegen/xai-grok-pager/npm/grok/scripts/assemble-platform-packages.js",
+        "crates/codegen/xai-grok-pager/npm/grok/scripts/test-assemble-platform-packages.js",
         "crates/codegen/xai-grok-shell/README.md",
         "crates/codegen/xai-grok-version/src/lib.rs"
       ],
@@ -930,7 +932,9 @@
         "crates/codegen/xai-grok-pager/src/scrollback/text_selection.rs",
         "crates/codegen/xai-grok-pager/src/slash/commands/theme.rs",
         "crates/codegen/xai-grok-pager/src/views/settings_modal.rs",
-        "crates/codegen/xai-grok-pager/tests/settings_e2e.rs"
+        "crates/codegen/xai-grok-pager/tests/settings_e2e.rs",
+        "fork/scripts/tests/test_vendor_warp_themes.py",
+        "fork/scripts/vendor_warp_themes.py"
       ],
       "integration_paths": [
         "crates/codegen/xai-grok-pager-render/build.rs",

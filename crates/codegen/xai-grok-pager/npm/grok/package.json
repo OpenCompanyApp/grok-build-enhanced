@@ -19,7 +19,8 @@
         "x64"
     ],
     "scripts": {
-        "postinstall": "node bin/postinstall.js"
+        "postinstall": "node bin/postinstall.js",
+        "test:assemble": "node --test scripts/test-assemble-platform-packages.js"
     },
     "publishConfig": {
         "access": "public"
