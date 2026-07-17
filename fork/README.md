@@ -1,8 +1,9 @@
 # Downstream compatibility manifest
 
-This directory records the immutable inputs and initial path ownership for the
-OpenCompanyApp downstream patch stack. It is compatibility metadata, not a
-release mechanism and not an alternative source of upstream-version truth.
+This directory records the immutable inputs and complete frozen-diff path
+ownership for the OpenCompanyApp downstream patch stack. It is compatibility
+metadata, not a release mechanism and not an alternative source of
+upstream-version truth.
 `UPSTREAM_VERSIONS.md` remains the human-reviewed upstream ledger.
 
 The Phase 2 snapshot is pinned to:
@@ -27,14 +28,16 @@ interpret a command from JSON. The manifest names checks by ID, and
 - stable source and feature IDs;
 - safe repository-relative feature globs plus literal integration and legal
   anchors; and
-- a deliberate `allow_uncovered` policy for incremental ownership coverage.
+- a fail-closed coverage policy requiring every frozen downstream path to have
+  an owner.
 
 Feature paths describe ownership of the downstream diff from the pinned
-baseline to the frozen tip. Coverage is intentionally incomplete in this first
-manifest. Unowned changed paths are warnings while `allow_uncovered` is true,
-but the checker always prints every uncovered path in bytewise-sorted order.
-Use `--strict-coverage` to make the same list fatal. Do not add exclusions merely
-to silence that report; add a feature owner when ownership is understood.
+baseline to the frozen tip. Every frozen changed path must have at least one
+feature owner, and `coverage.allow_uncovered` remains `false`. The checker prints
+any future uncovered path in bytewise-sorted order and fails. `--strict-coverage`
+provides the same fail-closed policy as an explicit CI assertion. Do not add
+exclusions merely to silence that report; add a feature owner when ownership is
+understood.
 
 Path patterns use `/` separators. `*` and `?` stay within one path component;
 `**` is accepted only as a complete component. Absolute paths, parent traversal,
