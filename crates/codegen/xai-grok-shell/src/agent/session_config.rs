@@ -59,6 +59,8 @@ fn effort_label(effort: ReasoningEffort) -> String {
         ReasoningEffort::Medium => "Medium",
         ReasoningEffort::High => "High",
         ReasoningEffort::Xhigh => "X-High",
+        ReasoningEffort::Max => "Max",
+        ReasoningEffort::Ultra => "Ultra",
     }
     .to_string()
 }
@@ -173,6 +175,32 @@ mod tests {
         let opts = build_session_config_options(&models, &current, &[], None);
         assert_eq!(opts.len(), 1);
         assert!(opts.iter().all(|o| o.category == "model"));
+    }
+
+    #[test]
+    fn extended_codex_modes_are_preserved_when_catalog_supplies_them() {
+        let models = [model("openai-codex/gpt-5.6", "GPT-5.6")];
+        let current = acp::ModelId::from("openai-codex/gpt-5.6");
+        let efforts = [ReasoningEffort::Max, ReasoningEffort::Ultra]
+            .into_iter()
+            .map(|effort| ReasoningEffortOption {
+                id: effort.as_str().to_string(),
+                value: effort,
+                label: effort_label(effort),
+                description: None,
+                default: effort == ReasoningEffort::Max,
+            })
+            .collect::<Vec<_>>();
+        let opts =
+            build_session_config_options(&models, &current, &efforts, Some(ReasoningEffort::Ultra));
+        let modes = opts
+            .iter()
+            .filter(|option| option.category == "mode")
+            .collect::<Vec<_>>();
+        assert_eq!(modes.len(), 2);
+        assert_eq!(modes[0].id, "max");
+        assert_eq!(modes[1].id, "ultra");
+        assert!(modes[1].selected);
     }
 
     #[test]

@@ -1501,9 +1501,8 @@ impl SessionActor {
             );
             return None;
         }
-        let (Some(storage), Some(params)) =
-            (self.memory.storage(), self.memory.backend_params.as_ref())
-        else {
+        let params = self.memory.backend_params.borrow().clone();
+        let (Some(storage), Some(params)) = (self.memory.storage(), params) else {
             return None;
         };
         let conversation = self.chat_state_handle.get_conversation().await;
@@ -1516,7 +1515,7 @@ impl SessionActor {
         }
         use xai_grok_tools::types::memory_backend::MemoryBackend as _;
         let (injection_params, configured_min_score) =
-            build_initial_injection_backend_params(params, &self.memory.initial_injection_config);
+            build_initial_injection_backend_params(&params, &self.memory.initial_injection_config);
         let backend = crate::session::memory::MemoryBackendImpl::from_session_params(
             storage,
             &injection_params,
@@ -1767,6 +1766,7 @@ impl SessionActor {
         let mut loop_index: u32 = 0;
         let mut todo_gate_fires: u32 = 0;
         let mut auth_retry_schedule = AuthRetrySchedule::new();
+        let mut codex_auth_retry_attempted = false;
         let mut turn_span_totals = TurnSpanTotals::default();
         let mut model_fingerprint: Option<String> = None;
         let mut structured_output_retries: u32 = 0;
@@ -1813,6 +1813,13 @@ impl SessionActor {
                 );
             }
             self.maybe_inject_mcp_reminder().await;
+            // A resumed session can already be beyond the hard window. Keep
+            // this check before every model-backed operation in the loop,
+            // even when a previous provider failure has suppressed automatic
+            // compaction.
+            if self.resolve_preflight_overflow().await? {
+                continue;
+            }
             if self.two_pass_active()
                 && !self.compaction.prefire.has_cache()
                 && self.should_prefire_two_pass().await
@@ -1887,6 +1894,18 @@ impl SessionActor {
                     crate::managed_config::resolve_deployment_key().as_deref(),
                 );
             }
+            if let Some(config) = self.chat_state_handle.get_sampling_config().await
+                && let Some(instruction) = self.models_manager.codex_multi_agent_mode_instruction(
+                    config.provider,
+                    &config.model,
+                    config.reasoning_effort,
+                )
+            {
+                // Ephemeral and provider-scoped: do not persist this into the
+                // user's conversation. Recompute on every loop iteration so
+                // switching into or out of Ultra takes effect immediately.
+                request.items.push(ConversationItem::system(instruction));
+            }
             if structured_output_native {
                 request.json_schema = json_schema.clone();
             }
@@ -1912,13 +1931,26 @@ impl SessionActor {
                 )),
             );
             let model_timer = std::time::Instant::now();
-            let (response, latency) = match self.run_turn_via_sampler(request.clone()).await? {
+            let (response, latency) = match self
+                .run_turn_via_sampler(request.clone(), !codex_auth_retry_attempted)
+                .await?
+            {
                 SamplerTurnOutcome::Response(r, latency) => (r, latency),
                 SamplerTurnOutcome::CompactAndResubmit => {
                     auth_retry_schedule.reset();
                     continue;
                 }
                 SamplerTurnOutcome::RefreshAuthAndResubmit => {
+                    if self
+                        .chat_state_handle
+                        .get_sampling_config()
+                        .await
+                        .is_some_and(|config| {
+                            config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
+                        })
+                    {
+                        codex_auth_retry_attempted = true;
+                    }
                     if let Some((attempt, delay)) = auth_retry_schedule.next_delay() {
                         let delay_ms = delay.as_millis() as u64;
                         tracing::warn!(
@@ -2025,7 +2057,8 @@ impl SessionActor {
                     },
                 );
             }
-            self.record_response_token_usage(&response, Some(model_duration_ms));
+            self.record_response_token_usage(&response, Some(model_duration_ms))
+                .await;
             if let Some(pt) = prompt_timing.take() {
                 let mcp_count = self.mcp_state.lock().await.configs.len() as u32;
                 let mcp_tools = self
@@ -2062,6 +2095,7 @@ impl SessionActor {
             let fallback_text = response.fallback_text();
             let stop_reason = response.stop_reason;
             let response_is_empty = response.is_empty();
+            let requires_provider_follow_up = response.requires_provider_follow_up();
             let turn_refused =
                 stop_reason == Some(xai_grok_sampling_types::StopReason::ContentFilter);
             let refusal_explanation = response.stop_message.clone();
@@ -2110,6 +2144,13 @@ impl SessionActor {
                 .await;
             }
             if tool_calls.is_empty() {
+                if requires_provider_follow_up {
+                    tracing::debug!(
+                        prompt_id = %req_id,
+                        "provider requested another sampling round in the same turn"
+                    );
+                    continue;
+                }
                 if !schema_ok
                     && !turn_refused
                     && let Some(gate_cfg) = self.todo_gate_policy()
@@ -2296,10 +2337,7 @@ impl SessionActor {
                 return Ok(TurnOutcome::MaxTurnsReached { limit });
             }
             tool_turn_count = next_turn;
-            if let Some(trigger_info) = self.check_preflight_overflow().await {
-                if let Err(e) = self.run_compact_only(trigger_info).await {
-                    tracing::error!(error = % e, "Preflight overflow compaction failed");
-                }
+            if self.resolve_preflight_overflow().await? {
                 continue;
             }
         }

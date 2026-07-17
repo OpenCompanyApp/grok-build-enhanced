@@ -25,6 +25,141 @@ use xai_grok_tools::implementations::grok_build::task::types::*;
 use xai_grok_workspace::file_system::AsyncFileSystem;
 use xai_hunk_tracker::HunkTrackerHandle;
 use super::*;
+
+type SubagentProviderTools = (
+    xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig,
+    xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig,
+    Option<xai_grok_tools::types::SharedApiKeyProvider>,
+);
+
+/// Resolve provider-owned media/auth resources from the child's effective
+/// model, not the parent model it happened to inherit its spawn context from.
+/// Cross-provider overrides are uncommon but security-sensitive: a Codex
+/// child must never receive xAI media credentials, and an xAI child must never
+/// receive the ChatGPT account-header provider.
+fn resolve_effective_provider_tools(
+    sampling: &xai_grok_sampler::SamplerConfig,
+    ctx: &SubagentSpawnContext,
+) -> SubagentProviderTools {
+    use xai_grok_sampling_types::ProviderId;
+    use xai_grok_tools::implementations::grok_build::{
+        image_gen::ImageGenConfig, video_gen::VideoGenConfig,
+    };
+
+    if sampling.provider == ctx.sampling_config.provider {
+        return (
+            ctx.image_gen_config.clone(),
+            ctx.video_gen_config.clone(),
+            ctx.api_key_provider.clone(),
+        );
+    }
+
+    match sampling.provider {
+        ProviderId::OpenAiCodex => {
+            let (default_image_gen, default_image_edit) = ctx.models_manager.image_tool_gates();
+            let image_gen_enabled = ctx
+                .agent_config
+                .as_ref()
+                .map_or(default_image_gen, |cfg| cfg.resolve_image_gen().value);
+            let image_edit_enabled = ctx
+                .agent_config
+                .as_ref()
+                .map_or(default_image_edit, |cfg| cfg.resolve_image_edit().value);
+            if !image_gen_enabled && !image_edit_enabled {
+                return (ImageGenConfig::Disabled, VideoGenConfig::Disabled, None);
+            }
+            let provider = crate::auth::codex::CodexAuthManager::new(
+                &crate::util::grok_home::grok_home(),
+            )
+            .ok()
+            .map(std::sync::Arc::new)
+            .map(crate::auth::codex::shared_api_key_provider);
+            (
+                // The selected coding model's image-input modality controls
+                // reading attachments, not the standalone gpt-image-2 tools.
+                ImageGenConfig::OpenAiCodex {
+                    base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
+                    image_gen_enabled,
+                    image_edit_enabled,
+                },
+                VideoGenConfig::Disabled,
+                provider,
+            )
+        }
+        ProviderId::Xai => {
+            let Some(api_key) = sampling.api_key.clone() else {
+                return (ImageGenConfig::Disabled, VideoGenConfig::Disabled, None);
+            };
+            let endpoints = ctx.models_manager.endpoints();
+            let base_url = endpoints.xai_api_base_url;
+            let version = ctx
+                .agent_config
+                .as_ref()
+                .and_then(|cfg| cfg.client_version.clone())
+                .unwrap_or_else(|| xai_grok_version::VERSION.to_owned());
+            let mut extra_headers = indexmap::IndexMap::new();
+            extra_headers.insert(
+                "user-agent".to_owned(),
+                format!("xai-grok-build/{version}"),
+            );
+            let (default_image_gen, default_image_edit) = ctx.models_manager.image_tool_gates();
+            let image_gen_enabled = ctx
+                .agent_config
+                .as_ref()
+                .map_or(default_image_gen, |cfg| cfg.resolve_image_gen().value);
+            let image_edit_enabled = ctx
+                .agent_config
+                .as_ref()
+                .map_or(default_image_edit, |cfg| cfg.resolve_image_edit().value);
+            let model_override = ctx
+                .agent_config
+                .as_ref()
+                .and_then(crate::agent::config::Config::resolve_image_gen_model_override);
+            let image = ImageGenConfig::Enabled {
+                api_key: api_key.clone(),
+                base_url: base_url.clone(),
+                extra_headers: extra_headers.clone(),
+                image_gen_enabled,
+                image_edit_enabled,
+                model_override,
+                // This is only a UX optimization; the server remains the
+                // authority and false is the documented fail-open value.
+                tier_restricted: false,
+            };
+            let video = match ctx.agent_config.as_ref() {
+                Some(cfg) => {
+                    let zdr = cfg
+                        .disable_zdr_incompatible_tools
+                        .then(|| cfg.zdr_video_output_s3.clone())
+                        .flatten()
+                        .filter(|s3| s3.is_valid());
+                    if cfg.disable_zdr_incompatible_tools && zdr.is_none() {
+                        VideoGenConfig::Disabled
+                    } else {
+                        VideoGenConfig::Enabled {
+                            api_key,
+                            base_url,
+                            extra_headers,
+                            zdr_video_output_s3: zdr.map(Box::new),
+                            tier_restricted: false,
+                        }
+                    }
+                }
+                None => VideoGenConfig::Disabled,
+            };
+            let provider = Some(
+                std::sync::Arc::new(crate::auth::manager::SharedAuthKeyProvider(
+                    ctx.auth_manager.clone(),
+                )) as xai_grok_tools::types::SharedApiKeyProvider,
+            );
+            (image, video, provider)
+        }
+        // A custom model may have arbitrary provider semantics. Fail closed
+        // for provider-owned media rather than guessing from its URL/key.
+        ProviderId::Custom => (ImageGenConfig::Disabled, VideoGenConfig::Disabled, None),
+    }
+}
+
 pub(super) fn task_model_override_error(
     requested: Option<&str>,
     provenance: ModelOverrideProvenance,
@@ -470,13 +605,24 @@ pub(crate) async fn handle_subagent_request(
         }
     }
     if let Some(raw) = effective_runtime.reasoning_effort.as_deref()
-        && ctx
-            .models_manager
-            .model_supports_reasoning_effort(effective_model_id.0.as_ref())
     {
         use xai_grok_sampling_types::ReasoningEffort;
         match raw.parse::<ReasoningEffort>() {
-            Ok(eff) => effective_sampling_config.reasoning_effort = Some(eff),
+            Ok(eff) => match ctx
+                .models_manager
+                .resolve_reasoning_effort_for_model(effective_model_id.0.as_ref(), eff)
+            {
+                Some(effective) => {
+                    effective_sampling_config.reasoning_effort = Some(effective);
+                }
+                None => {
+                    tracing::warn!(
+                        model_id = %effective_model_id.0,
+                        effort = %eff,
+                        "subagent reasoning_effort: model does not advertise override; using catalog default"
+                    );
+                }
+            },
             Err(err) => {
                 tracing::warn!(
                     value = raw, error = % err,
@@ -484,6 +630,17 @@ pub(crate) async fn handle_subagent_request(
                 )
             }
         }
+    }
+    if let Some(effort) = effective_sampling_config.reasoning_effort
+        && ctx.models_manager.model_in_catalog(&effective_model_id.0)
+    {
+        effective_sampling_config.reasoning_effort = ctx
+            .models_manager
+            .resolve_reasoning_effort_for_model(effective_model_id.0.as_ref(), effort)
+            .or_else(|| {
+                ctx.models_manager
+                    .model_default_reasoning_effort(effective_model_id.0.as_ref())
+            });
     }
     let subagent_id = request.id.clone();
     let child_session_id = acp::SessionId::new(subagent_id.clone());
@@ -779,11 +936,11 @@ pub(crate) async fn handle_subagent_request(
                 { "subagent_id" : & request.id, "subagent_type" : & request
                 .subagent_type, "effective_model" : effective_model_id.0.as_ref(),
                 "effective_model_raw" : & effective_sampling_config.model, "base_url" : &
-                effective_sampling_config.base_url, "key_prefix" : key_prefix(&
+                effective_sampling_config.base_url, "has_api_key" : has_api_key(&
                 effective_sampling_config.api_key), "auth_type" : format!("{:?}",
                 inherited_auth_type), "model_has_own_creds" : model_has_own_creds,
                 "auth_method_id" : ctx.auth_method_id.0.as_ref(), "parent_model" : ctx
-                .model_id.0.as_ref(), "parent_key_prefix" : key_prefix(& ctx
+                .model_id.0.as_ref(), "parent_has_api_key" : has_api_key(& ctx
                 .sampling_config.api_key), "context_window" : effective_sampling_config
                 .context_window, }
             ),
@@ -1034,6 +1191,11 @@ pub(crate) async fn handle_subagent_request(
     });
     let subagent_session_default_agent_profile = Some(definition.name.clone());
     let subagent_model_id = effective_sampling_config.model.clone();
+    let (
+        effective_image_gen_config,
+        effective_video_gen_config,
+        effective_api_key_provider,
+    ) = resolve_effective_provider_tools(&effective_sampling_config, &ctx);
     let _ = persistence
         .tx
         .send(crate::session::persistence::PersistenceMsg::CurrentModel {
@@ -1148,8 +1310,8 @@ pub(crate) async fn handle_subagent_request(
             None,
             ctx.web_search_sampling_config.clone(),
             ctx.web_fetch_config.clone(),
-            ctx.image_gen_config.clone(),
-            ctx.video_gen_config.clone(),
+            effective_image_gen_config,
+            effective_video_gen_config,
             ctx.app_builder_deployer_config.clone(),
             ctx.write_file_enabled,
             ctx.goal_enabled,
@@ -1172,7 +1334,7 @@ pub(crate) async fn handle_subagent_request(
             ctx.models_manager.clone(),
             parent_traceparent,
             ctx.permission_handle.clone(),
-            ctx.api_key_provider.clone(),
+            effective_api_key_provider,
             ctx.image_description_model.clone(),
             ctx.hook_registry.clone(),
             ctx.workspace_ops.clone(),
