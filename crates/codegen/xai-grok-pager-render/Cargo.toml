@@ -32,9 +32,12 @@ supports-color = { workspace = true }
 
 # Data
 serde = { workspace = true, features = ["derive"] }
+serde_yaml = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true, features = ["serde"] }
 documented = { workspace = true }
+arc-swap = { workspace = true }
+blake3 = { workspace = true }
 
 # VTE terminal emulation for native rendering of command output (SGR, cursor, \r)
 vte = { workspace = true }
@@ -85,8 +88,8 @@ shellexpand = "3.1"
 # Parsing
 url = { workspace = true }
 
-# Hot-reload config (dev mode)
-notify = { workspace = true, optional = true }
+# Theme/config file watching
+notify = { workspace = true }
 
 # libc: poll/read for non-blocking terminal reads in theme/osc11.rs.
 [target.'cfg(unix)'.dependencies]
@@ -102,9 +105,14 @@ serial_test = { workspace = true }
 tempfile = { workspace = true }
 
 [features]
+# Downstream pager tests exercise render-owned state and platform probes. Keep
+# those hooks out of normal builds while making the test dependency seam
+# explicit; `cfg(test)` alone does not apply when this crate is compiled as a
+# dependency of `xai-grok-pager`'s lib-test target.
+test-support = []
 # CI builds a single shared rlib variant per crate, so the pager's CI
 # test target links the same render lib as production. Enabling the test-only
 # helpers in the CI default set keeps them present for the pager test while
 # leaving cargo's `default` (and thus cargo production builds) without them.
 # The helpers are inert unless their mock setters are called.
-default-bazel = []
+default-bazel = ["test-support"]

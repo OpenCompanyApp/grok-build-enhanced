@@ -42,7 +42,7 @@ minijinja = { version = "2", features = ["custom_syntax"] }
 parking_lot = { workspace = true }
 htmd = { workspace = true }
 scraper = { workspace = true }
-reqwest = { workspace = true, features = ["rustls-tls", "json", "gzip", "brotli", "deflate"] }
+reqwest = { workspace = true, features = ["rustls-tls", "json", "gzip", "brotli", "deflate", "stream"] }
 pulldown-cmark = { workspace = true }
 regex = { workspace = true }
 schemars = { workspace = true }
@@ -114,6 +114,9 @@ tar = { workspace = true }
 workspace = true
 
 [features]
+# Allows downstream crate tests to route Codex web-search requests to a
+# loopback mock. Production builds keep the exact ChatGPT endpoint allowlist.
+test-support = []
 default-bazel = [
     "serde",
     ]
