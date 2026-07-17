@@ -674,6 +674,12 @@ fn is_http_url(raw: &str) -> bool {
 pub enum VideoGenConfig {
     #[default]
     Disabled,
+    /// The currently selected provider cannot expose video generation, but a
+    /// complete xAI recipe is retained so a later provider switch can install
+    /// the client and tool definitions without losing headers/ZDR/tier policy.
+    Unavailable {
+        xai_fallback: Option<Box<VideoGenConfig>>,
+    },
     Enabled {
         api_key: String,
         base_url: String,
@@ -690,6 +696,14 @@ pub enum VideoGenConfig {
 impl VideoGenConfig {
     pub fn is_enabled(&self) -> bool {
         matches!(self, Self::Enabled { .. })
+    }
+
+    pub fn xai_fallback(&self) -> Option<&VideoGenConfig> {
+        match self {
+            Self::Enabled { .. } => Some(self),
+            Self::Unavailable { xai_fallback } => xai_fallback.as_deref(),
+            Self::Disabled => None,
+        }
     }
 }
 

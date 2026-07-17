@@ -52,6 +52,27 @@ impl From<std::io::Error> for ComputerError {
 pub trait AsyncFileSystem: Send + Sync {
     async fn read_file(&self, path: &Path) -> Result<Vec<u8>, ComputerError>;
 
+    /// Read at most `max_bytes` from `path`.
+    ///
+    /// Backends with streaming or metadata support should override this so an
+    /// oversized file is never fully allocated. The default preserves
+    /// compatibility for remote adapters while still enforcing the semantic
+    /// limit before returning bytes to the caller.
+    async fn read_file_limited(
+        &self,
+        path: &Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ComputerError> {
+        let bytes = self.read_file(path).await?;
+        if bytes.len() > max_bytes {
+            return Err(ComputerError::io_with_kind(
+                format!("file exceeds {max_bytes} byte read limit"),
+                std::io::ErrorKind::InvalidData,
+            ));
+        }
+        Ok(bytes)
+    }
+
     async fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), ComputerError>;
 
     async fn delete_file(&self, path: &Path) -> Result<(), ComputerError>;

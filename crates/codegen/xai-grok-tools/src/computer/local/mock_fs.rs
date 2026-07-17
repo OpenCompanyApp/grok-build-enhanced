@@ -62,6 +62,27 @@ impl AsyncFileSystem for MockFs {
         })
     }
 
+    async fn read_file_limited(
+        &self,
+        path: &Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ComputerError> {
+        let files = self.files.read().await;
+        let content = files.get(path).ok_or_else(|| {
+            ComputerError::IOError(
+                format!("File not found: {}", path.display()),
+                Some(std::io::ErrorKind::NotFound),
+            )
+        })?;
+        if content.len() > max_bytes {
+            return Err(ComputerError::io_with_kind(
+                format!("file exceeds {max_bytes} byte read limit"),
+                std::io::ErrorKind::InvalidData,
+            ));
+        }
+        Ok(content.clone())
+    }
+
     async fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), ComputerError> {
         self.files
             .write()
@@ -95,6 +116,18 @@ mod tests {
         // Read it back
         let content = fs.read_file(Path::new("/test.txt")).await.unwrap();
         assert_eq!(content, b"hello world");
+    }
+
+    #[tokio::test]
+    async fn test_mock_fs_limited_read_rejects_before_clone() {
+        let fs = MockFs::new();
+        fs.set_file("/large.bin", &[7; 32]).await;
+
+        let err = fs
+            .read_file_limited(Path::new("/large.bin"), 16)
+            .await
+            .unwrap_err();
+        assert_eq!(err.io_error_kind(), Some(std::io::ErrorKind::InvalidData));
     }
 
     #[tokio::test]

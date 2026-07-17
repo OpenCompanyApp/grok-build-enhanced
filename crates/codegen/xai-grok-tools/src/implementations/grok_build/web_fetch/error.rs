@@ -1,6 +1,17 @@
 /// Structured errors for the `web_fetch` tool.
 use std::net::IpAddr;
 
+/// Reduce an HTTP(S) URL to its origin before it crosses an error, UI, hook,
+/// or logging boundary. URL userinfo, paths, queries, and fragments commonly
+/// contain credentials or private identifiers and are never diagnostic data.
+pub fn safe_url_origin(raw_url: &str) -> String {
+    url::Url::parse(raw_url)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|| "<redacted-url>".to_owned())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WebFetchError {
     #[error("URL exceeds maximum length of {max} characters")]
@@ -30,14 +41,14 @@ pub enum WebFetchError {
     #[error("DNS resolution returned no addresses for {0}")]
     DnsEmpty(String),
 
-    #[error("failed to build HTTP client: {0}")]
-    ClientBuildError(reqwest::Error),
+    #[error("failed to build HTTP client")]
+    ClientBuildError,
 
-    #[error("HTTP request failed: {0}")]
-    HttpRequest(#[from] reqwest::Error),
+    #[error("HTTP request to {origin} failed ({kind})")]
+    HttpRequest { origin: String, kind: &'static str },
 
-    #[error("invalid redirect URL: {0}")]
-    InvalidRedirect(String),
+    #[error("invalid redirect URL")]
+    InvalidRedirect,
 
     #[error("too many redirects (max {max})")]
     TooManyRedirects { max: usize },
@@ -45,8 +56,8 @@ pub enum WebFetchError {
     #[error("response body exceeds maximum size of {max} bytes")]
     ResponseTooLarge { max: usize },
 
-    #[error("invalid proxy configuration: {0}")]
-    ProxyConfigError(String),
+    #[error("invalid proxy configuration")]
+    ProxyConfigError,
 
     #[error("failed to save downloaded file: {0}")]
     IoError(#[from] std::io::Error),
@@ -56,6 +67,29 @@ pub enum WebFetchError {
 
     #[error("content body does not match claimed content type {content_type} from {url}")]
     ContentTypeMismatch { content_type: String, url: String },
+}
+
+impl WebFetchError {
+    /// Convert a reqwest failure into a bounded, URL-safe diagnostic. The
+    /// original reqwest error is deliberately not retained because both its
+    /// Display and Debug implementations may include the full request URL.
+    pub(crate) fn http_request(error: reqwest::Error, fallback_url: &str) -> Self {
+        let origin = error
+            .url()
+            .map(url::Url::as_str)
+            .map(safe_url_origin)
+            .unwrap_or_else(|| safe_url_origin(fallback_url));
+        let kind = if error.is_timeout() {
+            "timeout"
+        } else if error.is_connect() {
+            "connection"
+        } else if error.status().is_some() {
+            "status"
+        } else {
+            "transport"
+        };
+        Self::HttpRequest { origin, kind }
+    }
 }
 
 /// Extra recovery guidance appended to an [`WebFetchError::SsrfBlocked`] message.
@@ -99,6 +133,53 @@ mod tests {
         assert!(!is_github_host("ghe.example.com"));
         assert!(!is_github_host("internal-wiki.corp.example.com"));
         assert!(!is_github_host("gitlab.example.com"));
+    }
+
+    #[test]
+    fn safe_url_origin_strips_userinfo_path_query_and_fragment() {
+        let safe = safe_url_origin(
+            "https://user:password@example.com:8443/private/object?token=super-secret#fragment",
+        );
+        assert_eq!(safe, "https://example.com:8443");
+        for secret in [
+            "user",
+            "password",
+            "private",
+            "object",
+            "token",
+            "super-secret",
+            "fragment",
+        ] {
+            assert!(!safe.contains(secret), "origin leaked {secret}: {safe}");
+        }
+        assert_eq!(safe_url_origin("not a URL"), "<redacted-url>");
+    }
+
+    #[test]
+    fn content_errors_expose_only_pre_sanitized_origin() {
+        let origin = safe_url_origin(
+            "https://user:password@example.com/private?token=super-secret#fragment",
+        );
+        for message in [
+            WebFetchError::UnsupportedContentType {
+                content_type: "application/octet-stream".to_owned(),
+                url: origin.clone(),
+            }
+            .to_string(),
+            WebFetchError::ContentTypeMismatch {
+                content_type: "image/png".to_owned(),
+                url: origin.clone(),
+            }
+            .to_string(),
+        ] {
+            assert!(message.contains("https://example.com"));
+            for secret in ["user", "password", "private", "token", "super-secret"] {
+                assert!(
+                    !message.contains(secret),
+                    "error leaked {secret}: {message}"
+                );
+            }
+        }
     }
 
     #[test]
