@@ -213,11 +213,96 @@
       "latest_fetched": {
         "commit": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4"
       }
+    },
+    {
+      "id": "kimi-code",
+      "project": "Kimi Code",
+      "remote": "https://github.com/MoonshotAI/kimi-code.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "ada523ae6a06726c02ffcc7f35d01ee2216d309c"
+      },
+      "latest_fetched": {
+        "commit": "ada523ae6a06726c02ffcc7f35d01ee2216d309c"
+      }
+    },
+    {
+      "id": "kimi-cli",
+      "project": "Kimi CLI (legacy reference)",
+      "remote": "https://github.com/MoonshotAI/kimi-cli.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "4a550effdfcb29a25a5d325bf935296cc50cd417"
+      },
+      "latest_fetched": {
+        "commit": "4a550effdfcb29a25a5d325bf935296cc50cd417"
+      }
+    },
+    {
+      "id": "zai-sdk-python",
+      "project": "Z.AI Python SDK",
+      "remote": "https://github.com/zai-org/z-ai-sdk-python.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "ca5109c0aa9bf173839be391b4b14aeadf9a9bf9"
+      },
+      "latest_fetched": {
+        "commit": "ca5109c0aa9bf173839be391b4b14aeadf9a9bf9"
+      }
+    },
+    {
+      "id": "zai-coding-plugins",
+      "project": "Z.AI coding plugins",
+      "remote": "https://github.com/zai-org/zai-coding-plugins.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254"
+      },
+      "latest_fetched": {
+        "commit": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254"
+      }
+    },
+    {
+      "id": "glm-5",
+      "project": "GLM-5 model reference",
+      "remote": "https://github.com/zai-org/GLM-5.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "436efa09bc868a6922e307624189e7018406beb9"
+      },
+      "latest_fetched": {
+        "commit": "436efa09bc868a6922e307624189e7018406beb9"
+      }
+    },
+    {
+      "id": "codexbar",
+      "project": "CodexBar Z.AI usage reference",
+      "remote": "https://github.com/steipete/CodexBar.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "e6b2ea490cec47d122ba14e32bfc41e53d98422c"
+      },
+      "latest_fetched": {
+        "commit": "e6b2ea490cec47d122ba14e32bfc41e53d98422c"
+      }
+    },
+    {
+      "id": "zai-usage-helper",
+      "project": "Z.AI usage browser reference",
+      "remote": "https://github.com/nniicckk6/zai-extention.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "54cd1f33a703c417f2492ee1f21f22b3633a43c4"
+      },
+      "latest_fetched": {
+        "commit": "54cd1f33a703c417f2492ee1f21f22b3633a43c4"
+      }
     }
   ],
   "checks": [
     "patch-stack-objects",
     "patch-stack-history",
+    "coverage-candidate",
     "upstream-revisions",
     "feature-paths",
     "downstream-coverage"
@@ -367,6 +452,8 @@
       ],
       "integration_paths": [
         "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/openai_codex/mod.rs",
+        "crates/codegen/xai-grok-sampling-types/src/openai_codex.rs",
         "crates/codegen/xai-grok-sampling-types/src/provider.rs",
         "crates/codegen/xai-grok-shell/src/agent/models.rs",
         "crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs"
@@ -416,6 +503,90 @@
         "LICENSE",
         "THIRD-PARTY-NOTICES",
         "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "fork-guardrail-control-plane",
+      "description": "Read-only manifest, immutable-history, candidate-coverage, launcher, and regression-test control plane.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "fork/README.md",
+        "fork/manifest.json",
+        "fork/scripts/check_manifest.py",
+        "fork/scripts/tests/fixtures.py",
+        "fork/scripts/tests/test_check_manifest.py",
+        "fork/scripts/tests/test_verify_patch_stack.py",
+        "fork/scripts/verify_patch_stack.sh"
+      ],
+      "integration_paths": [
+        "fork/README.md",
+        "fork/manifest.json",
+        "fork/scripts/check_manifest.py",
+        "fork/scripts/verify_patch_stack.sh"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "openai-codex-provider-reference",
+      "description": "Implemented experimental OpenAI Codex subscription provider contract reference.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode",
+        "opencode-codex-auth"
+      ],
+      "paths": [
+        "docs/providers/openai-codex-subscription-provider-reference.md"
+      ],
+      "integration_paths": [
+        "docs/providers/openai-codex-subscription-provider-reference.md"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "kimi-provider-research",
+      "description": "Research and implementation design for a possible, currently unimplemented Kimi Code provider.",
+      "source_ids": [
+        "grok-build-upstream",
+        "kimi-code",
+        "kimi-cli"
+      ],
+      "paths": [
+        "docs/providers/kimi-code-integration-research.md"
+      ],
+      "integration_paths": [
+        "docs/providers/kimi-code-integration-research.md"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "zai-provider-research",
+      "description": "Research and implementation design for a possible, currently unimplemented Z.AI Coding Plan provider.",
+      "source_ids": [
+        "grok-build-upstream",
+        "opencode",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper"
+      ],
+      "paths": [
+        "docs/providers/zai-glm-coding-plan-integration-research.md"
+      ],
+      "integration_paths": [
+        "docs/providers/zai-glm-coding-plan-integration-research.md"
+      ],
+      "legal_paths": [
+        "LICENSE"
       ]
     },
     {
@@ -618,7 +789,14 @@
         "openai-codex",
         "opencode",
         "opencode-codex-auth",
-        "warp-themes"
+        "warp-themes",
+        "kimi-code",
+        "kimi-cli",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper"
       ],
       "paths": [
         ".gitignore",
@@ -627,6 +805,7 @@
         "THIRD-PARTY-NOTICES",
         "UPSTREAM_VERSIONS.md",
         "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
+        "docs/providers/README.md",
         "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md",
         "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md",
         "third_party/NOTICE",
@@ -635,7 +814,8 @@
       "integration_paths": [
         "AGENTS.md",
         "README.md",
-        "UPSTREAM_VERSIONS.md"
+        "UPSTREAM_VERSIONS.md",
+        "docs/providers/README.md"
       ],
       "legal_paths": [
         "LICENSE",
@@ -658,6 +838,8 @@
         "crates/codegen/xai-grok-markdown/src/render.rs",
         "crates/codegen/xai-grok-pager-render/src/syntax.rs",
         "crates/codegen/xai-grok-pager-render/src/theme/color_support.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/grokday.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/groknight.rs",
         "crates/codegen/xai-grok-pager-render/src/theme/system_appearance.rs"
       ],
       "integration_paths": [

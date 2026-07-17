@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 sys.dont_write_bytecode = True
 
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
+HEX_OBJECT_NAME_RE = re.compile(r"^[0-9A-Fa-f]+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
@@ -32,10 +33,12 @@ REGULAR_GIT_MODES = frozenset({"100644", "100755"})
 SERIES_FORMAT = "git-linear-history-v1"
 DELTA_FORMAT = "git-tree-delta-v1"
 MAX_ATTESTED_COMMITS = 10_000
+MAX_COVERAGE_COMMITS = 10_000
 
 KNOWN_CHECK_IDS = (
     "patch-stack-objects",
     "patch-stack-history",
+    "coverage-candidate",
     "upstream-revisions",
     "feature-paths",
     "downstream-coverage",
@@ -102,6 +105,8 @@ class CheckContext:
     upstream_versions: Path
     strict_coverage: bool
     git_binary: str = ""
+    coverage_candidate: str = ""
+    checked_out_head: str = ""
     _tree_cache: dict[str, dict[bytes, TreeEntry]] = field(default_factory=dict)
     _commit_cache: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     _changed_paths: list[str] | None = None
@@ -142,6 +147,21 @@ class CheckContext:
     def frozen_tree(self) -> str:
         return self.document["patch_stack"]["frozen_tip"]["tree"]
 
+    @property
+    def coverage_tree(self) -> str:
+        if not self.coverage_candidate:
+            raise GitError("coverage candidate has not been resolved")
+        return self.commit_tree(self.coverage_candidate)
+
+    def set_coverage_candidate(self, candidate: str, checked_out_head: str) -> None:
+        if SHA1_RE.fullmatch(candidate) is None:
+            raise GitError(f"invalid resolved coverage candidate: {candidate!r}")
+        if SHA1_RE.fullmatch(checked_out_head) is None:
+            raise GitError(f"invalid resolved checked-out HEAD: {checked_out_head!r}")
+        self.coverage_candidate = candidate
+        self.checked_out_head = checked_out_head
+        self._changed_paths = None
+
     def git_environment(self) -> dict[str, str]:
         binary_dir = str(Path(self.git_binary).parent)
         return {
@@ -177,6 +197,8 @@ class CheckContext:
             "maintenance.auto=false",
             "-c",
             "core.quotePath=false",
+            "-c",
+            "core.warnAmbiguousRefs=true",
             "-c",
             "color.ui=false",
             "-c",
@@ -297,17 +319,17 @@ class CheckContext:
     def changed_paths(self) -> list[str]:
         if self._changed_paths is None:
             baseline_entries = self.tree_map(self.baseline_tree)
-            frozen_entries = self.tree_map(self.frozen_tree)
+            candidate_entries = self.tree_map(self.coverage_tree)
             changed_raw = sorted(
                 path
-                for path in set(baseline_entries) | set(frozen_entries)
-                if baseline_entries.get(path) != frozen_entries.get(path)
+                for path in set(baseline_entries) | set(candidate_entries)
+                if baseline_entries.get(path) != candidate_entries.get(path)
             )
             try:
                 changed = [path.decode("utf-8") for path in changed_raw]
             except UnicodeDecodeError as error:
                 raise GitError(
-                    "the downstream trees contain a non-UTF-8 path that cannot be represented in JSON"
+                    "the baseline/candidate trees contain a non-UTF-8 path that cannot be represented in JSON"
                 ) from error
             self._changed_paths = changed
         return self._changed_paths
@@ -1249,6 +1271,67 @@ def check_patch_stack_history(context: CheckContext) -> Outcome:
     )
 
 
+def check_coverage_candidate(context: CheckContext) -> Outcome:
+    """Require a raw, single-parent path from the candidate to an attested checkpoint."""
+
+    checkpoints = {
+        context.frozen_tip: "exact frozen checkpoint",
+        **{
+            attestation["candidate"]["commit"]: (
+                f"thematic checkpoint {attestation['id']!r}"
+            )
+            for attestation in context.document["patch_stack"]["history"][
+                "thematic_equivalents"
+            ]
+        },
+    }
+    current = context.coverage_candidate
+    seen: set[str] = set()
+    followup_count = 0
+    errors: list[str] = []
+
+    # Reading the tree up front proves that the resolved candidate is a usable
+    # immutable commit/tree pair; feature and coverage checks reuse this cache.
+    context.tree_map(context.coverage_tree)
+
+    while current not in checkpoints:
+        if current in seen:
+            errors.append("coverage candidate history contains a parent cycle")
+            break
+        seen.add(current)
+        if followup_count >= MAX_COVERAGE_COMMITS:
+            errors.append(
+                "coverage candidate history exceeds the maximum supported "
+                f"post-checkpoint length of {MAX_COVERAGE_COMMITS} commits"
+            )
+            break
+        _tree, parents = context.commit_metadata(current)
+        if len(parents) != 1:
+            if not parents:
+                errors.append(
+                    f"coverage candidate history reached root commit {current} "
+                    "before an authenticated frozen or thematic checkpoint"
+                )
+            else:
+                errors.append(
+                    f"coverage candidate history commit {current} has {len(parents)} "
+                    "parents; post-checkpoint merges are forbidden"
+                )
+            break
+        current = parents[0]
+        followup_count += 1
+
+    if errors:
+        return Outcome("coverage candidate lineage could not be authenticated", errors)
+
+    checkpoint = checkpoints[current]
+    return Outcome(
+        f"committed candidate {context.coverage_candidate} descends linearly from "
+        f"the {checkpoint} through {followup_count} post-checkpoint commit(s); "
+        "checkpoint history is authenticated separately"
+    )
+
+
 def _ledger_revision(cell: str, project: str, label: str) -> str:
     matches = SHA1_SEARCH_RE.findall(cell)
     if not matches:
@@ -1375,17 +1458,19 @@ def _checkout_regular_file_status(repo_root: Path, relative_path: str) -> str | 
     return None
 
 
-def _frozen_regular_file_status(
-    frozen_entries: dict[bytes, TreeEntry], relative_path: str
+def _candidate_regular_file_status(
+    candidate_entries: dict[bytes, TreeEntry],
+    relative_path: str,
+    candidate: str,
 ) -> str | None:
-    entry = frozen_entries.get(relative_path.encode("utf-8"))
+    entry = candidate_entries.get(relative_path.encode("utf-8"))
     if entry is None:
-        return "is absent at the frozen tip"
+        return f"is absent at coverage candidate {candidate}"
     if entry.mode == "120000":
-        return "is a symlink at the frozen tip"
+        return f"is a symlink at coverage candidate {candidate}"
     if entry.mode not in REGULAR_GIT_MODES or entry.object_type != "blob":
         return (
-            "is not a regular file at the frozen tip "
+            f"is not a regular file at coverage candidate {candidate} "
             f"(mode {entry.mode}, type {entry.object_type})"
         )
     return None
@@ -1394,9 +1479,10 @@ def _frozen_regular_file_status(
 def check_feature_paths(context: CheckContext) -> Outcome:
     changed_paths = context.changed_paths()
     errors: list[str] = []
-    frozen_entries = context.tree_map(context.frozen_tree)
-    frozen_cache: dict[str, str | None] = {}
+    candidate_entries = context.tree_map(context.coverage_tree)
+    candidate_cache: dict[str, str | None] = {}
     checkout_cache: dict[str, str | None] = {}
+    candidate_is_checked_out = context.coverage_candidate == context.checked_out_head
 
     for feature in context.document["features"]:
         feature_id = feature["id"]
@@ -1415,27 +1501,30 @@ def check_feature_paths(context: CheckContext) -> Outcome:
 
         for kind in ("integration_paths", "legal_paths"):
             for path in feature[kind]:
-                if path not in checkout_cache:
-                    checkout_cache[path] = _checkout_regular_file_status(
-                        context.repo_root, path
+                if path not in candidate_cache:
+                    candidate_cache[path] = _candidate_regular_file_status(
+                        candidate_entries, path, context.coverage_candidate
                     )
-                checkout_error = checkout_cache[path]
-                if checkout_error is not None:
+                candidate_error = candidate_cache[path]
+                if candidate_error is not None:
                     errors.append(
-                        f"feature {feature_id!r} {kind} entry {path!r} {checkout_error}"
-                    )
-                if path not in frozen_cache:
-                    frozen_cache[path] = _frozen_regular_file_status(
-                        frozen_entries, path
-                    )
-                frozen_error = frozen_cache[path]
-                if frozen_error is not None:
-                    errors.append(
-                        f"feature {feature_id!r} {kind} entry {path!r} {frozen_error}"
+                        f"feature {feature_id!r} {kind} entry {path!r} {candidate_error}"
                     )
 
+                if candidate_is_checked_out:
+                    if path not in checkout_cache:
+                        checkout_cache[path] = _checkout_regular_file_status(
+                            context.repo_root, path
+                        )
+                    checkout_error = checkout_cache[path]
+                    if checkout_error is not None:
+                        errors.append(
+                            f"feature {feature_id!r} {kind} entry {path!r} {checkout_error}"
+                        )
+
     return Outcome(
-        f"{len(context.document['features'])} feature path set(s) and regular-file anchors verified",
+        f"{len(context.document['features'])} feature path set(s) and committed "
+        f"regular-file anchors verified at candidate {context.coverage_candidate}",
         sorted(set(errors)),
     )
 
@@ -1454,7 +1543,10 @@ def check_downstream_coverage(context: CheckContext) -> Outcome:
     ]
     uncovered.sort(key=lambda path: path.encode("utf-8"))
     covered_count = len(changed_paths) - len(uncovered)
-    summary = f"{covered_count}/{len(changed_paths)} downstream path(s) covered"
+    summary = (
+        f"{covered_count}/{len(changed_paths)} baseline-to-candidate downstream "
+        f"path(s) covered at {context.coverage_candidate}"
+    )
     if not uncovered:
         return Outcome(summary, uncovered=[])
     message = f"{len(uncovered)} downstream path(s) remain uncovered by feature ownership"
@@ -1464,6 +1556,7 @@ def check_downstream_coverage(context: CheckContext) -> Outcome:
 CHECKS: dict[str, Callable[[CheckContext], Outcome]] = {
     "patch-stack-objects": check_patch_stack_objects,
     "patch-stack-history": check_patch_stack_history,
+    "coverage-candidate": check_coverage_candidate,
     "upstream-revisions": check_upstream_revisions,
     "feature-paths": check_feature_paths,
     "downstream-coverage": check_downstream_coverage,
@@ -1490,6 +1583,13 @@ def _checker_argument_parser() -> argparse.ArgumentParser:
         "--upstream-versions",
         type=Path,
         help="upstream ledger path (default: <repo-root>/UPSTREAM_VERSIONS.md)",
+    )
+    parser.add_argument(
+        "--coverage-candidate",
+        help=(
+            "full commit OID or safe literal ref, resolved once "
+            "(default: checked-out committed HEAD)"
+        ),
     )
     parser.add_argument(
         "--strict-coverage",
@@ -1531,6 +1631,11 @@ def checker_main(arguments: list[str]) -> int:
         print(f"manifest validation failed with {len(load_errors)} schema error(s)")
         return 1
 
+    candidate_ref = options.coverage_candidate or "HEAD"
+    if not _safe_coverage_candidate(candidate_ref):
+        print(f"ERROR coverage-candidate: unsafe candidate revision: {candidate_ref!r}")
+        return 2
+
     try:
         context = CheckContext(
             document=document,
@@ -1538,8 +1643,13 @@ def checker_main(arguments: list[str]) -> int:
             upstream_versions=upstream_versions,
             strict_coverage=options.strict_coverage,
         )
+        checked_out_head = context.resolve_commit("HEAD")
+        candidate_commit = _resolve_coverage_candidate(
+            context, candidate_ref, checked_out_head
+        )
+        context.set_coverage_candidate(candidate_commit, checked_out_head)
     except GitError as error:
-        print(f"ERROR git: {error}")
+        print(f"ERROR coverage-candidate: candidate does not resolve to a commit: {error}")
         return 1
 
     error_count = 0
@@ -1578,6 +1688,47 @@ def _safe_candidate_ref(value: str) -> bool:
         and not value.endswith(("/", ".", ".lock"))
         and all(not component.startswith(".") for component in value.split("/"))
     )
+
+
+def _safe_coverage_candidate(value: str) -> bool:
+    if not _safe_candidate_ref(value):
+        return False
+    if SHA1_RE.fullmatch(value) is not None:
+        return True
+    return HEX_OBJECT_NAME_RE.fullmatch(value) is None
+
+
+def _resolve_coverage_candidate(
+    context: CheckContext, value: str, checked_out_head: str
+) -> str:
+    if value == "HEAD":
+        return checked_out_head
+    if SHA1_RE.fullmatch(value) is not None:
+        return context.resolve_commit(value)
+
+    result = context.git(
+        "rev-parse",
+        "--verify",
+        "--symbolic-full-name",
+        value,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="backslashreplace").strip()
+        raise GitError(detail or f"candidate ref {value!r} does not exist")
+    try:
+        symbolic_names = result.stdout.decode("ascii").splitlines()
+    except UnicodeDecodeError as error:
+        raise GitError("candidate ref resolved to a non-ASCII name") from error
+    if (
+        len(symbolic_names) != 1
+        or not symbolic_names[0].startswith("refs/")
+        or not _safe_candidate_ref(symbolic_names[0])
+    ):
+        raise GitError(
+            f"coverage candidate {value!r} is not a full OID or unambiguous literal ref"
+        )
+    return context.resolve_commit(symbolic_names[0])
 
 
 def _verifier_argument_parser() -> argparse.ArgumentParser:

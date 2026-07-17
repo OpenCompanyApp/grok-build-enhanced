@@ -25,6 +25,7 @@ DELTA_FORMAT = "git-tree-delta-v1"
 KNOWN_CHECKS = [
     "patch-stack-objects",
     "patch-stack-history",
+    "coverage-candidate",
     "upstream-revisions",
     "feature-paths",
     "downstream-coverage",
@@ -370,11 +371,13 @@ class ForkFixture:
     def write_upstream_versions(
         self,
         *,
+        project: str | None = None,
         remote: str | None = None,
         tracked_ref: str | None = None,
         reviewed: str | None = None,
         latest: str | None = None,
     ) -> None:
+        project_value = project or "Fixture Source"
         remote_value = remote or "https://example.invalid/fixture.git"
         ref_value = tracked_ref or "main"
         reviewed_revision = reviewed or self.baseline
@@ -387,7 +390,7 @@ class ForkFixture:
                     "| Project | Remote and tracked ref | Last reviewed / fork baseline | Latest fetched |",
                     "| --- | --- | --- | --- |",
                     (
-                        f"| Fixture Source | `{remote_value}` `{ref_value}` "
+                        f"| {project_value} | `{remote_value}` `{ref_value}` "
                         f"| [`{reviewed_revision}`](https://example.invalid/commit/{reviewed_revision}) "
                         f"| [`{latest_revision}`](https://example.invalid/commit/{latest_revision}) |"
                     ),

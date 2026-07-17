@@ -44,16 +44,111 @@ class CheckManifestTests(unittest.TestCase):
         self.assertIn("OK patch-stack-objects:", result.stdout)
         self.assertIn("OK patch-stack-history:", result.stdout)
         self.assertIn("1 thematic history attestation(s) authenticated", result.stdout)
+        self.assertIn("OK coverage-candidate:", result.stdout)
+        self.assertIn("checkpoint history is authenticated separately", result.stdout)
         self.assertIn(
             "remote/ref/revision record(s) cross-checked; no external tree mappings claimed",
             result.stdout,
         )
         self.assertIn(
-            "OK downstream-coverage: 3/3 downstream path(s) covered", result.stdout
+            "OK downstream-coverage: 3/3 baseline-to-candidate downstream path(s) covered",
+            result.stdout,
         )
         self.assertNotIn("UNCOVERED\t", result.stdout)
         self.assertEqual(before, after)
         self.assertEqual(bytecode_before, bytecode_after)
+
+    def test_exact_oid_and_thematic_ref_remain_valid_coverage_checkpoints(self) -> None:
+        thematic_ref = "archive/thematic-fixture"
+        self.fixture.git(
+            "tag", "-a", thematic_ref, "-m", "fixture thematic tag", self.fixture.thematic
+        )
+        cases = (
+            (self.fixture.tip, "exact frozen checkpoint"),
+            (thematic_ref, "thematic checkpoint 'fixture-thematic-equivalent'"),
+        )
+        for candidate, expected_checkpoint in cases:
+            with self.subTest(candidate=candidate):
+                result = self.fixture.run_checker(
+                    "--coverage-candidate", candidate, "--strict-coverage"
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertIn("OK coverage-candidate:", result.stdout)
+                self.assertIn(expected_checkpoint, result.stdout)
+                self.assertIn(
+                    "3/3 baseline-to-candidate downstream path(s) covered",
+                    result.stdout,
+                )
+
+    def test_unattested_same_tree_history_is_not_a_coverage_checkpoint(self) -> None:
+        result = self.fixture.run_checker(
+            "--coverage-candidate", self.fixture.unpinned
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ERROR coverage-candidate:", result.stdout)
+        self.assertIn(
+            "before an authenticated frozen or thematic checkpoint", result.stdout
+        )
+
+    def test_linear_thematic_followup_candidate_is_fully_covered(self) -> None:
+        self.fixture.git("checkout", "--quiet", "--detach", self.fixture.thematic)
+        self.fixture.write_repo_file("src/followup-owned.txt", "follow-up\n")
+        self.fixture.git("add", "--", "src/followup-owned.txt")
+        self.fixture.git("commit", "--quiet", "-m", "fixture thematic follow-up")
+        candidate = self.fixture.git_text("rev-parse", "HEAD")
+
+        document = self.fixture.make_document()
+        document["features"][0]["paths"].append("src/followup-owned.txt")
+        self.fixture.write_manifest(document)
+        result = self.fixture.run_checker()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"committed candidate {candidate}", result.stdout)
+        self.assertIn("through 1 post-checkpoint commit(s)", result.stdout)
+        self.assertIn(
+            "4/4 baseline-to-candidate downstream path(s) covered", result.stdout
+        )
+
+    def test_followup_candidate_reports_new_uncovered_path(self) -> None:
+        self.fixture.git("checkout", "--quiet", "--detach", self.fixture.thematic)
+        self.fixture.write_repo_file("src/followup-uncovered.txt", "uncovered\n")
+        self.fixture.git("add", "--", "src/followup-uncovered.txt")
+        self.fixture.git("commit", "--quiet", "-m", "fixture uncovered follow-up")
+
+        result = self.fixture.run_checker()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("OK coverage-candidate:", result.stdout)
+        self.assertIn(
+            "ERROR downstream-coverage: 1 downstream path(s) remain uncovered",
+            result.stdout,
+        )
+        self.assertIn("UNCOVERED\tsrc/followup-uncovered.txt", result.stdout)
+
+    def test_removed_and_moved_paths_use_the_raw_candidate_tree_delta(self) -> None:
+        self.fixture.git("checkout", "--quiet", "--detach", self.fixture.tip)
+        self.fixture.git(
+            "mv", "--", "src/integration.txt", "src/integration-moved.txt"
+        )
+        self.fixture.git("commit", "--quiet", "-m", "fixture move integration anchor")
+
+        document = self.fixture.make_document()
+        document["features"][0]["paths"].append("src/integration-moved.txt")
+        document["features"][0]["integration_paths"] = [
+            "src/integration-moved.txt"
+        ]
+        self.fixture.write_manifest(document)
+        covered = self.fixture.run_checker()
+        self.assertEqual(covered.returncode, 0, covered.stdout + covered.stderr)
+        self.assertIn(
+            "4/4 baseline-to-candidate downstream path(s) covered", covered.stdout
+        )
+
+        document["features"][0]["paths"].remove("src/integration.txt")
+        self.fixture.write_manifest(document)
+        uncovered = self.fixture.run_checker()
+        self.assertEqual(uncovered.returncode, 1, uncovered.stdout + uncovered.stderr)
+        self.assertIn("UNCOVERED\tsrc/integration.txt", uncovered.stdout)
 
     def test_coverage_is_always_fail_closed_and_bytewise_sorted(self) -> None:
         document = self.fixture.make_document()
@@ -200,6 +295,31 @@ class CheckManifestTests(unittest.TestCase):
         literal_glob["features"][0]["integration_paths"] = ["src/*.txt"]
         self.assert_schema_failure(literal_glob, "literal path without glob")
 
+    def test_coverage_candidate_cli_rejects_revision_expressions(self) -> None:
+        cases = (
+            "HEAD^{tree}",
+            "-c",
+            "refs/./hidden",
+            self.fixture.tip[:12],
+            self.fixture.tip.upper(),
+        )
+        for candidate in cases:
+            with self.subTest(candidate=candidate):
+                argument = (
+                    f"--coverage-candidate={candidate}"
+                    if candidate.startswith("-")
+                    else "--coverage-candidate"
+                )
+                arguments = (
+                    (argument,)
+                    if candidate.startswith("-")
+                    else (argument, candidate)
+                )
+                result = self.fixture.run_checker(*arguments)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("unsafe candidate revision", result.stdout)
+                self.assertEqual(result.stderr, "")
+
     def test_missing_integration_and_legal_anchors_are_fatal(self) -> None:
         document = self.fixture.make_document()
         document["features"][0]["paths"].append("src/missing-integration.txt")
@@ -213,7 +333,25 @@ class CheckManifestTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("matches no downstream path", result.stdout)
         self.assertIn("does not exist in the checkout", result.stdout)
-        self.assertIn("is absent at the frozen tip", result.stdout)
+        self.assertIn("is absent at coverage candidate", result.stdout)
+
+    def test_worktree_only_anchor_cannot_satisfy_the_committed_candidate(self) -> None:
+        self.fixture.write_repo_file("src/worktree-only.txt", "untracked anchor\n")
+        document = self.fixture.make_document()
+        document["features"][0]["paths"].append("src/worktree-only.txt")
+        document["features"][0]["integration_paths"] = [
+            "src/worktree-only.txt"
+        ]
+        self.fixture.write_manifest(document)
+
+        result = self.fixture.run_checker()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(
+            "integration_paths entry 'src/worktree-only.txt' is absent at coverage candidate",
+            result.stdout,
+        )
+        self.assertNotIn("does not exist in the checkout", result.stdout)
+        self.assertNotIn("UNCOVERED\tsrc/worktree-only.txt", result.stdout)
 
     def test_manifest_commands_are_never_executed(self) -> None:
         sentinel = self.fixture.root / "must-not-exist"
@@ -235,13 +373,18 @@ class CheckManifestTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("duplicate JSON key", result.stdout)
 
-    def test_upstream_remote_ref_and_revisions_are_cross_checked_exactly(self) -> None:
+    def test_upstream_project_remote_ref_and_commits_are_cross_checked_exactly(self) -> None:
         mutations = [
+            (
+                {"project": "Other Fixture Source"},
+                "manifest is missing upstream project",
+            ),
             (
                 {"remote": "https://example.invalid/other.git"},
                 "remote mismatch",
             ),
             ({"tracked_ref": "release"}, "tracked ref mismatch"),
+            ({"reviewed": "e" * 40}, "reviewed revision mismatch"),
             ({"latest": "f" * 40}, "latest-fetched revision mismatch"),
         ]
         for values, expected in mutations:
@@ -397,6 +540,49 @@ class CheckManifestTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("reached root commit", result.stdout)
 
+    def test_coverage_candidate_rejects_post_checkpoint_merges(self) -> None:
+        candidate = self.fixture.commit_tree(
+            self.fixture.tip_tree,
+            [self.fixture.tip, self.fixture.thematic],
+            "fixture forbidden post-checkpoint merge",
+        )
+        result = self.fixture.run_checker("--coverage-candidate", candidate)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ERROR coverage-candidate:", result.stdout)
+        self.assertIn("post-checkpoint merges are forbidden", result.stdout)
+
+    def test_graft_cannot_forge_coverage_checkpoint_parentage(self) -> None:
+        candidate = self.fixture.commit_tree(
+            self.fixture.tip_tree, [], "fixture unrelated coverage root"
+        )
+        grafts = self.fixture.repo / ".git" / "info" / "grafts"
+        grafts.write_text(f"{candidate} {self.fixture.tip}\n", encoding="ascii")
+
+        result = self.fixture.run_checker("--coverage-candidate", candidate)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ERROR coverage-candidate:", result.stdout)
+        self.assertIn(
+            "before an authenticated frozen or thematic checkpoint", result.stdout
+        )
+
+    def test_replacement_cannot_forge_coverage_checkpoint_parentage(self) -> None:
+        candidate = self.fixture.commit_tree(
+            self.fixture.tip_tree, [], "fixture replacement target root"
+        )
+        forged = self.fixture.commit_tree(
+            self.fixture.tip_tree,
+            [self.fixture.tip],
+            "fixture forged replacement child",
+        )
+        self.fixture.git("replace", candidate, forged)
+
+        result = self.fixture.run_checker("--coverage-candidate", candidate)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ERROR coverage-candidate:", result.stdout)
+        self.assertIn(
+            "before an authenticated frozen or thematic checkpoint", result.stdout
+        )
+
     def test_checkout_integration_symlink_is_rejected(self) -> None:
         self.fixture.symlink_repo_path("src/integration.txt", "../LICENSE")
         result = self.fixture.run_checker()
@@ -414,14 +600,20 @@ class CheckManifestTests(unittest.TestCase):
         self.fixture.write_repo_file("src/integration.txt", "downstream\n")
         result = self.fixture.run_checker()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("integration_paths entry 'src/integration.txt' is a symlink at the frozen tip", result.stdout)
+        self.assertIn(
+            "integration_paths entry 'src/integration.txt' is a symlink at coverage candidate",
+            result.stdout,
+        )
 
     def test_frozen_legal_symlink_mode_is_rejected(self) -> None:
         self.fixture.adopt_symlink_frozen_tip("LICENSE", "src/integration.txt")
         self.fixture.write_repo_file("LICENSE", "fixture license\n")
         result = self.fixture.run_checker()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("legal_paths entry 'LICENSE' is a symlink at the frozen tip", result.stdout)
+        self.assertIn(
+            "legal_paths entry 'LICENSE' is a symlink at coverage candidate",
+            result.stdout,
+        )
 
     def test_hostile_diff_config_and_attributes_cannot_change_tree_proofs(self) -> None:
         sentinel = self.fixture.root / "external-diff-ran"

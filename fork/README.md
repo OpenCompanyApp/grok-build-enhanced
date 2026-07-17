@@ -1,10 +1,10 @@
 # Downstream compatibility manifest
 
-This directory records immutable history attestations and complete frozen-tree
-path ownership for the OpenCompanyApp downstream patch stack. It is
-compatibility metadata, not a release mechanism and not an alternative source
-of upstream-version truth. `UPSTREAM_VERSIONS.md` remains the human-reviewed
-upstream ledger.
+This directory records immutable checkpoint-history attestations and complete
+baseline-to-candidate path ownership for the OpenCompanyApp downstream patch
+stack. It is compatibility metadata, not a release mechanism and not an
+alternative source of upstream-version truth. `UPSTREAM_VERSIONS.md` remains
+the human-reviewed upstream ledger.
 
 The Phase 2 snapshot is pinned to:
 
@@ -33,8 +33,8 @@ interpret a command from JSON. The manifest names checks by ID, and
 - stable source and feature IDs;
 - safe repository-relative feature globs plus literal integration and legal
   anchors; and
-- a fail-closed coverage policy requiring every frozen downstream path to have
-  an owner.
+- a fail-closed coverage policy requiring every baseline-to-coverage-candidate
+  downstream path to have an owner.
 
 Exact verification requires the candidate commit itself to equal the frozen
 commit. A different commit is never accepted merely because it has the same
@@ -47,6 +47,23 @@ entry is identical to its baseline entry. That last rule rejects add/delete and
 revert sequences hidden by a net-zero final tree. Parent and tree headers are
 read from raw commit objects, with replacement objects disabled, so graph
 presentation, deprecated grafts, and range-diff cannot authenticate parentage.
+
+Coverage-candidate authentication is deliberately separate from those frozen
+attestations. `check_manifest.py` resolves the checked-out committed `HEAD` by
+default, or resolves one explicitly supplied full OID or safe literal ref once,
+and then uses only the resulting commit ID. It walks raw parent headers until it
+reaches the exact frozen commit or a pinned thematic checkpoint. Every
+post-checkpoint commit must have exactly one parent; roots before a checkpoint,
+side-parent merges, grafts, and replacement objects fail. The checkpoint's
+complete exact/thematic attestation remains a separate mandatory check. The
+manifest therefore does not pin each evolving maintenance HEAD.
+
+Feature-pattern matches, committed anchors, and fail-closed coverage all use
+the raw delta from the pinned baseline tree to the resolved coverage-candidate
+tree. An anchor must be a regular blob in that committed candidate. If the
+candidate is checked-out `HEAD`, each anchor's checkout components must also be
+regular and free of symlinks. An uncommitted or untracked path can neither enter
+the tree delta nor satisfy a missing committed anchor.
 
 The authoritative delta format is `git-tree-delta-v1`. For each parent/child
 tree pair, the checker reads `git ls-tree -r -z --full-tree`, compares raw path
@@ -79,19 +96,20 @@ claim for unverified external trees.
 ## Ownership and anchors
 
 Feature paths describe ownership of the downstream tree delta from the pinned
-baseline to the frozen tip. All 652 frozen changed paths have at least one
-feature owner, and `coverage.allow_uncovered` is permanently `false`. The
-checker prints any future uncovered path in bytewise order and fails. Do not add
-exclusions merely to silence that report; add a feature owner only after
-ownership is understood.
+baseline to the resolved committed coverage candidate. At this revision all 674
+baseline-to-`HEAD` changed paths have at least one feature owner, and
+`coverage.allow_uncovered` is permanently `false`. The checker prints any future
+uncovered path in bytewise order and fails. Do not add exclusions merely to
+silence that report; add a feature owner only after ownership is understood.
 
 Path patterns use `/` separators. `*` and `?` stay within one path component;
 `**` is accepted only as a complete component. Absolute paths, parent traversal,
 empty components, control/formatting/surrogate characters, backslashes, `.git`,
 and shell-style expansion syntax are rejected. Integration and legal anchors
-are literal files. Every checkout component is inspected with `lstat`, and the
-frozen entry is read from NUL-delimited tree data. Symlinks and non-regular Git
-modes are rejected in both places.
+are literal files. Candidate entries are read from NUL-delimited tree data and
+must be regular blobs. When the candidate is checked-out `HEAD`, every checkout
+component is also inspected with `lstat`; symlinks and non-regular modes are
+rejected.
 
 ## Isolated checks
 
@@ -110,6 +128,19 @@ GIT=$(PATH="$SAFE_PATH" command -v git)
   XDG_CONFIG_HOME=/nonexistent-fork-guardrail-xdg LANG=C LC_ALL=C \
   PYTHONDONTWRITEBYTECODE=1 FORK_GUARDRAIL_GIT="$GIT" \
   "$PYTHON" -I -B fork/scripts/check_manifest.py --strict-coverage
+```
+
+The manifest check defaults coverage to the committed `HEAD`, not worktree or
+untracked content. To review another linear descendant, pass a full commit OID
+or safe literal ref explicitly while retaining the same isolated environment:
+
+```sh
+COVERAGE_CANDIDATE=refs/heads/reviewed-candidate
+/usr/bin/env -i PATH="$SAFE_PATH" HOME=/nonexistent-fork-guardrail-home \
+  XDG_CONFIG_HOME=/nonexistent-fork-guardrail-xdg LANG=C LC_ALL=C \
+  PYTHONDONTWRITEBYTECODE=1 FORK_GUARDRAIL_GIT="$GIT" \
+  "$PYTHON" -I -B fork/scripts/check_manifest.py --strict-coverage \
+  --coverage-candidate "$COVERAGE_CANDIDATE"
 ```
 
 `verify_patch_stack.sh` is a thin launcher. It parses no manifest fields in the
