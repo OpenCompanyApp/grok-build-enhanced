@@ -106,8 +106,9 @@ impl OidcRefresher {
                 "oidc refresh: disk has valid AT, adopting instead of consuming RT",
                 None,
                 Some(serde_json::json!({
-                    "disk_key_prefix": crate::auth::token_suffix(&disk_now.key),
-                    "tried_key_prefix": crate::auth::token_suffix(&tried.key),
+                    "access_token_changed": true,
+                    "disk_has_refresh_token": disk_now.refresh_token.is_some(),
+                    "attempt_had_refresh_token": tried.refresh_token.is_some(),
                 })),
             );
             self.note_refresh_progress();
@@ -124,14 +125,9 @@ impl OidcRefresher {
             "oidc refresh retrying with disk token",
             None,
             Some(serde_json::json!({
-                "tried_rt_prefix": tried
-                    .refresh_token
-                    .as_deref()
-                    .map(crate::auth::token_suffix),
-                "disk_rt_prefix": disk_now
-                    .refresh_token
-                    .as_deref()
-                    .map(crate::auth::token_suffix),
+                "refresh_token_changed": true,
+                "attempt_had_refresh_token": tried.refresh_token.is_some(),
+                "disk_has_refresh_token": disk_now.refresh_token.is_some(),
             })),
         );
 
@@ -185,7 +181,8 @@ impl TokenRefresher for OidcRefresher {
                 "oidc refresh: sibling refreshed, adopting valid disk AT",
                 None,
                 Some(serde_json::json!({
-                    "disk_key_prefix": crate::auth::token_suffix(&d.key),
+                    "access_token_changed": true,
+                    "disk_has_refresh_token": d.refresh_token.is_some(),
                 })),
             );
             self.note_refresh_progress();
@@ -214,8 +211,7 @@ impl TokenRefresher for OidcRefresher {
             })),
         );
 
-        // Snapshot for diagnostic upload on failure.
-        let pre_token = crate::auth::model::token_suffix(&auth.key).to_owned();
+        // Snapshot non-credential metadata for diagnostic upload on failure.
         let pre_email = auth.email.clone().unwrap_or_else(|| "unknown".into());
 
         match crate::auth::oidc::oidc_token_exchange(&auth).await {
@@ -233,14 +229,13 @@ impl TokenRefresher for OidcRefresher {
                 }
 
                 if let Some(uploader) = &self.diagnostic_uploader {
-                    spawn_diagnostic_upload(uploader, pre_token, pre_email, &self.upload_in_flight);
+                    spawn_diagnostic_upload(uploader, pre_email, &self.upload_in_flight);
                 }
                 RefreshOutcome::permanent(reason, Some(auth.key.clone()))
             }
             OidcRefreshResult::Failed => {
                 tracing::warn!(
                     refresh_reason = ?reason,
-                    user_id = %auth.user_id,
                     has_refresh_token = auth.refresh_token.is_some(),
                     issuer = ?auth.oidc_issuer,
                     client_id = ?auth.oidc_client_id,
@@ -259,7 +254,7 @@ impl TokenRefresher for OidcRefresher {
                     })),
                 );
                 if let Some(uploader) = &self.diagnostic_uploader {
-                    spawn_diagnostic_upload(uploader, pre_token, pre_email, &self.upload_in_flight);
+                    spawn_diagnostic_upload(uploader, pre_email, &self.upload_in_flight);
                 }
                 self.record_transient_failure(
                     "OIDC token refresh failed".into(),
@@ -273,7 +268,6 @@ impl TokenRefresher for OidcRefresher {
 /// Fire-and-forget diagnostic log upload. Guarded against concurrent spawns.
 fn spawn_diagnostic_upload(
     uploader: &DiagnosticUploader,
-    auth_token: String,
     email: String,
     in_flight: &Arc<AtomicBool>,
 ) {
@@ -310,7 +304,7 @@ fn spawn_diagnostic_upload(
             }
         };
 
-        uploader(log_bytes, auth_token, email).await;
+        uploader(log_bytes, email).await;
         in_flight.store(false, Ordering::Release);
     });
 }

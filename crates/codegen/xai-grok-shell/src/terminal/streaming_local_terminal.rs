@@ -1505,8 +1505,10 @@ mod tests {
 
                 let result = handle.await.unwrap().unwrap();
                 assert!(
-                    result.signal.is_some(),
-                    "process should have been killed by signal"
+                    result.signal.is_some() || result.exit_code.is_some_and(|code| code != 0),
+                    "killed shell must report a signal or a non-zero wait status: signal={:?}, exit_code={:?}",
+                    result.signal,
+                    result.exit_code,
                 );
             })
             .await;

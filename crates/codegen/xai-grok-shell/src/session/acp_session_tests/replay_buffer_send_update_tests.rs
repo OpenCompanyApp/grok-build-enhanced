@@ -112,6 +112,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
             context_window_override: None,
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+            auto_compact_retry_not_before_unix_secs: std::sync::atomic::AtomicU64::new(0),
             previous_model: std::cell::Cell::new(None),
             compaction_mode: xai_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
@@ -124,7 +125,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
             storage: std::cell::RefCell::new(None),
             save_on_end: true,
-            backend_params: None,
+            backend_params: std::cell::RefCell::new(None),
             initial_injection_config: Default::default(),
             context_injected: std::sync::atomic::AtomicBool::new(false),
             flush_count: std::sync::atomic::AtomicU64::new(0),
@@ -654,6 +655,7 @@ async fn completed_event_clears_slot_keeps_prior_uncommitted_segments() {
                         message_chunks_emitted: 0,
                         doom_loop_signals: Vec::new(),
                         stop_message: None,
+                        provider_end_turn: None,
                     }),
                     metrics: InferenceLatencyStats::default(),
                 })
@@ -729,6 +731,7 @@ async fn completed_event_releases_stream_drain_barrier() {
                         message_chunks_emitted: 1,
                         doom_loop_signals: Vec::new(),
                         stop_message: None,
+                        provider_end_turn: None,
                     }),
                     metrics: InferenceLatencyStats::default(),
                 })
@@ -861,6 +864,7 @@ async fn observe_only_confident_completion_stays_warn_only() {
                     "tail_repetition:8@thinking",
                 )],
                 stop_message: None,
+                provider_end_turn: None,
             };
             actor
                 .handle_sampling_event(SamplingEvent::Completed {
@@ -961,6 +965,7 @@ async fn doom_loop_recovery_stamps_capture_segments_and_counters() {
                     "tail_repetition:4@thinking",
                 )],
                 stop_message: None,
+                provider_end_turn: None,
             };
             actor
                 .handle_sampling_event(SamplingEvent::Completed {

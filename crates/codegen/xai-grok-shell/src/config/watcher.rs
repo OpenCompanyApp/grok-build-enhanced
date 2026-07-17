@@ -98,9 +98,9 @@ pub enum ConfigChangeEvent {
     HomeClaudeJsonChanged,
 }
 
-/// Watches `~/.grok/` for `auth.json`, `config.toml`, and `models_cache.json`
-/// changes, plus any extra paths (project `.grok/config.toml`, `.mcp.json`,
-/// etc.) provided at startup.
+/// Watches `~/.grok/` for `config.toml` and `models_cache.json`, the resolved
+/// auth file (`GROK_AUTH_PATH` or `~/.grok/auth.json`), and any extra paths
+/// (project `.grok/config.toml`, `.mcp.json`, etc.) provided at startup.
 ///
 /// Uses `notify-debouncer-mini` for built-in debounce that coalesces rapid
 /// editor writes (including write-then-rename patterns).
@@ -149,6 +149,18 @@ impl ConfigFileWatcher {
         let debounce = debounce.unwrap_or(DEFAULT_DEBOUNCE);
         let (tx, rx) = mpsc::unbounded_channel();
         let grok_home_buf = grok_home.to_path_buf();
+        let resolved_auth_path = crate::auth::resolved_auth_path(grok_home);
+        let auth_watch_path = if resolved_auth_path.is_absolute() {
+            resolved_auth_path
+        } else {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(resolved_auth_path)
+        };
+        let auth_file_name = auth_watch_path.file_name().map(ToOwned::to_owned);
+        let auth_parent = auth_watch_path
+            .parent()
+            .map(|parent| dunce::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf()));
         // `~/.claude.json` is consumed by **every**
         // session (see `load_claude_json_mcp_servers_as_configs`), so
         // a write to it must broadcast through the unit
@@ -179,7 +191,11 @@ impl ConfigFileWatcher {
                 let parent = path.parent();
 
                 let change = match name {
-                    Some("auth.json") if parent == Some(grok_home_buf.as_path()) => {
+                    _ if path.file_name() == auth_file_name.as_deref()
+                        && auth_parent
+                            .as_deref()
+                            .is_some_and(|directory| parent_is_dir(parent, directory)) =>
+                    {
                         Some(ConfigChangeEvent::AuthChanged)
                     }
                     Some("config.toml") if parent == Some(grok_home_buf.as_path()) => {
@@ -233,6 +249,20 @@ impl ConfigFileWatcher {
                 )
             })
             .ok()?;
+
+        if let Some(parent) = auth_watch_path.parent()
+            && !parent_is_dir(Some(parent), grok_home)
+            && let Err(error) = debouncer
+                .watcher()
+                .watch(parent, RecursiveMode::NonRecursive)
+        {
+            tracing::warn!(
+                path = %parent.display(),
+                error = %error,
+                "failed to watch custom auth directory"
+            );
+            return None;
+        }
 
         for p in extra_paths {
             if let Some(parent) = p.parent() {

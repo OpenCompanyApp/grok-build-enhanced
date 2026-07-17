@@ -187,13 +187,13 @@ impl StorageClientAttributionBridge {
     }
 }
 impl xai_file_utils::storage_client::Auth401AttributionCallback for StorageClientAttributionBridge {
-    fn record_401(&self, operation: &str, sent_bearer_prefix: Option<&str>) {
+    fn record_401(&self, operation: &str, bearer_was_sent: bool) {
         crate::auth::attribution::record_consumer_401(
             self.auth_manager.as_ref(),
             self.session_id.as_deref(),
             crate::auth::attribution::ConsumerKind::StorageClient,
             operation,
-            sent_bearer_prefix,
+            bearer_was_sent,
         );
     }
 }

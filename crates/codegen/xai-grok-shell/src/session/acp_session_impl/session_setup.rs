@@ -405,7 +405,7 @@ impl SessionActor {
                 None,
                 crate::auth::attribution::ConsumerKind::IdleResumeModelRefresh,
                 "",
-                creds.api_key.as_deref(),
+                creds.api_key.is_some(),
             );
         }
         let result = if !response.status().is_success() {
@@ -459,13 +459,19 @@ impl SessionActor {
         &self,
         metadata: crate::sampling::ResponseModelMetadata,
     ) {
-        if let Some(ref etag) = metadata.models_etag {
-            self.models_manager.refresh_if_new_etag(etag.clone()).await;
-        }
         let current_config = match self.chat_state_handle.get_sampling_config().await {
             Some(cfg) => cfg,
             None => return,
         };
+        if let Some(ref etag) = metadata.models_etag {
+            self.models_manager
+                .refresh_if_new_etag_for_provider_binding(
+                    metadata.provider,
+                    etag.clone(),
+                    metadata.credential_binding.clone(),
+                )
+                .await;
+        }
         let mut config_changed = false;
         let mut new_context_window = current_config.context_window;
         let mut new_max_completion_tokens = current_config.max_completion_tokens;

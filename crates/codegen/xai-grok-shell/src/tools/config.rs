@@ -201,6 +201,9 @@ impl ShellToolsetConfig {
     /// Optionally layers sampling credentials onto the web search config.
     pub fn new(base: Option<Self>, sampling_config: Option<SamplerConfig>) -> Self {
         let default_base = SamplerConfig {
+            provider: xai_grok_sampling_types::ProviderId::Xai,
+            credential_source: xai_grok_sampling_types::CredentialSourceId::Unspecified,
+            credential_binding: None,
             api_key: None,
             base_url: "https://api.x.ai/v1".to_string(),
             model: String::new(),
@@ -213,6 +216,7 @@ impl ShellToolsetConfig {
             context_window: 256_000,
             client_version: None,
             reasoning_effort: None,
+            service_tier: None,
             force_http1: false,
             max_retries: None,
             stream_tool_calls: false,
@@ -231,6 +235,7 @@ impl ShellToolsetConfig {
             // agent/config.rs and acp_session.rs.
             attribution_callback: None,
             bearer_resolver: None,
+            request_auth: None,
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,

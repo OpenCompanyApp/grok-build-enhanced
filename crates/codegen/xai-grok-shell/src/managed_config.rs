@@ -937,7 +937,10 @@ fn purge_prior_tenant_on_identity_change() {
         return; // another process is mid-apply/remove; it owns the transition
     };
     if crate::config::managed_config_identity_changed(Some(&team_id), None) {
-        tracing::info!(team_id = %team_id, "identity changed; purging the prior tenant's managed config");
+        tracing::info!(
+            team_identity_present = !team_id.is_empty(),
+            "identity changed; purging the prior tenant's managed config"
+        );
         remove_managed_config_files(&home);
     }
 }

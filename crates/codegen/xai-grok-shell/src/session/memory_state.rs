@@ -16,7 +16,7 @@ pub struct SessionMemory {
     pub save_on_end: bool,
     /// Shared params for building a fully-configured memory backend.
     /// `None` when memory is disabled.
-    pub backend_params: Option<crate::session::memory::MemoryBackendParams>,
+    pub backend_params: RefCell<Option<crate::session::memory::MemoryBackendParams>>,
     /// First-turn memory injection behavior resolved from local + remote config.
     pub initial_injection_config: crate::config::MemoryInitialInjectionConfig,
     /// Per-process latch: the first-turn injection decision already ran in
@@ -135,6 +135,7 @@ impl SessionMemory {
     ) -> Option<crate::session::memory::MemoryIndex> {
         let embed_dims = self
             .backend_params
+            .borrow()
             .as_ref()
             .and_then(|p| p.embed_config.as_ref())
             .map_or(1024, |c| c.dimensions);
@@ -155,7 +156,8 @@ impl SessionMemory {
         };
         if let Some(mut index) = self.open_index(&storage) {
             let _ = index.reindex_file(path, source);
-            if let Some(ref params) = self.backend_params
+            let params = self.backend_params.borrow().clone();
+            if let Some(params) = params
                 && let Some(provider) = params.make_embedding_provider().await
             {
                 crate::session::memory::embed_missing_chunks(&index, &provider).await;

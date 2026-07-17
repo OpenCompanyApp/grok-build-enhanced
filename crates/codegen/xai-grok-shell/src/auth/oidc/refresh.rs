@@ -124,11 +124,11 @@ pub(crate) async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
     {
         Ok(t) => t,
         Err(e) => {
-            if let Some(OidcError::TokenRefreshHttp { body, .. }) = e.downcast_ref::<OidcError>()
-                && let Some(error_code) = serde_json::from_str::<serde_json::Value>(body)
-                    .ok()
-                    .and_then(|v| v.get("error")?.as_str().map(str::to_owned))
-                && let Some(reason) = classify_terminal(&error_code)
+            if let Some(OidcError::TokenRefreshHttp {
+                error_code: Some(error_code),
+                ..
+            }) = e.downcast_ref::<OidcError>()
+                && let Some(reason) = classify_terminal(error_code)
             {
                 let (mono_ms, wall_ms, suspended_ms, suspected_suspend) = timing();
                 let cred_age_secs = auth.mint_age_seconds();
@@ -138,10 +138,7 @@ pub(crate) async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
                     Some(serde_json::json!({
                         "error_code": error_code,
                         "client_id": client_id,
-                        "tried_rt_prefix": auth.refresh_token.as_deref().map(crate::auth::token_suffix),
-                        "error_description": serde_json::from_str::<serde_json::Value>(body)
-                            .ok()
-                            .and_then(|v| v.get("error_description").cloned()),
+                        "had_refresh_token": auth.refresh_token.is_some(),
                         "mono_ms": mono_ms,
                         "wall_ms": wall_ms,
                         "suspended_ms": suspended_ms,
@@ -213,7 +210,7 @@ pub(crate) async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
     }
     tracing::debug!(
         idp_rotated,
-        key_prefix = crate::auth::token_suffix(&new_auth.key),
+        has_access_token = !new_auth.key.is_empty(),
         "oidc try_refresh_pure token obtained"
     );
     let (mono_ms, wall_ms, suspended_ms, suspected_suspend) = timing();

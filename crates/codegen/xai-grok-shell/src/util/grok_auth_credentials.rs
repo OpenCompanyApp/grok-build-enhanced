@@ -189,4 +189,15 @@ mod tests {
         let creds = GrokAuthCredentials::new(None).with_auth_manager(mgr);
         assert!(creds.resolve().user_token.is_none());
     }
+
+    #[test]
+    fn debug_never_contains_credential_material() {
+        let mut creds = GrokAuthCredentials::new(Some("user-token-secret".into()));
+        creds.deployment_key = Some("deployment-key-secret".into());
+
+        let rendered = format!("{creds:?}");
+        assert!(!rendered.contains("user-token-secret"));
+        assert!(!rendered.contains("deployment-key-secret"));
+        assert!(rendered.contains("<redacted>"));
+    }
 }

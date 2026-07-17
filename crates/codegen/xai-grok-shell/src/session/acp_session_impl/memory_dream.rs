@@ -380,7 +380,6 @@ impl SessionActor {
             .await;
 
         let result = async {
-            let sampling_client = self.prepare_chat_completion(false).await?;
             let MemoryFlushSnapshot {
                 counts,
                 chat_history,
@@ -427,12 +426,10 @@ impl SessionActor {
                 "Now write the memory summary as described in the system prompt.",
             ));
 
-            let model = match self.memory.flush_config.flush_model.clone() {
-                Some(m) => m,
-                None => self.chat_state_handle.get_sampling_config().await
-                    .map(|c| c.model)
-                    .unwrap_or_default(),
-            };
+            let requested_model = self.memory.flush_config.flush_model.as_deref();
+            let (sampling_client, model) = self
+                .prepare_aux_sampling_client(requested_model, "memory flush")
+                .await?;
             tracing::info!(
                 target: xai_grok_telemetry::memory_log::TARGET,
                 "MEMORY_FLUSH: using model={model}"
@@ -493,8 +490,8 @@ impl SessionActor {
                         // existing memory chunks before writing.
                         let is_sem_dup = if let Some(storage) = self.memory.storage() {
                             if let Some(index) = self.memory.open_index(&storage) {
-                                let provider = if let Some(ref params) = self.memory.backend_params
-                                {
+                                let params = self.memory.backend_params.borrow().clone();
+                                let provider = if let Some(params) = params {
                                     params.make_embedding_provider().await
                                 } else {
                                     None
@@ -660,7 +657,7 @@ impl SessionActor {
     }
 
     /// Rewrite a raw memory note into well-structured markdown via a one-shot
-    /// LLM call using the `grok-build` model.
+    /// LLM call using the active session model and provider route.
     ///
     /// Follows the same streaming pattern as [`handle_ai_suggest`]: prepares
     /// a sampling client, builds a system+user prompt, streams the response,
@@ -679,8 +676,8 @@ impl SessionActor {
             ));
         }
 
-        let sampling_client = self
-            .prepare_chat_completion(false)
+        let (sampling_client, model) = self
+            .prepare_aux_sampling_client(None, "memory note rewrite")
             .await
             .map_err(|e| format!("failed to prepare client: {e}"))?;
 
@@ -704,12 +701,17 @@ impl SessionActor {
             ConversationItem::user(user_msg),
         ];
 
+        let session_id = self.session_info.id.to_string();
         let request = ConversationRequest {
             items,
             tools: vec![],
-            model: Some("grok-build".to_owned()),
+            model: Some(model),
             temperature: Some(0.3),
             max_output_tokens: Some(1024),
+            x_grok_conv_id: Some(session_id.clone()),
+            x_grok_req_id: Some(format!("xai-memory-rewrite-{}", uuid::Uuid::new_v4())),
+            x_grok_session_id: Some(session_id),
+            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
             ..Default::default()
         };
 
@@ -737,6 +739,7 @@ impl SessionActor {
                     request_id,
                     idle_timeout,
                     doom_loop,
+                    sampling_client.provider(),
                 );
                 xai_grok_sampler::collect_response(events).await
             }

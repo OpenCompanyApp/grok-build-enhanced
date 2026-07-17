@@ -33,10 +33,13 @@ pub(super) enum OidcError {
     CallbackAuthFailed(String),
     #[error("failed to parse pasted input: {0}")]
     InvalidPastedInput(String),
-    #[error("OIDC token exchange failed: HTTP {status} — {body}")]
-    TokenExchangeHttp { status: u16, body: String },
-    #[error("OIDC token refresh failed: HTTP {status} — {body}")]
-    TokenRefreshHttp { status: u16, body: String },
+    #[error("OIDC token exchange failed: HTTP {status}")]
+    TokenExchangeHttp { status: u16 },
+    #[error("OIDC token refresh failed: HTTP {status}")]
+    TokenRefreshHttp {
+        status: u16,
+        error_code: Option<String>,
+    },
     #[error("OIDC authentication failed: state mismatch")]
     StateMismatch,
     #[error("OIDC id_token uses unsupported algorithm: {0}")]
@@ -194,7 +197,8 @@ pub(crate) fn enforce_login_principal(
         format!("one of teams: {}", allowed.join(", "))
     };
     tracing::warn!(
-        expected = % expected, actual = ? actual,
+        allowed_principal_count = allowed.len(),
+        actual_principal_present = actual.is_some_and(|id| !id.is_empty()),
         "OIDC: login principal does not satisfy required policy; rejecting"
     );
     Err(anyhow::Error::new(OidcError::PinnedPrincipalMismatch {
@@ -426,11 +430,7 @@ pub(super) async fn exchange_code(
     .await?;
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow::Error::new(OidcError::TokenExchangeHttp {
-            status,
-            body,
-        }));
+        return Err(anyhow::Error::new(OidcError::TokenExchangeHttp { status }));
     }
     Ok(resp.json().await?)
 }
@@ -439,15 +439,13 @@ pub(super) async fn exchange_code(
 /// `invalid_client`) stops retries. Everything else (5xx, 429, bare 4xx, or an
 /// unrecognized/RFC-transient code) is retried.
 fn is_transient_refresh_error(err: &anyhow::Error) -> bool {
-    let Some(OidcError::TokenRefreshHttp { status, body }) = err.downcast_ref::<OidcError>() else {
+    let Some(OidcError::TokenRefreshHttp { status, error_code }) = err.downcast_ref::<OidcError>()
+    else {
         return true;
     };
     if *status >= 500 || *status == 429 {
         return true;
     }
-    let error_code = serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| v.get("error")?.as_str().map(str::to_owned));
     error_code
         .as_deref()
         .and_then(super::refresh::classify_terminal)
@@ -473,7 +471,8 @@ pub(super) async fn refresh_tokens(
     use backon::Retryable;
     tracing::debug!(
         token_endpoint = % token_endpoint, principal_type = ? principal_type,
-        principal_id = ? principal_id, "OIDC: refreshing token"
+        principal_id_present = principal_id.is_some_and(|id| !id.is_empty()),
+        "OIDC: refreshing token"
     );
     (|| {
         refresh_tokens_once(
@@ -525,13 +524,13 @@ async fn refresh_tokens_once(
             .ok()
             .and_then(|v| v.get("error")?.as_str().map(str::to_owned));
         tracing::warn!(
-            http_status = status, oauth2_error = ? error_code, rt_prefix = crate
-            ::auth::token_suffix(refresh_token), client_id = % client_id, principal_type
+            http_status = status, oauth2_error = ? error_code,
+            had_refresh_token = !refresh_token.is_empty(), client_id = % client_id, principal_type
             = ? principal_type, "OIDC: token refresh HTTP error"
         );
         return Err(anyhow::Error::new(OidcError::TokenRefreshHttp {
             status,
-            body,
+            error_code,
         }));
     }
     Ok(resp.json().await?)

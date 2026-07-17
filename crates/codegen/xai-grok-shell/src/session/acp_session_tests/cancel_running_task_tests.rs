@@ -12,11 +12,20 @@ impl AsyncTerminalRunner for DummyTerminal {
         Err(TerminalError::Other("dummy terminal".into()))
     }
 }
-#[tokio::test(flavor = "current_thread")]
-async fn persist_ack_waits_for_disk_flush_before_success() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn persist_ack_waits_for_disk_flush_before_success() {
+    std::thread::Builder::new()
+        .name("persist-ack-test".to_owned())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(async {
+                let local = tokio::task::LocalSet::new();
+                local
+                    .run_until(async {
             let tmp = tempfile::TempDir::new().unwrap();
             let session_dir = tmp.path().join("session");
             let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
@@ -39,9 +48,13 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 cwd: cwd.as_str().to_string(),
             };
             let sampling_client = crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
+                provider: Default::default(),
+                credential_source: Default::default(),
+                credential_binding: None,
                 api_key: Some("test-key".to_string()),
                 base_url: "http://localhost".to_string(),
                 model: "test".to_string(),
+                service_tier: None,
                 max_completion_tokens: None,
                 temperature: None,
                 top_p: None,
@@ -61,6 +74,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 origin_client: None,
                 attribution_callback: None,
                 bearer_resolver: None,
+                request_auth: None,
                 supports_backend_search: false,
                 compactions_remaining: None,
                 compaction_at_tokens: None,
@@ -87,6 +101,8 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
             let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
                 vec![],
                 xai_grok_sampling_types::SamplingConfig {
+                    provider: Default::default(),
+                    credential_binding: None,
                     base_url: "http://localhost".to_string(),
                     model: "test".to_string(),
                     max_completion_tokens: None,
@@ -97,6 +113,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    service_tier: None,
                 },
                 Box::new(
                     crate::session::chat_persistence::ChannelChatPersistence::new(
@@ -154,6 +171,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     context_window_override: None,
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+                    auto_compact_retry_not_before_unix_secs: std::sync::atomic::AtomicU64::new(0),
                     previous_model: std::cell::Cell::new(None),
                     compaction_mode: xai_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
@@ -166,7 +184,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
                     storage: std::cell::RefCell::new(None),
                     save_on_end: true,
-                    backend_params: None,
+                    backend_params: std::cell::RefCell::new(None),
                     initial_injection_config: Default::default(),
                     context_injected: std::sync::atomic::AtomicBool::new(false),
                     flush_count: std::sync::atomic::AtomicU64::new(0),
@@ -322,8 +340,13 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 "loaded chat history should contain the just-persisted prompt"
             );
             let _ = prompt_task.await.expect("prompt task should complete");
+                    })
+                    .await;
+            });
         })
-        .await;
+        .expect("spawn persistence test thread")
+        .join()
+        .expect("persistence test thread");
 }
 #[tokio::test(flavor = "current_thread")]
 async fn first_turn_memory_injection_persists_to_chat_history() {
@@ -336,9 +359,13 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                 cwd: session_dir.path().to_string_lossy().to_string(),
             };
             let sampling_client = crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
+                provider: Default::default(),
+                credential_source: Default::default(),
+                credential_binding: None,
                 api_key: Some("test-key".to_string()),
                 base_url: "http://localhost".to_string(),
                 model: "test-model".to_string(),
+                service_tier: None,
                 max_completion_tokens: None,
                 extra_headers: Default::default(),
                 temperature: None,
@@ -358,6 +385,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                 origin_client: None,
                 attribution_callback: None,
                 bearer_resolver: None,
+                request_auth: None,
                 supports_backend_search: false,
                 compactions_remaining: None,
                 compaction_at_tokens: None,
@@ -385,6 +413,8 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                     ConversationItem::user("<user_info>OS Version: macos</user_info>"),
                 ],
                 xai_grok_sampling_types::SamplingConfig {
+                    provider: Default::default(),
+                    credential_binding: None,
                     base_url: "http://localhost".to_string(),
                     model: "test".to_string(),
                     max_completion_tokens: None,
@@ -395,6 +425,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    service_tier: None,
                 },
                 Box::new(
                     crate::session::chat_persistence::ChannelChatPersistence::new(
@@ -470,9 +501,13 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
             let tool_context =
                 ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
             let sampling_client = crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
+                provider: Default::default(),
+                credential_source: Default::default(),
+                credential_binding: None,
                 api_key: Some("test-key".to_string()),
                 base_url: "http://localhost".to_string(),
                 model: "test-model".to_string(),
+                service_tier: None,
                 max_completion_tokens: None,
                 extra_headers: Default::default(),
                 temperature: None,
@@ -492,6 +527,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 origin_client: None,
                 attribution_callback: None,
                 bearer_resolver: None,
+                request_auth: None,
                 supports_backend_search: false,
                 compactions_remaining: None,
                 compaction_at_tokens: None,
@@ -523,6 +559,8 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
             let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
                 initial_conversation.clone(),
                 xai_grok_sampling_types::SamplingConfig {
+                    provider: Default::default(),
+                    credential_binding: None,
                     base_url: "http://localhost".to_string(),
                     model: "test".to_string(),
                     max_completion_tokens: None,
@@ -533,6 +571,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    service_tier: None,
                 },
                 Box::new(
                     crate::session::chat_persistence::ChannelChatPersistence::new(
@@ -607,6 +646,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     context_window_override: None,
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+                    auto_compact_retry_not_before_unix_secs: std::sync::atomic::AtomicU64::new(0),
                     previous_model: std::cell::Cell::new(None),
                     compaction_mode: xai_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
@@ -619,7 +659,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
                     storage: std::cell::RefCell::new(Some(memory_storage)),
                     save_on_end: true,
-                    backend_params: Some(memory_backend_params),
+                    backend_params: std::cell::RefCell::new(Some(memory_backend_params)),
                     initial_injection_config: crate::config::MemoryInitialInjectionConfig {
                         enabled: false,
                         min_score: Some(0.8),
@@ -880,6 +920,8 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     context_window_override: None,
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+                    auto_compact_retry_not_before_unix_secs:
+                        std::sync::atomic::AtomicU64::new(0),
                     previous_model: std::cell::Cell::new(None),
                     compaction_mode: xai_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
@@ -892,7 +934,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
                     storage: std::cell::RefCell::new(None),
                     save_on_end: true,
-                    backend_params: None,
+                    backend_params: std::cell::RefCell::new(None),
                     initial_injection_config: Default::default(),
                     context_injected: std::sync::atomic::AtomicBool::new(false),
                     flush_count: std::sync::atomic::AtomicU64::new(0),
@@ -1789,9 +1831,13 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 let _ = axum::serve(listener, app).await;
             });
             let cfg = xai_grok_sampler::SamplerConfig {
+                provider: Default::default(),
+                credential_source: Default::default(),
+                credential_binding: None,
                 api_key: Some("test-key".to_string()),
                 base_url: format!("http://{addr}/v1"),
                 model: "test-model".to_string(),
+                service_tier: None,
                 max_completion_tokens: None,
                 temperature: None,
                 top_p: None,
@@ -1811,6 +1857,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 origin_client: None,
                 attribution_callback: None,
                 bearer_resolver: None,
+                request_auth: None,
                 supports_backend_search: false,
                 compactions_remaining: None,
                 compaction_at_tokens: None,
@@ -1924,6 +1971,8 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     context_window_override: None,
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+                    auto_compact_retry_not_before_unix_secs:
+                        std::sync::atomic::AtomicU64::new(0),
                     previous_model: std::cell::Cell::new(None),
                     compaction_mode: xai_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
@@ -1936,7 +1985,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
                     storage: std::cell::RefCell::new(None),
                     save_on_end: true,
-                    backend_params: None,
+                    backend_params: std::cell::RefCell::new(None),
                     initial_injection_config: Default::default(),
                     context_injected: std::sync::atomic::AtomicBool::new(false),
                     flush_count: std::sync::atomic::AtomicU64::new(0),

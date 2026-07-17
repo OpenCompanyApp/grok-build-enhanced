@@ -46,6 +46,8 @@ async fn create_test_actor(
     let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
+            provider: Default::default(),
+            credential_binding: None,
             base_url: "http://localhost".to_string(),
             model: "test".to_string(),
             max_completion_tokens: None,
@@ -57,6 +59,7 @@ async fn create_test_actor(
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
             stream_tool_calls: None,
+            service_tier: None,
         },
         Box::new(xai_chat_state::NullChatPersistence),
         event_tx,
@@ -108,6 +111,7 @@ async fn create_test_actor(
             context_window_override: None,
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+            auto_compact_retry_not_before_unix_secs: std::sync::atomic::AtomicU64::new(0),
             previous_model: std::cell::Cell::new(None),
             compaction_mode: xai_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
@@ -120,7 +124,7 @@ async fn create_test_actor(
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
             storage: std::cell::RefCell::new(None),
             save_on_end: true,
-            backend_params: None,
+            backend_params: std::cell::RefCell::new(None),
             initial_injection_config: Default::default(),
             context_injected: std::sync::atomic::AtomicBool::new(false),
             flush_count: std::sync::atomic::AtomicU64::new(0),
@@ -287,6 +291,112 @@ async fn test_check_auto_compact_needed_uses_state() {
         })
         .await;
 }
+
+/// A provider failure may suppress automatic compaction after the first model
+/// call. If that call's tool output leaves the transcript beyond the hard
+/// context window, resuming must terminate locally rather than issuing a
+/// second sampler request with the same oversized history.
+#[tokio::test(flavor = "current_thread")]
+async fn suppressed_hard_overflow_does_not_issue_second_sampler_call() {
+    use axum::Router;
+    use axum::http::StatusCode;
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            // The baseline represents the first sampler call that produced the
+            // large tool result and provider-side compaction suppression.
+            let sampler_calls = Arc::new(AtomicUsize::new(1));
+            let calls_for_handler = Arc::clone(&sampler_calls);
+            let app = Router::new().route(
+                "/chat/completions",
+                post(move || {
+                    let calls = Arc::clone(&calls_for_handler);
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::BAD_REQUEST,
+                            axum::Json(serde_json::json!({
+                                "error": {
+                                    "message": "unexpected second sampler request",
+                                    "type": "invalid_request_error"
+                                }
+                            })),
+                        )
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::task::spawn_local(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+
+            let (gateway_tx, _gateway_rx) =
+                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
+            let mut actor =
+                create_test_actor(101_000, 100_000, 85, gateway_tx, persistence_tx).await;
+            let mut chat_config = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            chat_config.base_url = format!("http://{addr}");
+            actor
+                .chat_state_handle
+                .update_sampling_config(chat_config.clone());
+            let (sampler_event_tx, _sampler_event_rx) =
+                tokio::sync::mpsc::unbounded_channel::<xai_grok_sampler::SamplingEvent>();
+            actor.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+                xai_grok_sampler::SamplerConfig {
+                    base_url: chat_config.base_url,
+                    model: chat_config.model,
+                    api_backend: chat_config.api_backend,
+                    context_window: chat_config.context_window.get(),
+                    ..Default::default()
+                },
+                xai_grok_sampler::RetryPolicy {
+                    max_retries: 0,
+                    rate_limit_retry_threshold: 0,
+                },
+                sampler_event_tx,
+            );
+            actor.compaction.auto_compact_suppressed.store(
+                crate::session::compaction_config::SUPPRESS_UNTIL_SUCCESS,
+                Ordering::Relaxed,
+            );
+            let actor = Arc::new(actor);
+
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                actor.process_conversation_turn_with_recovery(
+                    "hard-overflow-test",
+                    None,
+                    None,
+                    None,
+                ),
+            )
+            .await
+            .expect("hard-overflow guard must terminate promptly");
+            let result = match result {
+                Err(error) => error,
+                Ok(_) => panic!("suppressed hard overflow must stop the turn"),
+            };
+            assert!(
+                result
+                    .data
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|message| message.contains("Context window exceeded")),
+                "the turn should surface the local hard-overflow error: {result:?}"
+            );
+            assert_eq!(
+                sampler_calls.load(Ordering::SeqCst),
+                1,
+                "hard-overflow handling must not issue a second sampler call"
+            );
+        })
+        .await;
+}
 /// Test that overriding context_window on the sampling config changes
 /// auto-compact behavior. This validates the A/B fork fix: forked sessions
 /// must use the new model's context window, not the source session's.
@@ -357,6 +467,8 @@ async fn test_response_header_context_window_downgrade_rejected() {
             assert_eq!(cfg_before.context_window.get(), 500_000);
             actor
                 .handle_model_metadata_update(crate::sampling::ResponseModelMetadata {
+                    provider: xai_grok_sampling_types::ProviderId::Xai,
+                    credential_binding: None,
                     context_window: Some(256_000),
                     max_completion_tokens: None,
                     models_etag: None,
@@ -370,6 +482,8 @@ async fn test_response_header_context_window_downgrade_rejected() {
             );
             actor
                 .handle_model_metadata_update(crate::sampling::ResponseModelMetadata {
+                    provider: xai_grok_sampling_types::ProviderId::Xai,
+                    credential_binding: None,
                     context_window: Some(1_000_000),
                     max_completion_tokens: None,
                     models_etag: None,
@@ -477,6 +591,8 @@ async fn create_test_actor_with_memory(
     let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
+            provider: Default::default(),
+            credential_binding: None,
             base_url: "http://localhost".to_string(),
             model: "test".to_string(),
             max_completion_tokens: None,
@@ -488,6 +604,7 @@ async fn create_test_actor_with_memory(
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
             stream_tool_calls: None,
+            service_tier: None,
         },
         Box::new(xai_chat_state::NullChatPersistence),
         event_tx,
@@ -540,6 +657,7 @@ async fn create_test_actor_with_memory(
             context_window_override: None,
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+            auto_compact_retry_not_before_unix_secs: std::sync::atomic::AtomicU64::new(0),
             previous_model: std::cell::Cell::new(None),
             compaction_mode: xai_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
@@ -554,7 +672,7 @@ async fn create_test_actor_with_memory(
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
             storage: std::cell::RefCell::new(memory_storage),
             save_on_end: true,
-            backend_params: None,
+            backend_params: std::cell::RefCell::new(None),
             initial_injection_config: memory_initial_injection_config,
             context_injected: std::sync::atomic::AtomicBool::new(false),
             flush_count: std::sync::atomic::AtomicU64::new(0),
@@ -1131,6 +1249,8 @@ fn api_error_with_context_window(context_window: u64) -> xai_grok_sampler::Sampl
         is_retryable: false,
         retry_after_secs: None,
         model_metadata: Some(crate::sampling::ResponseModelMetadata {
+            provider: xai_grok_sampling_types::ProviderId::Xai,
+            credential_binding: None,
             context_window: Some(context_window),
             max_completion_tokens: None,
             models_etag: None,
@@ -1228,6 +1348,8 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
             let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
                 vec![],
                 xai_grok_sampling_types::SamplingConfig {
+                    provider: Default::default(),
+                    credential_binding: None,
                     base_url: mock_url,
                     model: "test-model".to_string(),
                     max_completion_tokens: Some(8192),
@@ -1238,6 +1360,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     context_window: std::num::NonZeroU64::new(200_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    service_tier: None,
                 },
                 Box::new(xai_chat_state::NullChatPersistence),
                 event_tx,
@@ -1308,6 +1431,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     context_window_override: None,
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+                    auto_compact_retry_not_before_unix_secs: std::sync::atomic::AtomicU64::new(0),
                     previous_model: std::cell::Cell::new(None),
                     compaction_mode: xai_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
@@ -1320,7 +1444,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
                     storage: std::cell::RefCell::new(None),
                     save_on_end: true,
-                    backend_params: None,
+                    backend_params: std::cell::RefCell::new(None),
                     initial_injection_config: Default::default(),
                     context_injected: std::sync::atomic::AtomicBool::new(false),
                     flush_count: std::sync::atomic::AtomicU64::new(0),

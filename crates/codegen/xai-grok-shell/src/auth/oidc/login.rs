@@ -508,8 +508,8 @@ pub async fn run_login_flow_with_config(
         } else if let Some((pt, pid, tid)) = token_principal {
             tracing::info!(
                 principal_type = %pt,
-                principal_id = %pid,
-                team_id = ?tid,
+                has_principal_id = !pid.is_empty(),
+                has_team_id = tid.as_ref().is_some_and(|id| !id.is_empty()),
                 "OIDC: resolved principal from access token"
             );
             (Some(pt), Some(pid), tid)
@@ -529,7 +529,10 @@ pub async fn run_login_flow_with_config(
         resolved_team_id,
     )
     .await?;
-    tracing::debug!(user_id = %user_info.user_id, "OIDC: extracted user info");
+    tracing::debug!(
+        has_user_id = !user_info.user_id.is_empty(),
+        "OIDC: extracted user info"
+    );
 
     let mut auth = build_grok_auth(tokens, user_info, &oidc.issuer, &oidc.client_id);
     auth_manager.enrich_auth_inline(&mut auth).await;
@@ -537,7 +540,10 @@ pub async fn run_login_flow_with_config(
         .update(auth)
         .await
         .map_err(|e| anyhow::Error::new(OidcError::SaveAuth(e.to_string())))?;
-    tracing::info!(user_id = %auth.user_id, "OIDC: login complete, credentials saved");
+    tracing::info!(
+        has_user_id = !auth.user_id.is_empty(),
+        "OIDC: login complete, credentials saved"
+    );
 
     Ok((auth, true))
 }

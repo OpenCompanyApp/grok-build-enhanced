@@ -499,6 +499,7 @@ mod tests {
     /// here until the drift-guard tests cover it.
     fn fully_populated_override() -> ConfigModelOverride {
         ConfigModelOverride {
+            provider: Some(Default::default()),
             model: Some("m".into()),
             base_url: Some("https://example.com".into()),
             name: Some("Model M".into()),

@@ -210,8 +210,8 @@ async fn attempt_auth_recovery(
                 "auth recovery: relay token unchanged, backing off",
                 None,
                 Some(serde_json::json!(
-                    { "context" : context, "key_prefix" : crate
-                    ::auth::token_suffix(& new_auth.key), }
+                    { "context" : context, "credential_present" : ! new_auth.key
+                    .is_empty(), }
                 )),
             );
             false
@@ -222,8 +222,8 @@ async fn attempt_auth_recovery(
                 "auth recovery: relay recovered",
                 None,
                 Some(serde_json::json!(
-                    { "context" : context, "new_key_prefix" : crate
-                    ::auth::token_suffix(& new_auth.key), }
+                    { "context" : context, "credential_present" : ! new_auth.key
+                    .is_empty(), }
                 )),
             );
             config.auth = new_auth;

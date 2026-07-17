@@ -828,6 +828,7 @@ pub fn parse_remote_model_value(
         .unwrap_or_default();
     Some(crate::agent::config::ModelEntryConfig {
         id,
+        provider: xai_grok_sampling_types::ProviderId::Xai,
         model,
         base_url,
         name,

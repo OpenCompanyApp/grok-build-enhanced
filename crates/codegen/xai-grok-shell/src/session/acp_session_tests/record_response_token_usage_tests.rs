@@ -18,6 +18,7 @@ fn response_with_usage(total_tokens: u32) -> ConversationResponse {
         message_chunks_emitted: 1,
         doom_loop_signals: Vec::new(),
         stop_message: None,
+        provider_end_turn: None,
     }
 }
 
@@ -30,6 +31,7 @@ fn response_without_usage() -> ConversationResponse {
         message_chunks_emitted: 1,
         doom_loop_signals: Vec::new(),
         stop_message: None,
+        provider_end_turn: None,
     }
 }
 
@@ -49,7 +51,9 @@ async fn updates_chat_state_total_tokens_from_response_usage() {
             let _sync = actor.chat_state_handle.get_total_tokens().await;
             assert_eq!(actor.chat_state_handle.get_total_tokens().await, 0);
 
-            actor.record_response_token_usage(&response_with_usage(150_000), None);
+            actor
+                .record_response_token_usage(&response_with_usage(150_000), None)
+                .await;
 
             assert_eq!(actor.chat_state_handle.get_total_tokens().await, 150_000);
             let prompt = actor
@@ -86,7 +90,9 @@ async fn preserves_total_tokens_when_response_has_no_usage() {
             let actor = create_test_actor(99_999, 256_000, 85, gateway_tx, persistence_tx).await;
             let _sync = actor.chat_state_handle.get_total_tokens().await;
 
-            actor.record_response_token_usage(&response_without_usage(), None);
+            actor
+                .record_response_token_usage(&response_without_usage(), None)
+                .await;
 
             assert_eq!(actor.chat_state_handle.get_total_tokens().await, 99_999);
         })
@@ -128,7 +134,9 @@ async fn build_session_info_used_reflects_recorded_response() {
                 .push_user_message_and_ack(ConversationItem::user("hello hello hello hello"))
                 .await;
 
-            actor.record_response_token_usage(&response_with_usage(120_000), None);
+            actor
+                .record_response_token_usage(&response_with_usage(120_000), None)
+                .await;
 
             let info = actor.build_session_info().await;
             assert_eq!(info.context.used, 120_000);
@@ -229,7 +237,9 @@ async fn stashes_per_turn_usage_in_chat_state() {
             );
 
             // Use existing fixture: total=200_000 → prompt=199_950, completion=50.
-            actor.record_response_token_usage(&response_with_usage(200_000), None);
+            actor
+                .record_response_token_usage(&response_with_usage(200_000), None)
+                .await;
 
             let stashed = actor
                 .chat_state_handle
