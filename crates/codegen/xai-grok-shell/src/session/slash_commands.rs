@@ -30,6 +30,7 @@ pub(crate) struct BuiltinCommand {
 ///   disabled). Used for `/memory` so the user can re-enable via toggle.
 /// - `Goal`: `resolve_goal()` feature flag is on AND `update_goal` is in the
 ///   session toolset (see `goal_slash_and_harness_available` in `acp_session.rs`).
+/// - `Fast`: authenticated Codex service-tier controls are enabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuiltinGate {
     AlwaysOn,
@@ -42,6 +43,7 @@ pub(crate) enum BuiltinGate {
     Hooks,
     Plugins,
     Goal,
+    Fast,
 }
 
 /// All built-in slash commands. Order here = display order in autocomplete.
@@ -58,6 +60,23 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
             } else {
                 Some(args.to_string())
             },
+        },
+    },
+    BuiltinCommand {
+        name: "fast",
+        description: "Turn ChatGPT Codex Fast mode on or off, or show its status",
+        argument_hint: Some("on|off|status"),
+        aliases: &[],
+        gate: BuiltinGate::Fast,
+        resolve: |args| {
+            let mode = match args.trim().to_ascii_lowercase().as_str() {
+                "" | "toggle" => FastModeAction::Toggle,
+                "status" => FastModeAction::Status,
+                "on" | "enable" | "enabled" | "true" | "1" => FastModeAction::On,
+                "off" | "disable" | "disabled" | "false" | "0" => FastModeAction::Off,
+                _ => FastModeAction::Invalid,
+            };
+            BuiltinAction::Fast { mode }
         },
     },
     BuiltinCommand {
@@ -387,6 +406,7 @@ pub(crate) struct CommandAvailability {
     pub hooks: bool,
     pub plugins: bool,
     pub goal: bool,
+    pub fast: bool,
 }
 
 impl CommandAvailability {
@@ -401,6 +421,7 @@ impl CommandAvailability {
             BuiltinGate::Hooks => self.hooks,
             BuiltinGate::Plugins => self.plugins,
             BuiltinGate::Goal => self.goal,
+            BuiltinGate::Fast => self.fast,
         }
     }
 
@@ -416,6 +437,7 @@ impl CommandAvailability {
             hooks: true,
             plugins: true,
             goal: true,
+            fast: true,
         }
     }
 }
@@ -609,6 +631,9 @@ pub(super) enum BuiltinAction {
     Compact {
         user_context: Option<String>,
     },
+    Fast {
+        mode: FastModeAction,
+    },
     SetYolo {
         enabled: bool,
     },
@@ -662,10 +687,20 @@ pub(super) enum BuiltinAction {
     GoalClear,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FastModeAction {
+    Toggle,
+    On,
+    Off,
+    Status,
+    Invalid,
+}
+
 impl BuiltinAction {
     pub(crate) fn command_name(&self) -> &'static str {
         match self {
             BuiltinAction::Compact { .. } => "compact",
+            BuiltinAction::Fast { .. } => "fast",
             BuiltinAction::SetYolo { .. } => "yolo",
             BuiltinAction::FlushMemory => "flush",
             BuiltinAction::Dream => "dream",
@@ -698,6 +733,9 @@ impl BuiltinAction {
     pub(crate) fn args_provided(&self) -> bool {
         match self {
             BuiltinAction::Compact { user_context } => user_context.is_some(),
+            BuiltinAction::Fast { mode } => {
+                !matches!(mode, FastModeAction::Toggle | FastModeAction::Status)
+            }
             BuiltinAction::SetYolo { .. } => true,
             BuiltinAction::FlushMemory => false,
             BuiltinAction::Dream => false,
@@ -1010,6 +1048,19 @@ pub(super) fn resolve(
         });
     }
 
+    // A pager connected before a live config reload can briefly retain its
+    // local `/fast` command after the shell's kill switch turns off. Still
+    // resolve that exact command so execution can return the disabled message
+    // instead of forwarding it to the model as ordinary user text.
+    if command_name == "fast"
+        && !availability.fast
+        && let Some(fast) = BUILTIN_COMMANDS
+            .iter()
+            .find(|command| command.name == "fast")
+    {
+        return Err(SlashCommandOutcome::Builtin((fast.resolve)(args)));
+    }
+
     // Check if the leading /command is a builtin.
     let commands = all_commands(skills, availability);
     let builtin_match = commands
@@ -1226,6 +1277,40 @@ mod tests {
         assert!(matches!(
             resolve_builtin("compact", "keep auth"),
             Some(BuiltinAction::Compact { user_context: Some(ctx) }) if ctx == "keep auth"
+        ));
+    }
+
+    #[test]
+    fn fast_parses_canonical_modes_and_rejects_unknown_arguments() {
+        for (argument, expected) in [
+            ("", FastModeAction::Toggle),
+            ("toggle", FastModeAction::Toggle),
+            ("status", FastModeAction::Status),
+            ("ON", FastModeAction::On),
+            ("off", FastModeAction::Off),
+            ("unexpected", FastModeAction::Invalid),
+        ] {
+            let Some(BuiltinAction::Fast { mode }) = resolve_builtin("fast", argument) else {
+                panic!("expected /fast {argument:?} to resolve as a Fast builtin");
+            };
+            assert_eq!(mode, expected, "argument {argument:?}");
+        }
+    }
+
+    #[test]
+    fn fast_resolves_through_the_full_slash_command_path() {
+        let outcome = resolve(
+            vec![text_block(" /fast on ")],
+            &[],
+            all_gated(),
+            SkillSlashRewrite::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            outcome,
+            SlashCommandOutcome::Builtin(BuiltinAction::Fast {
+                mode: FastModeAction::On
+            })
         ));
     }
 
@@ -1510,6 +1595,7 @@ mod tests {
             names,
             [
                 "compact",
+                "fast",
                 "always-approve",
                 "flush",
                 "dream",
@@ -1606,6 +1692,32 @@ mod tests {
             ..CommandAvailability::all_enabled()
         });
         assert!(!names.iter().any(|n| n == "goal"), "got: {names:?}");
+    }
+
+    #[test]
+    fn availability_filters_fast_command_from_advertising() {
+        let names = advertised_names(CommandAvailability {
+            fast: false,
+            ..CommandAvailability::all_enabled()
+        });
+        assert!(!names.iter().any(|n| n == "fast"), "got: {names:?}");
+
+        let outcome = resolve(
+            vec![text_block("/fast on")],
+            &[],
+            CommandAvailability {
+                fast: false,
+                ..CommandAvailability::all_enabled()
+            },
+            SkillSlashRewrite::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            outcome,
+            SlashCommandOutcome::Builtin(BuiltinAction::Fast {
+                mode: FastModeAction::On
+            })
+        ));
     }
 
     #[test]
@@ -1717,6 +1829,7 @@ mod tests {
             .map(|c| c.name)
             .collect();
         for forbidden in [
+            "fast",
             "flush",
             "dream",
             "memory",
@@ -1759,7 +1872,7 @@ mod tests {
             "goal should be advertised pre-session when the flag is on, got: {names:?}",
         );
         // Runtime/tool-dependent gates stay closed pre-session.
-        for forbidden in ["flush", "dream", "memory", "feedback", "plugins"] {
+        for forbidden in ["fast", "flush", "dream", "memory", "feedback", "plugins"] {
             assert!(
                 !names.iter().any(|n| n == forbidden),
                 "{forbidden} should stay excluded pre-session, got: {names:?}",
@@ -2074,6 +2187,7 @@ mod tests {
     fn default_availability_is_fail_closed_on_every_gate() {
         let names = advertised_names_with(CommandAvailability::default());
         for forbidden in [
+            "fast",
             "flush",
             "dream",
             "feedback",

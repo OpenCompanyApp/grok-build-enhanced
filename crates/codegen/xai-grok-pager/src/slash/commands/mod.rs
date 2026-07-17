@@ -21,6 +21,7 @@ pub mod effort_levels;
 pub mod exit;
 pub mod expand;
 pub mod export;
+pub mod fast;
 pub mod feedback;
 pub mod find;
 pub mod fork;
@@ -77,7 +78,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(docs::DocsCommand),
         Arc::new(home::HomeCommand),
         Arc::new(new::NewCommand),
-        
         Arc::new(fork::ForkCommand),
         Arc::new(compact::CompactCommand),
         Arc::new(copy::CopyCommand),
@@ -91,6 +91,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(screen_mode_switch::ScreenModeSwitchCommand::fullscreen()),
         Arc::new(model::ModelCommand),
         Arc::new(effort::EffortCommand),
+        Arc::new(fast::FastCommand),
         Arc::new(always_approve::AlwaysApproveCommand),
         Arc::new(auto::AutoCommand),
         Arc::new(multiline::MultilineCommand),
@@ -115,7 +116,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(mcps::McpsCommand),
         Arc::new(btw::BtwCommand),
         Arc::new(recap::RecapCommand),
-        
         Arc::new(terminal_setup::TerminalSetupCommand),
         Arc::new(voice::VoiceCommand),
         Arc::new(loop_cmd::LoopCommand),
@@ -195,6 +195,15 @@ mod tests {
         assert!(reg.get("new").is_some());
         assert!(reg.get("compact").is_some());
         assert!(reg.get("model").is_some());
+        assert!(
+            reg.get("fast").is_none(),
+            "/fast stays hidden until the shell advertises the feature"
+        );
+        reg.set_acp_commands(&[acp::AvailableCommand::new(
+            "fast".to_string(),
+            "Control Codex Fast mode".to_string(),
+        )]);
+        assert!(reg.get("fast").is_some());
         assert!(reg.get("home").is_some());
         assert!(reg.get("view-plan").is_some());
         reg.set_available_tools(std::collections::HashSet::from([
@@ -459,6 +468,17 @@ mod tests {
         let mut ctx = make_ctx(&models);
         usage::UsageCommand.run(&mut ctx, args)
     }
+
+    fn codex_models() -> ModelState {
+        let mut models = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("openai-codex/gpt-5.6-sol"));
+        models.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "GPT-5.6-Sol".to_string()),
+        );
+        models.current = Some(id);
+        models
+    }
     #[test]
     fn usage_no_args_returns_show_usage() {
         assert!(matches!(
@@ -478,6 +498,18 @@ mod tests {
         match run_usage("manage") {
             CommandResult::Action(Action::OpenUrl(url)) => {
                 assert_eq!(url, "https://grok.com/?_s=usage");
+            }
+            other => panic!("expected Action(OpenUrl), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_manage_opens_chatgpt_codex_usage_for_codex_model() {
+        let models = codex_models();
+        let mut ctx = make_ctx(&models);
+        match usage::UsageCommand.run(&mut ctx, "manage") {
+            CommandResult::Action(Action::OpenUrl(url)) => {
+                assert_eq!(url, "https://chatgpt.com/codex/settings/usage");
             }
             other => panic!("expected Action(OpenUrl), got {other:?}"),
         }
@@ -531,6 +563,21 @@ mod tests {
         assert_eq!(items[0].insert_text, "show");
         assert_eq!(items[1].display, "manage");
         assert_eq!(items[1].insert_text, "manage");
+    }
+
+    #[test]
+    fn usage_suggest_args_labels_codex_settings() {
+        let models = codex_models();
+        let ctx = crate::slash::command::AppCtx {
+            models: &models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            screen_mode: crate::app::ScreenMode::Fullscreen,
+        };
+        let items = usage::UsageCommand
+            .suggest_args(&ctx, "")
+            .expect("should have suggestions");
+        assert_eq!(items[1].description, "Open ChatGPT Codex usage settings");
     }
     #[test]
     fn usage_metadata() {

@@ -854,15 +854,9 @@ async fn resolve_effective_model_config(
     }
     resolve_subagent_sampling_config(subagent_type, definition_model, ctx).await
 }
-/// Truncate an API key to a safe prefix for logging.
-fn key_prefix(key: &Option<String>) -> String {
-    match key {
-        Some(k) => {
-            let len = k.len().min(8);
-            k[..len].to_string()
-        }
-        None => "<none>".to_string(),
-    }
+/// Report credential presence without deriving any loggable material from it.
+fn has_api_key(key: &Option<String>) -> bool {
+    key.as_ref().is_some_and(|key| !key.is_empty())
 }
 /// Emit a unified log entry recording which model and credentials a subagent
 /// resolved to, and how they compare to the parent's.
@@ -873,8 +867,8 @@ fn log_subagent_model_resolution(
     resolved_id: &acp::ModelId,
     parent: &xai_grok_sampler::SamplerConfig,
 ) {
-    let child_key = key_prefix(&resolved.api_key);
-    let parent_key = key_prefix(&parent.api_key);
+    let child_has_api_key = has_api_key(&resolved.api_key);
+    let parent_has_api_key = has_api_key(&parent.api_key);
     let keys_match = resolved.api_key == parent.api_key;
     xai_grok_telemetry::unified_log::debug(
         "subagent model resolved",
@@ -882,8 +876,9 @@ fn log_subagent_model_resolution(
         Some(serde_json::json!(
             { "agent" : agent_name, "priority" : priority, "child_model" :
             resolved_id.0.as_ref(), "child_base_url" : & resolved.base_url,
-            "child_key_prefix" : child_key, "parent_model" : & parent.model,
-            "parent_base_url" : & parent.base_url, "parent_key_prefix" : parent_key,
+            "child_has_api_key" : child_has_api_key, "parent_model" : & parent.model,
+            "parent_base_url" : & parent.base_url, "parent_has_api_key" :
+            parent_has_api_key,
             "keys_match" : keys_match, }
         )),
     );
@@ -910,6 +905,9 @@ async fn read_parent_sampling_config(
                 .map(|r| r.auth_scheme)
                 .unwrap_or_default();
             let inherited = xai_grok_sampler::SamplerConfig {
+                provider: cfg.provider,
+                credential_source: ctx.sampling_config.credential_source,
+                credential_binding: cfg.credential_binding,
                 api_key: creds.api_key,
                 base_url: cfg.base_url,
                 model: cfg.model.clone(),
@@ -922,6 +920,7 @@ async fn read_parent_sampling_config(
                 context_window: cfg.context_window.get(),
                 client_version: creds.client_version,
                 reasoning_effort: cfg.reasoning_effort,
+                service_tier: cfg.service_tier,
                 force_http1: false,
                 max_retries: None,
                 stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
@@ -932,6 +931,7 @@ async fn read_parent_sampling_config(
                 origin_client: ctx.sampling_config.origin_client.clone(),
                 attribution_callback: ctx.attribution_callback.clone(),
                 bearer_resolver: None,
+                request_auth: ctx.sampling_config.request_auth.clone(),
                 supports_backend_search: ctx
                     .models_manager
                     .model_supports_backend_search(ctx.model_id.0.as_ref()),
@@ -951,7 +951,7 @@ async fn read_parent_sampling_config(
                 None,
                 Some(serde_json::json!(
                     { "parent_model" : & inherited.model, "parent_base_url" : &
-                    inherited.base_url, "parent_key_prefix" : key_prefix(& inherited
+                    inherited.base_url, "parent_has_api_key" : has_api_key(& inherited
                     .api_key), "session_model_id" : model_id.0.as_ref(),
                     "global_model_id" : global_model_id.0.as_ref(), "source" :
                     "chat_state", }
@@ -969,7 +969,7 @@ async fn read_parent_sampling_config(
         None,
         Some(serde_json::json!(
             { "parent_model" : & ctx.sampling_config.model, "parent_base_url" : & ctx
-            .sampling_config.base_url, "parent_key_prefix" : key_prefix(& ctx
+            .sampling_config.base_url, "parent_has_api_key" : has_api_key(& ctx
             .sampling_config.api_key), "source" : "spawn_context_baseline",
             "has_chat_state" : ctx.parent_chat_state.is_some(), }
         )),
@@ -1019,7 +1019,7 @@ fn resolve_model_override_to_config(
     let mut credentials = resolve_credentials(&entry, session_key);
     credentials.auth_type = subagent_auth_type(Some(&entry), &ctx.auth_method_id);
     let resolved_auth_type = credentials.auth_type;
-    let config = sampling_config_for_model(
+    let mut config = sampling_config_for_model(
         &entry,
         credentials,
         ctx.alpha_test_key.clone(),
@@ -1027,13 +1027,23 @@ fn resolve_model_override_to_config(
         ctx.sampling_config.deployment_id.clone(),
         ctx.sampling_config.user_id.clone(),
     );
+    if config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
+        && let Ok(manager) =
+            crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home())
+    {
+        let manager = std::sync::Arc::new(manager);
+        if let Some(credentials) = manager.current() {
+            config.credential_binding = Some(credentials.credential_binding());
+            config.request_auth = Some(crate::auth::codex::shared_sampler_request_auth(manager));
+        }
+    }
     xai_grok_telemetry::unified_log::debug(
         "subagent resolve_model_override_to_config",
         None,
         Some(serde_json::json!(
             { "model_id" : model_id, "canonical_model" : canonical_model_id.0
             .as_ref(), "resolved_model_raw" : & config.model, "base_url" : & config
-            .base_url, "key_prefix" : key_prefix(& config.api_key),
+            .base_url, "has_api_key" : has_api_key(& config.api_key),
             "has_own_credentials" : entry.has_own_credentials(), "has_session_key" :
             has_session_key, "auth_type" : format!("{:?}", resolved_auth_type),
             "auth_method_id" : ctx.auth_method_id.0.as_ref(), }

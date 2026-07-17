@@ -6,9 +6,10 @@ use crate::sampling::{
     ToolChoice, ToolDefinition, ToolSpec, conversation_to_chat_messages,
 };
 use agent_client_protocol as acp;
-use async_openai::types::responses::ResponseStreamEvent;
+use async_openai::types::responses::{self as responses, ResponseStreamEvent};
 use futures_util::StreamExt;
 use reqwest::StatusCode;
+use std::collections::BTreeMap;
 pub use xai_chat_state::compaction_utils::{
     AUTO_CONTINUE_PROMPT, extract_last_real_user_query, extract_last_user_query,
     extract_messages_since_last_user, extract_real_user_queries, is_synthetic_extracted_query,
@@ -55,25 +56,38 @@ pub(crate) use xai_grok_sampling_types::is_context_length_error;
 /// and stuck-model conditions all persist). 4xx API responses other than
 /// 408 (timeout) and 429 (rate limit) are likewise deterministic. Network
 /// transport errors, stream-level blips, and 5xx responses are transient.
-fn classify_sampling_error(err: SamplingError) -> CompactFailure {
+fn classify_sampling_error_for_provider(
+    err: SamplingError,
+    provider: xai_grok_sampling_types::ProviderId,
+) -> CompactFailure {
     let acp_err = acp::Error::internal_error().data(format!("compact failed: {err}"));
     let deterministic = match &err {
         SamplingError::Auth(_)
+        | SamplingError::ProviderAuthRejected { .. }
         | SamplingError::InvalidConfiguration(_)
         | SamplingError::Serialization(_)
         | SamplingError::IdleTimeout { .. } => true,
         SamplingError::Api {
-            status, message, ..
+            status,
+            message,
+            should_retry,
+            ..
         } => {
-            is_context_length_error(message)
+            *should_retry == Some(false)
+                || is_context_length_error(message)
+                || (*status == StatusCode::TOO_MANY_REQUESTS
+                    && (provider.is_openai_codex() || message.contains("usage limit reached")))
                 || (status.is_client_error()
                     && *status != StatusCode::REQUEST_TIMEOUT
                     && *status != StatusCode::TOO_MANY_REQUESTS)
         }
         SamplingError::MaxTokensTruncation => true,
+        SamplingError::StreamError {
+            error_type,
+            message,
+        } => error_type == "usage_limit_reached" || message.contains("usage limit reached"),
         SamplingError::Http(_)
         | SamplingError::EventStreamError(_)
-        | SamplingError::StreamError { .. }
         | SamplingError::EmptyResponse { .. }
         | SamplingError::DoomLoopDetected { .. } => false,
     };
@@ -82,6 +96,11 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
     } else {
         CompactFailure::Transient(acp_err)
     }
+}
+
+#[cfg(test)]
+fn classify_sampling_error(err: SamplingError) -> CompactFailure {
+    classify_sampling_error_for_provider(err, xai_grok_sampling_types::ProviderId::Xai)
 }
 /// Classify a Anthropic-style stream error event (`ResponseError` /
 /// `ResponseFailed.error`) for the compaction retry loop.
@@ -99,6 +118,9 @@ fn classify_response_event_error(code: Option<&str>, message: &str) -> CompactFa
         Some(c) => format!("compact failed: {c}: {message}"),
         None => format!("compact failed: {message}"),
     });
+    if matches!(code, Some("usage_limit_reached")) || message.contains("usage limit reached") {
+        return CompactFailure::Deterministic(acp_err);
+    }
     if matches!(code, Some("invalid_request_error")) || message.contains("invalid_request_error") {
         return CompactFailure::Deterministic(acp_err);
     }
@@ -113,6 +135,55 @@ fn classify_response_event_error(code: Option<&str>, message: &str) -> CompactFa
         return CompactFailure::Deterministic(acp_err);
     }
     CompactFailure::Transient(acp_err)
+}
+
+/// Recover one provider-scoped Codex credential rejection for a direct
+/// compaction request. Normal turns get this behavior from the sampler actor,
+/// but compaction intentionally calls the transport client directly. Keep the
+/// retry local, one-shot, and typed so a Codex 401 can never reach the xAI
+/// `AuthManager` or turn into an unbounded refresh loop.
+async fn maybe_recover_compaction_provider_auth(
+    client: &OaiCompatClient,
+    error: &SamplingError,
+    recovery_attempted: &mut bool,
+) -> bool {
+    if *recovery_attempted {
+        return false;
+    }
+    let Some((provider, rejected)) = error.rejected_provider_credential() else {
+        return false;
+    };
+    if !provider.is_openai_codex() {
+        return false;
+    }
+    *recovery_attempted = true;
+    client
+        .recover_provider_auth_after_unauthorized(rejected.clone())
+        .await
+}
+
+/// Return the not-yet-seen suffix of an authoritative Responses text value.
+/// Codex streams may omit deltas and provide text only in `*.done`,
+/// `output_item.done`, or the terminal response. Tracking per output/content
+/// slot prevents those fallback frames from duplicating already streamed text.
+fn take_unstreamed_compaction_suffix(
+    streamed: &mut BTreeMap<(u32, u32), String>,
+    key: (u32, u32),
+    authoritative: &str,
+) -> Option<String> {
+    if authoritative.is_empty() {
+        return None;
+    }
+    let already_streamed = streamed.entry(key).or_default();
+    if !authoritative.starts_with(already_streamed.as_str()) {
+        return None;
+    }
+    let suffix = authoritative[already_streamed.len()..].to_owned();
+    if suffix.is_empty() {
+        return None;
+    }
+    already_streamed.push_str(&suffix);
+    Some(suffix)
 }
 /// Build the chat history that will be sent to the compaction model.
 ///
@@ -325,6 +396,28 @@ where
         Err(_) => StreamStep::IdleTimeout,
     }
 }
+
+/// Keep ordinary providers' tool-prefix alignment, but never expose callable
+/// tools to a Codex local-summary request. The Responses Lite transport moves
+/// the supplied definitions into `additional_tools` and, for normal turns,
+/// forces `tool_choice: auto`. That is correct for the agent loop but not for
+/// compaction: a tool-call-only response contains no summary text and used to
+/// look like an intermittent empty response. Current openai/codex uses a
+/// dedicated remote compaction contract; while Grok Build retains its local
+/// full-replace summarizer, a tool-free Codex request is the compatible and
+/// deterministic shape.
+fn provider_safe_compaction_tools(
+    provider: xai_grok_sampling_types::ProviderId,
+    tools: Vec<ToolSpec>,
+    hosted_tools: Vec<HostedTool>,
+) -> (Vec<ToolSpec>, Vec<HostedTool>) {
+    if provider.is_openai_codex() {
+        (Vec::new(), Vec::new())
+    } else {
+        (tools, hosted_tools)
+    }
+}
+
 /// Generates a summary of the conversation for compaction.
 /// Accepts `Vec<ConversationItem>` so the Responses path can preserve
 /// encrypted reasoning. ChatCompletions converts at point of use.
@@ -333,15 +426,12 @@ where
 /// user message — use [`build_compaction_chat_history`] to construct it. The
 /// split lets callers persist the exact request payload before issuing it.
 ///
-/// `tools` / `hosted_tools` are the SAME effective definitions the turn loop
-/// attaches to normal requests. Tool definitions are serialized into the
-/// prompt prefix by every backend, so omitting them would shift the entire
-/// prefix and force a full prefill on the summarizer call — attaching them
-/// keeps the request prefix byte-identical to the turn requests so the
-/// engine reuses the session's KV cache (the whole point of the verbatim
-/// input path). Tool *use* is forbidden via `tool_choice: none` where the
-/// backend can express it (ChatCompletions, Responses); the Messages wire
-/// enum has no `none`, so that path relies on the prompt instruction alone.
+/// For ordinary providers, `tools` / `hosted_tools` are the same effective
+/// definitions the turn loop attaches, retaining prefix-cache alignment while
+/// forbidding tool use with `tool_choice: none` where the backend supports it.
+/// Codex is deliberately tool-free here because its Responses Lite turn
+/// contract makes supplied tools callable; compaction must always return text.
+/// The Messages wire enum has no `none`, so that path relies on the prompt.
 ///
 /// Errors carry a [`CompactFailure`] classification so the caller can
 /// short-circuit retries on deterministic failures (4xx schema violations,
@@ -357,6 +447,8 @@ pub(crate) async fn generate_session_compact(
     idle_timeout: std::time::Duration,
     wall_clock_budget_secs: u64,
 ) -> Result<CompactOutput, CompactFailure> {
+    let (tools, hosted_tools) =
+        provider_safe_compaction_tools(sampling_config.provider, tools, hosted_tools);
     let num_messages = chat_history.len();
     let output = match sampling_config.api_backend {
         ApiBackend::ChatCompletions => {
@@ -387,7 +479,12 @@ pub(crate) async fn generate_session_compact(
             let stream_result = client.chat_completion_stream(message).await;
             let mut stream = match stream_result {
                 Ok((s, _metadata)) => s,
-                Err(e) => return Err(classify_sampling_error(e)),
+                Err(e) => {
+                    return Err(classify_sampling_error_for_provider(
+                        e,
+                        sampling_config.provider,
+                    ));
+                }
             };
             let mut timing = StreamTiming::new();
             let mut truncated = false;
@@ -451,7 +548,12 @@ pub(crate) async fn generate_session_compact(
                             }
                         }
                     }
-                    Err(e) => return Err(classify_sampling_error(e)),
+                    Err(e) => {
+                        return Err(classify_sampling_error_for_provider(
+                            e,
+                            sampling_config.provider,
+                        ));
+                    }
                 }
             }
             CompactOutput {
@@ -478,15 +580,44 @@ pub(crate) async fn generate_session_compact(
                 x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
-            let stream_result = client.conversation_stream_responses(request).await;
+            let mut recovery_attempted = false;
+            let stream_result = loop {
+                let result = client.conversation_stream_responses(request.clone()).await;
+                match &result {
+                    Err(error)
+                        if maybe_recover_compaction_provider_auth(
+                            &client,
+                            error,
+                            &mut recovery_attempted,
+                        )
+                        .await =>
+                    {
+                        tracing::info!(
+                            provider = "openai_codex",
+                            "recovered rejected compaction credential; retrying once"
+                        );
+                    }
+                    _ => break result,
+                }
+            };
             let mut stream = match stream_result {
                 Ok((s, _metadata, _doom_loop)) => s,
-                Err(e) => return Err(classify_sampling_error(e)),
+                Err(e) => {
+                    return Err(classify_sampling_error_for_provider(
+                        e,
+                        sampling_config.provider,
+                    ));
+                }
             };
             let mut timing = StreamTiming::new();
             let mut truncated = false;
             let mut stop_reason: Option<String> = None;
             let mut content = String::new();
+            let mut streamed_text: BTreeMap<(u32, u32), String> = BTreeMap::new();
+            let mut delta_text: BTreeMap<(u32, u32), String> = BTreeMap::new();
+            let mut terminal_text: BTreeMap<(u32, u32), String> = BTreeMap::new();
+            let mut done_text: BTreeMap<(u32, u32), String> = BTreeMap::new();
+            let mut output_item_text: BTreeMap<(u32, u32), String> = BTreeMap::new();
             let mut last_progress_at = std::time::Instant::now();
             loop {
                 let idle_remaining = idle_timeout.saturating_sub(last_progress_at.elapsed());
@@ -531,8 +662,92 @@ pub(crate) async fn generate_session_compact(
                         }
                         match &chunk {
                             ResponseStreamEvent::ResponseOutputTextDelta(text_delta_event) => {
-                                timing.record_delta();
-                                content.push_str(&text_delta_event.delta);
+                                if !text_delta_event.delta.is_empty() {
+                                    let key = (
+                                        text_delta_event.output_index,
+                                        text_delta_event.content_index,
+                                    );
+                                    timing.record_delta();
+                                    content.push_str(&text_delta_event.delta);
+                                    streamed_text
+                                        .entry(key)
+                                        .or_default()
+                                        .push_str(&text_delta_event.delta);
+                                    delta_text
+                                        .entry(key)
+                                        .or_default()
+                                        .push_str(&text_delta_event.delta);
+                                }
+                            }
+                            ResponseStreamEvent::ResponseOutputTextDone(text_done_event) => {
+                                let key =
+                                    (text_done_event.output_index, text_done_event.content_index);
+                                if !text_done_event.text.is_empty() {
+                                    done_text.insert(key, text_done_event.text.clone());
+                                    if let Some(suffix) = take_unstreamed_compaction_suffix(
+                                        &mut streamed_text,
+                                        key,
+                                        &text_done_event.text,
+                                    ) {
+                                        timing.record_delta();
+                                        content.push_str(&suffix);
+                                    }
+                                }
+                            }
+                            ResponseStreamEvent::ResponseOutputItemDone(done_event) => {
+                                if let responses::OutputItem::Message(message) = &done_event.item {
+                                    for (content_index, part) in message.content.iter().enumerate()
+                                    {
+                                        let responses::OutputMessageContent::OutputText(text) =
+                                            part
+                                        else {
+                                            continue;
+                                        };
+                                        let key = (done_event.output_index, content_index as u32);
+                                        if text.text.is_empty() {
+                                            continue;
+                                        }
+                                        output_item_text.insert(key, text.text.clone());
+                                        if let Some(suffix) = take_unstreamed_compaction_suffix(
+                                            &mut streamed_text,
+                                            key,
+                                            &text.text,
+                                        ) {
+                                            timing.record_delta();
+                                            content.push_str(&suffix);
+                                        }
+                                    }
+                                }
+                            }
+                            ResponseStreamEvent::ResponseCompleted(completed_event) => {
+                                for (output_index, item) in
+                                    completed_event.response.output.iter().enumerate()
+                                {
+                                    let responses::OutputItem::Message(message) = item else {
+                                        continue;
+                                    };
+                                    for (content_index, part) in message.content.iter().enumerate()
+                                    {
+                                        let responses::OutputMessageContent::OutputText(text) =
+                                            part
+                                        else {
+                                            continue;
+                                        };
+                                        let key = (output_index as u32, content_index as u32);
+                                        if text.text.is_empty() {
+                                            continue;
+                                        }
+                                        terminal_text.insert(key, text.text.clone());
+                                        if let Some(suffix) = take_unstreamed_compaction_suffix(
+                                            &mut streamed_text,
+                                            key,
+                                            &text.text,
+                                        ) {
+                                            timing.record_delta();
+                                            content.push_str(&suffix);
+                                        }
+                                    }
+                                }
                             }
                             ResponseStreamEvent::ResponseFailed(failed_event) => {
                                 let event_error = failed_event.response.error.as_ref();
@@ -574,8 +789,37 @@ pub(crate) async fn generate_session_compact(
                             _ => {}
                         }
                     }
-                    Err(e) => return Err(classify_sampling_error(e)),
+                    Err(e) => {
+                        return Err(classify_sampling_error_for_provider(
+                            e,
+                            sampling_config.provider,
+                        ));
+                    }
                 }
+            }
+            // Reconcile the final summary from the most authoritative frame
+            // available for each output/content slot. `output_item.done` wins
+            // over text-done, which wins over terminal output, which wins over
+            // raw deltas. This matches the normal sampler's sparse-stream
+            // recovery while keeping compaction tool-free.
+            let mut keys = std::collections::BTreeSet::new();
+            keys.extend(delta_text.keys().copied());
+            keys.extend(terminal_text.keys().copied());
+            keys.extend(done_text.keys().copied());
+            keys.extend(output_item_text.keys().copied());
+            let reconciled = keys
+                .into_iter()
+                .filter_map(|key| {
+                    output_item_text
+                        .get(&key)
+                        .or_else(|| done_text.get(&key))
+                        .or_else(|| terminal_text.get(&key))
+                        .or_else(|| delta_text.get(&key))
+                })
+                .cloned()
+                .collect::<String>();
+            if !reconciled.is_empty() {
+                content = reconciled;
             }
             CompactOutput {
                 content,
@@ -603,7 +847,12 @@ pub(crate) async fn generate_session_compact(
             let stream_result = client.conversation_stream_messages(request).await;
             let mut stream = match stream_result {
                 Ok((s, _metadata)) => s,
-                Err(e) => return Err(classify_sampling_error(e)),
+                Err(e) => {
+                    return Err(classify_sampling_error_for_provider(
+                        e,
+                        sampling_config.provider,
+                    ));
+                }
             };
             let mut timing = StreamTiming::new();
             let mut truncated = false;
@@ -702,7 +951,12 @@ pub(crate) async fn generate_session_compact(
                             _ => {}
                         }
                     }
-                    Err(e) => return Err(classify_sampling_error(e)),
+                    Err(e) => {
+                        return Err(classify_sampling_error_for_provider(
+                            e,
+                            sampling_config.provider,
+                        ));
+                    }
                 }
             }
             CompactOutput {
@@ -736,6 +990,33 @@ mod classify_tests {
     fn is_det(failure: &CompactFailure) -> bool {
         matches!(failure, CompactFailure::Deterministic(_))
     }
+
+    #[test]
+    fn codex_compaction_drops_callable_tools_but_xai_retains_them() {
+        let tool = ToolSpec {
+            name: "read_file".to_string(),
+            description: Some("read a file".to_string()),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let hosted = HostedTool::WebSearch {
+            allowed_domains: None,
+        };
+        let (xai_tools, xai_hosted) = provider_safe_compaction_tools(
+            xai_grok_sampling_types::ProviderId::Xai,
+            vec![tool.clone()],
+            vec![hosted.clone()],
+        );
+        assert_eq!(xai_tools.len(), 1);
+        assert_eq!(xai_hosted.len(), 1);
+
+        let (codex_tools, codex_hosted) = provider_safe_compaction_tools(
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            vec![tool],
+            vec![hosted],
+        );
+        assert!(codex_tools.is_empty());
+        assert!(codex_hosted.is_empty());
+    }
     #[test]
     fn sampling_api_4xx_is_deterministic_except_408_and_429() {
         let det = |s: StatusCode| {
@@ -757,6 +1038,48 @@ mod classify_tests {
         assert!(!det(StatusCode::INTERNAL_SERVER_ERROR));
         assert!(!det(StatusCode::BAD_GATEWAY));
         assert!(!det(StatusCode::SERVICE_UNAVAILABLE));
+    }
+
+    #[test]
+    fn codex_usage_limit_429_is_deterministic_without_reflecting_provider_content() {
+        assert!(is_det(&classify_sampling_error(SamplingError::Api {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "ChatGPT Codex request rejected (usage limit reached)".into(),
+            model_metadata: None,
+            retry_after_secs: Some(3_600),
+            should_retry: None,
+        })));
+        assert!(is_det(&classify_sampling_error(
+            SamplingError::StreamError {
+                error_type: "usage_limit_reached".into(),
+                message: "ChatGPT Codex stream rejected (usage limit reached)".into(),
+            }
+        )));
+        assert!(is_det(&classify_response_event_error(
+            Some("usage_limit_reached"),
+            "usage limit reached"
+        )));
+
+        assert!(is_det(&classify_sampling_error_for_provider(
+            SamplingError::Api {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                message: "ChatGPT Codex request rejected".into(),
+                model_metadata: None,
+                retry_after_secs: Some(60),
+                should_retry: None,
+            },
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+        )));
+        assert!(is_det(&classify_sampling_error_for_provider(
+            SamplingError::Api {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "provider asked not to retry".into(),
+                model_metadata: None,
+                retry_after_secs: None,
+                should_retry: Some(false),
+            },
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+        )));
     }
     #[test]
     fn sampling_non_api_variants_classify_correctly() {
@@ -1586,9 +1909,13 @@ mod reasoning_compaction_regression_tests {
     }
     fn test_config(base_url: &str) -> SamplerConfig {
         SamplerConfig {
+            provider: Default::default(),
+            credential_source: Default::default(),
+            credential_binding: None,
             api_key: Some("test-api-key".to_string()),
             base_url: base_url.to_string(),
             model: "test-model".to_string(),
+            service_tier: None,
             max_completion_tokens: Some(1000),
             temperature: Some(0.7),
             top_p: None,
@@ -1608,6 +1935,7 @@ mod reasoning_compaction_regression_tests {
             origin_client: None,
             attribution_callback: None,
             bearer_resolver: None,
+            request_auth: None,
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,
@@ -2020,5 +2348,398 @@ mod reasoning_compaction_regression_tests {
             _ => panic!("a thin stalled body must retry (Transient), not salvage"),
         }
         let _ = shutdown_tx.send(());
+    }
+}
+
+/// Codex Responses compaction has a deliberately direct transport path, so it
+/// needs its own contract tests for provider-auth recovery and sparse official
+/// SSE shapes rather than relying only on the normal sampler actor tests.
+#[cfg(test)]
+mod codex_responses_compaction_tests {
+    use super::*;
+    use crate::sampling::{Client, SamplerConfig};
+    use axum::http::{HeaderMap, StatusCode, Uri};
+    use axum::response::IntoResponse;
+    use axum::response::sse::{Event, Sse};
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use futures_util::stream;
+    use reqwest::header::{AUTHORIZATION, HOST, HeaderValue};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+    use xai_grok_sampling_types::{
+        CredentialBinding, OPENAI_CODEX_COMPATIBILITY_VERSION, OPENAI_CODEX_RESPONSES_LITE_HEADER,
+    };
+
+    struct CapturedCodexRequest {
+        url: String,
+        expected_url: String,
+        headers: HeaderMap,
+        body: serde_json::Value,
+    }
+
+    struct RotatingCodexAuth {
+        generation: AtomicU64,
+        recoveries: Arc<AtomicUsize>,
+    }
+
+    impl xai_grok_sampler::RequestAuth for RotatingCodexAuth {
+        fn apply(
+            &self,
+            headers: &mut HeaderMap,
+        ) -> Result<CredentialBinding, xai_grok_sampler::RequestAuthError> {
+            let generation = self.generation.load(Ordering::SeqCst);
+            let token = format!("Bearer test-compaction-token-{generation}");
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&token)
+                    .map_err(|_| xai_grok_sampler::RequestAuthError::InvalidAuthorizationHeader)?,
+            );
+            headers.insert(
+                "chatgpt-account-id",
+                HeaderValue::from_static("test-compaction-account"),
+            );
+            let mut binding =
+                CredentialBinding::openai_codex(Some("test-compaction-record".to_owned()));
+            binding.generation = generation;
+            Ok(binding)
+        }
+
+        fn recover_unauthorized(
+            &self,
+            rejected: CredentialBinding,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
+            Box::pin(async move {
+                self.recoveries.fetch_add(1, Ordering::SeqCst);
+                let current = self.generation.load(Ordering::SeqCst);
+                if rejected.provider.is_openai_codex() && rejected.generation == current {
+                    self.generation
+                        .store(current.saturating_add(1), Ordering::SeqCst);
+                    true
+                } else {
+                    false
+                }
+            })
+        }
+    }
+
+    fn created_and_completed_events(mut middle: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+        let mut events = vec![serde_json::json!({
+            "type": "response.created",
+            "response": {"id": "resp_compact"}
+        })];
+        events.append(&mut middle);
+        events.push(serde_json::json!({
+            "type": "response.completed",
+            "response": {"id": "resp_compact", "output": []}
+        }));
+        events
+    }
+
+    async fn run_codex_compaction_with_inputs(
+        events: Vec<serde_json::Value>,
+        first_unauthorized: bool,
+        always_unauthorized: bool,
+        responses_lite: bool,
+        tools: Vec<ToolSpec>,
+        hosted_tools: Vec<HostedTool>,
+    ) -> (
+        Result<CompactOutput, CompactFailure>,
+        usize,
+        usize,
+        Vec<String>,
+        Vec<CapturedCodexRequest>,
+    ) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let recoveries = Arc::new(AtomicUsize::new(0));
+        let seen_authorization = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let expected_url = format!("http://{addr}/responses");
+
+        let calls_for_handler = Arc::clone(&calls);
+        let seen_for_handler = Arc::clone(&seen_authorization);
+        let captured_for_handler = Arc::clone(&captured_requests);
+        let events_for_handler = events.clone();
+        let expected_url_for_handler = expected_url.clone();
+        let app = Router::new().route(
+            "/responses",
+            post(
+                move |uri: Uri, headers: HeaderMap, Json(body): Json<serde_json::Value>| {
+                    let call = calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                    let seen = Arc::clone(&seen_for_handler);
+                    let captured = Arc::clone(&captured_for_handler);
+                    let events = events_for_handler.clone();
+                    let expected_url = expected_url_for_handler.clone();
+                    async move {
+                        if let Some(value) = headers
+                            .get(AUTHORIZATION)
+                            .and_then(|value| value.to_str().ok())
+                        {
+                            seen.lock().unwrap().push(value.to_owned());
+                        }
+                        let host = headers
+                            .get(HOST)
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or_default();
+                        captured.lock().unwrap().push(CapturedCodexRequest {
+                            url: format!("http://{host}{uri}"),
+                            expected_url,
+                            headers,
+                            body,
+                        });
+                        if always_unauthorized || (first_unauthorized && call == 0) {
+                            return StatusCode::UNAUTHORIZED.into_response();
+                        }
+                        let stream = stream::iter(
+                            events
+                                .into_iter()
+                                .map(|value| {
+                                    Ok::<_, std::convert::Infallible>(
+                                        Event::default().data(value.to_string()),
+                                    )
+                                })
+                                .chain(std::iter::once(Ok::<_, std::convert::Infallible>(
+                                    Event::default().data("[DONE]"),
+                                ))),
+                        );
+                        Sse::new(stream).into_response()
+                    }
+                },
+            ),
+        );
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let mut config = SamplerConfig::openai_codex("gpt-5.6-luna");
+        config.base_url = format!("http://{addr}");
+        if responses_lite {
+            config.extra_headers.insert(
+                OPENAI_CODEX_RESPONSES_LITE_HEADER.to_owned(),
+                "true".to_owned(),
+            );
+        }
+        config.request_auth = Some(Arc::new(RotatingCodexAuth {
+            generation: AtomicU64::new(1),
+            recoveries: Arc::clone(&recoveries),
+        }));
+        let client = Client::new(config.clone()).expect("Codex loopback client");
+        let result = generate_session_compact(
+            vec![
+                ConversationItem::system("You are a helpful assistant."),
+                ConversationItem::user("Summarize the conversation so far."),
+            ],
+            tools,
+            hosted_tools,
+            client,
+            acp::SessionId::new("codex-compaction-test"),
+            &config,
+            std::time::Duration::from_secs(5),
+            0,
+        )
+        .await;
+        let _ = shutdown_tx.send(());
+
+        let seen = seen_authorization.lock().unwrap().clone();
+        let captured = std::mem::take(&mut *captured_requests.lock().unwrap());
+        (
+            result,
+            calls.load(Ordering::SeqCst),
+            recoveries.load(Ordering::SeqCst),
+            seen,
+            captured,
+        )
+    }
+
+    async fn run_codex_compaction(
+        events: Vec<serde_json::Value>,
+        first_unauthorized: bool,
+        always_unauthorized: bool,
+    ) -> (
+        Result<CompactOutput, CompactFailure>,
+        usize,
+        usize,
+        Vec<String>,
+    ) {
+        let (result, calls, recoveries, seen, _) = run_codex_compaction_with_inputs(
+            events,
+            first_unauthorized,
+            always_unauthorized,
+            false,
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+        (result, calls, recoveries, seen)
+    }
+
+    #[tokio::test]
+    async fn codex_compaction_recovers_one_401_and_accepts_done_only_text() {
+        let events = created_and_completed_events(vec![serde_json::json!({
+            "type": "response.output_text.done",
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "text": "<summary>done only</summary>"
+        })]);
+        let (result, calls, recoveries, seen) = run_codex_compaction(events, true, false).await;
+        assert_eq!(
+            result.expect("recovered compaction").content,
+            "<summary>done only</summary>"
+        );
+        assert_eq!(calls, 2);
+        assert_eq!(recoveries, 1);
+        assert_eq!(seen.len(), 2);
+        assert_ne!(seen[0], seen[1], "retry must use the refreshed generation");
+    }
+
+    #[tokio::test]
+    async fn codex_compaction_reconciles_partial_delta_with_done_text() {
+        let events = created_and_completed_events(vec![
+            serde_json::json!({
+                "type": "response.output_text.delta",
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "<summary>partial"
+            }),
+            serde_json::json!({
+                "type": "response.output_text.done",
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "text": "<summary>partial completed</summary>"
+            }),
+        ]);
+        let (result, calls, recoveries, _) = run_codex_compaction(events, false, false).await;
+        assert_eq!(
+            result.expect("sparse compaction").content,
+            "<summary>partial completed</summary>"
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(recoveries, 0);
+    }
+
+    #[tokio::test]
+    async fn codex_compaction_accepts_output_item_only_text() {
+        let events = created_and_completed_events(vec![serde_json::json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "<summary>item only</summary>"}]
+            }
+        })]);
+        let (result, calls, recoveries, _) = run_codex_compaction(events, false, false).await;
+        assert_eq!(
+            result.expect("item-only compaction").content,
+            "<summary>item only</summary>"
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(recoveries, 0);
+    }
+
+    #[tokio::test]
+    async fn codex_compaction_retries_a_rejected_credential_at_most_once() {
+        let (result, calls, recoveries, _) = run_codex_compaction(Vec::new(), true, true).await;
+        assert!(matches!(result, Err(CompactFailure::Deterministic(_))));
+        assert_eq!(calls, 2, "second 401 must be terminal");
+        assert_eq!(recoveries, 1, "refresh must happen at most once");
+    }
+
+    #[tokio::test]
+    async fn codex_lite_compaction_wire_is_tool_free_cache_stable_and_provider_scoped() {
+        let events = created_and_completed_events(vec![serde_json::json!({
+            "type": "response.output_text.done",
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "text": "<summary>wire contract</summary>"
+        })]);
+        let tool = ToolSpec {
+            name: "read_file".to_owned(),
+            description: Some("read a file".to_owned()),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let (result, calls, recoveries, _, mut captured) = run_codex_compaction_with_inputs(
+            events,
+            true,
+            false,
+            true,
+            vec![tool],
+            vec![HostedTool::WebSearch {
+                allowed_domains: None,
+            }],
+        )
+        .await;
+        assert_eq!(
+            result.expect("Codex Lite compaction").content,
+            "<summary>wire contract</summary>"
+        );
+        assert_eq!(calls, 2);
+        assert_eq!(recoveries, 1);
+        assert_eq!(captured.len(), 2);
+        assert_eq!(
+            captured[0].body["prompt_cache_key"], captured[1].body["prompt_cache_key"],
+            "the cache identity must remain stable across the provider-auth retry"
+        );
+        let request = captured.pop().unwrap();
+
+        assert_eq!(request.url, request.expected_url);
+        assert_eq!(request.body["model"], "gpt-5.6-luna");
+        assert_eq!(request.body["stream"], true);
+        assert_eq!(request.body["store"], false);
+        assert_eq!(
+            request.body["prompt_cache_key"], "codex-compaction-test",
+            "compaction cache identity must derive from the stable session, not the random request id"
+        );
+        assert_eq!(request.body["parallel_tool_calls"], false);
+        assert!(request.body.get("temperature").is_none());
+        assert!(request.body.get("tools").is_none());
+        assert!(request.body.get("tool_choice").is_none());
+        assert_eq!(request.body["input"][0]["type"], "additional_tools");
+        assert_eq!(request.body["input"][0]["role"], "developer");
+        assert_eq!(request.body["input"][0]["tools"], serde_json::json!([]));
+
+        let header = |name: &str| {
+            request
+                .headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+        };
+        assert_eq!(
+            header(AUTHORIZATION.as_str()),
+            Some("Bearer test-compaction-token-2")
+        );
+        assert_eq!(
+            header("chatgpt-account-id"),
+            Some("test-compaction-account")
+        );
+        assert_eq!(header("originator"), Some("grok_build_codex"));
+        assert_eq!(header("version"), Some(OPENAI_CODEX_COMPATIBILITY_VERSION));
+        assert_eq!(header(OPENAI_CODEX_RESPONSES_LITE_HEADER), Some("true"));
+        assert_eq!(header("session-id"), Some("codex-compaction-test"));
+        assert_eq!(header("thread-id"), Some("codex-compaction-test"));
+        assert_eq!(header("x-client-request-id"), Some("codex-compaction-test"));
+        for name in request.headers.keys().map(|name| name.as_str()) {
+            assert!(
+                !name.starts_with("x-grok-")
+                    && !name.starts_with("x-xai-")
+                    && !matches!(name, "x-api-key" | "x-userid" | "x-email"),
+                "Codex compaction leaked an xAI-specific header: {name}"
+            );
+        }
     }
 }

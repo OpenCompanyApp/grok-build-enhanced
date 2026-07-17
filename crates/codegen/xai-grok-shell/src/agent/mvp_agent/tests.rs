@@ -2083,6 +2083,7 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
         info: config::ModelInfo {
             user_selectable: true,
             id: None,
+            provider: xai_grok_sampling_types::ProviderId::Xai,
             model: model.to_string(),
             base_url: String::new(),
             name: None,
@@ -2105,6 +2106,11 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            service_tier: None,
+            multi_agent_version: None,
+            supports_image_input: false,
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,
@@ -2318,6 +2324,24 @@ async fn auth_type_xai_api_key_no_current_returns_api_key() {
              behavior to fall back to."
     );
 }
+/// Provider coexistence guard: authenticating ChatGPT Codex must not replace
+/// the shared xAI method that keeps proactive refresh and 401 recovery active
+/// for existing (and subsequently selected) xAI sessions.
+#[tokio::test(flavor = "current_thread")]
+async fn codex_auth_method_does_not_replace_xai_refresh_method() {
+    let agent = build_minimal_agent_for_tests();
+    agent.set_auth_method(acp::AuthMethodId::new(
+        crate::agent::auth_method::CACHED_TOKEN_AUTH_METHOD_ID,
+    ));
+    agent.set_auth_method(acp::AuthMethodId::new(
+        crate::agent::auth_method::OPENAI_CODEX_METHOD_ID,
+    ));
+    let selected = agent.auth_method_id.load();
+    assert_eq!(
+        selected.as_deref().map(|id| id.0.as_ref()),
+        Some(crate::agent::auth_method::CACHED_TOKEN_AUTH_METHOD_ID),
+    );
+}
 /// Positive baseline: when both signals agree (session-based method AND
 /// a live in-memory token), `SessionToken` is returned. This is the
 /// common case during a healthy session.
@@ -2446,6 +2470,7 @@ async fn cached_token_fallthrough_falls_to_grok_com_without_credentials() {
 /// | true     | Some      | Enabled, S3 threaded (ZDR with upload path) |
 #[tokio::test(flavor = "current_thread")]
 async fn prepare_video_gen_config_disabled_when_zdr_flag_set() {
+    use xai_grok_sampling_types::ProviderId;
     use xai_grok_tools::implementations::grok_build::video_gen::{
         S3AccessCredentials, VideoGenConfig, ZdrVideoOutputS3Config,
     };
@@ -2464,6 +2489,7 @@ async fn prepare_video_gen_config_disabled_when_zdr_flag_set() {
         }
     }
     let agent = build_minimal_agent_for_tests();
+    agent.sampling_config.borrow_mut().provider = ProviderId::Xai;
     agent.sampling_config.borrow_mut().api_key = Some("test-key".to_string());
     assert!(matches!(
         agent.prepare_video_gen_config(),
@@ -2503,8 +2529,10 @@ async fn prepare_video_gen_config_disabled_when_zdr_flag_set() {
 /// disabling a paid feature when tier info hasn't loaded.
 #[tokio::test(flavor = "current_thread")]
 async fn prepare_image_gen_config_fails_open_without_auth() {
+    use xai_grok_sampling_types::ProviderId;
     use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
     let agent = build_minimal_agent_for_tests();
+    agent.sampling_config.borrow_mut().provider = ProviderId::Xai;
     agent.sampling_config.borrow_mut().api_key = Some("test-key".to_string());
     let ImageGenConfig::Enabled {
         tier_restricted, ..
@@ -2516,6 +2544,39 @@ async fn prepare_image_gen_config_fails_open_without_auth() {
         !tier_restricted,
         "no resolved auth ⇒ fail open (tools not tier-restricted)"
     );
+}
+/// Restored/profile-pinned sessions carry their own sampler selection. Image
+/// setup must use that exact provider/model/key rather than the process default.
+#[tokio::test(flavor = "current_thread")]
+async fn prepare_image_gen_config_uses_explicit_session_sampling_config() {
+    use xai_grok_sampling_types::ProviderId;
+    use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
+
+    let agent = build_minimal_agent_for_tests();
+    agent.sampling_config.borrow_mut().provider = ProviderId::Xai;
+    agent.sampling_config.borrow_mut().api_key = Some("global-key".to_owned());
+
+    let mut session_sampling = agent.sampling_config.borrow().clone();
+    session_sampling.api_key = Some("session-key".to_owned());
+    let ImageGenConfig::Enabled { api_key, .. } =
+        agent.prepare_image_gen_config_for_sampling_config(&session_sampling)
+    else {
+        panic!("explicit xAI session should enable image tools");
+    };
+    assert_eq!(api_key, "session-key");
+
+    session_sampling.provider = ProviderId::OpenAiCodex;
+    session_sampling.model = "catalog-model-without-image-input".to_owned();
+    let ImageGenConfig::OpenAiCodex {
+        image_gen_enabled,
+        image_edit_enabled,
+        ..
+    } = agent.prepare_image_gen_config_for_sampling_config(&session_sampling)
+    else {
+        panic!("Codex image tools must not depend on the coding model's image-input modality");
+    };
+    assert!(image_gen_enabled);
+    assert!(image_edit_enabled);
 }
 #[tokio::test]
 async fn data_collection_enabled_for_normal_user() {
@@ -2634,7 +2695,7 @@ async fn diagnostic_upload_skipped_for_opted_out_user() {
     let uploader = agent
         .diagnostic_upload_config()
         .expect("uploader is wired whenever trace upload config is on");
-    uploader(b"log".to_vec(), "tok".into(), "user@example.com".into()).await;
+    uploader(b"log".to_vec(), "user@example.com".into()).await;
     assert_eq!(
         count.load(std::sync::atomic::Ordering::SeqCst),
         0,
@@ -2650,7 +2711,7 @@ async fn diagnostic_upload_sent_for_normal_user() {
     let uploader = agent
         .diagnostic_upload_config()
         .expect("uploader is wired whenever trace upload config is on");
-    uploader(b"log".to_vec(), "tok".into(), "user@example.com".into()).await;
+    uploader(b"log".to_vec(), "user@example.com".into()).await;
     assert!(
         count.load(std::sync::atomic::Ordering::SeqCst) >= 1,
         "positive control: diagnostics upload reaches the proxy for a \
@@ -2669,7 +2730,7 @@ async fn diagnostic_upload_skipped_without_credentials() {
     let uploader = agent
         .diagnostic_upload_config()
         .expect("uploader is wired whenever trace upload config is on");
-    uploader(b"log".to_vec(), "tok".into(), "user@example.com".into()).await;
+    uploader(b"log".to_vec(), "user@example.com".into()).await;
     assert_eq!(
         count.load(std::sync::atomic::Ordering::SeqCst),
         0,
@@ -2695,7 +2756,7 @@ async fn diagnostic_upload_skipped_after_mid_session_trace_upload_kill_switch() 
         cfg.telemetry.trace_upload = Some(false);
     }
     agent.sync_collection_config_gate();
-    uploader(b"log".to_vec(), "tok".into(), "user@example.com".into()).await;
+    uploader(b"log".to_vec(), "user@example.com".into()).await;
     assert_eq!(
         count.load(std::sync::atomic::Ordering::SeqCst),
         0,

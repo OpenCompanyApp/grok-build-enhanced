@@ -15,6 +15,116 @@ impl SessionActor {
                 self.run_compact(user_context).await?;
                 ok_end_turn(0, None)
             }
+            BuiltinAction::Fast { mode } => {
+                if !self.models_manager.fast_mode_enabled() {
+                    self.send_slash_command_output(
+                        "Fast mode is disabled by [features] fast_mode = false.",
+                    )
+                    .await;
+                    return ok_end_turn(0, None);
+                }
+                if mode == slash_commands::FastModeAction::Invalid {
+                    self.send_slash_command_output("Usage: /fast on|off|status")
+                        .await;
+                    return ok_end_turn(0, None);
+                }
+
+                let Some(mut sampling) = self.chat_state_handle.get_sampling_config().await else {
+                    self.send_slash_command_output(
+                        "Fast mode is unavailable until this session has selected a model.",
+                    )
+                    .await;
+                    return ok_end_turn(0, None);
+                };
+                if sampling.provider != xai_grok_sampling_types::ProviderId::OpenAiCodex {
+                    self.send_slash_command_output(
+                        "Fast mode is available only for supported models authenticated with a ChatGPT Codex subscription.",
+                    )
+                    .await;
+                    return ok_end_turn(0, None);
+                }
+
+                let Some(fast_tier) = self
+                    .models_manager
+                    .fast_service_tier_for_provider(sampling.provider, &sampling.model)
+                else {
+                    self.send_slash_command_output(&format!(
+                        "Fast mode is not advertised for {} by the authenticated Codex model catalog.",
+                        sampling.model
+                    ))
+                    .await;
+                    return ok_end_turn(0, None);
+                };
+
+                let active = sampling
+                    .service_tier
+                    .as_deref()
+                    .and_then(|tier| {
+                        self.models_manager.resolve_service_tier_for_provider(
+                            sampling.provider,
+                            &sampling.model,
+                            tier,
+                        )
+                    })
+                    .as_deref()
+                    == Some(fast_tier.id.as_str());
+                let credit_rate = if sampling.model.starts_with("gpt-5.6")
+                    || sampling.model.starts_with("gpt-5.5")
+                {
+                    "2.5x Standard subscription credits"
+                } else if sampling.model.starts_with("gpt-5.4") {
+                    "2x Standard subscription credits"
+                } else {
+                    "increased subscription credits"
+                };
+
+                let (enabled, persisted_value) = match mode {
+                    slash_commands::FastModeAction::Toggle if active => (false, Some("default")),
+                    slash_commands::FastModeAction::Toggle => (true, Some("fast")),
+                    slash_commands::FastModeAction::On => (true, Some("fast")),
+                    slash_commands::FastModeAction::Off => (false, Some("default")),
+                    slash_commands::FastModeAction::Status => (active, None),
+                    slash_commands::FastModeAction::Invalid => unreachable!(),
+                };
+
+                if persisted_value.is_some() {
+                    // Keep an explicit Standard sentinel in session state so a
+                    // catalog default cannot silently turn Fast back on later.
+                    sampling.service_tier = Some(if enabled {
+                        fast_tier.id.clone()
+                    } else {
+                        xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER.to_owned()
+                    });
+                    self.chat_state_handle
+                        .update_sampling_config(sampling.clone());
+                }
+
+                let persistence_error = if let Some(value) = persisted_value {
+                    crate::util::config::set_codex_service_tier(value)
+                        .await
+                        .err()
+                } else {
+                    None
+                };
+                let mut text = if enabled {
+                    format!(
+                        "Fast mode: on\nModel: {}\nSpeed: about 1.5x Standard\nUsage: {credit_rate}",
+                        sampling.model
+                    )
+                } else {
+                    format!(
+                        "Fast mode: off\nModel: {}\nSpeed and usage: Standard",
+                        sampling.model
+                    )
+                };
+                if let Some(error) = persistence_error {
+                    text.push_str(&format!(
+                        "\n\nThe current session was updated, but the default could not be saved: {error}"
+                    ));
+                }
+                self.send_slash_command_output(&text).await;
+                ok_end_turn(0, None)
+            }
             BuiltinAction::SetYolo { enabled } => {
                 let was = self.permissions.is_yolo_mode();
                 self.permissions.set_yolo_mode(enabled);
@@ -735,7 +845,8 @@ impl SessionActor {
                     "memory toggle via /memory slash command",
                 );
                 let msg = if enabled && !self.memory.is_enabled() {
-                    if let Some(ref params) = self.memory.backend_params {
+                    let params = self.memory.backend_params.borrow().clone();
+                    if let Some(params) = params {
                         let storage = crate::session::memory::MemoryStorage::new(
                             std::path::Path::new(&self.session_info.cwd),
                             None,
@@ -747,7 +858,7 @@ impl SessionActor {
                             let backend =
                                 crate::session::memory::MemoryBackendImpl::from_session_params(
                                     storage.clone(),
-                                    params,
+                                    &params,
                                 );
                             *self.memory.search_counter.borrow_mut() =
                                 Some(backend.search_counter.clone());

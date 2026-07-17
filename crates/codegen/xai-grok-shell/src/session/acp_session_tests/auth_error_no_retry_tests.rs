@@ -478,6 +478,63 @@ async fn legacy_auth_hint_on_401_unauthorized() {
         .await;
 }
 
+/// A simultaneously logged-in xAI account must not influence Codex failure
+/// labeling or reauthentication advice.
+#[tokio::test(flavor = "current_thread")]
+async fn codex_401_uses_provider_scoped_auth_label_and_login_commands() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let am = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+            am.hot_swap(GrokAuth {
+                key: "unrelated-xai-token".into(),
+                auth_mode: AuthMode::WebLogin,
+                ..GrokAuth::test_default()
+            });
+
+            let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor sampling config");
+            sampling.provider = xai_grok_sampling_types::ProviderId::OpenAiCodex;
+            sampling.model = "gpt-5.6-luna".to_owned();
+            sampling.base_url = xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+
+            let result = actor
+                .handle_sampling_failure(unauthorized_401_error())
+                .await;
+            let err = match result {
+                Err(error) => error,
+                Ok(_) => panic!("expected terminal Codex 401"),
+            };
+            let data = err.data.expect("error details");
+            let message = data
+                .get("message")
+                .and_then(|value| value.as_str())
+                .or_else(|| data.as_str())
+                .expect("user-facing message");
+            assert!(message.contains("Auth:      openai_codex"), "{message}");
+            assert!(
+                message.contains("grok logout --provider openai-codex"),
+                "{message}"
+            );
+            assert!(
+                message.contains("grok login --provider openai-codex"),
+                "{message}"
+            );
+            assert!(
+                !message.contains("deprecated authentication method"),
+                "{message}"
+            );
+            assert!(!message.contains("Auth:      WebLogin"), "{message}");
+        })
+        .await;
+}
+
 /// 401 with OIDC auth must NOT append the legacy hint.
 #[tokio::test(flavor = "current_thread")]
 async fn no_legacy_hint_on_401_for_oidc_auth() {
@@ -926,9 +983,13 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
             // Switch to the same model_id, now a per-model BYOK model on a
             // third-party endpoint.
             let cfg = xai_grok_sampler::SamplerConfig {
+                provider: Default::default(),
+                credential_source: Default::default(),
+                credential_binding: None,
                 api_key: Some("byok-key".to_string()),
                 base_url: "https://third-party.example/v1".to_string(),
                 model: model.clone(),
+                service_tier: None,
                 max_completion_tokens: None,
                 temperature: None,
                 top_p: None,
@@ -948,6 +1009,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 origin_client: None,
                 attribution_callback: None,
                 bearer_resolver: None,
+                request_auth: None,
                 supports_backend_search: false,
                 compactions_remaining: None,
                 compaction_at_tokens: None,

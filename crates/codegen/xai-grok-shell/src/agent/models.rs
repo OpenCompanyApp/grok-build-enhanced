@@ -1,7 +1,7 @@
 //! Model fetching, resolution, and management.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use parking_lot::RwLock;
 
@@ -10,11 +10,11 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use indexmap::IndexMap;
 
 use crate::agent::config::{self, ModelEntry, resolve_credentials, sampling_config_for_model};
-use crate::auth::{AuthManager, GrokAuth, GrokComConfig};
+use crate::auth::{AuthManager, AuthMode, GrokAuth, GrokComConfig};
 use crate::remote::{FetchModelsResult, fetch_models_blocking};
 use crate::sampling::SamplerConfig as SamplingConfig;
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
+use xai_grok_sampling_types::{ProviderId, ReasoningEffort, ReasoningEffortOption};
 
 // ── Auth method for model fetching ──────────────────────────────────────────
 
@@ -64,13 +64,108 @@ enum CacheAuthMethod {
     Deployment,
 }
 
+fn hash_scope_part(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&(value.len() as u64).to_le_bytes());
+    hasher.update(value);
+}
+
+/// One-way credential/account binding for the legacy xAI model cache. Raw API
+/// keys, session tokens, user IDs, and deployment keys are never persisted or
+/// logged. First-party session bindings prefer stable principal identity so
+/// ordinary token rotation does not discard a valid catalog. External and
+/// stored API-key credentials are bound to the opaque bearer itself because
+/// their profile fields can be carried across an arbitrary provider refresh.
+fn xai_catalog_credential_scope(
+    endpoints: &config::EndpointsConfig,
+    auth: Option<&GrokAuth>,
+    fetch_auth: ModelFetchAuth,
+) -> Option<String> {
+    let mut hasher = blake3::Hasher::new_derive_key("grok-build xai model cache scope v2");
+    hash_scope_part(
+        &mut hasher,
+        crate::remote::models_list_url(endpoints, fetch_auth).as_bytes(),
+    );
+    hash_scope_part(&mut hasher, format!("{fetch_auth:?}").as_bytes());
+    if fetch_auth == ModelFetchAuth::Deployment {
+        hash_scope_part(
+            &mut hasher,
+            endpoints
+                .deployment_key
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+    }
+
+    if endpoints.has_custom_endpoint() || fetch_auth == ModelFetchAuth::ApiKey {
+        let api_key = crate::agent::auth_method::read_xai_api_key_env()
+            .ok()
+            .filter(|key| !key.is_empty())
+            .or_else(|| {
+                auth.map(|value| value.key.clone())
+                    .filter(|key| !key.is_empty())
+            });
+        hash_scope_part(&mut hasher, b"api_key");
+        if let Some(api_key) = api_key {
+            hash_scope_part(&mut hasher, api_key.as_bytes());
+        } else {
+            hash_scope_part(&mut hasher, b"missing");
+        }
+    } else {
+        hash_scope_part(&mut hasher, b"session");
+        let Some(auth) = auth else {
+            hash_scope_part(&mut hasher, b"missing");
+            return Some(hasher.finalize().to_hex().to_string());
+        };
+        hash_scope_part(&mut hasher, format!("{:?}", auth.auth_mode).as_bytes());
+        if matches!(auth.auth_mode, AuthMode::External | AuthMode::ApiKey) {
+            hash_scope_part(&mut hasher, b"opaque_credential");
+            hash_scope_part(&mut hasher, auth.key.as_bytes());
+        } else {
+            hash_scope_part(
+                &mut hasher,
+                auth.oidc_issuer.as_deref().unwrap_or_default().as_bytes(),
+            );
+            hash_scope_part(
+                &mut hasher,
+                auth.oidc_client_id
+                    .as_deref()
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
+            // `x-userid` is part of every session catalog request, including
+            // team-principal requests, so it is always part of the cache
+            // identity rather than only being a fallback.
+            hash_scope_part(&mut hasher, auth.user_id.as_bytes());
+            for value in [
+                auth.principal_type.as_deref(),
+                auth.principal_id.as_deref(),
+                auth.team_id.as_deref(),
+                auth.organization_id.as_deref(),
+            ] {
+                hash_scope_part(&mut hasher, value.unwrap_or_default().as_bytes());
+            }
+            if auth.user_id.is_empty()
+                && auth.principal_id.is_none()
+                && auth.team_id.is_none()
+                && auth.organization_id.is_none()
+            {
+                hash_scope_part(&mut hasher, auth.key.as_bytes());
+            }
+        }
+    }
+    Some(hasher.finalize().to_hex().to_string())
+}
+
 pub(crate) fn task_model_error_for_catalog(
     requested: &str,
     available: &IndexMap<String, ModelEntry>,
     is_session_auth: bool,
 ) -> Option<String> {
     let is_available = |entry: &ModelEntry| {
-        entry.info.user_selectable && entry.info.visible_for_auth(is_session_auth)
+        !entry.info.hidden
+            && entry.info.user_selectable
+            && model_addressable_for_auth(&entry.info, is_session_auth)
     };
     if config::find_model_by_id(available, requested).is_some_and(&is_available) {
         return None;
@@ -94,6 +189,18 @@ pub(crate) fn task_model_error_for_catalog(
     Some(format!("Unknown Task.model slug '{requested}'. {guidance}"))
 }
 
+/// The ChatGPT Codex catalog is already scoped to an authenticated ChatGPT
+/// account. Its `supported_in_api` flag describes OpenAI API-key availability,
+/// not ChatGPT subscription visibility, and must not be gated by xAI's auth
+/// mode. xAI/custom entries retain their existing API-key/session semantics.
+fn model_visible_for_auth(info: &config::ModelInfo, is_xai_session_auth: bool) -> bool {
+    !info.hidden && model_addressable_for_auth(info, is_xai_session_auth)
+}
+
+fn model_addressable_for_auth(info: &config::ModelInfo, is_xai_session_auth: bool) -> bool {
+    info.provider == ProviderId::OpenAiCodex || is_xai_session_auth || info.supported_in_api
+}
+
 /// Thread-safe model manager.
 ///
 /// Owns the auth manager, config, and gateway needed to refresh models.
@@ -105,21 +212,63 @@ pub struct ModelsManager {
 
 struct Inner {
     prefetched: RwLock<Option<IndexMap<String, ModelEntry>>>,
+    /// Authenticated ChatGPT Codex catalog, independent from xAI's cache and
+    /// identity lifecycle. Entries are provider-authoritative and are merged
+    /// into `models` only after xAI/custom model resolution.
+    codex_models: RwLock<IndexMap<String, ModelEntry>>,
+    has_codex_catalog: RwLock<bool>,
+    /// Exact non-secret credential/account scope that produced
+    /// `codex_models`. Token refreshes preserve this identity; login,
+    /// logout, and account switches do not.
+    codex_catalog_identity: RwLock<Option<CodexCatalogIdentity>>,
+    /// A cached fallback may remain usable while the current credential
+    /// generation's entitlement catalog is revalidated online. This prevents
+    /// same-account relogin/plan changes from being mistaken for recovery.
+    codex_catalog_needs_revalidation: AtomicBool,
     models: RwLock<IndexMap<String, ModelEntry>>,
     current_model_id: RwLock<acp::ModelId>,
     current_reasoning_effort: RwLock<Option<ReasoningEffort>>,
     etag: RwLock<Option<String>>,
+    codex_etag: RwLock<Option<String>>,
     /// Set once a real catalog has been fetched; gates whether
     /// `apply_refresh_result` calls `reselect_default_model` (first
     /// time) or `reselect_current_model_if_missing` (subsequent).
     /// Reset in `clear()` for identity changes.
     has_fetched_real_catalog: RwLock<bool>,
+    /// Independent xAI catalog lifecycle; Codex discovery must not suppress
+    /// first-xAI reselection or xAI retry recovery.
+    has_xai_catalog: RwLock<bool>,
+    /// One-way credential/account scope that produced the installed xAI
+    /// catalog. Stable across same-account token rotation, different across
+    /// account/API/deployment changes.
+    xai_catalog_credential_scope: RwLock<Option<String>>,
+    /// Newest disk-cache publication accepted for the installed xAI scope.
+    /// Prevents two same-generation cache readers from applying E2 and then
+    /// regressing in memory to an older E1 that completed later.
+    xai_catalog_cache_fetched_at: RwLock<Option<DateTime<Utc>>>,
     // ── Owned context for self-contained refresh ────────────────
     auth_manager: Arc<AuthManager>,
     cfg: RwLock<config::Config>,
     fetch_auth: RwLock<ModelFetchAuth>,
     gateway: RwLock<Option<xai_acp_lib::AcpAgentGatewaySender>>,
     cache: ModelsCacheManager,
+    /// Serializes every provider-state + merged-catalog publication across
+    /// config-watcher, session, ETag, and auth threads. No async work is done
+    /// while held.
+    catalog_write_gate: parking_lot::Mutex<()>,
+    /// Monotonic xAI catalog operation/config generation. Only the newest
+    /// request/cache snapshot may publish, preventing an older endpoint/auth
+    /// response from winning after a config reload or newer fetch.
+    xai_fetch_generation: AtomicU64,
+    /// Codex counterpart to `xai_fetch_generation`. Every accepted config
+    /// reload invalidates in-flight provider catalog operations.
+    codex_fetch_generation: AtomicU64,
+    /// Runtime-applied remote-fetch policy, read only while paired with the
+    /// Codex generation or under `catalog_write_gate`.
+    codex_remote_fetch_enabled: AtomicBool,
+    codex_refresh_gate: tokio::sync::Mutex<()>,
+    /// Guard to prevent overlapping provider-local Codex catalog retry loops.
+    codex_retry_in_flight: AtomicBool,
     /// Guard to prevent overlapping retry loops.
     retry_in_flight: AtomicBool,
     /// `allowed_models` matched nothing in the fetched catalog; the prompt path
@@ -148,6 +297,118 @@ struct Inner {
     model_switch_watch: tokio::sync::watch::Sender<u64>,
 }
 
+/// In-memory scope for an entitled Codex catalog. This is deliberately never
+/// logged or persisted; the disk cache uses its own one-way account binding.
+#[derive(Clone, PartialEq, Eq)]
+struct CodexCatalogIdentity {
+    credential_id: String,
+    account_id: String,
+    user_id: Option<String>,
+    is_fedramp: bool,
+}
+
+#[derive(Clone)]
+struct XaiCatalogSnapshot {
+    generation: u64,
+    config: config::Config,
+    fetch_auth: ModelFetchAuth,
+    origin: String,
+    credential_scope: Option<String>,
+}
+
+struct XaiNetworkCatalog {
+    models: IndexMap<String, ModelEntry>,
+    etag: Option<String>,
+}
+
+impl CodexCatalogIdentity {
+    fn from_credentials(credentials: &crate::auth::codex::CodexCredentials) -> Self {
+        Self {
+            credential_id: credentials.credential_id().to_owned(),
+            account_id: credentials.account_id().to_owned(),
+            user_id: credentials.user_id().map(ToOwned::to_owned),
+            is_fedramp: credentials.is_fedramp,
+        }
+    }
+}
+
+impl std::fmt::Debug for CodexCatalogIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CodexCatalogIdentity")
+            .field("credential_id", &"<redacted>")
+            .field("account_id", &"<redacted>")
+            .field("user_id", &"<redacted>")
+            .field("is_fedramp", &self.is_fedramp)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CodexCatalogRefreshOutcome {
+    Updated,
+    CachedFallback,
+    TransientFailure,
+    TerminalFailure,
+    NotAuthenticated,
+    Disabled,
+}
+
+impl CodexCatalogRefreshOutcome {
+    fn updated(self) -> bool {
+        matches!(self, Self::Updated | Self::CachedFallback)
+    }
+}
+
+fn codex_catalog_error_is_transient(error: &crate::remote::CodexCatalogError) -> bool {
+    matches!(
+        error,
+        crate::remote::CodexCatalogError::AuthenticationTransient
+            | crate::remote::CodexCatalogError::Timeout
+            | crate::remote::CodexCatalogError::Transport
+            | crate::remote::CodexCatalogError::HttpStatus(408 | 429 | 500..=599)
+    )
+}
+
+fn codex_catalog_lock_error_is_transient(error: &crate::auth::codex::CodexAuthError) -> bool {
+    matches!(
+        error,
+        crate::auth::codex::CodexAuthError::AccountChanged
+            | crate::auth::codex::CodexAuthError::LockTimeout
+    ) || matches!(
+        error,
+        crate::auth::codex::CodexAuthError::Storage(source)
+            if matches!(
+                source.kind(),
+                std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::TimedOut
+            )
+    )
+}
+
+fn codex_catalog_auth_failure_outcome(
+    error: &crate::auth::codex::CodexAuthError,
+    credentials_still_exist: bool,
+) -> CodexCatalogRefreshOutcome {
+    if codex_catalog_lock_error_is_transient(error) {
+        CodexCatalogRefreshOutcome::TransientFailure
+    } else if credentials_still_exist {
+        CodexCatalogRefreshOutcome::TerminalFailure
+    } else {
+        CodexCatalogRefreshOutcome::NotAuthenticated
+    }
+}
+
+fn current_openai_codex_identity() -> Option<CodexCatalogIdentity> {
+    let manager =
+        crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home()).ok()?;
+    manager
+        .current()
+        .as_ref()
+        .map(CodexCatalogIdentity::from_credentials)
+}
+
 impl Default for ModelsManager {
     fn default() -> Self {
         let grok_home = crate::util::grok_home::grok_home();
@@ -173,19 +434,40 @@ impl ModelsManager {
         let has_session = auth_manager.current_or_expired().is_some();
         let fetch_auth = ModelFetchAuth::resolve(&cfg.endpoints, has_session);
         let current_reasoning_effort = cfg.models.default_reasoning_effort;
+        let codex_models = models
+            .iter()
+            .filter(|(_, entry)| entry.info.provider == ProviderId::OpenAiCodex)
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect();
         Self {
             inner: Arc::new(Inner {
                 prefetched: RwLock::new(prefetched),
+                codex_models: RwLock::new(codex_models),
+                has_codex_catalog: RwLock::new(false),
+                codex_catalog_identity: RwLock::new(None),
+                codex_catalog_needs_revalidation: AtomicBool::new(false),
                 models: RwLock::new(models),
                 current_model_id: RwLock::new(current_model_id),
                 current_reasoning_effort: RwLock::new(current_reasoning_effort),
                 etag: RwLock::new(None),
+                codex_etag: RwLock::new(None),
                 has_fetched_real_catalog: RwLock::new(false),
+                has_xai_catalog: RwLock::new(false),
+                xai_catalog_credential_scope: RwLock::new(None),
+                xai_catalog_cache_fetched_at: RwLock::new(None),
                 auth_manager,
                 cfg: RwLock::new(cfg),
                 fetch_auth: RwLock::new(fetch_auth),
                 gateway: RwLock::new(None),
                 cache: ModelsCacheManager::new(),
+                catalog_write_gate: parking_lot::Mutex::new(()),
+                xai_fetch_generation: AtomicU64::new(1),
+                codex_fetch_generation: AtomicU64::new(1),
+                codex_remote_fetch_enabled: AtomicBool::new(
+                    crate::util::config::resolve_remote_fetch_enabled(),
+                ),
+                codex_refresh_gate: tokio::sync::Mutex::new(()),
+                codex_retry_in_flight: AtomicBool::new(false),
                 retry_in_flight: AtomicBool::new(false),
                 allowlist_excludes_all: AtomicBool::new(false),
                 model_switch_watch: tokio::sync::watch::channel(0u64).0,
@@ -220,27 +502,80 @@ impl ModelsManager {
         prefetched_models: Option<IndexMap<String, ModelEntry>>,
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self, String> {
-        let has_session = auth_manager.current_or_expired().is_some();
+        let cached_session = auth_manager.current_or_expired();
+        let has_session = cached_session.is_some();
         let is_session_auth = auth_manager
             .auth_mode()
             .is_some_and(|m| m.is_session_auth());
         let fetch_auth = ModelFetchAuth::resolve(&cfg.endpoints, has_session);
-        let prefetched_models = prefetched_models.or_else(|| {
-            let cache = ModelsCacheManager::new();
-            cache
-                .load_fresh(
-                    &fetch_auth.cache_auth_method(),
-                    &crate::remote::models_list_url(&cfg.endpoints, fetch_auth),
-                )
-                .map(|c| c.models)
-        });
+        let credential_scope =
+            xai_catalog_credential_scope(&cfg.endpoints, cached_session.as_ref(), fetch_auth);
+        let cache = ModelsCacheManager::new();
+        let scoped_cache = cache.load_fresh(
+            &fetch_auth.cache_auth_method(),
+            &crate::remote::models_list_url(&cfg.endpoints, fetch_auth),
+            credential_scope.as_deref(),
+        );
+        let must_attest_prefetch = has_session || fetch_auth != ModelFetchAuth::Session;
+        let (prefetched_models, xai_cache_fetched_at, xai_cache_etag) =
+            match (prefetched_models, scoped_cache) {
+                // Every production early-prefetch path persists before
+                // returning. Re-adopt through the *current* credential scope
+                // so account A cannot finish prefetching and then be installed
+                // after a switch to B.
+                (Some(_), Some(cached)) if must_attest_prefetch => {
+                    (Some(cached.models), Some(cached.fetched_at), cached.etag)
+                }
+                (Some(_), None) if must_attest_prefetch => {
+                    tracing::warn!(
+                        "discarding unattested xAI startup prefetch after auth/config transition"
+                    );
+                    (None, None, None)
+                }
+                (Some(prefetched), _) => (Some(prefetched), None, None),
+                (None, Some(cached)) => (Some(cached.models), Some(cached.fetched_at), cached.etag),
+                (None, None) => (None, None, None),
+            };
         let has_prefetched = prefetched_models.is_some();
-        let catalog = resolve_model_catalog(cfg, prefetched_models.clone());
+        let codex_prefetch = prefetch_openai_codex_models_blocking()
+            .filter(|_| crate::util::config::resolve_remote_fetch_enabled());
+        let has_codex_catalog = codex_prefetch.is_some();
+        let codex_etag = codex_prefetch
+            .as_ref()
+            .and_then(|prefetch| prefetch.etag.clone());
+        let codex_catalog_identity = codex_prefetch
+            .as_ref()
+            .map(|prefetch| prefetch.identity.clone());
+        let codex_catalog_needs_revalidation = codex_prefetch
+            .as_ref()
+            .is_some_and(|prefetch| !prefetch.authoritative);
+        let codex_models = codex_prefetch
+            .as_ref()
+            .map(|prefetch| prefetch.models.clone())
+            .unwrap_or_default();
+        let catalog = resolve_combined_model_catalog(cfg, prefetched_models.clone(), codex_models);
 
-        // Validate only against a real catalog; a bundled-only first run defers
-        // to the async fetch (`apply_refresh_result`).
-        if has_prefetched {
-            validate_selectable(cfg, &catalog)?;
+        // Validate only against a complete-enough real catalog. If one
+        // configured provider is still pending recovery, the other provider's
+        // successful prefetch must not make its allowlist patterns fatal.
+        if has_prefetched || has_codex_catalog {
+            let remote_fetch_enabled = crate::util::config::resolve_remote_fetch_enabled();
+            let xai_expected = match fetch_auth {
+                ModelFetchAuth::Session => has_session,
+                ModelFetchAuth::ApiKey
+                | ModelFetchAuth::Deployment
+                | ModelFetchAuth::CustomEndpoint => true,
+            };
+            let codex_expected = current_openai_codex_identity().is_some();
+            let provider_pending = remote_fetch_enabled
+                && ((xai_expected && !has_prefetched)
+                    || (codex_expected
+                        && (!has_codex_catalog || codex_catalog_needs_revalidation)));
+            if let Err(error) = validate_selectable(cfg, &catalog)
+                && !(provider_pending && allowlist_matches_nothing(cfg, &catalog))
+            {
+                return Err(error);
+            }
         }
 
         let (current_model_key, current_model, model_source) =
@@ -261,9 +596,28 @@ impl ModelsManager {
             auth_manager,
             cfg.clone(),
         );
-        if has_prefetched {
+        if has_prefetched || has_codex_catalog {
             *mgr.inner.has_fetched_real_catalog.write() = true;
         }
+        *mgr.inner.has_xai_catalog.write() = has_prefetched;
+        *mgr.inner.xai_catalog_credential_scope.write() =
+            has_prefetched.then_some(credential_scope).flatten();
+        *mgr.inner.xai_catalog_cache_fetched_at.write() =
+            has_prefetched.then_some(xai_cache_fetched_at).flatten();
+        *mgr.inner.etag.write() = has_prefetched.then_some(xai_cache_etag).flatten();
+        *mgr.inner.has_codex_catalog.write() = has_codex_catalog;
+        *mgr.inner.codex_etag.write() = codex_etag;
+        *mgr.inner.codex_catalog_identity.write() = codex_catalog_identity;
+        mgr.inner
+            .codex_catalog_needs_revalidation
+            .store(codex_catalog_needs_revalidation, Ordering::Release);
+        mgr.inner.allowlist_excludes_all.store(
+            allowlist_matches_nothing(cfg, &mgr.inner.models.read()),
+            Ordering::Release,
+        );
+        // Keep the cross-process identity lease alive until every piece of the
+        // prefetched account-bound catalog has been installed in the manager.
+        drop(codex_prefetch);
         Ok(mgr)
     }
 
@@ -276,17 +630,90 @@ impl ModelsManager {
     /// Calls `reselect_default_model` when the preferred model changed
     /// (and is `Some`); otherwise `reselect_current_model_if_missing`.
     pub fn apply_config(&self, new_config: config::Config) {
+        let catalog_write = self.inner.catalog_write_gate.lock();
+        let current_auth = self.inner.auth_manager.current_or_expired();
+        let live_config = self.inner.cfg.read().clone();
+        let has_session = current_auth.is_some();
+        // Resolve from the live auth snapshot rather than trusting the stored
+        // enum: an auth switch can arrive before its watcher callback.
+        let live_fetch_auth = ModelFetchAuth::resolve(&live_config.endpoints, has_session);
+        let live_credential_scope = xai_catalog_credential_scope(
+            &live_config.endpoints,
+            current_auth.as_ref(),
+            live_fetch_auth,
+        );
+        let had_xai_catalog = *self.inner.has_xai_catalog.read();
+        let live_scope_changed = had_xai_catalog
+            && self.inner.xai_catalog_credential_scope.read().as_ref()
+                != live_credential_scope.as_ref();
+
         // Reject an invalid reload instead of mutating live state: bad globs or
         // (once a real catalog exists) an allowlist that excludes everything.
+        // Credential reconciliation still happens before every early return.
         if let Err(e) = new_config.validate_model_filters() {
             tracing::error!(error = %e, "ignoring config reload: invalid model filters");
+            if live_scope_changed {
+                *self.inner.fetch_auth.write() = live_fetch_auth;
+                self.inner.cache.invalidate();
+                self.clear_xai_catalog_unlocked();
+                drop(catalog_write);
+                self.notify_models_updated();
+                self.start_xai_catalog_recovery();
+            }
             return;
         }
-        let prefetched = self.inner.prefetched.read().clone();
-        let new_catalog = resolve_model_catalog(&new_config, prefetched);
+        let new_fetch_auth = ModelFetchAuth::resolve(&new_config.endpoints, has_session);
+        let new_credential_scope = xai_catalog_credential_scope(
+            &new_config.endpoints,
+            current_auth.as_ref(),
+            new_fetch_auth,
+        );
+        let xai_scope_changed = had_xai_catalog
+            && self.inner.xai_catalog_credential_scope.read().as_ref()
+                != new_credential_scope.as_ref();
+        let prefetched = if xai_scope_changed {
+            None
+        } else {
+            self.inner.prefetched.read().clone()
+        };
+        let new_catalog =
+            resolve_combined_model_catalog(&new_config, prefetched, self.codex_models_snapshot());
         let has_real_catalog = *self.inner.has_fetched_real_catalog.read();
-        if has_real_catalog && let Err(e) = validate_selectable(&new_config, &new_catalog) {
+        let xai_expected = new_fetch_auth != ModelFetchAuth::Session || has_session;
+        let start_xai_recovery = xai_expected && (!had_xai_catalog || xai_scope_changed);
+        let codex_expected = current_openai_codex_identity().is_some();
+        let remote_fetch_enabled = crate::util::config::resolve_remote_fetch_enabled();
+        let start_codex_recovery = remote_fetch_enabled
+            && codex_expected
+            && (!*self.inner.has_codex_catalog.read()
+                || self
+                    .inner
+                    .codex_catalog_needs_revalidation
+                    .load(Ordering::Acquire));
+        let provider_pending = remote_fetch_enabled
+            && ((xai_expected && (!had_xai_catalog || xai_scope_changed))
+                || (codex_expected
+                    && (!*self.inner.has_codex_catalog.read()
+                        || self
+                            .inner
+                            .codex_catalog_needs_revalidation
+                            .load(Ordering::Acquire))));
+        if has_real_catalog
+            && let Err(e) = validate_selectable(&new_config, &new_catalog)
+            && !(provider_pending && allowlist_matches_nothing(&new_config, &new_catalog))
+        {
             tracing::error!(error = %e, "ignoring config reload: allowed_models excludes all models");
+            if live_scope_changed {
+                // Credential identity safety wins over retaining a rejected
+                // config reload. Never leave the prior producer's entitlements
+                // installed after a known account/key/endpoint transition.
+                *self.inner.fetch_auth.write() = live_fetch_auth;
+                self.inner.cache.invalidate();
+                self.clear_xai_catalog_unlocked();
+                drop(catalog_write);
+                self.notify_models_updated();
+                self.start_xai_catalog_recovery();
+            }
             return;
         }
 
@@ -298,17 +725,31 @@ impl ModelsManager {
             )
         };
         let new_preferred = new_config.models.default.clone();
-        let has_session = self.inner.auth_manager.current_or_expired().is_some();
-        *self.inner.fetch_auth.write() =
-            ModelFetchAuth::resolve(&new_config.endpoints, has_session);
-        *self.inner.cfg.write() = new_config.clone();
-        // Recompute the prompt-block flag so a corrective reload unblocks.
-        if has_real_catalog {
-            let excludes_all = allowlist_matches_nothing(&new_config, &new_catalog);
-            self.inner
-                .allowlist_excludes_all
-                .store(excludes_all, Ordering::Relaxed);
+        self.inner
+            .xai_fetch_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.inner
+            .codex_fetch_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.inner
+            .codex_remote_fetch_enabled
+            .store(remote_fetch_enabled, Ordering::Release);
+        if xai_scope_changed {
+            *self.inner.prefetched.write() = None;
+            *self.inner.has_xai_catalog.write() = false;
+            *self.inner.xai_catalog_credential_scope.write() = None;
+            *self.inner.etag.write() = None;
+            *self.inner.has_fetched_real_catalog.write() = *self.inner.has_codex_catalog.read();
+            self.inner.cache.invalidate();
         }
+        *self.inner.fetch_auth.write() = new_fetch_auth;
+        *self.inner.cfg.write() = new_config.clone();
+        // Always fail closed at the prompt seam while an allowlisted provider
+        // is still pending discovery; successful publication recomputes this.
+        let excludes_all = allowlist_matches_nothing(&new_config, &new_catalog);
+        self.inner
+            .allowlist_excludes_all
+            .store(excludes_all, Ordering::Relaxed);
         *self.inner.models.write() = new_catalog;
 
         // A preferred-model flip caused only by a campaign overlay appearing or
@@ -341,6 +782,7 @@ impl ModelsManager {
         } else {
             self.reselect_current_model_if_missing(&new_config);
         }
+        drop(catalog_write);
 
         // Push the new catalog to connected clients (`x.ai/models/update`).
         // Without this, a long-running agent (leader mode) correctly swaps
@@ -349,6 +791,12 @@ impl ModelsManager {
         // until they reconnect. No-op when no gateway is attached (tests,
         // pre-init).
         self.notify_models_updated();
+        if start_xai_recovery {
+            self.start_xai_catalog_recovery();
+        }
+        if start_codex_recovery {
+            self.start_openai_codex_catalog_recovery();
+        }
     }
 
     // ── Accessors ───────────────────────────────────────────────────
@@ -361,8 +809,13 @@ impl ModelsManager {
         self.inner.cfg.read().endpoints.clone()
     }
 
+    /// Whether authenticated Codex service-tier controls are enabled.
+    pub fn fast_mode_enabled(&self) -> bool {
+        self.inner.cfg.read().features.fast_mode.unwrap_or(true)
+    }
+
     /// Does the current credential grant access to OAuth-only models?
-    fn is_session_auth(&self) -> bool {
+    pub(crate) fn is_session_auth(&self) -> bool {
         self.inner
             .auth_manager
             .auth_mode()
@@ -446,12 +899,63 @@ impl ModelsManager {
 
     /// Whether the given model supports reasoning effort according to the catalog.
     pub fn model_supports_reasoning_effort(&self, model_id: &str) -> bool {
-        self.inner
-            .models
-            .read()
-            .get(model_id)
+        let models = self.inner.models.read();
+        model_entry_by_id_or_slug(&models, model_id)
             .map(|e| e.info().supports_reasoning_effort)
             .unwrap_or(false)
+    }
+
+    /// Whether `effort` is explicitly accepted by the model identified by a
+    /// catalog id or routing slug.
+    ///
+    /// All effort assignment seams use this method so an ACP client, restored
+    /// session, subagent override, or global default cannot bypass a dynamic
+    /// catalog's per-model menu (for example, GPT-5.6 Luna does not offer
+    /// `ultra`, while Sol and Terra do).
+    pub fn model_offers_reasoning_effort(&self, model_id: &str, effort: ReasoningEffort) -> bool {
+        self.resolve_reasoning_effort_for_model(model_id, effort)
+            .is_some()
+    }
+
+    /// Resolve a user/config effort token to the effective value for this
+    /// catalog model. Before Codex introduced a distinct `max` tier, Grok
+    /// Build accepted `max` as the legacy spelling for `xhigh`; retain that
+    /// behavior for every non-Codex provider while preserving real Codex Max.
+    pub fn resolve_reasoning_effort_for_model(
+        &self,
+        model_id: &str,
+        effort: ReasoningEffort,
+    ) -> Option<ReasoningEffort> {
+        let models = self.inner.models.read();
+        let info = model_entry_by_id_or_slug(&models, model_id)?.info();
+        resolve_model_reasoning_effort(info, effort)
+    }
+
+    /// Provider-qualified variant for persisted sampling configs, which store
+    /// the routing slug rather than the namespaced catalog key. Without the
+    /// provider discriminator a custom/xAI entry sharing a Codex slug could
+    /// supply the wrong effort menu.
+    pub fn model_offers_reasoning_effort_for_provider(
+        &self,
+        provider: ProviderId,
+        model_id: &str,
+        effort: ReasoningEffort,
+    ) -> bool {
+        self.resolve_reasoning_effort_for_provider(provider, model_id, effort)
+            .is_some()
+    }
+
+    /// Provider-qualified effort resolver for persisted sampling configs,
+    /// which carry routing slugs rather than namespaced catalog ids.
+    pub fn resolve_reasoning_effort_for_provider(
+        &self,
+        provider: ProviderId,
+        model_id: &str,
+        effort: ReasoningEffort,
+    ) -> Option<ReasoningEffort> {
+        let models = self.inner.models.read();
+        let info = model_entry_by_id_or_slug_for_provider(&models, model_id, provider)?.info();
+        resolve_model_reasoning_effort(info, effort)
     }
 
     /// The catalog default reasoning effort for `model_id`, if the catalog
@@ -459,11 +963,100 @@ impl ModelsManager {
     /// nor the global config sets an explicit effort, so surfaced config stays
     /// consistent with the effort sampling actually uses.
     pub fn model_default_reasoning_effort(&self, model_id: &str) -> Option<ReasoningEffort> {
-        self.inner
-            .models
-            .read()
-            .get(model_id)
-            .and_then(|e| e.info().reasoning_effort)
+        let models = self.inner.models.read();
+        let info = model_entry_by_id_or_slug(&models, model_id)?.info();
+        info.reasoning_effort
+            .and_then(|effort| resolve_model_reasoning_effort(info, effort))
+            .or_else(|| advertised_default_reasoning_effort(info))
+    }
+
+    pub fn model_default_reasoning_effort_for_provider(
+        &self,
+        provider: ProviderId,
+        model_id: &str,
+    ) -> Option<ReasoningEffort> {
+        let models = self.inner.models.read();
+        let info = model_entry_by_id_or_slug_for_provider(&models, model_id, provider)?.info();
+        info.reasoning_effort
+            .and_then(|effort| resolve_model_reasoning_effort(info, effort))
+            .or_else(|| advertised_default_reasoning_effort(info))
+    }
+
+    /// Return the provider-advertised Fast tier for a model. Fast is an exact
+    /// provider contract: its catalog and request id is `priority`. Do not
+    /// infer request behavior from the display name.
+    pub fn fast_service_tier_for_provider(
+        &self,
+        provider: ProviderId,
+        model_id: &str,
+    ) -> Option<config::ModelServiceTier> {
+        if provider != ProviderId::OpenAiCodex || !self.fast_mode_enabled() {
+            return None;
+        }
+        let models = self.inner.models.read();
+        let info = model_entry_by_id_or_slug_for_provider(&models, model_id, provider)?.info();
+        info.service_tiers
+            .iter()
+            .find(|tier| tier.id == xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER)
+            .cloned()
+    }
+
+    /// Validate a persisted service-tier selection against the live,
+    /// provider-qualified model catalog. Explicit Standard is always valid for
+    /// a known Codex model; every other value must be advertised by that model.
+    pub fn resolve_service_tier_for_provider(
+        &self,
+        provider: ProviderId,
+        model_id: &str,
+        service_tier: &str,
+    ) -> Option<String> {
+        if provider != ProviderId::OpenAiCodex {
+            return None;
+        }
+        let models = self.inner.models.read();
+        let info = model_entry_by_id_or_slug_for_provider(&models, model_id, provider)?.info();
+        let normalized = normalize_service_tier_alias(service_tier.trim());
+        if normalized == xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER {
+            return Some(normalized.to_owned());
+        }
+        if !self.fast_mode_enabled() {
+            return None;
+        }
+        info.service_tiers
+            .iter()
+            .any(|tier| tier.id == normalized)
+            .then(|| normalized.to_owned())
+    }
+
+    /// Turn-local Codex v2 delegation policy. Ultra retains Grok Build's
+    /// native agent loop and activates its existing task/subagent tool
+    /// proactively; every other level explicitly returns to request-only
+    /// delegation. No tools, permissions, nesting limits, or session state are
+    /// changed by this instruction.
+    pub fn codex_multi_agent_mode_instruction(
+        &self,
+        provider: ProviderId,
+        model_id: &str,
+        effort: Option<ReasoningEffort>,
+    ) -> Option<String> {
+        if provider != ProviderId::OpenAiCodex {
+            return None;
+        }
+        let models = self.inner.models.read();
+        let entry = model_entry_by_id_or_slug_for_provider(&models, model_id, provider)?;
+        if entry.info().multi_agent_version.as_deref() != Some("v2") {
+            return None;
+        }
+        let proactive = effort == Some(ReasoningEffort::Ultra)
+            && model_info_offers_reasoning_effort(entry.info(), ReasoningEffort::Ultra);
+        let body = if proactive {
+            "Proactive multi-agent delegation is enabled for this turn. Use Grok Build's existing subagents when independent parallel work would materially improve speed or quality. This changes delegation policy only; all existing tool, permission, nesting, and session rules still apply."
+        } else {
+            "Proactive multi-agent delegation is disabled for this turn. Spawn a Grok Build subagent only when the user, project instructions, or an applicable skill explicitly requests delegation. All existing tool, permission, nesting, and session rules remain in force."
+        };
+        Some(format!(
+            "<multi_agent_mode provider=\"openai_codex\">\n{body}\n</multi_agent_mode>"
+        ))
     }
 
     /// The raw catalog `reasoning_efforts` list for `model_id` with no fallback,
@@ -471,12 +1064,20 @@ impl ModelsManager {
     /// session modes). Distinct from the pager's gate-first, fallback-applied
     /// `ModelState::reasoning_effort_options`.
     pub fn model_reasoning_efforts(&self, model_id: &str) -> Vec<ReasoningEffortOption> {
-        self.inner
-            .models
-            .read()
-            .get(model_id)
+        let models = self.inner.models.read();
+        model_entry_by_id_or_slug(&models, model_id)
             .map(|e| e.info().reasoning_efforts.clone())
             .unwrap_or_default()
+    }
+
+    /// Resolve the current image tool gates from the live configuration rather
+    /// than inheriting an `ImageGenConfig` constructed for a previous provider.
+    pub(crate) fn image_tool_gates(&self) -> (bool, bool) {
+        let cfg = self.inner.cfg.read();
+        (
+            cfg.resolve_image_gen().value,
+            cfg.resolve_image_edit().value,
+        )
     }
 
     pub fn model_supports_backend_search(&self, model_id: &str) -> bool {
@@ -543,6 +1144,21 @@ impl ModelsManager {
         resolve_catalog_key(&models, &acp::ModelId::new(model_id)).is_some()
     }
 
+    pub fn model_in_catalog_for_provider(&self, provider: ProviderId, model_id: &str) -> bool {
+        let models = self.inner.models.read();
+        model_entry_by_id_or_slug_for_provider(&models, model_id, provider).is_some()
+    }
+
+    pub fn model_supports_image_input_for_provider(
+        &self,
+        provider: ProviderId,
+        model_id: &str,
+    ) -> bool {
+        let models = self.inner.models.read();
+        model_entry_by_id_or_slug_for_provider(&models, model_id, provider)
+            .is_some_and(|entry| entry.info.supports_image_input)
+    }
+
     #[cfg(test)]
     fn prefetched(&self) -> Option<IndexMap<String, ModelEntry>> {
         self.inner.prefetched.read().clone()
@@ -556,27 +1172,473 @@ impl ModelsManager {
     // ── Mutations ───────────────────────────────────────────────────
 
     fn rebuild(&self, cfg: &config::Config, prefetched: Option<IndexMap<String, ModelEntry>>) {
-        *self.inner.models.write() = resolve_model_catalog(cfg, prefetched);
+        let _write = self.inner.catalog_write_gate.lock();
+        self.rebuild_unlocked(cfg, prefetched);
+    }
+
+    /// Rebuild while the caller holds `catalog_write_gate` across any related
+    /// provider-state mutation/snapshot.
+    fn rebuild_unlocked(
+        &self,
+        cfg: &config::Config,
+        prefetched: Option<IndexMap<String, ModelEntry>>,
+    ) {
+        let models = resolve_combined_model_catalog(cfg, prefetched, self.codex_models_snapshot());
+        *self.inner.models.write() = models;
+    }
+
+    fn codex_models_snapshot(&self) -> IndexMap<String, ModelEntry> {
+        self.inner.codex_models.read().clone()
+    }
+
+    /// Refresh the authenticated ChatGPT account's entitled Codex catalog.
+    /// Failures retain the last in-memory catalog; only an authoritative
+    /// network/cache result replaces it. This path never consults xAI auth.
+    pub async fn refresh_openai_codex_models(&self) -> bool {
+        self.refresh_openai_codex_models_inner(None).await.updated()
+    }
+
+    async fn lock_openai_codex_catalog_binding(
+        &self,
+        manager: &crate::auth::codex::CodexAuthManager,
+        expected: &xai_grok_sampling_types::CredentialBinding,
+    ) -> Result<
+        (
+            crate::auth::codex::CodexCredentials,
+            crate::auth::codex::CodexCatalogIdentityLease,
+        ),
+        CodexCatalogRefreshOutcome,
+    > {
+        match manager.lock_catalog_binding(expected).await {
+            Ok(locked) => Ok(locked),
+            Err(error) => {
+                // Account changes and logout are expected races; storage/lock
+                // failures fail closed because the prior account scope can no
+                // longer be proven current.
+                let current = manager.reload().ok().flatten();
+                self.reconcile_openai_codex_identity(None);
+                tracing::warn!(error = %error, "OpenAI Codex catalog identity verification failed");
+                Err(codex_catalog_auth_failure_outcome(
+                    &error,
+                    current.is_some(),
+                ))
+            }
+        }
+    }
+
+    async fn attest_current_openai_codex_identity_after_failure(
+        &self,
+        manager: &crate::auth::codex::CodexAuthManager,
+    ) -> Result<(), CodexCatalogRefreshOutcome> {
+        let current = match manager.current_verified() {
+            Ok(current) => current,
+            Err(error) => {
+                let credentials_still_exist = manager.reload().ok().flatten().is_some();
+                self.reconcile_openai_codex_identity(None);
+                return Err(codex_catalog_auth_failure_outcome(
+                    &error,
+                    credentials_still_exist,
+                ));
+            }
+        };
+        let (_credentials, _lease) = self
+            .lock_openai_codex_catalog_binding(manager, &current.credential_binding())
+            .await?;
+        Ok(())
+    }
+
+    fn codex_config_rejection_outcome(&self) -> CodexCatalogRefreshOutcome {
+        if self
+            .inner
+            .codex_remote_fetch_enabled
+            .load(Ordering::Acquire)
+        {
+            CodexCatalogRefreshOutcome::TransientFailure
+        } else {
+            CodexCatalogRefreshOutcome::Disabled
+        }
+    }
+
+    async fn refresh_openai_codex_models_inner(
+        &self,
+        observed: Option<(String, xai_grok_sampling_types::CredentialBinding)>,
+    ) -> CodexCatalogRefreshOutcome {
+        let _refresh = self.inner.codex_refresh_gate.lock().await;
+        let operation_generation = self.inner.codex_fetch_generation.load(Ordering::Acquire);
+        let grok_home = crate::util::grok_home::grok_home();
+        let manager = match crate::auth::codex::CodexAuthManager::new(&grok_home) {
+            Ok(manager) => manager,
+            Err(error) => {
+                self.reconcile_openai_codex_identity(None);
+                tracing::warn!(error = %error, "could not load OpenAI Codex credentials for model refresh");
+                return CodexCatalogRefreshOutcome::TerminalFailure;
+            }
+        };
+        let credentials = match manager.current() {
+            Some(credentials) => credentials,
+            None => {
+                self.reconcile_openai_codex_identity(None);
+                tracing::debug!("OpenAI Codex model refresh skipped: not logged in");
+                return CodexCatalogRefreshOutcome::NotAuthenticated;
+            }
+        };
+        let identity = CodexCatalogIdentity::from_credentials(&credentials);
+
+        // Invalidate account A before attempting account B's network request.
+        // A failed B refresh must never leave A's entitlements visible.
+        self.reconcile_openai_codex_identity(Some(&identity));
+
+        if !self
+            .inner
+            .codex_remote_fetch_enabled
+            .load(Ordering::Acquire)
+        {
+            let _identity_lease = match self
+                .lock_openai_codex_catalog_binding(&manager, &credentials.credential_binding())
+                .await
+            {
+                Ok((_credentials, lease)) => lease,
+                Err(outcome) => return outcome,
+            };
+            tracing::debug!("OpenAI Codex model refresh skipped: remote_fetch disabled");
+            return CodexCatalogRefreshOutcome::Disabled;
+        }
+        let config = match crate::remote::CodexCatalogClientConfig::new(grok_home.join("cache")) {
+            Ok(config) => config,
+            Err(error) => {
+                let _ = self
+                    .lock_openai_codex_catalog_binding(&manager, &credentials.credential_binding())
+                    .await;
+                tracing::warn!(error = %error, "could not configure OpenAI Codex model refresh");
+                return CodexCatalogRefreshOutcome::TerminalFailure;
+            }
+        };
+        let client = match crate::remote::CodexCatalogClient::new(config) {
+            Ok(client) => client,
+            Err(error) => {
+                let _ = self
+                    .lock_openai_codex_catalog_binding(&manager, &credentials.credential_binding())
+                    .await;
+                tracing::warn!(error = %error, "could not create OpenAI Codex model client");
+                return CodexCatalogRefreshOutcome::TerminalFailure;
+            }
+        };
+
+        if let Some((observed_etag, observed_binding)) = observed.as_ref()
+            && observed_binding == &credentials.credential_binding()
+            && *self.inner.has_codex_catalog.read()
+            && self.inner.codex_catalog_identity.read().as_ref() == Some(&identity)
+            && self.inner.codex_etag.read().as_deref() == Some(observed_etag.as_str())
+            && !self
+                .inner
+                .codex_catalog_needs_revalidation
+                .load(Ordering::Acquire)
+        {
+            // The matching ETag came from a live authenticated Codex response,
+            // so it is authoritative for the current account. Renew only that
+            // account's disk cache, then hold the identity lease through the
+            // in-memory validation marker update.
+            let auth = crate::remote::CodexCatalogAuthSnapshot::new(
+                credentials.access_token(),
+                credentials.account_id(),
+                credentials.user_id(),
+                credentials.credential_binding(),
+                credentials.is_fedramp,
+            );
+            let renewed_binding = match auth {
+                Ok(auth) => match client.renew_cached(&auth, observed_etag).await {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        tracing::debug!(error = %error, "could not renew OpenAI Codex catalog cache TTL");
+                        observed_binding.clone()
+                    }
+                },
+                Err(_) => return CodexCatalogRefreshOutcome::TerminalFailure,
+            };
+            let (_locked_credentials, _identity_lease) = match self
+                .lock_openai_codex_catalog_binding(&manager, &renewed_binding)
+                .await
+            {
+                Ok(locked) => locked,
+                Err(outcome) => return outcome,
+            };
+            let _catalog_write = self.inner.catalog_write_gate.lock();
+            if self.inner.codex_fetch_generation.load(Ordering::Acquire) != operation_generation
+                || !self
+                    .inner
+                    .codex_remote_fetch_enabled
+                    .load(Ordering::Acquire)
+            {
+                return self.codex_config_rejection_outcome();
+            }
+            self.inner
+                .codex_catalog_needs_revalidation
+                .store(false, Ordering::Release);
+            return CodexCatalogRefreshOutcome::Updated;
+        }
+
+        let (catalog, etag, authoritative, request_binding) = match client.fetch(&manager).await {
+            Ok(fetched) => (
+                fetched.catalog,
+                fetched.etag,
+                true,
+                fetched.credential_binding,
+            ),
+            Err(error) if codex_catalog_error_is_transient(&error) => {
+                match client.load_cached(&manager).await {
+                    Ok(cached) => (
+                        cached.catalog,
+                        cached.etag,
+                        false,
+                        cached.credential_binding,
+                    ),
+                    Err(_) => {
+                        if let Err(outcome) = self
+                            .attest_current_openai_codex_identity_after_failure(&manager)
+                            .await
+                        {
+                            return outcome;
+                        }
+                        tracing::warn!(error = %error, "OpenAI Codex model refresh failed");
+                        return CodexCatalogRefreshOutcome::TransientFailure;
+                    }
+                }
+            }
+            Err(error) => {
+                if let Err(outcome) = self
+                    .attest_current_openai_codex_identity_after_failure(&manager)
+                    .await
+                {
+                    return outcome;
+                }
+                tracing::warn!(error = %error, "OpenAI Codex model refresh failed");
+                return CodexCatalogRefreshOutcome::TerminalFailure;
+            }
+        };
+
+        // Serialize the final identity check and publication with all shipped
+        // login/logout/refresh writers. This closes the last account-switch
+        // window between a post-request reload and in-memory installation.
+        let (locked_credentials, _identity_lease) = match self
+            .lock_openai_codex_catalog_binding(&manager, &request_binding)
+            .await
+        {
+            Ok(locked) => locked,
+            Err(outcome) => return outcome,
+        };
+        let identity = CodexCatalogIdentity::from_credentials(&locked_credentials);
+        let etag = etag.or_else(|| {
+            observed.and_then(|(etag, binding)| (binding == request_binding).then_some(etag))
+        });
+        if !self.try_apply_openai_codex_catalog(
+            catalog,
+            etag,
+            identity,
+            authoritative,
+            operation_generation,
+        ) {
+            return self.codex_config_rejection_outcome();
+        }
+        if authoritative {
+            CodexCatalogRefreshOutcome::Updated
+        } else {
+            CodexCatalogRefreshOutcome::CachedFallback
+        }
+    }
+
+    fn try_apply_openai_codex_catalog(
+        &self,
+        catalog: crate::remote::CodexModelCatalog,
+        etag: Option<String>,
+        identity: CodexCatalogIdentity,
+        authoritative: bool,
+        operation_generation: u64,
+    ) -> bool {
+        let catalog_write = self.inner.catalog_write_gate.lock();
+        if self.inner.codex_fetch_generation.load(Ordering::Acquire) != operation_generation
+            || !self
+                .inner
+                .codex_remote_fetch_enabled
+                .load(Ordering::Acquire)
+        {
+            return false;
+        }
+        let count =
+            self.apply_openai_codex_catalog_unlocked(catalog, etag, identity, authoritative);
+        drop(catalog_write);
+        tracing::info!(count, "OpenAI Codex model catalog refreshed");
+        self.notify_models_updated();
+        true
+    }
+
+    fn apply_openai_codex_catalog_unlocked(
+        &self,
+        catalog: crate::remote::CodexModelCatalog,
+        etag: Option<String>,
+        identity: CodexCatalogIdentity,
+        authoritative: bool,
+    ) -> usize {
+        let mapped = map_openai_codex_catalog(catalog);
+        let count = mapped.len();
+        let first_codex_catalog = !*self.inner.has_codex_catalog.read();
+        *self.inner.codex_models.write() = mapped;
+        *self.inner.codex_etag.write() = etag;
+        *self.inner.codex_catalog_identity.write() = Some(identity);
+        *self.inner.has_codex_catalog.write() = true;
+        self.inner
+            .codex_catalog_needs_revalidation
+            .store(!authoritative, Ordering::Release);
+
+        *self.inner.has_fetched_real_catalog.write() = true;
+        let config = self.inner.cfg.read().clone();
+        let prefetched = self.inner.prefetched.read().clone();
+        self.rebuild_unlocked(&config, prefetched);
+
+        let excludes_all = allowlist_matches_nothing(&config, &self.inner.models.read());
+        self.inner
+            .allowlist_excludes_all
+            .store(excludes_all, Ordering::Relaxed);
+        if first_codex_catalog {
+            self.reselect_default_model(&config);
+        } else {
+            self.reselect_current_model_if_missing(&config);
+        }
+        count
+    }
+
+    #[cfg(test)]
+    fn apply_openai_codex_catalog(
+        &self,
+        catalog: crate::remote::CodexModelCatalog,
+        etag: Option<String>,
+        identity: CodexCatalogIdentity,
+        authoritative: bool,
+    ) {
+        let catalog_write = self.inner.catalog_write_gate.lock();
+        let count =
+            self.apply_openai_codex_catalog_unlocked(catalog, etag, identity, authoritative);
+        drop(catalog_write);
+        tracing::info!(count, "OpenAI Codex model catalog refreshed");
+        self.notify_models_updated();
+    }
+
+    /// Clear only Codex provider state when its current credential/account no
+    /// longer matches the catalog producer. xAI models and credentials remain
+    /// untouched. Returns whether visible state changed.
+    fn reconcile_openai_codex_identity(&self, current: Option<&CodexCatalogIdentity>) -> bool {
+        let catalog_write = self.inner.catalog_write_gate.lock();
+        let has_state = *self.inner.has_codex_catalog.read()
+            || !self.inner.codex_models.read().is_empty()
+            || self.inner.codex_etag.read().is_some()
+            || self.inner.codex_catalog_identity.read().is_some();
+        if !has_state
+            || (self.inner.codex_catalog_identity.read().as_ref() == current && current.is_some())
+        {
+            return false;
+        }
+
+        self.inner.codex_models.write().clear();
+        *self.inner.codex_etag.write() = None;
+        *self.inner.codex_catalog_identity.write() = None;
+        *self.inner.has_codex_catalog.write() = false;
+        self.inner
+            .codex_catalog_needs_revalidation
+            .store(false, Ordering::Release);
+
+        let config = self.inner.cfg.read().clone();
+        let prefetched = self.inner.prefetched.read().clone();
+        let has_xai_catalog = *self.inner.has_xai_catalog.read();
+        *self.inner.has_fetched_real_catalog.write() = has_xai_catalog;
+        self.rebuild_unlocked(&config, prefetched);
+        let excludes_all = allowlist_matches_nothing(&config, &self.inner.models.read());
+        self.inner
+            .allowlist_excludes_all
+            .store(excludes_all, Ordering::Relaxed);
+        self.reselect_current_model_if_missing(&config);
+        drop(catalog_write);
+        tracing::info!("OpenAI Codex model catalog cleared after auth identity change");
+        self.notify_models_updated();
+        true
+    }
+
+    /// Route response-header model ETags to the provider that produced them.
+    /// Codex and xAI ETags/caches are deliberately independent.
+    pub async fn refresh_if_new_etag_for_provider(&self, provider: ProviderId, etag: String) {
+        self.refresh_if_new_etag_for_provider_binding(provider, etag, None)
+            .await;
+    }
+
+    /// Route response-header ETags with the immutable credential generation
+    /// that produced the response. A missing or stale Codex binding forces a
+    /// normal authenticated `/models` fetch rather than renewing cached bytes.
+    pub async fn refresh_if_new_etag_for_provider_binding(
+        &self,
+        provider: ProviderId,
+        etag: String,
+        credential_binding: Option<xai_grok_sampling_types::CredentialBinding>,
+    ) {
+        if provider == ProviderId::OpenAiCodex {
+            tracing::info!(etag = %etag, "OpenAI Codex models etag changed, refreshing");
+            let outcome = self
+                .refresh_openai_codex_models_inner(
+                    credential_binding.map(|binding| (etag, binding)),
+                )
+                .await;
+            if matches!(
+                outcome,
+                CodexCatalogRefreshOutcome::TransientFailure
+                    | CodexCatalogRefreshOutcome::CachedFallback
+            ) {
+                self.inner
+                    .codex_catalog_needs_revalidation
+                    .store(true, Ordering::Release);
+                self.start_openai_codex_catalog_recovery();
+            }
+        } else {
+            self.refresh_if_new_etag(etag).await;
+        }
     }
 
     /// Refresh models when the etag changes.
     ///
-    /// Writes etag optimistically before spawning the fetch to coalesce
-    /// concurrent callers seeing the same new etag.
+    /// Commits a new ETag only with a successful generation-checked fetch.
+    /// Concurrent duplicate notifications may launch duplicate work, but a
+    /// failed request can never permanently suppress later recovery.
     pub async fn refresh_if_new_etag(&self, etag: String) {
         let same_etag = {
             let current = self.inner.etag.read();
             current.as_deref() == Some(etag.as_str())
         };
         if same_etag {
-            let fetch_auth = *self.inner.fetch_auth.read();
-            self.inner
-                .cache
-                .renew_ttl(&fetch_auth.cache_auth_method(), &self.cache_origin())
-                .await;
+            let snapshot = self.xai_catalog_snapshot();
+            let catalog_write = self.inner.catalog_write_gate.lock();
+            let installed_scope_matches = *self.inner.has_xai_catalog.read()
+                && self.inner.xai_catalog_credential_scope.read().as_ref()
+                    == snapshot.credential_scope.as_ref();
+            if installed_scope_matches && self.xai_catalog_snapshot_is_current(&snapshot) {
+                self.inner.cache.renew_ttl(
+                    &snapshot.fetch_auth.cache_auth_method(),
+                    &snapshot.origin,
+                    snapshot.credential_scope.as_deref(),
+                    &etag,
+                );
+                return;
+            }
+            let clear_stale_catalog = *self.inner.has_xai_catalog.read()
+                && self.inner.xai_catalog_credential_scope.read().as_ref()
+                    != snapshot.credential_scope.as_ref();
+            if clear_stale_catalog {
+                self.inner.cache.invalidate();
+                self.clear_xai_catalog_unlocked();
+            }
+            drop(catalog_write);
+            if clear_stale_catalog {
+                self.notify_models_updated();
+            }
+            tracing::info!(etag = %etag, "models etag matched stale or missing identity; refreshing");
+            self.do_refresh(Some(etag), RefreshStrategy::Online);
             return;
         }
-        *self.inner.etag.write() = Some(etag.clone());
         tracing::info!(etag = %etag, "models etag changed, refreshing");
         self.do_refresh(Some(etag), RefreshStrategy::Online);
     }
@@ -584,22 +1646,40 @@ impl ModelsManager {
     /// Auth identity changed: invalidate disk cache and refresh the catalog.
     ///
     /// Safe on OIDC token recovery after idle: we never drop a successfully-fetched
-    /// catalog on transient failure. Only fall back to the bundled default when
-    /// we have never had a real catalog (`!has_fetched_real_catalog`), or via
+    /// xAI catalog on transient failure. Only fall back to the bundled default when
+    /// we have never had a real xAI catalog, or via
     /// the genuine no-auth path (`clear()`).
     ///
     /// Respects the auth snapshot / hot-swap discipline.
     pub async fn on_auth_changed(&self) {
-        let config = self.inner.cfg.read().clone();
+        let config = {
+            let _catalog_write = self.inner.catalog_write_gate.lock();
+            let config = self.inner.cfg.read().clone();
+            let current_auth = self.inner.auth_manager.current_or_expired();
+            let has_session = current_auth.is_some();
+            let fetch_auth = ModelFetchAuth::resolve(&config.endpoints, has_session);
+            self.inner
+                .xai_fetch_generation
+                .fetch_add(1, Ordering::AcqRel);
+            *self.inner.fetch_auth.write() = fetch_auth;
+            // Invalidate under the same gate as the generation transition:
+            // readers from the old generation are rejected, and readers from
+            // the new generation cannot observe the old account's cache.
+            self.inner.cache.invalidate();
+            let current_scope =
+                xai_catalog_credential_scope(&config.endpoints, current_auth.as_ref(), fetch_auth);
+            let account_changed = *self.inner.has_xai_catalog.read()
+                && self.inner.xai_catalog_credential_scope.read().as_ref()
+                    != current_scope.as_ref();
+            if account_changed {
+                // Preserve on same-account token refresh, but never expose A's
+                // entitlements while B's first fetch is pending or failing.
+                self.clear_xai_catalog_unlocked();
+            }
+            config
+        };
         crate::agent::init::update_telemetry_config(&config, &self.inner.auth_manager);
-        self.inner.cache.invalidate();
-        let has_session = self.inner.auth_manager.current_or_expired().is_some();
-        let fetch_auth = ModelFetchAuth::resolve(&config.endpoints, has_session);
-        *self.inner.fetch_auth.write() = fetch_auth;
-        if self.inner.auth_manager.current_or_expired().is_none()
-            && fetch_auth == ModelFetchAuth::Session
-        {
-            self.clear();
+        if self.clear_if_unauthenticated_session() {
             return;
         }
 
@@ -609,7 +1689,19 @@ impl ModelsManager {
         let remote_fetch_enabled = crate::util::config::resolve_remote_fetch_enabled();
         self.fetch_and_apply_inner(remote_fetch_enabled).await;
 
-        if !*self.inner.has_fetched_real_catalog.read() && self.inner.prefetched.read().is_none() {
+        let fell_back_to_bundled = {
+            let _catalog_write = self.inner.catalog_write_gate.lock();
+            if !*self.inner.has_xai_catalog.read() && self.inner.prefetched.read().is_none() {
+                let live_config = self.inner.cfg.read().clone();
+                self.rebuild_unlocked(&live_config, None);
+                self.reselect_current_model_if_missing(&live_config);
+                true
+            } else {
+                false
+            }
+        };
+
+        if fell_back_to_bundled {
             if remote_fetch_enabled {
                 xai_grok_telemetry::unified_log::warn(
                     "model catalog: falling back to bundled defaults only",
@@ -623,9 +1715,6 @@ impl ModelsManager {
                 // Deliberate no-fetch state, not a failure: no warn-class log.
                 tracing::debug!("model catalog: bundled defaults in use (remote_fetch disabled)");
             }
-            self.rebuild(&config, None); // first-time only: no fetched catalog, use bundled defaults
-            self.reselect_current_model_if_missing(&config);
-
             // Schedule background retries so we recover once the network is
             // back (e.g. after sleep/resume when the first fetch races DNS).
             // With remote_fetch disabled a retry can never succeed, so none is
@@ -695,13 +1784,31 @@ impl ModelsManager {
     /// `ModelsCacheManager` path is fixed to `grok_home()`, a process-wide
     /// `OnceLock`).
     fn reload_from_cache_manager(&self, cache: &ModelsCacheManager) {
-        let fetch_auth = *self.inner.fetch_auth.read();
-        let Some(cached) = cache.load_fresh(&fetch_auth.cache_auth_method(), &self.cache_origin())
-        else {
+        let snapshot = self.xai_catalog_snapshot();
+        let Some(cached) = cache.load_fresh(
+            &snapshot.fetch_auth.cache_auth_method(),
+            &snapshot.origin,
+            snapshot.credential_scope.as_deref(),
+        ) else {
             tracing::debug!("models cache changed on disk but is not loadable; ignoring");
             return;
         };
-
+        let catalog_write = self.inner.catalog_write_gate.lock();
+        if !self.xai_catalog_snapshot_is_current(&snapshot) {
+            tracing::debug!("models cache was loaded for stale config; ignoring");
+            return;
+        }
+        if self.inner.xai_catalog_credential_scope.read().as_ref()
+            == snapshot.credential_scope.as_ref()
+            && self
+                .inner
+                .xai_catalog_cache_fetched_at
+                .read()
+                .is_some_and(|installed| cached.fetched_at < installed)
+        {
+            tracing::debug!("older models cache publication completed late; ignoring");
+            return;
+        }
         // Self-write / no-change dedup by content. `ModelEntry` doesn't impl
         // `PartialEq` (nested config types), so compare the serialized form —
         // catalogs are small (tens of entries) and writes are debounced.
@@ -717,6 +1824,10 @@ impl ModelsManager {
             if cached.etag.is_some() {
                 *self.inner.etag.write() = cached.etag;
             }
+            *self.inner.has_xai_catalog.write() = true;
+            *self.inner.has_fetched_real_catalog.write() = true;
+            *self.inner.xai_catalog_credential_scope.write() = snapshot.credential_scope.clone();
+            *self.inner.xai_catalog_cache_fetched_at.write() = Some(cached.fetched_at);
             tracing::debug!("models cache changed on disk but catalog is identical; skipping");
             return;
         }
@@ -727,16 +1838,19 @@ impl ModelsManager {
         // `apply_refresh_result`): if the leader bootstrapped on bundled
         // defaults, the configured default must be re-resolved against the
         // real catalog rather than left on a placeholder.
-        let first_real_catalog = {
-            let mut flag = self.inner.has_fetched_real_catalog.write();
+        let first_xai_catalog = {
+            let mut flag = self.inner.has_xai_catalog.write();
             let was_first = !*flag;
             *flag = true;
             was_first
         };
+        *self.inner.xai_catalog_credential_scope.write() = snapshot.credential_scope.clone();
+        *self.inner.xai_catalog_cache_fetched_at.write() = Some(cached.fetched_at);
+        *self.inner.has_fetched_real_catalog.write() = true;
         *self.inner.prefetched.write() = Some(cached.models.clone());
-        self.rebuild(&cfg, Some(cached.models));
+        self.rebuild_unlocked(&cfg, Some(cached.models));
         *self.inner.etag.write() = cached.etag;
-        if first_real_catalog {
+        if first_xai_catalog {
             self.reselect_default_model(&cfg);
         } else {
             self.reselect_current_model_if_missing(&cfg);
@@ -753,6 +1867,7 @@ impl ModelsManager {
         if excludes_all {
             tracing::error!("allowed_models excludes all fetched models; prompts will be blocked");
         }
+        drop(catalog_write);
 
         tracing::info!(count, "model catalog hot-reloaded from disk cache");
         xai_grok_telemetry::unified_log::info(
@@ -761,6 +1876,181 @@ impl ModelsManager {
             Some(serde_json::json!({ "model_count": count })),
         );
         self.notify_models_updated();
+    }
+
+    /// Reconcile a Codex-only auth file change, refresh the new account's
+    /// entitlement catalog, and retry transient discovery failures without
+    /// disturbing xAI authentication.
+    pub async fn on_openai_codex_auth_changed(&self) -> bool {
+        // A same-account record rotation may carry a new plan/workspace
+        // entitlement even though its stable identity is unchanged.
+        self.inner
+            .codex_catalog_needs_revalidation
+            .store(true, Ordering::Release);
+        let outcome = self.refresh_openai_codex_models_inner(None).await;
+        let needs_revalidation =
+            outcome != CodexCatalogRefreshOutcome::Updated && *self.inner.has_codex_catalog.read();
+        self.inner
+            .codex_catalog_needs_revalidation
+            .store(needs_revalidation, Ordering::Release);
+        if matches!(
+            outcome,
+            CodexCatalogRefreshOutcome::TransientFailure
+                | CodexCatalogRefreshOutcome::CachedFallback
+        ) {
+            self.start_openai_codex_catalog_recovery();
+        }
+        outcome.updated()
+    }
+
+    /// Start provider-local startup recovery when credentials exist but the
+    /// initial Codex prefetch did not produce an account-bound catalog.
+    pub fn start_openai_codex_catalog_recovery(&self) {
+        let Some(identity) = current_openai_codex_identity() else {
+            self.reconcile_openai_codex_identity(None);
+            return;
+        };
+        // Reconcile the installed account even when remote discovery is
+        // disabled. Disabling network access must never leave another
+        // account's entitled models visible.
+        self.reconcile_openai_codex_identity(Some(&identity));
+        if !self
+            .inner
+            .codex_remote_fetch_enabled
+            .load(Ordering::Acquire)
+        {
+            return;
+        }
+        if *self.inner.has_codex_catalog.read()
+            && self.inner.codex_catalog_identity.read().as_ref() == Some(&identity)
+            && !self
+                .inner
+                .codex_catalog_needs_revalidation
+                .load(Ordering::Acquire)
+        {
+            return;
+        }
+        self.spawn_openai_codex_catalog_retry(identity);
+    }
+
+    fn spawn_openai_codex_catalog_retry(&self, expected_identity: CodexCatalogIdentity) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            // Constructors and config reloads are also used by synchronous
+            // embedders. A missing runtime must not panic the caller; the next
+            // authenticated runtime hook or ETag notification will retry.
+            tracing::debug!("OpenAI Codex model catalog retry deferred: no Tokio runtime");
+            return;
+        };
+        if self
+            .inner
+            .codex_retry_in_flight
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            tracing::debug!("OpenAI Codex model catalog retry already in flight");
+            return;
+        }
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum RetryCompletion {
+            Updated,
+            IdentityChanged,
+            Stopped,
+        }
+
+        let mgr = self.clone();
+        runtime.spawn(async move {
+            let backoff = crate::tools::retry::BackoffConfig::new(5, 5_000, 60_000);
+            let result = crate::tools::retry::execute_with_backoff(
+                &backoff,
+                || {
+                    let mgr = mgr.clone();
+                    let expected_identity = expected_identity.clone();
+                    async move {
+                        if current_openai_codex_identity().as_ref() != Some(&expected_identity) {
+                            return Ok(RetryCompletion::IdentityChanged);
+                        }
+                        if *mgr.inner.has_codex_catalog.read()
+                            && mgr.inner.codex_catalog_identity.read().as_ref()
+                                == Some(&expected_identity)
+                            && !mgr
+                                .inner
+                                .codex_catalog_needs_revalidation
+                                .load(Ordering::Acquire)
+                        {
+                            return Ok(RetryCompletion::Updated);
+                        }
+
+                        match mgr.refresh_openai_codex_models_inner(None).await {
+                            CodexCatalogRefreshOutcome::Updated => Ok(RetryCompletion::Updated),
+                            CodexCatalogRefreshOutcome::CachedFallback => {
+                                Err("cached OpenAI Codex model catalog fallback")
+                            }
+                            CodexCatalogRefreshOutcome::TransientFailure => {
+                                Err("transient OpenAI Codex model catalog failure")
+                            }
+                            CodexCatalogRefreshOutcome::NotAuthenticated => {
+                                Ok(RetryCompletion::IdentityChanged)
+                            }
+                            CodexCatalogRefreshOutcome::TerminalFailure => {
+                                if current_openai_codex_identity().as_ref()
+                                    != Some(&expected_identity)
+                                {
+                                    Ok(RetryCompletion::IdentityChanged)
+                                } else {
+                                    Ok(RetryCompletion::Stopped)
+                                }
+                            }
+                            CodexCatalogRefreshOutcome::Disabled => Ok(RetryCompletion::Stopped),
+                        }
+                    }
+                },
+                |attempt, max_retries, delay| async move {
+                    xai_grok_telemetry::unified_log::warn(
+                        "OpenAI Codex model catalog: retry scheduled",
+                        None,
+                        Some(serde_json::json!({
+                            "attempt": attempt,
+                            "max_retries": max_retries,
+                            "delay_ms": delay.as_millis() as u64,
+                        })),
+                    );
+                },
+            )
+            .await;
+
+            mgr.inner
+                .codex_retry_in_flight
+                .store(false, Ordering::Release);
+            match result {
+                Ok(RetryCompletion::Updated) => {
+                    xai_grok_telemetry::unified_log::info(
+                        "OpenAI Codex model catalog: retry succeeded",
+                        None,
+                        Some(serde_json::json!({
+                            "model_count": mgr.inner.codex_models.read().len(),
+                        })),
+                    );
+                }
+                Ok(RetryCompletion::IdentityChanged) => {
+                    tracing::debug!("OpenAI Codex model catalog retry stopped after auth change");
+                    // A new account may have arrived while its immediate
+                    // refresh was blocked by this retry guard. Re-evaluate it
+                    // only after releasing the guard.
+                    mgr.start_openai_codex_catalog_recovery();
+                }
+                Ok(RetryCompletion::Stopped) => {
+                    tracing::debug!("OpenAI Codex model catalog retry stopped");
+                }
+                Err(error) => {
+                    xai_grok_telemetry::unified_log::warn(
+                        "OpenAI Codex model catalog: all retries exhausted",
+                        None,
+                        Some(serde_json::json!({ "error": error })),
+                    );
+                }
+            }
+        });
     }
 
     /// Retry model catalog fetch in the background with exponential backoff.
@@ -796,13 +2086,13 @@ impl ModelsManager {
                     let mgr = mgr.clone();
                     async move {
                         // Bail out early if another code path already loaded a real catalog.
-                        if *mgr.inner.has_fetched_real_catalog.read() {
+                        if *mgr.inner.has_xai_catalog.read() {
                             return Ok(());
                         }
 
                         mgr.fetch_and_apply().await;
 
-                        if *mgr.inner.has_fetched_real_catalog.read() {
+                        if *mgr.inner.has_xai_catalog.read() {
                             Ok(())
                         } else {
                             Err("model catalog fetch returned no models")
@@ -846,6 +2136,28 @@ impl ModelsManager {
         });
     }
 
+    /// Recover a missing credential-scoped xAI startup catalog without
+    /// waiting for a later file/auth notification. This is required when an
+    /// early prefetch is correctly discarded because its producing account
+    /// changed before manager installation.
+    pub fn start_xai_catalog_recovery(&self) {
+        if !crate::util::config::resolve_remote_fetch_enabled()
+            || *self.inner.has_xai_catalog.read()
+        {
+            return;
+        }
+        let fetch_auth = *self.inner.fetch_auth.read();
+        let expected = match fetch_auth {
+            ModelFetchAuth::Session => self.inner.auth_manager.current_or_expired().is_some(),
+            ModelFetchAuth::ApiKey
+            | ModelFetchAuth::Deployment
+            | ModelFetchAuth::CustomEndpoint => true,
+        };
+        if expected {
+            self.spawn_catalog_retry();
+        }
+    }
+
     /// Refresh the model catalog on every auth token refresh.
     ///
     /// Listens for [`AuthManager::refresh_notifier`] signals directly,
@@ -856,7 +2168,7 @@ impl ModelsManager {
     /// via `x.ai/models/update`.
     pub fn start_auth_refresh_watcher(&self, notify: Arc<tokio::sync::Notify>) {
         let mgr = self.clone();
-        let had_catalog_at_start = *self.inner.has_fetched_real_catalog.read();
+        let had_catalog_at_start = *self.inner.has_xai_catalog.read();
         xai_grok_telemetry::unified_log::info(
             "model catalog: auth refresh watcher started",
             None,
@@ -876,7 +2188,7 @@ impl ModelsManager {
                     );
                     continue;
                 }
-                let had_catalog = *mgr.inner.has_fetched_real_catalog.read();
+                let had_catalog = *mgr.inner.has_xai_catalog.read();
                 let old_count = mgr.available().len();
                 xai_grok_telemetry::unified_log::info(
                     "model catalog: auth refresh watcher triggered",
@@ -886,8 +2198,11 @@ impl ModelsManager {
                         "model_count_before": old_count,
                     })),
                 );
-                mgr.fetch_and_apply().await;
-                let has_catalog = *mgr.inner.has_fetched_real_catalog.read();
+                // The notifier can represent an account switch, not merely a
+                // same-account token rotation. Reconcile the installed scope
+                // synchronously before any network await.
+                mgr.on_auth_changed().await;
+                let has_catalog = *mgr.inner.has_xai_catalog.read();
                 let new_count = mgr.available().len();
                 if has_catalog {
                     if !had_catalog || new_count != old_count {
@@ -917,13 +2232,50 @@ impl ModelsManager {
 
     /// Wipe in-memory state so a previous identity's catalog doesn't leak.
     fn clear(&self) {
+        let catalog_write = self.inner.catalog_write_gate.lock();
+        self.clear_xai_catalog_unlocked();
+        drop(catalog_write);
+        self.notify_models_updated();
+    }
+
+    /// Clear only if the *current* config/auth context still represents an
+    /// unauthenticated session. The check and mutation share the write gate so
+    /// a concurrent API-key/custom-endpoint config reload cannot be erased by
+    /// a stale auth-change callback.
+    fn clear_if_unauthenticated_session(&self) -> bool {
+        let catalog_write = self.inner.catalog_write_gate.lock();
+        if *self.inner.fetch_auth.read() != ModelFetchAuth::Session
+            || self.inner.auth_manager.current_or_expired().is_some()
+        {
+            return false;
+        }
+        self.clear_xai_catalog_unlocked();
+        drop(catalog_write);
+        self.notify_models_updated();
+        true
+    }
+
+    /// Caller holds `catalog_write_gate`.
+    fn clear_xai_catalog_unlocked(&self) {
+        self.inner
+            .xai_fetch_generation
+            .fetch_add(1, Ordering::AcqRel);
         *self.inner.prefetched.write() = None;
-        *self.inner.models.write() = IndexMap::new();
+        *self.inner.has_xai_catalog.write() = false;
+        *self.inner.xai_catalog_credential_scope.write() = None;
+        *self.inner.xai_catalog_cache_fetched_at.write() = None;
         *self.inner.etag.write() = None;
-        *self.inner.has_fetched_real_catalog.write() = false;
+        let has_codex_catalog = *self.inner.has_codex_catalog.read();
+        *self.inner.has_fetched_real_catalog.write() = has_codex_catalog;
+        let config = self.inner.cfg.read().clone();
+        // xAI identity changes must not erase the independent ChatGPT Codex
+        // account catalog or replace its credentials.
+        self.rebuild_unlocked(&config, None);
+        let excludes_all = allowlist_matches_nothing(&config, &self.inner.models.read());
         self.inner
             .allowlist_excludes_all
-            .store(false, Ordering::Relaxed);
+            .store(excludes_all, Ordering::Relaxed);
+        self.reselect_current_model_if_missing(&config);
     }
 
     /// Build a `SamplingConfig` from the current model + auth state.
@@ -970,19 +2322,150 @@ impl ModelsManager {
         crate::remote::models_list_url(&endpoints, fetch_auth)
     }
 
-    fn try_load_cache(&self) -> bool {
+    /// Capture one internally-consistent xAI fetch/cache context. Network
+    /// launches supersede every older in-flight operation immediately.
+    fn begin_xai_catalog_operation(&self) -> XaiCatalogSnapshot {
+        let _catalog_write = self.inner.catalog_write_gate.lock();
+        let config = self.inner.cfg.read().clone();
         let fetch_auth = *self.inner.fetch_auth.read();
-        let Some(cached) = self
+        let origin = crate::remote::models_list_url(&config.endpoints, fetch_auth);
+        let auth = self.inner.auth_manager.current_or_expired();
+        let credential_scope =
+            xai_catalog_credential_scope(&config.endpoints, auth.as_ref(), fetch_auth);
+        let generation = self
             .inner
-            .cache
-            .load_fresh(&fetch_auth.cache_auth_method(), &self.cache_origin())
-        else {
+            .xai_fetch_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        XaiCatalogSnapshot {
+            generation,
+            config,
+            fetch_auth,
+            origin,
+            credential_scope,
+        }
+    }
+
+    /// Re-attest the credential returned by `AuthManager::auth()` before a
+    /// network request starts. `auth()` may itself refresh an external bearer
+    /// or adopt a sibling-process credential, so the identity can differ from
+    /// the launch snapshot. A different producer scope clears the installed
+    /// catalog while holding the publication gate; a failed request for B can
+    /// therefore never leave A's entitlements visible.
+    fn prepare_xai_network_operation(
+        &self,
+        launch: &XaiCatalogSnapshot,
+        auth: Option<&GrokAuth>,
+    ) -> Option<(XaiCatalogSnapshot, bool)> {
+        let _catalog_write = self.inner.catalog_write_gate.lock();
+        if self.inner.xai_fetch_generation.load(Ordering::Acquire) != launch.generation {
+            tracing::debug!(
+                generation = launch.generation,
+                "discarding superseded xAI model catalog launch"
+            );
+            return None;
+        }
+
+        let config = self.inner.cfg.read().clone();
+        let fetch_auth = ModelFetchAuth::resolve(&config.endpoints, auth.is_some());
+        let origin = crate::remote::models_list_url(&config.endpoints, fetch_auth);
+        let credential_scope = xai_catalog_credential_scope(&config.endpoints, auth, fetch_auth);
+        let fetch_shape_changed =
+            *self.inner.fetch_auth.read() != fetch_auth || launch.origin != origin;
+        let installed_scope_changed = *self.inner.has_xai_catalog.read()
+            && self.inner.xai_catalog_credential_scope.read().as_ref() != credential_scope.as_ref();
+
+        *self.inner.fetch_auth.write() = fetch_auth;
+        let cleared = if installed_scope_changed {
+            self.inner.cache.invalidate();
+            self.clear_xai_catalog_unlocked();
+            true
+        } else {
+            if fetch_shape_changed {
+                self.inner
+                    .xai_fetch_generation
+                    .fetch_add(1, Ordering::AcqRel);
+                self.inner.cache.invalidate();
+            }
+            false
+        };
+
+        Some((
+            XaiCatalogSnapshot {
+                generation: self.inner.xai_fetch_generation.load(Ordering::Acquire),
+                config,
+                fetch_auth,
+                origin,
+                credential_scope,
+            },
+            cleared,
+        ))
+    }
+
+    /// Snapshot without superseding an in-flight fetch. Cache readers validate
+    /// this again under the write gate; an already-started authoritative
+    /// network response is deliberately allowed to win afterward.
+    fn xai_catalog_snapshot(&self) -> XaiCatalogSnapshot {
+        let _catalog_write = self.inner.catalog_write_gate.lock();
+        let config = self.inner.cfg.read().clone();
+        let fetch_auth = *self.inner.fetch_auth.read();
+        let auth = self.inner.auth_manager.current_or_expired();
+        let credential_scope =
+            xai_catalog_credential_scope(&config.endpoints, auth.as_ref(), fetch_auth);
+        XaiCatalogSnapshot {
+            generation: self.inner.xai_fetch_generation.load(Ordering::Acquire),
+            origin: crate::remote::models_list_url(&config.endpoints, fetch_auth),
+            config,
+            fetch_auth,
+            credential_scope,
+        }
+    }
+
+    /// Caller holds `catalog_write_gate`.
+    fn xai_catalog_snapshot_is_current(&self, snapshot: &XaiCatalogSnapshot) -> bool {
+        let config = self.inner.cfg.read();
+        let fetch_auth = *self.inner.fetch_auth.read();
+        let auth = self.inner.auth_manager.current_or_expired();
+        let credential_scope =
+            xai_catalog_credential_scope(&config.endpoints, auth.as_ref(), fetch_auth);
+        self.inner.xai_fetch_generation.load(Ordering::Acquire) == snapshot.generation
+            && fetch_auth == snapshot.fetch_auth
+            && crate::remote::models_list_url(&config.endpoints, fetch_auth) == snapshot.origin
+            && credential_scope == snapshot.credential_scope
+    }
+
+    fn try_load_cache(&self) -> bool {
+        let snapshot = self.xai_catalog_snapshot();
+        let Some(cached) = self.inner.cache.load_fresh(
+            &snapshot.fetch_auth.cache_auth_method(),
+            &snapshot.origin,
+            snapshot.credential_scope.as_deref(),
+        ) else {
             return false;
         };
+        let _catalog_write = self.inner.catalog_write_gate.lock();
+        if !self.xai_catalog_snapshot_is_current(&snapshot) {
+            tracing::debug!("discarding xAI model cache loaded for stale config");
+            return false;
+        }
+        if self.inner.xai_catalog_credential_scope.read().as_ref()
+            == snapshot.credential_scope.as_ref()
+            && self
+                .inner
+                .xai_catalog_cache_fetched_at
+                .read()
+                .is_some_and(|installed| cached.fetched_at < installed)
+        {
+            tracing::debug!("older xAI model cache load completed late; ignoring");
+            return false;
+        }
         let cfg = self.inner.cfg.read().clone();
         *self.inner.has_fetched_real_catalog.write() = true;
+        *self.inner.has_xai_catalog.write() = true;
+        *self.inner.xai_catalog_credential_scope.write() = snapshot.credential_scope.clone();
+        *self.inner.xai_catalog_cache_fetched_at.write() = Some(cached.fetched_at);
         *self.inner.prefetched.write() = Some(cached.models.clone());
-        self.rebuild(&cfg, Some(cached.models));
+        self.rebuild_unlocked(&cfg, Some(cached.models));
         *self.inner.etag.write() = cached.etag;
         true
     }
@@ -993,16 +2476,46 @@ impl ModelsManager {
             tracing::info!("model catalog refresh skipped: remote_fetch disabled");
             return;
         }
-        let cfg = self.inner.cfg.read().clone();
-        let endpoints = cfg.endpoints.clone();
-        let fetch_auth = *self.inner.fetch_auth.read();
+        let launch = self.begin_xai_catalog_operation();
         let auth_manager = self.inner.auth_manager.clone();
         let mgr = self.clone();
 
         tokio::task::spawn(async move {
-            let auth = auth_manager.auth().await.ok();
-            let new_prefetched = fetch_models_async(endpoints, auth, fetch_auth).await;
-            if !mgr.apply_refresh_result(&cfg, new_prefetched, new_etag) {
+            let auth = match auth_manager.auth().await {
+                Ok(auth) => Some(auth),
+                Err(_)
+                    if launch.fetch_auth == ModelFetchAuth::Session
+                        && auth_manager.current_or_expired().is_some() =>
+                {
+                    // A transient refresh failure is not an account change.
+                    // Preserve the installed scope and do not attempt an
+                    // unauthenticated request.
+                    return;
+                }
+                Err(_) => None,
+            };
+            let Some((snapshot, cleared)) =
+                mgr.prepare_xai_network_operation(&launch, auth.as_ref())
+            else {
+                return;
+            };
+            if cleared {
+                mgr.notify_models_updated();
+            }
+            if snapshot.fetch_auth == ModelFetchAuth::Session && auth.is_none() {
+                return;
+            }
+            let fetched = fetch_models_network_async(
+                snapshot.config.endpoints.clone(),
+                auth,
+                snapshot.fetch_auth,
+            )
+            .await;
+            let (new_prefetched, committed_etag) = match fetched {
+                Some(fetched) => (Some(fetched.models), fetched.etag.or(new_etag)),
+                None => (None, None),
+            };
+            if !mgr.apply_xai_refresh_result(&snapshot, new_prefetched, committed_etag) {
                 return;
             }
             tracing::info!("models manager refreshed");
@@ -1062,10 +2575,29 @@ impl ModelsManager {
             tracing::info!("model catalog refresh skipped: remote_fetch disabled");
             return;
         }
-        let auth = self.inner.auth_manager.auth().await.ok();
+        let launch = self.begin_xai_catalog_operation();
+        let auth = match self.inner.auth_manager.auth().await {
+            Ok(auth) => Some(auth),
+            Err(_)
+                if launch.fetch_auth == ModelFetchAuth::Session
+                    && self.inner.auth_manager.current_or_expired().is_some() =>
+            {
+                return;
+            }
+            Err(_) => None,
+        };
+        let Some((snapshot, cleared)) = self.prepare_xai_network_operation(&launch, auth.as_ref())
+        else {
+            return;
+        };
+        if cleared {
+            self.notify_models_updated();
+        }
+        if snapshot.fetch_auth == ModelFetchAuth::Session && auth.is_none() {
+            return;
+        }
         let has_auth = auth.is_some();
-        let fetch_auth = *self.inner.fetch_auth.read();
-        let cfg = self.inner.cfg.read().clone();
+        let fetch_auth = snapshot.fetch_auth;
         xai_grok_telemetry::unified_log::info(
             "model catalog: fetching",
             None,
@@ -1074,8 +2606,13 @@ impl ModelsManager {
                 "fetch_auth": format!("{fetch_auth:?}"),
             })),
         );
-        let new_prefetched = fetch_models_async(cfg.endpoints.clone(), auth, fetch_auth).await;
-        let success = self.apply_refresh_result(&cfg, new_prefetched, None);
+        let fetched =
+            fetch_models_network_async(snapshot.config.endpoints.clone(), auth, fetch_auth).await;
+        let (new_prefetched, response_etag) = match fetched {
+            Some(fetched) => (Some(fetched.models), fetched.etag),
+            None => (None, None),
+        };
+        let success = self.apply_xai_refresh_result(&snapshot, new_prefetched, response_etag);
         if success {
             xai_grok_telemetry::unified_log::info(
                 "model catalog: fetch succeeded",
@@ -1093,6 +2630,36 @@ impl ModelsManager {
         new_prefetched: Option<IndexMap<String, ModelEntry>>,
         new_etag: Option<String>,
     ) -> bool {
+        self.apply_refresh_result_inner(Some(config), None, new_prefetched, new_etag)
+    }
+
+    fn apply_xai_refresh_result(
+        &self,
+        snapshot: &XaiCatalogSnapshot,
+        new_prefetched: Option<IndexMap<String, ModelEntry>>,
+        new_etag: Option<String>,
+    ) -> bool {
+        self.apply_refresh_result_inner(None, Some(snapshot), new_prefetched, new_etag)
+    }
+
+    fn apply_refresh_result_inner(
+        &self,
+        test_config: Option<&config::Config>,
+        snapshot: Option<&XaiCatalogSnapshot>,
+        new_prefetched: Option<IndexMap<String, ModelEntry>>,
+        new_etag: Option<String>,
+    ) -> bool {
+        let _catalog_write = self.inner.catalog_write_gate.lock();
+        if let Some(snapshot) = snapshot
+            && !self.xai_catalog_snapshot_is_current(snapshot)
+        {
+            tracing::debug!(
+                generation = snapshot.generation,
+                "discarding stale xAI model catalog response"
+            );
+            return false;
+        }
+
         let Some(new_prefetched) = new_prefetched else {
             tracing::warn!("model refresh failed, leaving existing models unchanged");
             xai_grok_telemetry::unified_log::warn(
@@ -1105,14 +2672,51 @@ impl ModelsManager {
             return false;
         };
 
-        let first_real_catalog = {
-            let mut flag = self.inner.has_fetched_real_catalog.write();
+        // Production fetches always rebuild against the live config protected
+        // by the validated generation. Unit-only direct callers retain the
+        // historical explicit-config seam.
+        let live_config;
+        let config = if snapshot.is_some() {
+            live_config = self.inner.cfg.read().clone();
+            &live_config
+        } else {
+            test_config.expect("direct catalog apply requires config")
+        };
+        let first_xai_catalog = {
+            let mut flag = self.inner.has_xai_catalog.write();
             let was_first = !*flag;
             *flag = true;
             was_first
         };
+        if let Some(snapshot) = snapshot {
+            *self.inner.xai_catalog_credential_scope.write() = snapshot.credential_scope.clone();
+        } else {
+            // The direct catalog-publication seam used by synchronous tests
+            // must establish the same credential binding as the production
+            // snapshot path. Otherwise the next config reload mistakes the
+            // freshly installed catalog for a cross-account transition and
+            // clears it.
+            let current_auth = self.inner.auth_manager.current_or_expired();
+            let fetch_auth = ModelFetchAuth::resolve(&config.endpoints, current_auth.is_some());
+            *self.inner.xai_catalog_credential_scope.write() =
+                xai_catalog_credential_scope(&config.endpoints, current_auth.as_ref(), fetch_auth);
+        }
+        *self.inner.has_fetched_real_catalog.write() = true;
+        if let Some(snapshot) = snapshot {
+            // Persist only after generation/auth-origin validation, under the
+            // same publication gate. A rejected pre-switch request can never
+            // poison the shared cache and re-enter through the file watcher.
+            let fetched_at = self.inner.cache.persist(
+                &new_prefetched,
+                new_etag.as_deref(),
+                snapshot.fetch_auth.cache_auth_method(),
+                &snapshot.origin,
+                snapshot.credential_scope.as_deref(),
+            );
+            *self.inner.xai_catalog_cache_fetched_at.write() = Some(fetched_at);
+        }
         *self.inner.prefetched.write() = Some(new_prefetched.clone());
-        self.rebuild(config, Some(new_prefetched));
+        self.rebuild_unlocked(config, Some(new_prefetched));
         *self.inner.etag.write() = new_etag;
 
         // Can't exit a running app; flag it so the prompt path blocks instead.
@@ -1124,7 +2728,7 @@ impl ModelsManager {
             tracing::error!("allowed_models excludes all fetched models; prompts will be blocked");
         }
 
-        if first_real_catalog {
+        if first_xai_catalog {
             self.reselect_default_model(config);
         } else {
             self.reselect_current_model_if_missing(config);
@@ -1160,7 +2764,7 @@ impl ModelsManager {
             old = %current.0, new = %new_id.0, source = %source,
             "current model not in new catalog, reselecting default"
         );
-        *self.inner.current_model_id.write() = new_id;
+        self.set_current_model_id(new_id);
     }
 
     /// Re-resolve the default model against the current catalog.
@@ -1179,7 +2783,7 @@ impl ModelsManager {
                 old = %current.0, new = %new_id.0, source = %source,
                 "re-resolved default model after catalog populated"
             );
-            *self.inner.current_model_id.write() = new_id;
+            self.set_current_model_id(new_id);
         }
     }
 }
@@ -1209,6 +2813,10 @@ struct ModelsCache {
     grok_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auth_method: Option<CacheAuthMethod>,
+    /// One-way binding to the effective xAI account/API/deployment credential.
+    /// Raw credential and account material is never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential_scope: Option<String>,
     /// Models-list URL this catalog was fetched from
     /// ([`crate::remote::models_list_url`]). Compared on load so a cache
     /// written against one backend is a miss for another: entries embed
@@ -1235,6 +2843,7 @@ impl ModelsCache {
 }
 
 struct CacheResult {
+    fetched_at: DateTime<Utc>,
     models: IndexMap<String, ModelEntry>,
     etag: Option<String>,
 }
@@ -1258,6 +2867,7 @@ impl ModelsCacheManager {
         &self,
         expected_auth: &CacheAuthMethod,
         expected_origin: &str,
+        expected_credential_scope: Option<&str>,
     ) -> Option<CacheResult> {
         let data = std::fs::read(&self.path).ok()?;
         let cache: ModelsCache = serde_json::from_slice(&data).ok()?;
@@ -1277,12 +2887,17 @@ impl ModelsCacheManager {
             );
             return None;
         }
+        if cache.credential_scope.as_deref() != expected_credential_scope {
+            tracing::debug!("models cache credential scope mismatch");
+            return None;
+        }
         if !cache.is_fresh(self.ttl) {
             tracing::debug!("models cache is stale");
             return None;
         }
         tracing::debug!(count = cache.models.len(), "loaded models from disk cache");
         Some(CacheResult {
+            fetched_at: cache.fetched_at,
             models: cache.models,
             etag: cache.etag,
         })
@@ -1295,20 +2910,30 @@ impl ModelsCacheManager {
         etag: Option<&str>,
         auth_method: CacheAuthMethod,
         origin: &str,
-    ) {
+        credential_scope: Option<&str>,
+    ) -> DateTime<Utc> {
+        let fetched_at = Utc::now();
         let cache = ModelsCache {
-            fetched_at: Utc::now(),
+            fetched_at,
             grok_version: Some(xai_grok_version::VERSION.to_string()),
             auth_method: Some(auth_method),
+            credential_scope: credential_scope.map(ToOwned::to_owned),
             origin: Some(origin.to_string()),
             etag: etag.map(|s| s.to_string()),
             models: models.clone(),
         };
         self.atomic_write(&cache);
+        fetched_at
     }
 
-    async fn renew_ttl(&self, expected_auth: &CacheAuthMethod, expected_origin: &str) {
-        let data = match tokio::fs::read(&self.path).await {
+    fn renew_ttl(
+        &self,
+        expected_auth: &CacheAuthMethod,
+        expected_origin: &str,
+        expected_credential_scope: Option<&str>,
+        expected_etag: &str,
+    ) {
+        let data = match std::fs::read(&self.path) {
             Ok(data) => data,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
             Err(e) => {
@@ -1327,8 +2952,16 @@ impl ModelsCacheManager {
             tracing::debug!("models cache TTL renewal skipped: origin mismatch");
             return;
         }
+        if cache.credential_scope.as_deref() != expected_credential_scope {
+            tracing::debug!("models cache TTL renewal skipped: credential scope mismatch");
+            return;
+        }
+        if cache.etag.as_deref() != Some(expected_etag) {
+            tracing::debug!("models cache TTL renewal skipped: ETag mismatch");
+            return;
+        }
         cache.fetched_at = Utc::now();
-        self.atomic_write_async(&cache).await;
+        self.atomic_write(&cache);
         tracing::debug!("models cache TTL renewed");
     }
 
@@ -1351,19 +2984,6 @@ impl ModelsCacheManager {
             && std::fs::write(&tmp, &json).is_ok()
         {
             let _ = std::fs::rename(&tmp, &self.path);
-        }
-    }
-
-    async fn atomic_write_async(&self, cache: &ModelsCache) {
-        if let Some(parent) = self.path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        let Ok(json) = serde_json::to_vec_pretty(cache) else {
-            return;
-        };
-        if tokio::fs::write(&tmp, &json).await.is_ok() {
-            let _ = tokio::fs::rename(&tmp, &self.path).await;
         }
     }
 }
@@ -1438,6 +3058,223 @@ pub(crate) fn prefetch_models_and_settings_blocking(
     (models, settings)
 }
 
+/// Fetch the current ChatGPT account's entitled Codex models without sharing
+/// any state with xAI model discovery. The async OAuth/catalog client runs on
+/// a short-lived thread so this startup seam remains safe when called from an
+/// existing Tokio runtime.
+struct CodexPrefetchResult {
+    models: IndexMap<String, ModelEntry>,
+    etag: Option<String>,
+    identity: CodexCatalogIdentity,
+    authoritative: bool,
+    _identity_lease: crate::auth::codex::CodexCatalogIdentityLease,
+}
+
+fn prefetch_openai_codex_models_blocking() -> Option<CodexPrefetchResult> {
+    if !crate::util::config::resolve_remote_fetch_enabled() {
+        return None;
+    }
+    let grok_home = crate::util::grok_home::grok_home();
+    let worker = std::thread::Builder::new()
+        .name("openai-codex-models".to_owned())
+        .spawn(move || {
+            let manager = crate::auth::codex::CodexAuthManager::new(&grok_home).ok()?;
+            manager.current()?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            runtime.block_on(async move {
+                let config =
+                    crate::remote::CodexCatalogClientConfig::new(grok_home.join("cache")).ok()?;
+                let client = crate::remote::CodexCatalogClient::new(config).ok()?;
+                let (catalog, etag, authoritative, request_binding) =
+                    match client.fetch(&manager).await {
+                        Ok(fetched) => (
+                            fetched.catalog,
+                            fetched.etag,
+                            true,
+                            fetched.credential_binding,
+                        ),
+                        Err(error) if codex_catalog_error_is_transient(&error) => {
+                            let cached = client.load_cached(&manager).await.ok()?;
+                            (
+                                cached.catalog,
+                                cached.etag,
+                                false,
+                                cached.credential_binding,
+                            )
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "OpenAI Codex model discovery failed");
+                            return None;
+                        }
+                    };
+                // Serialize the final identity check with login/logout and
+                // keep the lease alive through installation in `from_config`.
+                let (locked_credentials, identity_lease) =
+                    manager.lock_catalog_binding(&request_binding).await.ok()?;
+                if !crate::util::config::resolve_remote_fetch_enabled() {
+                    return None;
+                }
+                let identity = CodexCatalogIdentity::from_credentials(&locked_credentials);
+                Some(CodexPrefetchResult {
+                    models: map_openai_codex_catalog(catalog),
+                    etag,
+                    identity,
+                    authoritative,
+                    _identity_lease: identity_lease,
+                })
+            })
+        })
+        .ok()?;
+    worker.join().ok().flatten()
+}
+
+fn map_openai_codex_catalog(
+    catalog: crate::remote::CodexModelCatalog,
+) -> IndexMap<String, ModelEntry> {
+    catalog
+        .models
+        .into_iter()
+        .filter_map(|model| {
+            let context_window = model
+                .context_window
+                .or(model.max_context_window)
+                .and_then(|value| u64::try_from(value).ok())
+                .and_then(std::num::NonZeroU64::new)
+                .unwrap_or_else(|| {
+                    std::num::NonZeroU64::new(crate::remote::DEFAULT_CONTEXT_WINDOW)
+                        .expect("default context window is non-zero")
+                });
+            let default_effort = model
+                .default_reasoning_level
+                .as_deref()
+                .and_then(|value| value.parse::<ReasoningEffort>().ok());
+            // Grok's session gate is percentage-based while the Codex catalog
+            // publishes an absolute auto-compact token limit. Derive the
+            // earliest safe whole-percent threshold so each entitled model
+            // follows its live catalog budget instead of silently falling back
+            // to the fork-wide default. The effective-window percentage is a
+            // hard cap, not a replacement when the catalog omits a limit.
+            let effective_context_percent = u8::try_from(model.effective_context_window_percent)
+                .ok()
+                .filter(|value| (1..=100).contains(value));
+            let auto_compact_threshold_percent = model
+                .auto_compact_token_limit
+                .and_then(|value| u64::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .map(|limit| {
+                    let percent = limit
+                        .saturating_mul(100)
+                        .checked_div(context_window.get())
+                        .unwrap_or(1)
+                        .clamp(1, 100) as u8;
+                    effective_context_percent.map_or(percent, |cap| percent.min(cap))
+                });
+            let reasoning_efforts: Vec<ReasoningEffortOption> = model
+                .supported_reasoning_levels
+                .iter()
+                .filter_map(|preset| {
+                    let value = preset.effort.parse::<ReasoningEffort>().ok()?;
+                    Some(ReasoningEffortOption {
+                        id: preset.effort.clone(),
+                        value,
+                        label: preset.effort.clone(),
+                        description: (!preset.description.is_empty())
+                            .then(|| preset.description.clone()),
+                        default: Some(value) == default_effort,
+                    })
+                })
+                .collect();
+            // `hide` models remain explicitly addressable (for `-m` and
+            // persisted sessions) but stay out of the picker. `none` and
+            // unknown visibility values fail closed and are not addressable.
+            let (hidden, addressable) = match model.visibility.as_deref() {
+                Some("list") => (false, true),
+                Some("hide") => (true, true),
+                _ => (true, false),
+            };
+            let id = model.id.clone();
+            let display_name = if model.display_name.trim().is_empty() {
+                model.slug.clone()
+            } else {
+                model.display_name.clone()
+            };
+            let mut extra_headers = IndexMap::new();
+            if model.use_responses_lite {
+                extra_headers.insert(
+                    xai_grok_sampling_types::OPENAI_CODEX_RESPONSES_LITE_HEADER.to_owned(),
+                    "true".to_owned(),
+                );
+            }
+            let multi_agent_version = model
+                .multi_agent_version
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_ascii_lowercase);
+            let supports_image_input = model.accepts_images();
+            Some((
+                id.clone(),
+                ModelEntry {
+                    info: config::ModelInfo {
+                        id: Some(id),
+                        provider: ProviderId::OpenAiCodex,
+                        model: model.slug,
+                        base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
+                        name: Some(display_name),
+                        description: model.description,
+                        max_completion_tokens: None,
+                        temperature: None,
+                        top_p: None,
+                        api_backend: xai_grok_sampling_types::ApiBackend::Responses,
+                        auth_scheme: xai_grok_sampler::AuthScheme::Bearer,
+                        extra_headers,
+                        context_window,
+                        auto_compact_threshold_percent,
+                        system_prompt_label: None,
+                        use_concise: false,
+                        // Preserve Grok Build's agent loop and system prompt;
+                        // Codex is a provider, not a replacement agent profile.
+                        agent_type: config::default_agent_type(),
+                        inference_idle_timeout_secs: None,
+                        max_retries: None,
+                        hidden,
+                        user_selectable: addressable,
+                        supported_in_api: model.supported_in_api,
+                        reasoning_effort: default_effort,
+                        supports_reasoning_effort: !reasoning_efforts.is_empty(),
+                        reasoning_efforts,
+                        service_tiers: model
+                            .service_tiers
+                            .into_iter()
+                            .map(|tier| config::ModelServiceTier {
+                                id: tier.id,
+                                name: tier.name,
+                                description: tier.description,
+                            })
+                            .collect(),
+                        default_service_tier: model.default_service_tier,
+                        service_tier: None,
+                        multi_agent_version,
+                        supports_image_input,
+                        // Grok's hosted backend-search extension is xAI-only.
+                        supports_backend_search: false,
+                        compactions_remaining: None,
+                        compaction_at_tokens: None,
+                        show_model_fingerprint: false,
+                        stream_tool_calls: None,
+                        laziness_detector: config::LazinessDetectorPerModelConfig::default(),
+                    },
+                    api_key: None,
+                    env_key: None,
+                    api_base_url: None,
+                },
+            ))
+        })
+        .collect()
+}
+
 /// `remote_fetch_enabled` is a parameter so the pair helper above resolves the
 /// knob once for both halves.
 fn prefetch_models_blocking_gated(
@@ -1449,8 +3286,10 @@ fn prefetch_models_blocking_gated(
     let cache_auth = fetch_auth.cache_auth_method();
     // Same URL the fetch below will hit — the cache is only valid for it.
     let cache_origin = crate::remote::models_list_url(endpoints, fetch_auth);
+    let credential_scope = xai_catalog_credential_scope(endpoints, auth, fetch_auth);
     let cache = ModelsCacheManager::new();
-    if let Some(cached) = cache.load_fresh(&cache_auth, &cache_origin) {
+    if let Some(cached) = cache.load_fresh(&cache_auth, &cache_origin, credential_scope.as_deref())
+    {
         return Some(cached.models);
     }
 
@@ -1476,7 +3315,13 @@ fn prefetch_models_blocking_gated(
             // `resolve_model_list` (config.rs), not here. Don't re-add it.
 
             tracing::info!(count = map.len(), etag = ?etag, "Prefetched models");
-            cache.persist(&map, etag.as_deref(), cache_auth, &cache_origin);
+            cache.persist(
+                &map,
+                etag.as_deref(),
+                cache_auth,
+                &cache_origin,
+                credential_scope.as_deref(),
+            );
             Some(map)
         }
         Ok(FetchModelsResult { .. }) => {
@@ -1628,6 +3473,39 @@ pub(crate) fn resolve_catalog_key(
         .map(|(key, _)| acp::ModelId::new(key.clone()))
 }
 
+/// Resolve either the catalog key or the provider routing slug without
+/// allocating an ACP id. Last slug match wins, matching `resolve_catalog_key`
+/// and `MvpAgent::resolve_model_id` so user overrides take precedence.
+fn model_entry_by_id_or_slug<'a>(
+    models: &'a IndexMap<String, ModelEntry>,
+    id: &str,
+) -> Option<&'a ModelEntry> {
+    models.get(id).or_else(|| {
+        models
+            .iter()
+            .rev()
+            .find(|(_, entry)| entry.info.model == id)
+            .map(|(_, entry)| entry)
+    })
+}
+
+fn model_entry_by_id_or_slug_for_provider<'a>(
+    models: &'a IndexMap<String, ModelEntry>,
+    id: &str,
+    provider: ProviderId,
+) -> Option<&'a ModelEntry> {
+    models
+        .get(id)
+        .filter(|entry| entry.info.provider == provider)
+        .or_else(|| {
+            models
+                .iter()
+                .rev()
+                .find(|(_, entry)| entry.info.provider == provider && entry.info.model == id)
+                .map(|(_, entry)| entry)
+        })
+}
+
 /// Catalog key for a persisted session model id, restricted to **selectable**
 /// entries. A selectable exact-key match wins (as in [`resolve_catalog_key`]);
 /// otherwise the last selectable entry whose routing slug matches `id`, so a
@@ -1636,17 +3514,77 @@ pub(crate) fn selectable_catalog_key_for_persisted(
     models: &IndexMap<String, ModelEntry>,
     available: &IndexMap<acp::ModelId, acp::ModelInfo>,
     id: &acp::ModelId,
+    is_session_auth: bool,
 ) -> Option<acp::ModelId> {
-    if available.contains_key(id) {
+    let restorable = |key: &str, entry: &ModelEntry| {
+        available.contains_key(&acp::ModelId::new(key.to_owned()))
+            || (entry.info.hidden
+                && entry.info.user_selectable
+                && model_addressable_for_auth(&entry.info, is_session_auth))
+    };
+    if let Some(entry) = models.get(id.0.as_ref())
+        && restorable(id.0.as_ref(), entry)
+    {
         return Some(id.clone());
     }
     let id_str = id.0.as_ref();
-    if let Some((key, _)) = models.iter().rev().find(|(key, entry)| {
-        available.contains_key(&acp::ModelId::new((*key).clone())) && entry.info.model == id_str
-    }) {
+    if let Some((key, _)) = models
+        .iter()
+        .rev()
+        .find(|(key, entry)| restorable(key, entry) && entry.info.model == id_str)
+    {
         return Some(acp::ModelId::new(key.clone()));
     }
-    resolve_catalog_key(models, id).filter(|key| available.contains_key(key))
+    None
+}
+
+/// Provider-scoped variant of [`selectable_catalog_key_for_persisted`].
+///
+/// This is used when a persisted id itself carries a provider identity (for
+/// example `openai-codex/...`). A routing-slug collision must never let a
+/// session cross that provider boundary while it is being restored.
+pub(crate) fn selectable_catalog_key_for_persisted_provider(
+    models: &IndexMap<String, ModelEntry>,
+    available: &IndexMap<acp::ModelId, acp::ModelInfo>,
+    id: &acp::ModelId,
+    is_session_auth: bool,
+    provider: ProviderId,
+) -> Option<acp::ModelId> {
+    let restorable = |key: &str, entry: &ModelEntry| {
+        entry.info.provider == provider
+            && (available.contains_key(&acp::ModelId::new(key.to_owned()))
+                || (entry.info.hidden
+                    && entry.info.user_selectable
+                    && model_addressable_for_auth(&entry.info, is_session_auth)))
+    };
+    if let Some(entry) = models.get(id.0.as_ref())
+        && restorable(id.0.as_ref(), entry)
+    {
+        return Some(id.clone());
+    }
+    let id_str = id.0.as_ref();
+    models
+        .iter()
+        .rev()
+        .find(|(key, entry)| restorable(key, entry) && entry.info.model == id_str)
+        .map(|(key, _)| acp::ModelId::new(key.clone()))
+}
+
+/// First picker-visible model belonging to `provider`.
+///
+/// Provider-qualified session recovery uses this only after the persisted
+/// model is no longer entitled. Keeping the filter here prevents a merged
+/// catalog's insertion order from turning a provider-local fallback into an
+/// xAI/Codex cross-over.
+pub(crate) fn first_available_catalog_key_for_provider(
+    models: &IndexMap<String, ModelEntry>,
+    available: &IndexMap<acp::ModelId, acp::ModelInfo>,
+    provider: ProviderId,
+) -> Option<acp::ModelId> {
+    models.iter().find_map(|(key, entry)| {
+        let id = acp::ModelId::new(key.clone());
+        (entry.info.provider == provider && available.contains_key(&id)).then_some(id)
+    })
 }
 
 /// A "campaign-only" preferred flip: the default changed and either side's value
@@ -1676,10 +3614,17 @@ pub(crate) fn resolve_default_model(
     catalog: &IndexMap<String, ModelEntry>,
     is_session_auth: bool,
 ) -> (String, ModelEntry, config::ConfigSource) {
-    let visible: IndexMap<String, ModelEntry> = catalog
+    let addressable: IndexMap<String, ModelEntry> = catalog
         .iter()
-        .filter(|(_, e)| e.info.visible_for_auth(is_session_auth) && e.info.user_selectable)
+        .filter(|(_, e)| {
+            model_addressable_for_auth(&e.info, is_session_auth) && e.info.user_selectable
+        })
         .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let visible: IndexMap<String, ModelEntry> = addressable
+        .iter()
+        .filter(|(_, entry)| !entry.info.hidden)
+        .map(|(key, entry)| (key.clone(), entry.clone()))
         .collect();
 
     let model_pref = config::resolve_string_flag(
@@ -1695,8 +3640,8 @@ pub(crate) fn resolve_default_model(
         if let Some((key, first)) = visible.first() {
             return (key.clone(), first.clone());
         }
-        if let Some((key, entry)) = catalog.iter().find(|(_, e)| e.info.user_selectable) {
-            tracing::warn!("no auth-visible selectable model; using first selectable entry");
+        if let Some((key, entry)) = addressable.first() {
+            tracing::warn!("no picker-visible model; using first explicitly addressable entry");
             return (key.clone(), entry.clone());
         }
         // Pre-catalog/degenerate only: nothing selectable. Set the bundled
@@ -1719,19 +3664,22 @@ pub(crate) fn resolve_default_model(
             (key, first, config::ConfigSource::Default)
         }
         Some(pref) => {
-            let found = visible
+            let is_explicit = matches!(
+                pref.source,
+                config::ConfigSource::Cli | config::ConfigSource::Env
+            ) || (matches!(pref.source, config::ConfigSource::Config)
+                && !cfg.models.default_is_campaign_driven);
+            // Backend `hide` means "omit from picker", not "unusable". Honor
+            // it for an explicit CLI/env/config selection while keeping
+            // remote and campaign defaults picker-visible only.
+            let candidates = if is_explicit { &addressable } else { &visible };
+            let found = candidates
                 .get_key_value(&pref.value)
-                .or_else(|| visible.iter().find(|(_, m)| m.model == pref.value));
+                .or_else(|| candidates.iter().find(|(_, m)| m.model == pref.value));
 
             if let Some((key, entry)) = found {
                 (key.clone(), entry.clone(), pref.source)
             } else {
-                let is_explicit = matches!(
-                    pref.source,
-                    config::ConfigSource::Cli
-                        | config::ConfigSource::Env
-                        | config::ConfigSource::Config
-                );
                 if is_explicit {
                     tracing::warn!(
                         model_id = %pref.value, source = %pref.source,
@@ -1780,7 +3728,7 @@ pub fn available_models(
 ) -> IndexMap<acp::ModelId, acp::ModelInfo> {
     let visible: IndexMap<String, ModelEntry> = catalog
         .iter()
-        .filter(|(_, e)| e.info.visible_for_auth(is_session_auth))
+        .filter(|(_, e)| model_visible_for_auth(&e.info, is_session_auth))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     config::to_acp_model_info(&visible)
@@ -1833,7 +3781,32 @@ pub fn resolve_model_catalog(
     cfg: &config::Config,
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
+    resolve_combined_model_catalog(cfg, prefetched, IndexMap::new())
+}
+
+/// Resolve xAI/custom models first, then merge the independent authenticated
+/// Codex catalog and apply one common visibility/allowlist/effort policy pass.
+/// Codex entries are namespaced and provider-authoritative, so a custom model
+/// cannot silently turn a ChatGPT entitlement into static API-key traffic.
+fn resolve_combined_model_catalog(
+    cfg: &config::Config,
+    prefetched: Option<IndexMap<String, ModelEntry>>,
+    codex_models: IndexMap<String, ModelEntry>,
+) -> IndexMap<String, ModelEntry> {
     let mut catalog: IndexMap<String, ModelEntry> = config::resolve_model_list(cfg, prefetched);
+    // Subscription models are provider-authoritative. Never let a static
+    // custom-model entry impersonate an entitlement or survive logout.
+    catalog.retain(|_, entry| entry.info.provider != ProviderId::OpenAiCodex);
+    catalog.extend(codex_models);
+
+    let fast_mode_enabled = cfg.features.fast_mode.unwrap_or(true);
+    for entry in catalog
+        .values_mut()
+        .filter(|entry| entry.info.provider == ProviderId::OpenAiCodex)
+    {
+        entry.info.service_tier =
+            resolve_model_service_tier(&entry.info, cfg.service_tier.as_deref(), fast_mode_enabled);
+    }
 
     if let Ok(Some(disabled)) = ModelGlobSet::compile(cfg.models.disabled_models.as_ref()) {
         let before = catalog.len();
@@ -1846,14 +3819,12 @@ pub fn resolve_model_catalog(
 
     // None/empty allowlist = allow all.
     match ModelGlobSet::compile(cfg.models.allowed_models.as_ref()) {
-        Ok(None) => {
-            for entry in catalog.values_mut() {
-                entry.info.user_selectable = true;
-            }
-        }
+        // Preserve provider-level addressability. In particular Codex
+        // visibility `none` must not be promoted by an absent allowlist.
+        Ok(None) => {}
         Ok(Some(allowed)) => {
             for (key, entry) in catalog.iter_mut() {
-                entry.info.user_selectable = allowed.matches(key, &entry.model);
+                entry.info.user_selectable &= allowed.matches(key, &entry.model);
             }
         }
         Err(bad) => {
@@ -1872,14 +3843,38 @@ pub fn resolve_model_catalog(
         }
     }
 
-    // Persisted default first; CLI override below wins when set.
-    // Only apply if the model supports reasoning effort.
+    // A direct per-model override may independently replace the scalar default
+    // and the advertised menu. Reconcile that pair before any global override
+    // is applied so a stale value (for example Luna + ultra) can never reach a
+    // sampler config. Prefer the model-advertised default, then its first menu
+    // entry; legacy models without a menu fall back to omission.
+    for entry in catalog.values_mut() {
+        let Some(configured) = entry.info.reasoning_effort else {
+            continue;
+        };
+        match resolve_model_reasoning_effort(&entry.info, configured) {
+            Some(effective) => entry.info.reasoning_effort = Some(effective),
+            None => {
+                entry.info.reasoning_effort = advertised_default_reasoning_effort(&entry.info);
+                tracing::warn!(
+                    model = %entry.info.model,
+                    rejected_effort = ?configured,
+                    fallback_effort = ?entry.info.reasoning_effort,
+                    "configured reasoning effort is not advertised by model; using catalog default"
+                );
+            }
+        }
+    }
+
+    // Persisted default first; CLI override below wins when set. A support
+    // boolean is not sufficient because dynamic catalogs advertise a distinct
+    // menu for each model.
     if let Some(effort) = cfg.models.default_reasoning_effort
         && let Some(default_id) = cfg.models.default.as_deref()
         && let Some(entry) = catalog.get_mut(default_id)
-        && entry.info.supports_reasoning_effort
+        && let Some(effective) = resolve_model_reasoning_effort(&entry.info, effort)
     {
-        entry.info.reasoning_effort = Some(effort);
+        entry.info.reasoning_effort = Some(effective);
     }
 
     // Skip non-reasoning models so we don't send the field to providers that reject it.
@@ -1887,8 +3882,8 @@ pub fn resolve_model_catalog(
     // must not stamp `none` onto grok-4.5, which only offers low/medium/high).
     if let Some(effort) = cfg.reasoning_effort_override {
         for entry in catalog.values_mut() {
-            if model_offers_reasoning_effort(&entry.info, effort) {
-                entry.info.reasoning_effort = Some(effort);
+            if let Some(effective) = resolve_model_reasoning_effort(&entry.info, effort) {
+                entry.info.reasoning_effort = Some(effective);
             }
         }
     }
@@ -1901,21 +3896,84 @@ pub fn resolve_model_catalog(
 /// Uses the server `reasoning_efforts` menu when present; otherwise the
 /// built-in low/medium/high/xhigh set (same as the pager legacy menu — no
 /// `none`/`minimal`).
-fn model_offers_reasoning_effort(info: &config::ModelInfo, effort: ReasoningEffort) -> bool {
+fn model_info_offers_reasoning_effort(info: &config::ModelInfo, effort: ReasoningEffort) -> bool {
+    resolve_model_reasoning_effort(info, effort).is_some()
+}
+
+/// Return the effective effort accepted by `info`. Codex owns distinct Max
+/// and Ultra tiers. Everywhere else, the historical Grok Build `max` alias
+/// remains exactly equivalent to Xhigh, including custom providers.
+fn resolve_model_reasoning_effort(
+    info: &config::ModelInfo,
+    effort: ReasoningEffort,
+) -> Option<ReasoningEffort> {
     if !info.supports_reasoning_effort {
-        return false;
+        return None;
     }
+    let effective = if info.provider != ProviderId::OpenAiCodex && effort == ReasoningEffort::Max {
+        ReasoningEffort::Xhigh
+    } else {
+        effort
+    };
     if info.reasoning_efforts.is_empty() {
         matches!(
-            effort,
+            effective,
             ReasoningEffort::Low
                 | ReasoningEffort::Medium
                 | ReasoningEffort::High
                 | ReasoningEffort::Xhigh
         )
+        .then_some(effective)
     } else {
-        info.reasoning_efforts.iter().any(|opt| opt.value == effort)
+        info.reasoning_efforts
+            .iter()
+            .any(|opt| opt.value == effective)
+            .then_some(effective)
     }
+}
+
+fn advertised_default_reasoning_effort(info: &config::ModelInfo) -> Option<ReasoningEffort> {
+    info.reasoning_efforts
+        .iter()
+        .find(|option| option.default)
+        .or_else(|| info.reasoning_efforts.first())
+        .map(|option| option.value)
+        .and_then(|effort| resolve_model_reasoning_effort(info, effort))
+}
+
+fn normalize_service_tier_alias(value: &str) -> &str {
+    if value.eq_ignore_ascii_case("fast") {
+        xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER
+    } else {
+        value
+    }
+}
+
+fn resolve_model_service_tier(
+    info: &config::ModelInfo,
+    configured: Option<&str>,
+    fast_mode_enabled: bool,
+) -> Option<String> {
+    if info.provider != ProviderId::OpenAiCodex || !fast_mode_enabled {
+        return None;
+    }
+
+    if let Some(configured) = configured {
+        let configured = normalize_service_tier_alias(configured.trim());
+        if configured == xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER {
+            return Some(configured.to_owned());
+        }
+        return info
+            .service_tiers
+            .iter()
+            .any(|tier| tier.id == configured)
+            .then(|| configured.to_owned());
+    }
+
+    // Keep Fast mode opt-in. The catalog default is capability metadata and must
+    // not silently turn on the higher-usage priority tier for a user who did not
+    // select a service tier.
+    None
 }
 
 /// True when an active `allowed_models` allowlist leaves no selectable model.
@@ -1967,14 +4025,28 @@ pub(crate) fn validate_selectable(
     Ok(())
 }
 
-/// Async wrapper around `prefetch_models_blocking`.
-pub(crate) async fn fetch_models_async(
+/// Network-only xAI catalog fetch. Runtime `Online` refreshes must not consult
+/// or persist the cache before their generation/auth-origin snapshot is
+/// validated by `ModelsManager`; startup retains the cache-first helper above.
+async fn fetch_models_network_async(
     endpoints: config::EndpointsConfig,
     auth: Option<GrokAuth>,
     fetch_auth: ModelFetchAuth,
-) -> Option<IndexMap<String, ModelEntry>> {
+) -> Option<XaiNetworkCatalog> {
     tokio::task::spawn_blocking(move || {
-        prefetch_models_blocking(&endpoints, auth.as_ref(), fetch_auth)
+        let FetchModelsResult { models, etag } =
+            fetch_models_blocking(&endpoints, auth.as_ref(), fetch_auth).ok()?;
+        if models.is_empty() {
+            tracing::warn!("Models endpoint returned empty list");
+            return None;
+        }
+        let api_base_url_override = match fetch_auth {
+            ModelFetchAuth::ApiKey => Some(endpoints.xai_api_base_url.clone()),
+            _ => None,
+        };
+        let models = build_prefetched_map(models, api_base_url_override);
+        tracing::info!(count = models.len(), etag = ?etag, "Fetched models for runtime refresh");
+        Some(XaiNetworkCatalog { models, etag })
     })
     .await
     .unwrap_or(None)
@@ -2004,6 +4076,560 @@ mod tests {
 
     fn config_from_toml(toml: &str) -> config::Config {
         config::Config::new_from_toml_cfg(&toml::from_str(toml).unwrap()).unwrap()
+    }
+
+    fn gpt_56_codex_catalog() -> IndexMap<String, ModelEntry> {
+        use crate::remote::{
+            CodexCatalogModel, CodexModelCatalog, CodexModelServiceTier, CodexReasoningEffortPreset,
+        };
+
+        let model = |slug: &str, default: &str, efforts: &[&str]| CodexCatalogModel {
+            id: format!("openai-codex/{slug}"),
+            slug: slug.to_owned(),
+            display_name: slug.to_owned(),
+            default_reasoning_level: Some(default.to_owned()),
+            supported_reasoning_levels: efforts
+                .iter()
+                .map(|effort| CodexReasoningEffortPreset {
+                    effort: (*effort).to_owned(),
+                    description: format!("{effort} reasoning"),
+                })
+                .collect(),
+            visibility: Some("list".to_owned()),
+            supported_in_api: true,
+            context_window: Some(372_000),
+            max_context_window: Some(372_000),
+            input_modalities: vec!["text".to_owned(), "image".to_owned()],
+            use_responses_lite: true,
+            multi_agent_version: Some(serde_json::json!("v2")),
+            service_tiers: vec![CodexModelServiceTier {
+                id: xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER.to_owned(),
+                name: "Fast".to_owned(),
+                description: "1.5x speed, increased usage".to_owned(),
+            }],
+            ..Default::default()
+        };
+        let through_ultra = ["low", "medium", "high", "xhigh", "max", "ultra"];
+        let through_max = ["low", "medium", "high", "xhigh", "max"];
+        map_openai_codex_catalog(CodexModelCatalog {
+            models: vec![
+                model("gpt-5.6-sol", "low", &through_ultra),
+                model("gpt-5.6-terra", "medium", &through_ultra),
+                model("gpt-5.6-luna", "medium", &through_max),
+            ],
+        })
+    }
+
+    #[test]
+    fn codex_fast_alias_is_applied_only_when_catalog_and_feature_allow_it() {
+        let mut catalog = gpt_56_codex_catalog();
+        let unsupported_id = "openai-codex/gpt-5.6-no-fast";
+        let mut unsupported = catalog["openai-codex/gpt-5.6-luna"].clone();
+        unsupported.info.id = Some(unsupported_id.to_owned());
+        unsupported.info.model = "gpt-5.6-no-fast".to_owned();
+        unsupported.info.service_tiers.clear();
+        unsupported.info.default_service_tier = None;
+        catalog.insert(unsupported_id.to_owned(), unsupported);
+
+        let mut cfg = config_from_toml(
+            r#"
+            service_tier = "fast"
+
+            [features]
+            fast_mode = true
+            "#,
+        );
+        let resolved = resolve_combined_model_catalog(&cfg, None, catalog.clone());
+        assert_eq!(
+            resolved["openai-codex/gpt-5.6-luna"]
+                .info
+                .service_tier
+                .as_deref(),
+            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER),
+        );
+        assert_eq!(resolved[unsupported_id].info.service_tier, None);
+
+        cfg.features.fast_mode = Some(false);
+        let disabled = resolve_combined_model_catalog(&cfg, None, catalog);
+        assert!(
+            disabled
+                .values()
+                .filter(|entry| entry.info.provider == ProviderId::OpenAiCodex)
+                .all(|entry| entry.info.service_tier.is_none())
+        );
+    }
+
+    #[test]
+    fn codex_standard_sentinel_overrides_catalog_default_without_auto_enabling_fast() {
+        let mut catalog = gpt_56_codex_catalog();
+        catalog
+            .get_mut("openai-codex/gpt-5.6-luna")
+            .unwrap()
+            .info
+            .default_service_tier =
+            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER.to_owned());
+
+        let defaulted =
+            resolve_combined_model_catalog(&config::Config::default(), None, catalog.clone());
+        assert_eq!(
+            defaulted["openai-codex/gpt-5.6-luna"].info.service_tier, None,
+            "an advertised catalog default must not silently opt the user into Fast",
+        );
+
+        let cfg = config::Config {
+            service_tier: Some("default".to_owned()),
+            ..Default::default()
+        };
+        let standard = resolve_combined_model_catalog(&cfg, None, catalog);
+        assert_eq!(
+            standard["openai-codex/gpt-5.6-luna"]
+                .info
+                .service_tier
+                .as_deref(),
+            Some(xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER),
+            "explicit Standard must override a catalog Fast default",
+        );
+    }
+
+    #[test]
+    fn codex_service_tier_manager_resolution_is_provider_qualified() {
+        let manager = manager_with_catalog(gpt_56_codex_catalog());
+        let fast = manager
+            .fast_service_tier_for_provider(ProviderId::OpenAiCodex, "gpt-5.6-luna")
+            .expect("Luna advertises Fast in this catalog fixture");
+        assert_eq!(
+            fast.id,
+            xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER
+        );
+        assert_eq!(
+            manager.resolve_service_tier_for_provider(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-luna",
+                "fast",
+            ),
+            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER.to_owned()),
+        );
+        assert_eq!(
+            manager.resolve_service_tier_for_provider(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-luna",
+                "default",
+            ),
+            Some(xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER.to_owned()),
+        );
+        assert_eq!(
+            manager.resolve_service_tier_for_provider(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-luna",
+                "unadvertised",
+            ),
+            None,
+        );
+        assert!(
+            manager
+                .fast_service_tier_for_provider(ProviderId::Xai, "gpt-5.6-luna")
+                .is_none()
+        );
+
+        let mut disabled_config = config::Config::default();
+        disabled_config.features.fast_mode = Some(false);
+        let disabled = manager_with_catalog_and_config(gpt_56_codex_catalog(), disabled_config);
+        assert!(!disabled.fast_mode_enabled());
+        assert!(
+            disabled
+                .fast_service_tier_for_provider(ProviderId::OpenAiCodex, "gpt-5.6-luna")
+                .is_none()
+        );
+        assert_eq!(
+            disabled.resolve_service_tier_for_provider(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-luna",
+                "fast",
+            ),
+            None,
+            "the feature kill switch must reject a restored Fast selection",
+        );
+    }
+
+    fn manager_with_catalog(catalog: IndexMap<String, ModelEntry>) -> ModelsManager {
+        manager_with_catalog_and_config(catalog, config::Config::default())
+    }
+
+    fn manager_with_catalog_and_config(
+        catalog: IndexMap<String, ModelEntry>,
+        cfg: config::Config,
+    ) -> ModelsManager {
+        let tmp = std::env::temp_dir().join("grok-test-models-manager-gpt-56");
+        ModelsManager::new(
+            None,
+            catalog,
+            acp::ModelId::new("openai-codex/gpt-5.6-luna"),
+            Arc::new(AuthManager::new(&tmp, GrokComConfig::default())),
+            cfg,
+        )
+    }
+
+    #[test]
+    fn gpt_56_effort_policy_matches_each_dynamic_catalog_menu() {
+        let catalog = gpt_56_codex_catalog();
+        for (id, expected_default) in [
+            ("openai-codex/gpt-5.6-sol", ReasoningEffort::Low),
+            ("openai-codex/gpt-5.6-terra", ReasoningEffort::Medium),
+            ("openai-codex/gpt-5.6-luna", ReasoningEffort::Medium),
+        ] {
+            let info = &catalog[id].info;
+            assert_eq!(info.context_window.get(), 372_000);
+            assert_eq!(info.reasoning_effort, Some(expected_default));
+            assert_eq!(info.provider, ProviderId::OpenAiCodex);
+            assert!(info.supports_image_input);
+            assert_eq!(
+                info.extra_headers
+                    .get(xai_grok_sampling_types::OPENAI_CODEX_RESPONSES_LITE_HEADER)
+                    .map(String::as_str),
+                Some("true")
+            );
+        }
+        let manager = manager_with_catalog(catalog);
+        let through_ultra = [
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::Xhigh,
+            ReasoningEffort::Max,
+            ReasoningEffort::Ultra,
+        ];
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra"] {
+            for effort in through_ultra {
+                assert!(
+                    manager.model_offers_reasoning_effort(model, effort),
+                    "{model} should offer {effort} by routing slug"
+                );
+                assert!(
+                    manager
+                        .model_offers_reasoning_effort(&format!("openai-codex/{model}"), effort,),
+                    "{model} should offer {effort} by catalog id"
+                );
+            }
+        }
+
+        for effort in through_ultra
+            .into_iter()
+            .filter(|effort| *effort != ReasoningEffort::Ultra)
+        {
+            assert!(manager.model_offers_reasoning_effort("gpt-5.6-luna", effort));
+        }
+        assert!(!manager.model_offers_reasoning_effort("gpt-5.6-luna", ReasoningEffort::Ultra,));
+        assert_eq!(
+            manager.model_default_reasoning_effort("gpt-5.6-luna"),
+            Some(ReasoningEffort::Medium),
+        );
+    }
+
+    #[test]
+    fn luna_ultra_config_reconciles_to_advertised_medium_default() {
+        let mut prefetched = gpt_56_codex_catalog();
+        prefetched
+            .get_mut("openai-codex/gpt-5.6-luna")
+            .unwrap()
+            .info
+            .reasoning_effort = Some(ReasoningEffort::Ultra);
+        let mut cfg = config::Config::default();
+        cfg.models.default = Some("openai-codex/gpt-5.6-luna".to_owned());
+        cfg.models.default_reasoning_effort = Some(ReasoningEffort::Ultra);
+
+        let resolved = resolve_combined_model_catalog(&cfg, None, prefetched);
+        assert_eq!(
+            resolved["openai-codex/gpt-5.6-luna"].info.reasoning_effort,
+            Some(ReasoningEffort::Medium),
+            "neither a direct scalar override nor persisted default may force Luna to ultra",
+        );
+    }
+
+    #[test]
+    fn codex_v2_ultra_activates_grok_native_proactive_delegation_only_when_offered() {
+        let manager = manager_with_catalog(gpt_56_codex_catalog());
+
+        let ultra = manager
+            .codex_multi_agent_mode_instruction(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-sol",
+                Some(ReasoningEffort::Ultra),
+            )
+            .unwrap();
+        assert!(ultra.contains("enabled for this turn"));
+        assert!(ultra.contains("existing tool, permission, nesting, and session rules"));
+
+        let max = manager
+            .codex_multi_agent_mode_instruction(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-sol",
+                Some(ReasoningEffort::Max),
+            )
+            .unwrap();
+        assert!(max.contains("disabled for this turn"));
+
+        let luna_stale_ultra = manager
+            .codex_multi_agent_mode_instruction(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-luna",
+                Some(ReasoningEffort::Ultra),
+            )
+            .unwrap();
+        assert!(luna_stale_ultra.contains("disabled for this turn"));
+        assert!(
+            manager
+                .codex_multi_agent_mode_instruction(
+                    ProviderId::Xai,
+                    "gpt-5.6-sol",
+                    Some(ReasoningEffort::Ultra),
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn codex_non_v2_catalog_does_not_inject_multi_agent_policy() {
+        let mut catalog = gpt_56_codex_catalog();
+        catalog
+            .get_mut("openai-codex/gpt-5.6-sol")
+            .unwrap()
+            .info
+            .multi_agent_version = Some("v1".to_owned());
+        let manager = manager_with_catalog(catalog);
+        assert!(
+            manager
+                .codex_multi_agent_mode_instruction(
+                    ProviderId::OpenAiCodex,
+                    "gpt-5.6-sol",
+                    Some(ReasoningEffort::Ultra),
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn provider_qualified_effort_lookup_ignores_same_slug_xai_entry() {
+        let mut catalog = gpt_56_codex_catalog();
+        let mut xai = catalog["openai-codex/gpt-5.6-sol"].clone();
+        xai.info.id = Some("xai-shadow".to_owned());
+        xai.info.provider = ProviderId::Xai;
+        xai.info
+            .reasoning_efforts
+            .retain(|option| option.value == ReasoningEffort::Low);
+        catalog.insert("xai-shadow".to_owned(), xai);
+        let manager = manager_with_catalog(catalog);
+
+        assert!(manager.model_offers_reasoning_effort_for_provider(
+            ProviderId::OpenAiCodex,
+            "gpt-5.6-sol",
+            ReasoningEffort::Ultra,
+        ));
+        assert!(!manager.model_offers_reasoning_effort_for_provider(
+            ProviderId::Xai,
+            "gpt-5.6-sol",
+            ReasoningEffort::Ultra,
+        ));
+    }
+
+    #[test]
+    fn codex_mapping_preserves_api_flag_lite_marker_and_context_semantics() {
+        use crate::remote::{CodexCatalogModel, CodexModelCatalog};
+
+        let mapped = map_openai_codex_catalog(CodexModelCatalog {
+            models: vec![CodexCatalogModel {
+                id: "openai-codex/provider-only".to_owned(),
+                slug: "provider-only".to_owned(),
+                display_name: "Provider only".to_owned(),
+                visibility: Some("list".to_owned()),
+                supported_in_api: false,
+                context_window: Some(123_000),
+                max_context_window: Some(456_000),
+                auto_compact_token_limit: Some(100_000),
+                use_responses_lite: true,
+                ..Default::default()
+            }],
+        });
+        let info = &mapped["openai-codex/provider-only"].info;
+        assert_eq!(info.context_window.get(), 123_000);
+        assert_eq!(info.auto_compact_threshold_percent, Some(81));
+        assert!(!info.supported_in_api);
+        assert!(model_visible_for_auth(info, false));
+        assert_eq!(
+            info.extra_headers
+                .get(xai_grok_sampling_types::OPENAI_CODEX_RESPONSES_LITE_HEADER)
+                .map(String::as_str),
+            Some("true")
+        );
+
+        let fallback = map_openai_codex_catalog(CodexModelCatalog {
+            models: vec![CodexCatalogModel {
+                id: "openai-codex/no-window".to_owned(),
+                slug: "no-window".to_owned(),
+                visibility: Some("list".to_owned()),
+                ..Default::default()
+            }],
+        });
+        assert_eq!(
+            fallback["openai-codex/no-window"].info.context_window.get(),
+            crate::remote::DEFAULT_CONTEXT_WINDOW
+        );
+    }
+
+    #[test]
+    fn codex_catalog_and_etag_survive_xai_identity_clear() {
+        use crate::remote::{CodexCatalogModel, CodexModelCatalog};
+
+        let manager = test_manager();
+        *manager.inner.etag.write() = Some("xai-etag".to_owned());
+        manager.apply_openai_codex_catalog(
+            CodexModelCatalog {
+                models: vec![CodexCatalogModel {
+                    id: "openai-codex/account-model".to_owned(),
+                    slug: "account-model".to_owned(),
+                    display_name: "Account model".to_owned(),
+                    visibility: Some("list".to_owned()),
+                    supported_in_api: true,
+                    context_window: Some(372_000),
+                    ..Default::default()
+                }],
+            },
+            Some("codex-etag".to_owned()),
+            CodexCatalogIdentity {
+                credential_id: "credential-a".to_owned(),
+                account_id: "account-a".to_owned(),
+                user_id: Some("user-a".to_owned()),
+                is_fedramp: false,
+            },
+            true,
+        );
+
+        assert_eq!(manager.inner.etag.read().as_deref(), Some("xai-etag"));
+        assert_eq!(
+            manager.inner.codex_etag.read().as_deref(),
+            Some("codex-etag")
+        );
+        assert!(manager.models().contains_key("openai-codex/account-model"));
+
+        manager.clear();
+        assert_eq!(manager.inner.etag.read().as_deref(), None);
+        assert_eq!(
+            manager.inner.codex_etag.read().as_deref(),
+            Some("codex-etag")
+        );
+        assert!(manager.models().contains_key("openai-codex/account-model"));
+        assert!(manager.has_fetched_real_catalog());
+    }
+
+    #[test]
+    fn codex_catalog_is_cleared_on_account_switch_or_logout_but_xai_survives() {
+        use crate::remote::{CodexCatalogModel, CodexModelCatalog};
+
+        let manager = test_manager();
+        let mut xai_models = IndexMap::new();
+        xai_models.insert(
+            "xai-model".to_owned(),
+            ModelEntry::fallback("xai-model", &config::EndpointsConfig::default()),
+        );
+        *manager.inner.prefetched.write() = Some(xai_models.clone());
+        manager.rebuild(&config::Config::default(), Some(xai_models));
+
+        let account_a = CodexCatalogIdentity {
+            credential_id: "credential-a".to_owned(),
+            account_id: "account-a".to_owned(),
+            user_id: Some("user-a".to_owned()),
+            is_fedramp: false,
+        };
+        let account_b = CodexCatalogIdentity {
+            credential_id: "credential-b".to_owned(),
+            account_id: "account-b".to_owned(),
+            user_id: Some("user-b".to_owned()),
+            is_fedramp: false,
+        };
+        let catalog = || CodexModelCatalog {
+            models: vec![CodexCatalogModel {
+                id: "openai-codex/account-model".to_owned(),
+                slug: "account-model".to_owned(),
+                visibility: Some("list".to_owned()),
+                ..Default::default()
+            }],
+        };
+
+        manager.apply_openai_codex_catalog(
+            catalog(),
+            Some("codex-etag".to_owned()),
+            account_a.clone(),
+            true,
+        );
+        assert!(manager.models().contains_key("openai-codex/account-model"));
+        assert!(
+            !manager.reconcile_openai_codex_identity(Some(&account_a)),
+            "a token revision for the same credential/account must retain the catalog"
+        );
+
+        assert!(manager.reconcile_openai_codex_identity(Some(&account_b)));
+        assert!(!manager.models().contains_key("openai-codex/account-model"));
+        assert!(manager.models().contains_key("xai-model"));
+        assert!(manager.inner.codex_etag.read().is_none());
+        assert!(manager.inner.codex_catalog_identity.read().is_none());
+
+        manager.apply_openai_codex_catalog(catalog(), None, account_b, true);
+        assert!(manager.reconcile_openai_codex_identity(None));
+        assert!(!manager.models().contains_key("openai-codex/account-model"));
+        assert!(manager.models().contains_key("xai-model"));
+    }
+
+    #[test]
+    fn codex_visibility_hide_is_explicitly_addressable_but_none_is_not() {
+        use crate::remote::{CodexCatalogModel, CodexModelCatalog};
+
+        let mapped = map_openai_codex_catalog(CodexModelCatalog {
+            models: vec![
+                CodexCatalogModel {
+                    id: "openai-codex/visible".to_owned(),
+                    slug: "visible".to_owned(),
+                    visibility: Some("list".to_owned()),
+                    ..Default::default()
+                },
+                CodexCatalogModel {
+                    id: "openai-codex/hidden".to_owned(),
+                    slug: "hidden".to_owned(),
+                    visibility: Some("hide".to_owned()),
+                    ..Default::default()
+                },
+                CodexCatalogModel {
+                    id: "openai-codex/none".to_owned(),
+                    slug: "none".to_owned(),
+                    visibility: Some("none".to_owned()),
+                    ..Default::default()
+                },
+            ],
+        });
+        assert!(mapped["openai-codex/hidden"].info.hidden);
+        assert!(mapped["openai-codex/hidden"].info.user_selectable);
+        assert!(mapped["openai-codex/none"].info.hidden);
+        assert!(!mapped["openai-codex/none"].info.user_selectable);
+
+        let mut cfg = config::Config::default();
+        cfg.models.default = Some("openai-codex/hidden".to_owned());
+        let resolved = resolve_combined_model_catalog(&cfg, None, mapped);
+        let (key, _, source) = resolve_default_model(&cfg, &resolved, false);
+        assert_eq!(key, "openai-codex/hidden");
+        assert_eq!(source, config::ConfigSource::Config);
+        let picker = available_models(&resolved, false);
+        assert!(picker.contains_key(&acp::ModelId::new("openai-codex/visible")));
+        assert!(!picker.contains_key(&acp::ModelId::new("openai-codex/hidden")));
+        assert!(!picker.contains_key(&acp::ModelId::new("openai-codex/none")));
+    }
+
+    #[test]
+    fn static_custom_entry_cannot_impersonate_codex_entitlement() {
+        let mut static_models = IndexMap::new();
+        let mut entry = ModelEntry::fallback("gpt-static", &config::EndpointsConfig::default());
+        entry.info.provider = ProviderId::OpenAiCodex;
+        static_models.insert("openai-codex/gpt-static".to_owned(), entry);
+
+        let resolved = resolve_model_catalog(&config::Config::default(), Some(static_models));
+        assert!(!resolved.contains_key("openai-codex/gpt-static"));
     }
 
     #[test]
@@ -2291,6 +4917,54 @@ mod tests {
         assert_eq!(
             catalog["plain-model"].info.reasoning_effort, None,
             "non-reasoning default model must NOT be stamped with persisted effort",
+        );
+    }
+
+    #[test]
+    fn legacy_max_alias_resolves_to_xhigh_without_collapsing_codex_max() {
+        let mut cfg = config::Config::default();
+        cfg.models.default = Some("reasoning-model".to_owned());
+        cfg.models.default_reasoning_effort = Some(ReasoningEffort::Max);
+
+        let mut prefetched = IndexMap::new();
+        let mut legacy = ModelEntry {
+            info: config::ModelInfo::fallback("reasoning-model"),
+            api_key: None,
+            env_key: None,
+            api_base_url: None,
+        };
+        legacy.info.provider = ProviderId::Xai;
+        legacy.info.supports_reasoning_effort = true;
+        prefetched.insert("reasoning-model".to_owned(), legacy);
+
+        let catalog = resolve_model_catalog(&cfg, Some(prefetched));
+        assert_eq!(
+            catalog["reasoning-model"].info.reasoning_effort,
+            Some(ReasoningEffort::Xhigh),
+            "the pre-Codex max spelling must retain its xhigh meaning",
+        );
+
+        let auth_dir = std::env::temp_dir().join("grok-test-models-manager-legacy-max");
+        let manager = ModelsManager::new(
+            None,
+            catalog,
+            acp::ModelId::new("reasoning-model"),
+            Arc::new(AuthManager::new(&auth_dir, GrokComConfig::default())),
+            cfg,
+        );
+        assert_eq!(
+            manager.resolve_reasoning_effort_for_model("reasoning-model", ReasoningEffort::Max,),
+            Some(ReasoningEffort::Xhigh),
+        );
+
+        let codex = manager_with_catalog(gpt_56_codex_catalog());
+        assert_eq!(
+            codex.resolve_reasoning_effort_for_model(
+                "openai-codex/gpt-5.6-sol",
+                ReasoningEffort::Max,
+            ),
+            Some(ReasoningEffort::Max),
+            "an explicitly advertised Codex Max tier must remain distinct",
         );
     }
 
@@ -2724,6 +5398,10 @@ mod tests {
         }
     }
 
+    fn test_cache_scope(manager: &ModelsManager) -> Option<String> {
+        manager.xai_catalog_snapshot().credential_scope
+    }
+
     /// An external process persisting a fresh catalog must be picked up:
     /// catalog swapped, etag adopted, real-catalog flag set.
     #[test]
@@ -2738,6 +5416,7 @@ mod tests {
             Some("etag-ext"),
             auth_method,
             &mgr.cache_origin(),
+            test_cache_scope(&mgr).as_deref(),
         );
 
         mgr.reload_from_cache_manager(&cache);
@@ -2777,6 +5456,7 @@ mod tests {
             Some("etag-keep"),
             auth_method,
             &mgr.cache_origin(),
+            test_cache_scope(&mgr).as_deref(),
         );
 
         mgr.reload_from_cache_manager(&cache);
@@ -2808,6 +5488,7 @@ mod tests {
             Some("etag-first"),
             auth_method,
             &mgr.cache_origin(),
+            test_cache_scope(&mgr).as_deref(),
         );
 
         mgr.reload_from_cache_manager(&cache);
@@ -2840,6 +5521,7 @@ mod tests {
             Some("etag-b"),
             auth_method,
             &mgr.cache_origin(),
+            test_cache_scope(&mgr).as_deref(),
         );
 
         mgr.reload_from_cache_manager(&cache);
@@ -2869,6 +5551,7 @@ mod tests {
             fetched_at: Utc::now() - ChronoDuration::seconds(3600),
             grok_version: Some(xai_grok_version::VERSION.to_string()),
             auth_method: Some(auth_method),
+            credential_scope: test_cache_scope(&mgr),
             origin: Some(mgr.cache_origin()),
             etag: Some("etag-stale".into()),
             models: make_prefetched(&["grok-stale"]),
@@ -2900,11 +5583,32 @@ mod tests {
             Some("etag-x"),
             other,
             &mgr.cache_origin(),
+            test_cache_scope(&mgr).as_deref(),
         );
 
         mgr.reload_from_cache_manager(&cache);
 
         assert!(!mgr.models().contains_key("grok-other-auth"));
+    }
+
+    #[test]
+    fn reload_from_disk_cache_ignores_credential_scope_mismatch() {
+        let mgr = test_manager();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache_manager(tmp.path());
+        let auth_method = mgr.inner.fetch_auth.read().cache_auth_method();
+        cache.persist(
+            &make_prefetched(&["grok-other-account"]),
+            Some("etag-other-account"),
+            auth_method,
+            &mgr.cache_origin(),
+            Some("one-way-scope-for-another-account"),
+        );
+
+        mgr.reload_from_cache_manager(&cache);
+
+        assert!(!mgr.models().contains_key("grok-other-account"));
+        assert!(mgr.inner.etag.read().is_none());
     }
 
     /// A cache persisted by a process pointed at a *different backend* (env
@@ -2924,6 +5628,7 @@ mod tests {
             Some("etag-y"),
             auth_method,
             "http://127.0.0.1:49953/v1/models",
+            test_cache_scope(&mgr).as_deref(),
         );
 
         mgr.reload_from_cache_manager(&cache);
@@ -2945,6 +5650,7 @@ mod tests {
             fetched_at: Utc::now(),
             grok_version: Some(xai_grok_version::VERSION.to_string()),
             auth_method: Some(auth_method),
+            credential_scope: None,
             origin: None,
             etag: Some("etag-legacy".into()),
             models: make_prefetched(&["grok-legacy"]),
@@ -3186,6 +5892,137 @@ mod tests {
         );
     }
 
+    #[test]
+    fn deployment_cache_scope_changes_with_deployment_key_without_session() {
+        let first = config::EndpointsConfig {
+            deployment_key: Some("deploy-a".to_owned()),
+            ..config::EndpointsConfig::default()
+        };
+        let second = config::EndpointsConfig {
+            deployment_key: Some("deploy-b".to_owned()),
+            ..config::EndpointsConfig::default()
+        };
+        let first_scope =
+            xai_catalog_credential_scope(&first, None, ModelFetchAuth::Deployment).unwrap();
+        let second_scope =
+            xai_catalog_credential_scope(&second, None, ModelFetchAuth::Deployment).unwrap();
+        assert_ne!(first_scope, second_scope);
+        assert!(!first_scope.contains("deploy-a"));
+        assert!(!second_scope.contains("deploy-b"));
+    }
+
+    #[test]
+    fn external_cache_scope_changes_with_bearer_even_when_profile_is_carried() {
+        let endpoints = config::EndpointsConfig::default();
+        let mut first = GrokAuth {
+            auth_mode: AuthMode::External,
+            key: "external-bearer-a".to_owned(),
+            user_id: "carried-user".to_owned(),
+            principal_id: Some("carried-principal".to_owned()),
+            team_id: Some("carried-team".to_owned()),
+            ..GrokAuth::default()
+        };
+        let first_scope =
+            xai_catalog_credential_scope(&endpoints, Some(&first), ModelFetchAuth::Session)
+                .unwrap();
+        first.key = "external-bearer-b".to_owned();
+        let second_scope =
+            xai_catalog_credential_scope(&endpoints, Some(&first), ModelFetchAuth::Session)
+                .unwrap();
+
+        assert_ne!(first_scope, second_scope);
+        assert!(!first_scope.contains("external-bearer-a"));
+        assert!(!second_scope.contains("external-bearer-b"));
+    }
+
+    #[test]
+    fn first_party_team_cache_scope_includes_request_user_id() {
+        let endpoints = config::EndpointsConfig::default();
+        let mut first = GrokAuth {
+            auth_mode: AuthMode::Oidc,
+            key: "rotating-access-token".to_owned(),
+            user_id: "team-user-a".to_owned(),
+            principal_type: Some("Team".to_owned()),
+            principal_id: Some("shared-principal".to_owned()),
+            team_id: Some("shared-team".to_owned()),
+            ..GrokAuth::default()
+        };
+        let first_scope =
+            xai_catalog_credential_scope(&endpoints, Some(&first), ModelFetchAuth::Session)
+                .unwrap();
+        first.user_id = "team-user-b".to_owned();
+        let second_scope =
+            xai_catalog_credential_scope(&endpoints, Some(&first), ModelFetchAuth::Session)
+                .unwrap();
+
+        assert_ne!(first_scope, second_scope);
+    }
+
+    #[test]
+    fn first_party_cache_scope_survives_access_token_rotation() {
+        let endpoints = config::EndpointsConfig::default();
+        let mut auth = GrokAuth {
+            auth_mode: AuthMode::Oidc,
+            key: "access-token-a".to_owned(),
+            user_id: "stable-user".to_owned(),
+            principal_id: Some("stable-principal".to_owned()),
+            ..GrokAuth::default()
+        };
+        let first_scope =
+            xai_catalog_credential_scope(&endpoints, Some(&auth), ModelFetchAuth::Session).unwrap();
+        auth.key = "access-token-b".to_owned();
+        let second_scope =
+            xai_catalog_credential_scope(&endpoints, Some(&auth), ModelFetchAuth::Session).unwrap();
+
+        assert_eq!(first_scope, second_scope);
+    }
+
+    #[test]
+    fn network_prepare_clears_external_account_a_before_account_b_fetch() {
+        let home = tempfile::tempdir().unwrap();
+        let auth_manager = Arc::new(AuthManager::new(home.path(), GrokComConfig::default()));
+        let auth_a = GrokAuth {
+            auth_mode: AuthMode::External,
+            key: "external-a".to_owned(),
+            user_id: "carried-user".to_owned(),
+            principal_id: Some("carried-principal".to_owned()),
+            ..GrokAuth::default()
+        };
+        auth_manager.hot_swap(auth_a.clone());
+        let manager = ModelsManager::new(
+            Some(IndexMap::new()),
+            IndexMap::new(),
+            acp::ModelId::new("default"),
+            Arc::clone(&auth_manager),
+            config::Config::default(),
+        );
+        let scope_a = xai_catalog_credential_scope(
+            &config::EndpointsConfig::default(),
+            Some(&auth_a),
+            ModelFetchAuth::Session,
+        );
+        *manager.inner.has_xai_catalog.write() = true;
+        *manager.inner.xai_catalog_credential_scope.write() = scope_a.clone();
+
+        let launch = manager.begin_xai_catalog_operation();
+        let auth_b = GrokAuth {
+            key: "external-b".to_owned(),
+            ..auth_a
+        };
+        let (prepared, cleared) = manager
+            .prepare_xai_network_operation(&launch, Some(&auth_b))
+            .expect("latest operation should remain current");
+
+        assert!(cleared);
+        assert!(!*manager.inner.has_xai_catalog.read());
+        assert_eq!(*manager.inner.xai_catalog_credential_scope.read(), None);
+        assert_ne!(prepared.credential_scope, scope_a);
+        assert_eq!(
+            prepared.generation,
+            manager.inner.xai_fetch_generation.load(Ordering::Acquire)
+        );
+    }
+
     /// `deployment_key` outranks a stray `XAI_API_KEY`, but session wins over both.
     #[test]
     #[serial]
@@ -3357,6 +6194,7 @@ mod tests {
     ) -> config::ModelEntryConfig {
         config::ModelEntryConfig {
             id: id.map(|s| s.to_owned()),
+            provider: xai_grok_sampling_types::ProviderId::Xai,
             model: model.to_owned(),
             base_url: "https://test.api/v1".to_owned(),
             name: name.map(|n| n.to_owned()),
@@ -3527,7 +6365,9 @@ mod tests {
 
         let available: IndexMap<_, _> = IndexMap::new();
         let persisted = acp::ModelId::new("grok-4.5");
-        assert!(selectable_catalog_key_for_persisted(&models, &available, &persisted).is_none());
+        assert!(
+            selectable_catalog_key_for_persisted(&models, &available, &persisted, true).is_none()
+        );
     }
 
     #[test]
@@ -3550,7 +6390,7 @@ mod tests {
                 .as_ref(),
             "grok-build"
         );
-        let key = selectable_catalog_key_for_persisted(&models, &available, &persisted)
+        let key = selectable_catalog_key_for_persisted(&models, &available, &persisted, true)
             .expect("must resolve to selectable section");
         assert_eq!(key.0.as_ref(), "enterprise-grok-build");
     }
@@ -3567,7 +6407,7 @@ mod tests {
         let available = test_available_keys(&["enterprise-grok-build", "grok-4.3"]);
 
         let persisted = acp::ModelId::new("grok-build");
-        let key = selectable_catalog_key_for_persisted(&models, &available, &persisted)
+        let key = selectable_catalog_key_for_persisted(&models, &available, &persisted, true)
             .expect("slug must resolve to selectable key");
         assert_eq!(key.0.as_ref(), "enterprise-grok-build");
     }
@@ -3583,9 +6423,51 @@ mod tests {
         let available = test_available_keys(&["grok-build", "other"]);
 
         let persisted = acp::ModelId::new("grok-build");
-        let key = selectable_catalog_key_for_persisted(&models, &available, &persisted)
+        let key = selectable_catalog_key_for_persisted(&models, &available, &persisted, true)
             .expect("exact selectable key must win");
         assert_eq!(key.0.as_ref(), "grok-build");
+    }
+
+    #[test]
+    fn provider_scoped_persisted_resolution_ignores_same_slug_xai_entry() {
+        let mut models = IndexMap::new();
+        models.insert("xai-shadow".to_string(), make_model_entry("gpt-5.6-sol"));
+        let mut codex = make_model_entry("gpt-5.6-sol");
+        codex.info.provider = ProviderId::OpenAiCodex;
+        models.insert("openai-codex/gpt-5.6-sol".to_string(), codex);
+        let available = test_available_keys(&["xai-shadow", "openai-codex/gpt-5.6-sol"]);
+
+        let key = selectable_catalog_key_for_persisted_provider(
+            &models,
+            &available,
+            &acp::ModelId::new("gpt-5.6-sol"),
+            true,
+            ProviderId::OpenAiCodex,
+        )
+        .expect("Codex routing slug must remain provider-scoped");
+        assert_eq!(key.0.as_ref(), "openai-codex/gpt-5.6-sol");
+    }
+
+    #[test]
+    fn provider_scoped_fallback_never_crosses_from_codex_to_xai() {
+        let mut models = IndexMap::new();
+        models.insert("grok-4".to_string(), make_model_entry("grok-4"));
+        let mut codex = make_model_entry("gpt-5.6-terra");
+        codex.info.provider = ProviderId::OpenAiCodex;
+        models.insert("openai-codex/gpt-5.6-terra".to_string(), codex);
+
+        let only_xai = test_available_keys(&["grok-4"]);
+        assert!(
+            first_available_catalog_key_for_provider(&models, &only_xai, ProviderId::OpenAiCodex,)
+                .is_none(),
+            "an xAI model must never satisfy a Codex fallback"
+        );
+
+        let both = test_available_keys(&["grok-4", "openai-codex/gpt-5.6-terra"]);
+        let fallback =
+            first_available_catalog_key_for_provider(&models, &both, ProviderId::OpenAiCodex)
+                .expect("entitled Codex fallback must be selected");
+        assert_eq!(fallback.0.as_ref(), "openai-codex/gpt-5.6-terra");
     }
 
     fn test_available_keys(keys: &[&str]) -> IndexMap<acp::ModelId, acp::ModelInfo> {
