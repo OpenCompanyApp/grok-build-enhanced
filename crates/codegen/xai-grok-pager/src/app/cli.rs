@@ -1,6 +1,6 @@
 //! CLI argument parsing for the pager.
 pub use crate::headless::OutputFormat;
-use clap::{ArgAction, Parser, Subcommand, ValueHint};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum, ValueHint};
 use clap_complete::Shell;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -16,9 +16,16 @@ pub enum Command {
         json: bool,
     },
     /// Sign out and clear cached credentials
-    Logout,
+    Logout {
+        /// Authentication provider to sign out from.
+        #[arg(long, value_enum, default_value = "xai")]
+        provider: AuthProviderArg,
+    },
     /// Sign in to Grok
     Login {
+        /// Authentication provider to sign in to.
+        #[arg(long, value_enum, default_value = "xai")]
+        provider: AuthProviderArg,
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
         legacy: bool,
@@ -47,7 +54,11 @@ pub enum Command {
     /// Manage cross-session memory
     Memory(crate::memory_cmd::MemoryArgs),
     /// List available models and exit
-    Models,
+    Models {
+        /// Model provider to query.
+        #[arg(long, value_enum, default_value = "xai")]
+        provider: AuthProviderArg,
+    },
     /// List, search, or restore sessions
     Sessions(crate::sessions_cmd::SessionsArgs),
     /// Fetch and install managed configuration
@@ -136,6 +147,20 @@ See ~/.grok/README.md for more information.
     /// `~/.grok/config.toml` or when the `GROK_AGENT_DASHBOARD=0` env
     /// var is set.
     Dashboard,
+}
+
+/// Provider selected by authentication and model-discovery CLI commands.
+///
+/// The default remains xAI so existing invocations keep their behavior. Codex
+/// subscription credentials are deliberately selected explicitly and live in
+/// a separate authentication scope.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum AuthProviderArg {
+    #[default]
+    #[value(name = "xai")]
+    Xai,
+    #[value(name = "openai-codex", alias = "openai_codex")]
+    OpenAiCodex,
 }
 /// Arguments for the `wrap` subcommand: the command to run, then its args.
 #[derive(Debug, clap::Args, Clone)]
@@ -1107,8 +1132,70 @@ mod tests {
     #[test]
     fn subcommand_takes_precedence_over_positional_prompt() {
         let args = PagerArgs::try_parse_from(["grok", "logout"]).expect("subcommand parses");
-        assert!(matches!(args.command, Some(Command::Logout)));
+        assert!(matches!(
+            args.command,
+            Some(Command::Logout {
+                provider: AuthProviderArg::Xai
+            })
+        ));
         assert!(args.prompt.is_none());
+    }
+    #[test]
+    fn auth_provider_defaults_to_xai() {
+        let login = PagerArgs::try_parse_from(["grok", "login"]).expect("login parses");
+        assert!(matches!(
+            login.command,
+            Some(Command::Login {
+                provider: AuthProviderArg::Xai,
+                device_auth: false,
+                ..
+            })
+        ));
+
+        let models = PagerArgs::try_parse_from(["grok", "models"]).expect("models parses");
+        assert!(matches!(
+            models.command,
+            Some(Command::Models {
+                provider: AuthProviderArg::Xai
+            })
+        ));
+    }
+    #[test]
+    fn openai_codex_provider_parses_for_auth_and_models() {
+        let login = PagerArgs::try_parse_from([
+            "grok",
+            "login",
+            "--provider",
+            "openai-codex",
+            "--device-auth",
+        ])
+        .expect("Codex device login parses");
+        assert!(matches!(
+            login.command,
+            Some(Command::Login {
+                provider: AuthProviderArg::OpenAiCodex,
+                device_auth: true,
+                ..
+            })
+        ));
+
+        let logout = PagerArgs::try_parse_from(["grok", "logout", "--provider", "openai-codex"])
+            .expect("Codex logout parses");
+        assert!(matches!(
+            logout.command,
+            Some(Command::Logout {
+                provider: AuthProviderArg::OpenAiCodex
+            })
+        ));
+
+        let models = PagerArgs::try_parse_from(["grok", "models", "--provider", "openai-codex"])
+            .expect("Codex model listing parses");
+        assert!(matches!(
+            models.command,
+            Some(Command::Models {
+                provider: AuthProviderArg::OpenAiCodex
+            })
+        ));
     }
     #[test]
     fn positional_prompt_conflicts_with_headless_single() {

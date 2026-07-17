@@ -32,6 +32,13 @@ pub(crate) async fn apply(
         .await
         .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
     let model = agent.resolve_model_id(&model_id)?;
+    // Gate provider credentials before any harness/session mutation. Codex
+    // login is independent of the global xAI auth method, so an unauthenticated
+    // selection produces an actionable provider-specific error while existing
+    // xAI refresh state remains intact.
+    agent
+        .ensure_provider_authenticated(model.info().provider)
+        .await?;
     let use_concise = model.info().use_concise;
     let session_default = handle
         .session_default_agent_profile
@@ -115,19 +122,20 @@ pub(crate) async fn apply(
     let mut model_sampling =
         agent.prepare_sampling_config_for_model(&model, handle.origin_client.clone());
     if let Some(eff) = effort_override {
-        if agent
+        if let Some(effective_effort) = agent
             .models_manager
-            .model_supports_reasoning_effort(model_id.0.as_ref())
+            .resolve_reasoning_effort_for_model(model_id.0.as_ref(), eff)
         {
             tracing::info!(
-                session_id = % session_id.0, effort = % eff,
+                session_id = % session_id.0, requested_effort = % eff, effort = %
+                effective_effort,
                 "set_session_model: applying reasoning_effort override from meta"
             );
-            model_sampling.reasoning_effort = Some(eff);
+            model_sampling.reasoning_effort = Some(effective_effort);
         } else {
             tracing::warn!(
                 session_id = % session_id.0, model_id = % model_id.0, effort = % eff,
-                "set_session_model: ignoring reasoning_effort override — model does not support it"
+                "set_session_model: ignoring reasoning_effort override — model does not advertise it"
             );
         }
     }

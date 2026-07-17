@@ -15,7 +15,7 @@
 //!   ignored by generation mismatch.
 
 use super::actions::Effect;
-use super::app_view::{AppView, AuthState};
+use super::app_view::{ActiveView, AppView, AuthState};
 
 /// Default watch cadence. Overridable via the remote settings
 /// `grok_build_settings.subscription_watch_interval_secs` field.
@@ -43,8 +43,24 @@ pub(crate) const SUBSCRIPTION_CHECK_DEBOUNCE: std::time::Duration =
 pub(crate) const GATE_VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl AppView {
+    /// Whether the model selected in the visible session belongs to the
+    /// ChatGPT Codex subscription provider. The welcome screen owns the
+    /// shared model picker; active sessions own a per-session selection.
+    fn active_model_is_openai_codex(&self) -> bool {
+        match self.active_view {
+            ActiveView::Agent(agent_id) => self
+                .agents
+                .get(&agent_id)
+                .is_some_and(|agent| agent.session.models.current_model_is_openai_codex()),
+            ActiveView::Welcome | ActiveView::AgentDashboard => {
+                self.models.current_model_is_openai_codex()
+            }
+        }
+    }
+
     /// Consumer xAI session auth: not an API key, not an enterprise team.
-    /// Subscription gates and the watch only apply to these sessions.
+    /// Subscription gates apply only to these sessions; the periodic watcher
+    /// has an additional active-provider gate below.
     fn is_consumer_session(&self) -> bool {
         matches!(self.auth_state, AuthState::Done)
             && !self.is_api_key_auth
@@ -88,6 +104,7 @@ impl AppView {
     pub fn subscription_watch_wanted(&self) -> bool {
         self.subscription_watch_interval().is_some()
             && self.is_consumer_session()
+            && !self.active_model_is_openai_codex()
             && (self.gate.is_some() || self.may_be_free_tier())
     }
 
@@ -240,7 +257,7 @@ impl AppView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::app_view::tests::test_app;
+    use crate::app::app_view::tests::{test_app, test_app_with_agent};
 
     fn watch_gate() -> xai_grok_shell::auth::GateInfo {
         xai_grok_shell::auth::GateInfo {
@@ -300,6 +317,61 @@ mod tests {
 
         app.auth_state = AuthState::Pending { error: None };
         assert!(!app.subscription_watch_wanted(), "pre-auth never watches");
+    }
+
+    #[test]
+    fn codex_model_never_starts_xai_subscription_watch() {
+        let mut app = test_app();
+        app.models.current = Some(agent_client_protocol::ModelId::new(std::sync::Arc::from(
+            "openai-codex/gpt-5.6-luna",
+        )));
+
+        assert!(
+            !app.subscription_watch_wanted(),
+            "Codex subscription sessions must not poll xAI auth metadata"
+        );
+        assert!(app.fire_subscription_check("watch").is_empty());
+
+        app.models.current = Some(agent_client_protocol::ModelId::new(std::sync::Arc::from(
+            "grok-4.5",
+        )));
+        assert!(
+            app.subscription_watch_wanted(),
+            "switching back to xAI must restore xAI subscription polling"
+        );
+    }
+
+    #[test]
+    fn active_codex_agent_never_starts_xai_subscription_watch() {
+        let mut app = test_app_with_agent();
+        let ActiveView::Agent(agent_id) = app.active_view else {
+            panic!("test fixture must open its agent");
+        };
+        // Keep the welcome/global picker on xAI to prove the watcher resolves
+        // the visible agent's provider rather than stale shared model state.
+        app.models.current = Some(agent_client_protocol::ModelId::new(std::sync::Arc::from(
+            "grok-4.5",
+        )));
+        let agent = app.agents.get_mut(&agent_id).expect("active agent");
+        agent.session.models.current = Some(agent_client_protocol::ModelId::new(
+            std::sync::Arc::from("openai-codex/gpt-5.6-luna"),
+        ));
+
+        assert!(!app.subscription_watch_wanted());
+        assert!(app.fire_subscription_check("watch").is_empty());
+
+        app.agents
+            .get_mut(&agent_id)
+            .expect("active agent")
+            .session
+            .models
+            .current = Some(agent_client_protocol::ModelId::new(std::sync::Arc::from(
+            "grok-4.5",
+        )));
+        assert!(
+            app.subscription_watch_wanted(),
+            "switching the active session back to xAI must restore its watcher"
+        );
     }
 
     #[test]

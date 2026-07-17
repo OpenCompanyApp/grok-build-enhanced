@@ -1,10 +1,11 @@
 //! Data APIs for `grok models`. Clients own display.
 
 use agent_client_protocol as acp;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use xai_acp_lib::{AcpAgentTx, acp_send};
 
 use crate::agent::config::Config as AgentConfig;
+use crate::remote::{CodexCatalogClient, CodexCatalogClientConfig, CodexCatalogModel};
 
 /// Status for the `grok models` banner (display order ≠ sampling priority; see [`AuthStatus::resolve`]).
 #[derive(Debug, PartialEq, Eq)]
@@ -89,6 +90,59 @@ pub async fn list_models(
     Ok(state)
 }
 
+/// Picker-ready model state for the authenticated ChatGPT Codex account.
+///
+/// IDs are already namespaced as `openai-codex/<slug>` by the catalog client,
+/// preventing collisions with xAI or custom models.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodexSubscriptionModelState {
+    pub default_model_id: Option<String>,
+    pub available_models: Vec<CodexCatalogModel>,
+}
+
+/// Query the current ChatGPT Codex model catalog with Grok Build's separately
+/// scoped Codex credentials.
+///
+/// This path never creates or consults the xAI `AuthManager`. The catalog
+/// client's provider-local recovery hook reloads/refreshes once on a 401.
+pub async fn list_codex_subscription_models() -> Result<CodexSubscriptionModelState> {
+    let grok_home = crate::util::grok_home::grok_home();
+    let auth = crate::auth::codex::CodexAuthManager::new(&grok_home)
+        .context("Failed to load ChatGPT Codex credentials")?;
+    if auth.current().is_none() {
+        anyhow::bail!(
+            "You are not logged in to ChatGPT Codex. Run `grok login --provider openai-codex`."
+        );
+    }
+
+    let cache_dir = grok_home.join("cache").join("openai-codex");
+    let config = CodexCatalogClientConfig::new(cache_dir)
+        .context("Failed to configure ChatGPT Codex model discovery")?;
+    let client = CodexCatalogClient::new(config)
+        .context("Failed to configure ChatGPT Codex model discovery")?;
+    let fetched = client
+        .fetch(&auth)
+        .await
+        .context("Failed to fetch ChatGPT Codex models")?;
+
+    Ok(codex_subscription_model_state(fetched.catalog.models))
+}
+
+fn codex_subscription_model_state(
+    mut models: Vec<CodexCatalogModel>,
+) -> CodexSubscriptionModelState {
+    // Match the current open-source Codex picker contract: ascending priority,
+    // and only entries explicitly marked for listing. Hidden entries can still
+    // be addressed by an explicit model ID in the runtime integration.
+    models.sort_by_key(|model| model.priority);
+    models.retain(CodexCatalogModel::visible_in_picker);
+    let default_model_id = models.first().map(|model| model.id.clone());
+    CodexSubscriptionModelState {
+        default_model_id,
+        available_models: models,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +182,45 @@ mod tests {
             api_key = "sk-byok"
             "#
         )
+    }
+
+    #[test]
+    fn codex_models_are_namespaced_sorted_and_picker_visible() {
+        let visible_later = CodexCatalogModel {
+            id: "openai-codex/later".to_owned(),
+            slug: "later".to_owned(),
+            visibility: Some("list".to_owned()),
+            priority: 20,
+            ..Default::default()
+        };
+        let hidden = CodexCatalogModel {
+            id: "openai-codex/hidden".to_owned(),
+            slug: "hidden".to_owned(),
+            visibility: Some("hide".to_owned()),
+            priority: 0,
+            ..Default::default()
+        };
+        let visible_default = CodexCatalogModel {
+            id: "openai-codex/default".to_owned(),
+            slug: "default".to_owned(),
+            visibility: Some("list".to_owned()),
+            priority: 10,
+            ..Default::default()
+        };
+
+        let state = codex_subscription_model_state(vec![visible_later, hidden, visible_default]);
+        assert_eq!(
+            state.default_model_id.as_deref(),
+            Some("openai-codex/default")
+        );
+        assert_eq!(
+            state
+                .available_models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["openai-codex/default", "openai-codex/later"]
+        );
     }
 
     fn config_from_toml(toml_src: &str) -> Config {

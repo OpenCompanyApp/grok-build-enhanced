@@ -4,6 +4,7 @@ pub mod agent;
 pub mod chat_models_client;
 pub mod client;
 pub mod conversations_client;
+pub mod openai_codex_catalog;
 pub mod pull;
 #[cfg(test)]
 mod pull_smoke_test;
@@ -31,6 +32,14 @@ pub(crate) use client::{DEFAULT_CONTEXT_WINDOW, fetch_models_blocking, models_li
 pub use conversations_client::{
     ConvError, ConvQuery, Conversation, ConversationsClient, ListConversationsPage,
     UpdateConversationBody,
+};
+pub use openai_codex_catalog::{
+    CodexCachedCatalog, CodexCatalogAuthError, CodexCatalogAuthProvider, CodexCatalogAuthSnapshot,
+    CodexCatalogCacheStatus, CodexCatalogClient, CodexCatalogClientConfig, CodexCatalogError,
+    CodexCatalogFetch, CodexCatalogFetchSource, CodexCatalogModel, CodexModelAvailabilityNux,
+    CodexModelCatalog, CodexModelServiceTier, CodexModelUpgrade, CodexReasoningEffortPreset,
+    CodexTruncationPolicy, OPENAI_CODEX_BASE_URL, OPENAI_CODEX_CATALOG_TIMEOUT,
+    OPENAI_CODEX_MODEL_NAMESPACE, OPENAI_CODEX_PROVIDER_ID,
 };
 pub use pull::{PullResult, pull_session_to_local};
 pub use sync::RemoteSync;

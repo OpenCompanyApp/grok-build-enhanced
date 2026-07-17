@@ -33,6 +33,14 @@ pub fn bootstrap(
     // Refresh on every auth refresh — the FSEvents watcher can silently die after
     // macOS sleep, stranding the catalog on bundled defaults.
     models_manager.start_auth_refresh_watcher(auth_manager.refresh_notifier());
+    // An early prefetch is account-bound through the cache and may be discarded
+    // if another process switched xAI identities before installation. Recover
+    // immediately without requiring another watcher event.
+    models_manager.start_xai_catalog_recovery();
+    // ChatGPT Codex discovery has an independent credential scope and retry
+    // lifecycle. Recover a transient startup miss without waiting for a new
+    // login or process restart.
+    models_manager.start_openai_codex_catalog_recovery();
 
     Ok((cfg, models_manager))
 }

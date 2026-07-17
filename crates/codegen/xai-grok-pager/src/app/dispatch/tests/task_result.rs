@@ -1811,6 +1811,24 @@ fn check_subscription_complete_failure_without_pending_gate_is_noop() {
     assert!(app.has_access());
 }
 
+/// A provider-scoped shell may return `meta: null` when xAI subscription
+/// metadata does not apply (for example, an active Codex session). Treat it
+/// exactly like an absent result rather than trying to decode `AuthMeta`.
+#[test]
+fn check_subscription_complete_null_meta_is_absent() {
+    let mut app = test_app();
+    let effects = dispatch_task_result(
+        TaskResult::CheckSubscriptionComplete {
+            verify: None,
+            meta: Some(serde_json::Value::Null),
+        },
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    assert!(app.has_access());
+}
+
 /// The verification window expired before the live check resolved:
 /// err on blocking — the deferred gate is promoted, and the freshly shown
 /// paywall gets the 5s auto-lift chain.
