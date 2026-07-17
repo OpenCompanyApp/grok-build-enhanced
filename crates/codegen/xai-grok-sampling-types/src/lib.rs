@@ -10,6 +10,7 @@ pub mod conversation;
 pub mod doom_loop;
 pub mod error;
 pub mod messages;
+pub mod openai_codex;
 pub mod provider;
 pub mod serde_helpers;
 pub mod types;
@@ -23,12 +24,13 @@ pub use self::error::{
     EmptyReason, EmptyResponseContext, ResponseModelMetadata, Result, SamplingError,
     is_context_length_error,
 };
-pub use self::provider::{
-    CredentialBinding, CredentialSourceId, OPENAI_CODEX_BASE_URL,
-    OPENAI_CODEX_COMPATIBILITY_VERSION, OPENAI_CODEX_EXTENDED_REASONING_EFFORT_METADATA_KEY,
-    OPENAI_CODEX_FAST_SERVICE_TIER, OPENAI_CODEX_RESPONSES_LITE_HEADER, OPENAI_CODEX_RESPONSES_URL,
-    OPENAI_CODEX_STANDARD_SERVICE_TIER, ProviderId,
+pub use self::openai_codex::{
+    OPENAI_CODEX_BASE_URL, OPENAI_CODEX_COMPATIBILITY_VERSION,
+    OPENAI_CODEX_EXTENDED_REASONING_EFFORT_METADATA_KEY, OPENAI_CODEX_FAST_SERVICE_TIER,
+    OPENAI_CODEX_RESPONSES_LITE_HEADER, OPENAI_CODEX_RESPONSES_URL,
+    OPENAI_CODEX_STANDARD_SERVICE_TIER,
 };
+pub use self::provider::{CredentialBinding, CredentialSourceId, ProviderId};
 pub use self::types::*;
 
 // Re-export async-openai crate Responses API types under `rs` namespace
