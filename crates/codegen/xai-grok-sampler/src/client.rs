@@ -35,7 +35,7 @@ use crate::provider::openai_codex::{
     endpoint as codex_endpoint, errors as codex_errors, headers as codex_headers,
     responses as codex_responses, sse::CodexSseDecoder,
 };
-use codex_headers::{CHATGPT_ACCOUNT_ID_HEADER, CODEX_TURN_STATE_HEADER};
+use codex_headers::CODEX_TURN_STATE_HEADER;
 
 // Re-export ApiBackend from the shared types crate for downstream callers.
 pub use xai_grok_sampling_types::ApiBackend;
@@ -328,6 +328,67 @@ struct PreparedRequest {
     credential_binding: Option<CredentialBinding>,
 }
 
+#[derive(Default)]
+enum ProviderAuthRecoveryState {
+    #[default]
+    Idle,
+    Recovering,
+    Pending(CredentialBinding),
+}
+
+/// Cancellation-safe transition guard for provider-owned async recovery.
+/// While it is alive, synchronous request preparation fails closed instead of
+/// racing a credential rotation. Dropping an unfinished future restores Idle.
+struct ProviderAuthRecoveryGuard<'a> {
+    state: &'a std::sync::Mutex<ProviderAuthRecoveryState>,
+    finished: bool,
+}
+
+impl<'a> ProviderAuthRecoveryGuard<'a> {
+    fn begin(state: &'a std::sync::Mutex<ProviderAuthRecoveryState>) -> Option<Self> {
+        let mut current = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !matches!(&*current, ProviderAuthRecoveryState::Idle) {
+            return None;
+        }
+        *current = ProviderAuthRecoveryState::Recovering;
+        drop(current);
+        Some(Self {
+            state,
+            finished: false,
+        })
+    }
+
+    fn finish(mut self, next: ProviderAuthRecoveryState) -> bool {
+        let mut current = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let transitioned = matches!(&*current, ProviderAuthRecoveryState::Recovering);
+        if transitioned {
+            *current = next;
+        }
+        self.finished = true;
+        transitioned
+    }
+}
+
+impl Drop for ProviderAuthRecoveryGuard<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let mut current = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(&*current, ProviderAuthRecoveryState::Recovering) {
+            *current = ProviderAuthRecoveryState::Idle;
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SamplingClient {
     http: reqwest::Client,
@@ -346,6 +407,11 @@ pub struct SamplingClient {
     /// Provider-owned dynamic credentials applied after ordinary header
     /// injection on every request.
     request_auth: Option<crate::config::SharedRequestAuth>,
+    /// Exact rejected binding that the next request on this client must
+    /// strictly succeed. Shared across cheap clones so direct sampler callers
+    /// cannot bypass the post-recovery check by cloning the transport.
+    /// Deliberately omitted from `Debug` and tracing.
+    provider_auth_recovery_state: std::sync::Arc<std::sync::Mutex<ProviderAuthRecoveryState>>,
     /// Per-turn ChatGPT sticky-routing state shared by cheap client clones.
     /// An empty request ID (for example an auxiliary title call) neither reads
     /// nor clears this state, so concurrent auxiliary work cannot disturb the
@@ -511,7 +577,7 @@ impl SamplingClient {
         if let Some(ref api_key) = config.api_key {
             match config.auth_scheme {
                 AuthScheme::XApiKey => {
-                    let header_value = HeaderValue::from_str(api_key).map_err(|_| {
+                    let mut header_value = HeaderValue::from_str(api_key).map_err(|_| {
                         tracing::debug!(
                             "Invalid api_key: cannot be converted to a valid HTTP header"
                         );
@@ -520,11 +586,12 @@ impl SamplingClient {
                                 .to_string(),
                         )
                     })?;
+                    header_value.set_sensitive(true);
                     headers.insert(HeaderName::from_static("x-api-key"), header_value);
                 }
                 AuthScheme::Bearer => {
                     let bearer = format!("Bearer {}", api_key);
-                    let header_value = HeaderValue::from_str(&bearer).map_err(|_| {
+                    let mut header_value = HeaderValue::from_str(&bearer).map_err(|_| {
                         tracing::debug!(
                             "Invalid api_key: cannot be converted to a valid HTTP Authorization header"
                         );
@@ -533,6 +600,7 @@ impl SamplingClient {
                                 .to_string(),
                         )
                     })?;
+                    header_value.set_sensitive(true);
                     headers.insert(AUTHORIZATION, header_value);
                 }
             }
@@ -567,8 +635,11 @@ impl SamplingClient {
                     "OpenAI Codex protected/provider headers cannot be set via extra_headers",
                 ));
             }
-            let header_value = HeaderValue::from_str(value)
+            let mut header_value = HeaderValue::from_str(value)
                 .map_err(|_| SamplingError::InvalidConfiguration("Invalid extra header value"))?;
+            if Self::is_sensitive_header(header_name.as_str()) {
+                header_value.set_sensitive(true);
+            }
             headers.insert(header_name, header_value);
         }
 
@@ -625,6 +696,7 @@ impl SamplingClient {
                 headers.insert(USER_AGENT, v);
             }
         }
+        Self::mark_sensitive_headers(&mut headers);
 
         let http = if config.provider.is_openai_codex() {
             codex_endpoint::http_client()?
@@ -649,8 +721,6 @@ impl SamplingClient {
             has_api_key = config.api_key.is_some(),
             has_bearer_resolver = config.bearer_resolver.is_some(),
             has_request_auth = config.request_auth.is_some(),
-            has_authorization_header = headers.get(AUTHORIZATION).is_some(),
-            has_x_api_key_header = headers.get(HeaderName::from_static("x-api-key")).is_some(),
         );
 
         let defaults = ClientDefaults {
@@ -676,6 +746,7 @@ impl SamplingClient {
             bearer_resolver: config.bearer_resolver,
             header_injector: config.header_injector,
             request_auth: config.request_auth,
+            provider_auth_recovery_state: Default::default(),
             codex_turn_state,
         })
     }
@@ -683,7 +754,10 @@ impl SamplingClient {
     /// Rebuild this HTTP client without dropping the actor-owned Codex turn
     /// state. Used only for transport fallback within the same submission.
     pub(crate) fn rebuild_with_config(&self, config: SamplerConfig) -> Result<Self> {
-        Self::new_with_codex_turn_state(config, self.codex_turn_state.clone())
+        let mut rebuilt = Self::new_with_codex_turn_state(config, self.codex_turn_state.clone())?;
+        rebuilt.provider_auth_recovery_state =
+            std::sync::Arc::clone(&self.provider_auth_recovery_state);
+        Ok(rebuilt)
     }
 
     /// The configured API backend for this client.
@@ -696,9 +770,17 @@ impl SamplingClient {
         self.defaults.provider
     }
 
-    /// POST with default headers. Legacy bearer resolution and provider-owned
-    /// dynamic auth are applied to a fresh map on every call.
-    fn post(&self, url: impl reqwest::IntoUrl) -> Result<PreparedRequest> {
+    /// Build a fresh request-header map and bind it to the exact credential
+    /// snapshot that supplied provider-owned authentication.
+    ///
+    /// When `rejected` is present, this is the first request preparation after
+    /// a provider reported 401. The actual signing binding must be a strict
+    /// successor of that exact rejected binding; a preflight alone is not
+    /// sufficient because another refresh or account switch could race it.
+    fn prepare_request_headers(
+        &self,
+        rejected: Option<&CredentialBinding>,
+    ) -> Result<(HeaderMap, Option<CredentialBinding>)> {
         let mut headers = self.default_headers.clone();
         if let Some(resolver) = &self.bearer_resolver
             && let Some(fresh) = resolver.current_bearer()
@@ -706,14 +788,16 @@ impl SamplingClient {
             match self.defaults.auth_scheme {
                 AuthScheme::XApiKey => {
                     headers.remove(AUTHORIZATION);
-                    if let Ok(v) = HeaderValue::from_str(&fresh) {
-                        headers.insert(HeaderName::from_static("x-api-key"), v);
+                    if let Ok(mut value) = HeaderValue::from_str(&fresh) {
+                        value.set_sensitive(true);
+                        headers.insert(HeaderName::from_static("x-api-key"), value);
                     }
                 }
                 AuthScheme::Bearer => {
                     headers.remove(HeaderName::from_static("x-api-key"));
-                    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {fresh}")) {
-                        headers.insert(AUTHORIZATION, v);
+                    if let Ok(mut value) = HeaderValue::from_str(&format!("Bearer {fresh}")) {
+                        value.set_sensitive(true);
+                        headers.insert(AUTHORIZATION, value);
                     }
                 }
             }
@@ -739,6 +823,68 @@ impl SamplingClient {
         if self.defaults.provider.is_openai_codex() {
             codex_headers::seal_after_request_auth(&mut headers, credential_binding.as_ref())?;
         }
+        if let Some(rejected) = rejected
+            && !credential_binding
+                .as_ref()
+                .is_some_and(|current| current.is_strict_successor_of(rejected))
+        {
+            return Err(SamplingError::InvalidConfiguration(
+                "provider authentication recovery did not advance the rejected credential binding",
+            ));
+        }
+
+        // Do this after every extension point. Static credentials and live
+        // bearer replacement are marked at insertion time as well, while this
+        // final pass catches credential-like extra/injected headers and custom
+        // RequestAuth implementations.
+        Self::mark_sensitive_headers(&mut headers);
+        Ok((headers, credential_binding))
+    }
+
+    /// POST with default headers. Legacy bearer resolution and provider-owned
+    /// dynamic auth are applied to a fresh map on every call.
+    fn post(&self, url: impl reqwest::IntoUrl) -> Result<PreparedRequest> {
+        self.post_after_provider_auth_recovery(url, None)
+    }
+
+    fn post_after_provider_auth_recovery(
+        &self,
+        url: impl reqwest::IntoUrl,
+        rejected: Option<&CredentialBinding>,
+    ) -> Result<PreparedRequest> {
+        // Serialize the one-shot successor check across cheap client clones.
+        // Holding this small sync mutex through `RequestAuth::apply` is safe:
+        // that trait method is deliberately synchronous and required to be a
+        // cheap snapshot read.
+        let mut recovery_state = self
+            .provider_auth_recovery_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pending_binding = match &*recovery_state {
+            ProviderAuthRecoveryState::Idle => None,
+            ProviderAuthRecoveryState::Recovering => {
+                return Err(SamplingError::InvalidConfiguration(
+                    "provider authentication recovery is still in progress",
+                ));
+            }
+            ProviderAuthRecoveryState::Pending(binding) => Some(binding),
+        };
+        if let (Some(explicit), Some(pending_binding)) = (rejected, pending_binding)
+            && explicit != pending_binding
+        {
+            return Err(SamplingError::InvalidConfiguration(
+                "provider authentication retry does not match the pending rejected binding",
+            ));
+        }
+        let required_successor = rejected.or(pending_binding);
+        let prepared_headers = self.prepare_request_headers(required_successor);
+        if prepared_headers.is_ok()
+            && matches!(&*recovery_state, ProviderAuthRecoveryState::Pending(_))
+        {
+            *recovery_state = ProviderAuthRecoveryState::Idle;
+        }
+        drop(recovery_state);
+        let (headers, credential_binding) = prepared_headers?;
 
         tracing::info!(
             target: crate::sampling_log::TARGET,
@@ -750,9 +896,6 @@ impl SamplingClient {
             auth_scheme = ?self.defaults.auth_scheme,
             has_bearer_resolver = self.bearer_resolver.is_some(),
             has_request_auth = self.request_auth.is_some(),
-            has_authorization_header = headers.get(AUTHORIZATION).is_some(),
-            has_x_api_key_header = headers.get(HeaderName::from_static("x-api-key")).is_some(),
-            has_account_header = headers.get(CHATGPT_ACCOUNT_ID_HEADER).is_some(),
         );
 
         Ok(PreparedRequest {
@@ -817,10 +960,30 @@ impl SamplingClient {
         if !self.defaults.provider.is_openai_codex() {
             return false;
         }
-        match &self.request_auth {
-            Some(request_auth) => request_auth.recover_unauthorized(rejected).await,
-            None => false,
+        let Some(request_auth) = &self.request_auth else {
+            return false;
+        };
+        let Some(recovery_guard) =
+            ProviderAuthRecoveryGuard::begin(self.provider_auth_recovery_state.as_ref())
+        else {
+            return false;
+        };
+        if !request_auth.recover_unauthorized(rejected.clone()).await {
+            return false;
         }
+
+        // A provider reporting recovery success is only advisory. Reload the
+        // post-recovery snapshot and require a same-record generation advance
+        // before any caller is told to retry.
+        if self.prepare_request_headers(Some(&rejected)).is_err() {
+            return false;
+        }
+
+        // Pin the exact rejection into the next actual request on this client.
+        // The actor passes the same binding explicitly as an additional guard;
+        // direct sampler callers (such as compaction) are protected by this
+        // shared one-shot state without changing their public call shape.
+        recovery_guard.finish(ProviderAuthRecoveryState::Pending(rejected))
     }
 
     pub fn auth_info(&self) -> crate::sampling_log::AuthInfo {
@@ -836,28 +999,44 @@ impl SamplingClient {
 
     /// Check if a header name contains sensitive information that should be redacted.
     fn is_sensitive_header(name: &str) -> bool {
-        let lower = name.to_lowercase();
-        lower.contains("authorization")
-            || lower.contains("api-key")
-            || lower.contains("apikey")
-            || lower.contains("token")
-            || lower.contains("secret")
-            || lower.contains("account")
-            || lower.contains("user-id")
-            || lower.contains("userid")
-            || lower.contains("email")
-            || lower.contains("organization")
-            || lower.contains("org-id")
-            || lower.contains("team-id")
-            || lower.contains("deployment-id")
-            || lower.contains("project-id")
-            || lower == "openai-project"
+        let lower = name.to_ascii_lowercase();
+        let compact: String = lower
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect();
+        compact.contains("authorization")
+            || compact.contains("authentication")
+            || compact.contains("apikey")
+            || compact.contains("token")
+            || compact.contains("secret")
+            || compact.contains("credential")
+            || compact.contains("account")
+            || compact.contains("userid")
+            || compact.contains("email")
+            || compact.contains("organization")
+            || compact.contains("orgid")
+            || compact.contains("teamid")
+            || compact.contains("deploymentid")
+            || compact.contains("projectid")
+            || compact.contains("cookie")
+            || compact.contains("session")
+            || compact.contains("threadid")
+            || compact.contains("clientrequestid")
+            || compact.contains("clientidentifier")
             || lower == "x-openai-fedramp"
-            || lower.contains("cookie")
-            || lower.contains("session")
-            || lower.contains("thread-id")
-            || lower.contains("client-request-id")
             || lower == CODEX_TURN_STATE_HEADER
+    }
+
+    /// Mark every credential- or identity-like value sensitive at the HTTP
+    /// layer. This is intentionally name-based and provider-neutral so custom
+    /// proxy access headers receive the same `HeaderValue` Debug redaction as
+    /// standard Authorization and API-key headers.
+    fn mark_sensitive_headers(headers: &mut HeaderMap) {
+        for (name, value) in headers.iter_mut() {
+            if Self::is_sensitive_header(name.as_str()) {
+                value.set_sensitive(true);
+            }
+        }
     }
 
     /// Format a single header for error messages, redacting sensitive values.
@@ -870,31 +1049,14 @@ impl SamplingClient {
         format!("  {}: {}", name, display_value)
     }
 
-    /// Build request headers string for error messages (redacting sensitive values).
-    fn format_request_headers(
-        &self,
-        x_grok_conv_id: &str,
-        x_grok_req_id: &str,
-        model_id: &str,
-        include_accept: bool,
-    ) -> Vec<String> {
-        let mut req_headers: Vec<String> = self
-            .default_headers
-            .iter()
-            .map(|(name, value)| {
-                Self::format_header(name.as_str(), value.to_str().unwrap_or("[non-utf8]"))
-            })
-            .collect();
-
-        if !self.defaults.provider.is_openai_codex() {
-            req_headers.push(Self::format_header("x-grok-conv-id", x_grok_conv_id));
-            req_headers.push(Self::format_header("x-grok-req-id", x_grok_req_id));
-            req_headers.push(Self::format_header("x-grok-model-override", model_id));
-        }
-        if include_accept {
-            req_headers.push(Self::format_header("accept", "text/event-stream"));
-        }
-        req_headers
+    /// Fixed/coarse request-header context for user-visible API errors. Never
+    /// enumerate names, values, or counts: even a redacted optional name (or a
+    /// changing count) exposes provider security state through diagnostics.
+    fn request_header_diagnostics(&self, streaming: bool) -> Vec<String> {
+        vec![format!(
+            "  details omitted (provider={}, streaming={streaming})",
+            self.defaults.provider
+        )]
     }
 
     /// Build response headers for error messages.
@@ -915,21 +1077,17 @@ impl SamplingClient {
             .collect()
     }
 
-    /// Log all headers from a request at debug level (redacting sensitive values).
-    fn log_request_headers(request: &reqwest::Request, endpoint_name: &str) {
-        for (name, value) in request.headers().iter() {
-            let value_str = if Self::is_sensitive_header(name.as_str()) {
-                "[REDACTED]"
-            } else {
-                value.to_str().unwrap_or("[non-utf8]")
-            };
-            tracing::debug!(
-                header_name = %name,
-                header_value = %value_str,
-                "Request header ({})",
-                endpoint_name
-            );
-        }
+    /// Emit fixed request diagnostics without enumerating header names, values,
+    /// or counts. Even a redacted per-header event exposes optional security
+    /// state through its name (and a count exposes it through cardinality).
+    fn log_request_diagnostics(request: &reqwest::Request, endpoint_name: &str) {
+        tracing::debug!(
+            endpoint = endpoint_name,
+            method = %request.method(),
+            url = %request.url(),
+            has_body = request.body().is_some(),
+            "HTTP request prepared; header diagnostics suppressed"
+        );
     }
 
     /// Build error context message based on error type and status code.
@@ -1157,7 +1315,7 @@ impl SamplingClient {
             method = %built_request.method(),
             "Sending chat/completions request"
         );
-        Self::log_request_headers(&built_request, "chat/completions");
+        Self::log_request_diagnostics(&built_request, "chat/completions");
 
         let response = self.http.execute(built_request).await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
@@ -1189,8 +1347,7 @@ impl SamplingClient {
                 )));
             }
 
-            let req_headers =
-                self.format_request_headers(x_grok_conv_id, x_grok_req_id, &model_id, true);
+            let req_headers = self.request_header_diagnostics(true);
             let resp_headers =
                 Self::format_response_headers(response.headers(), self.defaults.provider);
             let bytes = response.bytes().await?;
@@ -1447,8 +1604,7 @@ impl SamplingClient {
                 )));
             }
 
-            let req_headers =
-                self.format_request_headers(x_grok_conv_id, x_grok_req_id, &model_id, false);
+            let req_headers = self.request_header_diagnostics(false);
             let server_message = self.provider_error_message(bytes.as_ref());
 
             let message = self.build_api_error_message(
@@ -1492,6 +1648,19 @@ impl SamplingClient {
     /// SSE decoder as the server reports triggers and is meant to be handed
     /// to `stream_responses` so the signals land on the final
     /// `ConversationResponse`.
+    #[allow(clippy::type_complexity)]
+    pub async fn create_response_stream(
+        &self,
+        request: CreateResponseWrapper,
+    ) -> Result<(
+        BoxStream<'static, Result<rs::ResponseStreamEvent>>,
+        Option<ResponseModelMetadata>,
+        Option<crate::doom_loop::DoomLoopSignalCollector>,
+    )> {
+        self.create_response_stream_after_provider_auth_recovery(request, None)
+            .await
+    }
+
     #[tracing::instrument(
         name = "http.create_response_stream",
         skip_all,
@@ -1504,9 +1673,10 @@ impl SamplingClient {
         )
     )]
     #[allow(clippy::type_complexity)]
-    pub async fn create_response_stream(
+    async fn create_response_stream_after_provider_auth_recovery(
         &self,
         mut request: CreateResponseWrapper,
+        rejected: Option<&CredentialBinding>,
     ) -> Result<(
         BoxStream<'static, Result<rs::ResponseStreamEvent>>,
         Option<ResponseModelMetadata>,
@@ -1580,7 +1750,8 @@ impl SamplingClient {
             .doom_loop_recovery
             .filter(|_| !self.defaults.provider.is_openai_codex())
             .map(crate::doom_loop::DoomLoopSignalCollector::new);
-        let prepared = self.post(self.endpoint("responses"))?;
+        let prepared =
+            self.post_after_provider_auth_recovery(self.endpoint("responses"), rejected)?;
         let request_credential = prepared.credential_binding;
         let mut http_request = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
@@ -1601,7 +1772,7 @@ impl SamplingClient {
             method = %built_request.method(),
             "Sending responses API stream request"
         );
-        Self::log_request_headers(&built_request, "responses");
+        Self::log_request_diagnostics(&built_request, "responses");
 
         let response = self.http.execute(built_request).await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
@@ -1639,8 +1810,7 @@ impl SamplingClient {
             );
             let retry_after_secs = extract_retry_after(response.headers());
             let should_retry = extract_should_retry(response.headers());
-            let req_headers =
-                self.format_request_headers(x_grok_conv_id, x_grok_req_id, &model_id, true);
+            let req_headers = self.request_header_diagnostics(true);
             let resp_headers =
                 Self::format_response_headers(response.headers(), self.defaults.provider);
             let bytes = response.bytes().await?;
@@ -1882,8 +2052,7 @@ impl SamplingClient {
                 )));
             }
 
-            let req_headers =
-                self.format_request_headers(x_grok_conv_id, x_grok_req_id, &model_id, false);
+            let req_headers = self.request_header_diagnostics(false);
             let server_message = parse_error_bytes(bytes.as_ref());
 
             let message = self.build_api_error_message(
@@ -1990,7 +2159,7 @@ impl SamplingClient {
             method = %built_request.method(),
             "Sending messages API stream request"
         );
-        Self::log_request_headers(&built_request, "messages");
+        Self::log_request_diagnostics(&built_request, "messages");
 
         let response = self.http.execute(built_request).await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
@@ -2019,8 +2188,7 @@ impl SamplingClient {
             );
             let retry_after_secs = extract_retry_after(response.headers());
             let should_retry = extract_should_retry(response.headers());
-            let req_headers =
-                self.format_request_headers(x_grok_conv_id, x_grok_req_id, &model_id, true);
+            let req_headers = self.request_header_diagnostics(true);
             let resp_headers =
                 Self::format_response_headers(response.headers(), self.defaults.provider);
             let bytes = response.bytes().await?;
@@ -2206,7 +2374,35 @@ impl SamplingClient {
     #[allow(clippy::type_complexity)]
     pub async fn conversation_stream_responses(
         &self,
+        request: ConversationRequest,
+    ) -> Result<(
+        BoxStream<'static, Result<rs::ResponseStreamEvent>>,
+        Option<ResponseModelMetadata>,
+        Option<crate::doom_loop::DoomLoopSignalCollector>,
+    )> {
+        self.conversation_stream_responses_with_rejected_binding(request, None)
+            .await
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) async fn conversation_stream_responses_after_provider_auth_recovery(
+        &self,
+        request: ConversationRequest,
+        rejected: &CredentialBinding,
+    ) -> Result<(
+        BoxStream<'static, Result<rs::ResponseStreamEvent>>,
+        Option<ResponseModelMetadata>,
+        Option<crate::doom_loop::DoomLoopSignalCollector>,
+    )> {
+        self.conversation_stream_responses_with_rejected_binding(request, Some(rejected))
+            .await
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn conversation_stream_responses_with_rejected_binding(
+        &self,
         mut request: ConversationRequest,
+        rejected: Option<&CredentialBinding>,
     ) -> Result<(
         BoxStream<'static, Result<rs::ResponseStreamEvent>>,
         Option<ResponseModelMetadata>,
@@ -2241,7 +2437,8 @@ impl SamplingClient {
             wrapper.trace = Some(trace);
         }
 
-        self.create_response_stream(wrapper).await
+        self.create_response_stream_after_provider_auth_recovery(wrapper, rejected)
+            .await
     }
 
     /// Send a conversation request using the Responses API (non-streaming).
@@ -2396,12 +2593,82 @@ impl SamplingClient {
 mod tests {
     use super::*;
     use crate::provider::openai_codex::headers::{
-        CODEX_CLIENT_REQUEST_ID_HEADER, CODEX_SESSION_ID_HEADER, CODEX_THREAD_ID_HEADER,
-        OPENAI_CODEX_ORIGINATOR, OPENAI_FEDRAMP_HEADER,
+        CHATGPT_ACCOUNT_ID_HEADER, CODEX_CLIENT_REQUEST_ID_HEADER, CODEX_SESSION_ID_HEADER,
+        CODEX_THREAD_ID_HEADER, OPENAI_CODEX_ORIGINATOR, OPENAI_FEDRAMP_HEADER,
     };
     use indexmap::IndexMap;
     use xai_grok_sampling_types::OPENAI_CODEX_COMPATIBILITY_VERSION;
     use xai_grok_sampling_types::types::ChatRequestMessage;
+
+    const CODEX_AUTHORIZATION_FIXTURE: &str = "Bearer opaque-credential";
+    const CODEX_ACCOUNT_FIXTURE: &str = "opaque-account";
+    const CODEX_FEDRAMP_FIXTURE: &str = "true";
+    const CODEX_SESSION_FIXTURE: &str = "opaque-session";
+    const CODEX_THREAD_FIXTURE: &str = "opaque-thread";
+    const CODEX_RECORD_FIXTURE: &str = "local-credential-record";
+    const SWITCHED_RECORD_FIXTURE: &str = "other-local-record";
+    const REDACTION_VALUE_FIXTURE: &str = "opaque-sensitive-value";
+
+    #[derive(Clone, Default)]
+    struct DebugEventCapture {
+        events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    struct DebugFieldCapture(String);
+
+    impl tracing::field::Visit for DebugFieldCapture {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            let _ = write!(&mut self.0, "{}={value:?};", field.name());
+        }
+    }
+
+    impl tracing::Subscriber for DebugEventCapture {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() == tracing::Level::DEBUG
+        }
+
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut fields = DebugFieldCapture(String::new());
+            event.record(&mut fields);
+            let rendered = format!(
+                "target={};name={};{}",
+                event.metadata().target(),
+                event.metadata().name(),
+                fields.0
+            );
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(rendered);
+        }
+
+        fn enter(&self, _: &tracing::span::Id) {}
+
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    fn capture_request_diagnostics(request: &reqwest::Request) -> Vec<String> {
+        let capture = DebugEventCapture::default();
+        {
+            let _guard = tracing::subscriber::set_default(capture.clone());
+            SamplingClient::log_request_diagnostics(request, "responses");
+        }
+        let events = capture
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        events
+    }
 
     fn minimal_config() -> SamplerConfig {
         SamplerConfig {
@@ -2603,14 +2870,51 @@ mod tests {
             "x-openai-fedramp",
             "cookie",
         ] {
-            let rendered = SamplingClient::format_header(name, "sensitive-value");
+            let rendered = SamplingClient::format_header(name, REDACTION_VALUE_FIXTURE);
             assert!(rendered.contains("[REDACTED]"));
-            assert!(!rendered.contains("sensitive-value"));
+            assert!(!rendered.contains(REDACTION_VALUE_FIXTURE));
         }
         assert_eq!(
             SamplingClient::format_header("traceparent", "safe-value"),
             "  traceparent: safe-value"
         );
+    }
+
+    #[test]
+    fn generic_debug_diagnostics_hide_optional_security_header_presence() {
+        let url = reqwest::Url::parse("https://example.test/responses").unwrap();
+        let baseline = reqwest::Request::new(reqwest::Method::POST, url.clone());
+        let mut protected = reqwest::Request::new(reqwest::Method::POST, url);
+
+        let mut fedramp = HeaderValue::from_static("true");
+        fedramp.set_sensitive(true);
+        protected
+            .headers_mut()
+            .insert(HeaderName::from_static(OPENAI_FEDRAMP_HEADER), fedramp);
+        let mut turn_state = HeaderValue::from_static("opaque-state-fixture");
+        turn_state.set_sensitive(true);
+        protected
+            .headers_mut()
+            .insert(HeaderName::from_static(CODEX_TURN_STATE_HEADER), turn_state);
+
+        let baseline_debug = capture_request_diagnostics(&baseline);
+        let protected_debug = capture_request_diagnostics(&protected);
+        if baseline_debug.len() != 1 {
+            panic!("generic request debug diagnostics were not emitted exactly once");
+        }
+        if baseline_debug != protected_debug {
+            panic!("optional request security state changed generic debug diagnostics");
+        }
+        let captured = protected_debug.join("\n");
+        for forbidden in [
+            OPENAI_FEDRAMP_HEADER,
+            CODEX_TURN_STATE_HEADER,
+            "opaque-state-fixture",
+        ] {
+            if captured.contains(forbidden) {
+                panic!("request security state leaked into generic debug diagnostics");
+            }
+        }
     }
 
     #[test]
@@ -2670,10 +2974,10 @@ mod tests {
         let (config, _) = codex_config();
         let client = SamplingClient::new(config).unwrap();
         let grok_headers = GrokRequestHeaders {
-            conv_id: "thread-1",
+            conv_id: CODEX_THREAD_FIXTURE,
             req_id: "request-ignored",
             model_id: "gpt-5-codex",
-            session_id: "session-1",
+            session_id: CODEX_SESSION_FIXTURE,
             turn_idx: None,
             agent_id: "agent-ignored",
             deployment_id: None,
@@ -2692,19 +2996,17 @@ mod tests {
                 .get(OPENAI_CODEX_RESPONSES_LITE_HEADER)
                 .is_none()
         );
-        assert_eq!(
+        assert!(
             request
                 .headers()
                 .get(CODEX_SESSION_ID_HEADER)
-                .and_then(|value| value.to_str().ok()),
-            Some("session-1")
+                .is_some_and(|value| value.as_bytes() == CODEX_SESSION_FIXTURE.as_bytes())
         );
-        assert_eq!(
+        assert!(
             request
                 .headers()
                 .get(CODEX_THREAD_ID_HEADER)
-                .and_then(|value| value.to_str().ok()),
-            Some("thread-1")
+                .is_some_and(|value| value.as_bytes() == CODEX_THREAD_FIXTURE.as_bytes())
         );
         for name in [
             CODEX_SESSION_ID_HEADER,
@@ -2725,13 +3027,34 @@ mod tests {
     }
 
     #[test]
-    fn new_applies_extra_headers() {
+    fn credential_like_extra_headers_are_sensitive() {
         let mut cfg = minimal_config();
         cfg.extra_headers
-            .insert("x-test-header".to_string(), "test-value".to_string());
-        cfg.extra_headers
-            .insert("x-XAI-token-auth".to_string(), "xai-grok-cli".to_string());
-        let _client = SamplingClient::new(cfg).expect("client with extra headers should construct");
+            .insert("x-test-header".to_string(), "ordinary-value".to_string());
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "x-api-key",
+            "x-XAI-token-auth",
+            "x-api-key-backup",
+            "x-client-secret",
+        ] {
+            cfg.extra_headers
+                .insert(name.to_string(), "opaque-value".to_string());
+        }
+
+        let client = SamplingClient::new(cfg).expect("extra headers should construct");
+        assert!(!client.default_headers["x-test-header"].is_sensitive());
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "x-api-key",
+            "x-xai-token-auth",
+            "x-api-key-backup",
+            "x-client-secret",
+        ] {
+            assert!(client.default_headers[name].is_sensitive());
+        }
     }
 
     struct StaticCodexRequestAuth {
@@ -2739,7 +3062,7 @@ mod tests {
     }
 
     fn test_codex_binding(generation: u64) -> CredentialBinding {
-        let mut binding = CredentialBinding::openai_codex(Some("test-credential".to_owned()));
+        let mut binding = CredentialBinding::openai_codex(Some(CODEX_RECORD_FIXTURE.to_owned()));
         binding.generation = generation;
         binding
     }
@@ -2752,15 +3075,15 @@ mod tests {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             headers.insert(
                 AUTHORIZATION,
-                HeaderValue::from_static("Bearer codex-access-token"),
+                HeaderValue::from_static(CODEX_AUTHORIZATION_FIXTURE),
             );
             headers.insert(
                 HeaderName::from_static(CHATGPT_ACCOUNT_ID_HEADER),
-                HeaderValue::from_static("account-selected-by-auth-store"),
+                HeaderValue::from_static(CODEX_ACCOUNT_FIXTURE),
             );
             headers.insert(
-                HeaderName::from_static("x-openai-fedramp"),
-                HeaderValue::from_static("true"),
+                HeaderName::from_static(OPENAI_FEDRAMP_HEADER),
+                HeaderValue::from_static(CODEX_FEDRAMP_FIXTURE),
             );
             Ok(test_codex_binding(1))
         }
@@ -2768,6 +3091,16 @@ mod tests {
 
     struct RecoveringCodexRequestAuth {
         recoveries: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        generation: std::sync::atomic::AtomicU64,
+    }
+
+    impl RecoveringCodexRequestAuth {
+        fn new(recoveries: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+            Self {
+                recoveries,
+                generation: std::sync::atomic::AtomicU64::new(1),
+            }
+        }
     }
 
     impl crate::config::RequestAuth for RecoveringCodexRequestAuth {
@@ -2777,13 +3110,15 @@ mod tests {
         ) -> std::result::Result<CredentialBinding, crate::config::RequestAuthError> {
             headers.insert(
                 AUTHORIZATION,
-                HeaderValue::from_static("Bearer codex-access-token"),
+                HeaderValue::from_static("Bearer opaque-credential"),
             );
             headers.insert(
                 HeaderName::from_static(CHATGPT_ACCOUNT_ID_HEADER),
-                HeaderValue::from_static("account-selected-by-auth-store"),
+                HeaderValue::from_static("opaque-account"),
             );
-            Ok(test_codex_binding(1))
+            Ok(test_codex_binding(
+                self.generation.load(std::sync::atomic::Ordering::SeqCst),
+            ))
         }
 
         fn recover_unauthorized(
@@ -2794,8 +3129,47 @@ mod tests {
                 assert_eq!(rejected, test_codex_binding(1));
                 self.recoveries
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.generation
+                    .store(2, std::sync::atomic::Ordering::SeqCst);
                 true
             })
+        }
+    }
+
+    struct RacingCodexRequestAuth {
+        applications: std::sync::atomic::AtomicUsize,
+        actual_binding: CredentialBinding,
+    }
+
+    impl crate::config::RequestAuth for RacingCodexRequestAuth {
+        fn apply(
+            &self,
+            headers: &mut HeaderMap,
+        ) -> std::result::Result<CredentialBinding, crate::config::RequestAuthError> {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_static(CODEX_AUTHORIZATION_FIXTURE),
+            );
+            headers.insert(
+                HeaderName::from_static(CHATGPT_ACCOUNT_ID_HEADER),
+                HeaderValue::from_static(CODEX_ACCOUNT_FIXTURE),
+            );
+            if self
+                .applications
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                Ok(test_codex_binding(2))
+            } else {
+                Ok(self.actual_binding.clone())
+            }
+        }
+
+        fn recover_unauthorized(
+            &self,
+            _rejected: CredentialBinding,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
+            Box::pin(async { true })
         }
     }
 
@@ -2948,16 +3322,27 @@ mod tests {
     async fn provider_auth_recovery_is_scoped_to_codex_request_auth() {
         let recoveries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut config = SamplerConfig::openai_codex("gpt-5-codex");
-        config.request_auth = Some(std::sync::Arc::new(RecoveringCodexRequestAuth {
-            recoveries: std::sync::Arc::clone(&recoveries),
-        }));
+        config.request_auth = Some(std::sync::Arc::new(RecoveringCodexRequestAuth::new(
+            std::sync::Arc::clone(&recoveries),
+        )));
         let client = SamplingClient::new(config).expect("Codex client should build");
+        let rejected = test_codex_binding(1);
         assert!(
             client
-                .recover_provider_auth_after_unauthorized(test_codex_binding(1))
+                .recover_provider_auth_after_unauthorized(rejected.clone())
                 .await
         );
         assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let prepared = client
+            .post_after_provider_auth_recovery("https://example.test/responses", Some(&rejected))
+            .expect("same-record generation advance should bind the retry");
+        assert_eq!(
+            prepared
+                .credential_binding
+                .expect("Codex request must retain a binding")
+                .generation,
+            2
+        );
 
         let xai = SamplingClient::new(minimal_config()).expect("xAI client should build");
         assert!(
@@ -2968,20 +3353,83 @@ mod tests {
     }
 
     #[test]
+    fn requests_fail_closed_while_provider_recovery_is_in_progress() {
+        let (config, auth_calls) = codex_config();
+        let client = SamplingClient::new(config).expect("Codex client should build");
+        let recovery_guard =
+            ProviderAuthRecoveryGuard::begin(client.provider_auth_recovery_state.as_ref())
+                .expect("idle recovery state should be reservable");
+
+        let error = match client.post("https://example.test/responses") {
+            Err(error) => error,
+            Ok(_) => panic!("a request escaped while provider recovery was in progress"),
+        };
+        assert!(error.to_string().contains("still in progress"));
+        assert_eq!(auth_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        drop(recovery_guard);
+        client
+            .post("https://example.test/responses")
+            .expect("dropping an unfinished recovery restores idle state");
+        assert_eq!(auth_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn actual_request_binding_cannot_race_recovery_preflight() {
+        let mut switched = test_codex_binding(3);
+        switched.record_id = Some(SWITCHED_RECORD_FIXTURE.to_owned());
+        let mut config = SamplerConfig::openai_codex("gpt-5-codex");
+        config.request_auth = Some(std::sync::Arc::new(RacingCodexRequestAuth {
+            applications: std::sync::atomic::AtomicUsize::new(0),
+            actual_binding: switched,
+        }));
+        let client = SamplingClient::new(config).expect("Codex client should build");
+        let retry_client = client.clone();
+        assert!(
+            client
+                .recover_provider_auth_after_unauthorized(test_codex_binding(1))
+                .await
+        );
+
+        let error = match retry_client.post("https://example.test/responses") {
+            Err(error) => error,
+            Ok(_) => panic!("a raced credential rebind was accepted for retry"),
+        };
+        let rendered = error.to_string();
+        assert!(rendered.contains("did not advance the rejected credential binding"));
+        assert!(!rendered.contains(SWITCHED_RECORD_FIXTURE));
+    }
+
+    #[test]
     fn codex_rejects_static_or_generic_header_credentials() {
+        const UNSAFE_VALUE: &str = "opaque-credential-material";
+
         let (mut static_key, _) = codex_config();
-        static_key.api_key = Some("must-not-be-a-static-token".to_string());
+        static_key.api_key = Some(UNSAFE_VALUE.to_string());
         let error = SamplingClient::new(static_key).unwrap_err();
         assert!(error.to_string().contains("dynamic request authentication"));
 
-        let (mut generic_header, _) = codex_config();
-        generic_header.extra_headers.insert(
-            "Authorization".to_string(),
-            "Bearer must-not-escape".to_string(),
-        );
-        let error = SamplingClient::new(generic_header).unwrap_err();
-        assert!(error.to_string().contains("protected/provider headers"));
-        assert!(!error.to_string().contains("must-not-escape"));
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "x-api-key-backup",
+            "x-auth-token",
+            "x-client-secret",
+            "cookie",
+        ] {
+            let (mut generic_header, _) = codex_config();
+            generic_header
+                .extra_headers
+                .insert(name.to_string(), UNSAFE_VALUE.to_string());
+            let Err(error) = SamplingClient::new(generic_header) else {
+                panic!("Codex accepted a protected extra-header alias");
+            };
+            let rendered = error.to_string();
+            assert!(rendered.contains("protected/provider headers"));
+            if rendered.contains(UNSAFE_VALUE) {
+                panic!("protected extra-header credential material leaked into an error");
+            }
+        }
     }
 
     #[test]
@@ -3010,14 +3458,13 @@ mod tests {
             ))
             .expect("the dynamic auth boundary is validated per request");
             let error = match client.post("http://localhost/test") {
-                Ok(_) => panic!("hostile credential header {header_name} was accepted"),
+                Ok(_) => panic!("a hostile credential header was accepted"),
                 Err(error) => error,
             };
             let rendered = error.to_string();
-            assert!(
-                rendered.contains("unsupported credential header"),
-                "unexpected error for {header_name}: {rendered}"
-            );
+            if !rendered.contains("unsupported credential header") {
+                panic!("credential-header rejection used an unexpected diagnostic");
+            }
             assert!(!rendered.contains(header_name));
             assert!(!rendered.contains(HOSTILE_VALUE));
         }
@@ -3033,18 +3480,20 @@ mod tests {
             ))
             .expect("the dynamic auth boundary is validated per request");
             let error = match client.post("http://localhost/test") {
-                Ok(_) => panic!("invalid FedRAMP value {invalid_value} was accepted"),
+                Ok(_) => panic!("invalid provider security state was accepted"),
                 Err(error) => error,
             };
             let rendered = error.to_string();
-            assert!(rendered.contains("must be exactly true"));
+            if !rendered.contains("must be exactly true") {
+                panic!("provider security-state rejection used an unexpected diagnostic");
+            }
             assert!(!rendered.contains(invalid_value));
         }
 
         let mut without_fedramp = SamplerConfig::openai_codex("gpt-5.6-terra");
-        without_fedramp.request_auth = Some(std::sync::Arc::new(RecoveringCodexRequestAuth {
-            recoveries: Default::default(),
-        }));
+        without_fedramp.request_auth = Some(std::sync::Arc::new(RecoveringCodexRequestAuth::new(
+            Default::default(),
+        )));
         let client = SamplingClient::new(without_fedramp).unwrap();
         let _ = client
             .post("http://localhost/test")
@@ -3075,14 +3524,13 @@ mod tests {
             ))
             .expect("the dynamic auth boundary is validated per request");
             let error = match client.post("http://localhost/test") {
-                Ok(_) => panic!("duplicate credential header {header_name} was accepted"),
+                Ok(_) => panic!("duplicate credential headers were accepted"),
                 Err(error) => error,
             };
             let rendered = error.to_string();
-            assert!(
-                rendered.contains("duplicate credential headers"),
-                "unexpected error for duplicate {header_name}: {rendered}"
-            );
+            if !rendered.contains("duplicate credential headers") {
+                panic!("duplicate credential rejection used an unexpected diagnostic");
+            }
             assert!(!rendered.contains(header_value));
         }
     }
@@ -3231,9 +3679,9 @@ mod tests {
             strict: None,
         })]);
         request.wire_reasoning_effort = Some(ReasoningEffort::Ultra);
-        request.x_grok_conv_id = Some("codex-thread-123".to_string());
+        request.x_grok_conv_id = Some(CODEX_THREAD_FIXTURE.to_string());
         request.x_grok_req_id = Some("must-not-be-sent".to_string());
-        request.x_grok_session_id = Some("codex-session-123".to_string());
+        request.x_grok_session_id = Some(CODEX_SESSION_FIXTURE.to_string());
         request.x_grok_agent_id = Some("must-not-be-sent".to_string());
         request.extra_raw_tools = vec![serde_json::json!({"type": "x_search"})];
 
@@ -3253,23 +3701,20 @@ mod tests {
         server.abort();
 
         assert_eq!(uri.path(), "/responses");
-        assert_eq!(
-            headers
-                .get(AUTHORIZATION)
-                .and_then(|value| value.to_str().ok()),
-            Some("Bearer codex-access-token")
+        assert!(
+            headers.get(AUTHORIZATION).is_some_and(|value| {
+                value.as_bytes() == CODEX_AUTHORIZATION_FIXTURE.as_bytes()
+            })
         );
-        assert_eq!(
+        assert!(
             headers
                 .get(CHATGPT_ACCOUNT_ID_HEADER)
-                .and_then(|value| value.to_str().ok()),
-            Some("account-selected-by-auth-store")
+                .is_some_and(|value| value.as_bytes() == CODEX_ACCOUNT_FIXTURE.as_bytes())
         );
-        assert_eq!(
+        assert!(
             headers
-                .get("x-openai-fedramp")
-                .and_then(|value| value.to_str().ok()),
-            Some("true")
+                .get(OPENAI_FEDRAMP_HEADER)
+                .is_some_and(|value| value.as_bytes() == CODEX_FEDRAMP_FIXTURE.as_bytes())
         );
         assert_eq!(
             headers
@@ -3281,23 +3726,20 @@ mod tests {
             headers.get("version").and_then(|value| value.to_str().ok()),
             Some(OPENAI_CODEX_COMPATIBILITY_VERSION)
         );
-        assert_eq!(
+        assert!(
             headers
                 .get(CODEX_SESSION_ID_HEADER)
-                .and_then(|value| value.to_str().ok()),
-            Some("codex-session-123")
+                .is_some_and(|value| value.as_bytes() == CODEX_SESSION_FIXTURE.as_bytes())
         );
-        assert_eq!(
+        assert!(
             headers
                 .get(CODEX_THREAD_ID_HEADER)
-                .and_then(|value| value.to_str().ok()),
-            Some("codex-thread-123")
+                .is_some_and(|value| value.as_bytes() == CODEX_THREAD_FIXTURE.as_bytes())
         );
-        assert_eq!(
+        assert!(
             headers
                 .get(CODEX_CLIENT_REQUEST_ID_HEADER)
-                .and_then(|value| value.to_str().ok()),
-            Some("codex-thread-123")
+                .is_some_and(|value| value.as_bytes() == CODEX_THREAD_FIXTURE.as_bytes())
         );
         assert_eq!(
             headers
@@ -3376,11 +3818,11 @@ mod tests {
             .rejected_provider_credential()
             .expect("Codex 401 must retain the signing receipt");
         assert_eq!(provider, ProviderId::OpenAiCodex);
-        assert_eq!(credential, &test_codex_binding(1));
+        assert!(credential == &test_codex_binding(1));
         let rendered = format!("{error:?} {error}");
-        assert!(!rendered.contains("test-credential"));
-        assert!(!rendered.contains("codex-access-token"));
-        assert!(!rendered.contains("account-selected-by-auth-store"));
+        assert!(!rendered.contains(CODEX_RECORD_FIXTURE));
+        assert!(!rendered.contains(CODEX_AUTHORIZATION_FIXTURE));
+        assert!(!rendered.contains(CODEX_ACCOUNT_FIXTURE));
     }
 
     #[tokio::test]
@@ -3390,21 +3832,21 @@ mod tests {
         use axum::response::IntoResponse;
         use axum::routing::post;
 
+        const REFLECTED_BODY: &str = "Bearer reflected-body-secret";
+        const REFLECTED_HEADER: &str = "Bearer reflected-header-secret";
+        const REFLECTED_CONTENT_TYPE: &str = "text/plain; reflected=account-secret";
+
         let app = Router::new().route(
             "/responses",
             post(|| async {
-                let mut response = (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Bearer reflected-body-secret",
-                )
-                    .into_response();
-                response.headers_mut().insert(
-                    "x-error-detail",
-                    HeaderValue::from_static("Bearer reflected-header-secret"),
-                );
+                let mut response =
+                    (StatusCode::INTERNAL_SERVER_ERROR, REFLECTED_BODY).into_response();
+                response
+                    .headers_mut()
+                    .insert("x-error-detail", HeaderValue::from_static(REFLECTED_HEADER));
                 response.headers_mut().insert(
                     reqwest::header::CONTENT_TYPE,
-                    HeaderValue::from_static("text/plain; reflected=account-secret"),
+                    HeaderValue::from_static(REFLECTED_CONTENT_TYPE),
                 );
                 response
             }),
@@ -3428,37 +3870,45 @@ mod tests {
         let rendered = format!("{error:?} {error}");
         assert!(rendered.contains("content-type: [value omitted]"));
         assert!(!rendered.contains("x-error-detail"));
-        assert!(!rendered.contains("reflected-header-secret"));
-        assert!(!rendered.contains("reflected-body-secret"));
-        assert!(!rendered.contains("account-secret"));
-        assert!(!rendered.contains("codex-access-token"));
-        assert!(!rendered.contains("account-selected-by-auth-store"));
+        assert!(!rendered.contains(REFLECTED_HEADER));
+        assert!(!rendered.contains(REFLECTED_BODY));
+        assert!(!rendered.contains(REFLECTED_CONTENT_TYPE));
+        assert!(!rendered.contains(CODEX_AUTHORIZATION_FIXTURE));
+        assert!(!rendered.contains(CODEX_ACCOUNT_FIXTURE));
     }
 
     #[test]
     fn codex_error_bodies_cannot_reflect_credentials_into_diagnostics() {
+        const REFLECTED_BODY: &[u8] =
+            br#"{"error":{"message":"Bearer secret-token account-secret"}}"#;
+        const TOKEN_MARKER: &str = "secret-token";
+        const ACCOUNT_MARKER: &str = "account-secret";
+        const USAGE_BODY: &[u8] = br#"{"error":{"type":"usage_limit_reached","message":"Bearer reflected-secret","resets_at":1704067242}}"#;
+        const USAGE_MARKER: &str = "reflected-secret";
+        const RESET_MARKER: &str = "1704067242";
+
         let (config, _) = codex_config();
         let client = SamplingClient::new(config).unwrap();
-        let reflected = br#"{"error":{"message":"Bearer secret-token account-secret"}}"#;
-        let message = client.provider_error_message(reflected);
-        assert_eq!(message, "ChatGPT Codex request rejected");
-        assert!(!message.contains("secret-token"));
-        assert!(!message.contains("account-secret"));
+        let message = client.provider_error_message(REFLECTED_BODY);
+        if message != "ChatGPT Codex request rejected" {
+            panic!("provider error diagnostics exposed unexpected detail");
+        }
+        assert!(!message.contains(TOKEN_MARKER));
+        assert!(!message.contains(ACCOUNT_MARKER));
 
         let encrypted = br#"{"error":{"code":"encrypted_content"}}"#;
-        assert_eq!(
-            client.provider_error_message(encrypted),
-            "ChatGPT Codex request rejected (encrypted_content)"
-        );
+        if client.provider_error_message(encrypted)
+            != "ChatGPT Codex request rejected (encrypted_content)"
+        {
+            panic!("provider encrypted-content diagnostics exposed unexpected detail");
+        }
 
-        let usage_limit = br#"{"error":{"type":"usage_limit_reached","message":"Bearer reflected-secret","resets_at":1704067242}}"#;
-        let usage_message = client.provider_error_message(usage_limit);
-        assert_eq!(
-            usage_message,
-            "ChatGPT Codex request rejected (usage limit reached)"
-        );
-        assert!(!usage_message.contains("reflected-secret"));
-        assert!(!usage_message.contains("1704067242"));
+        let usage_message = client.provider_error_message(USAGE_BODY);
+        if usage_message != "ChatGPT Codex request rejected (usage limit reached)" {
+            panic!("provider usage-limit diagnostics exposed unexpected detail");
+        }
+        assert!(!usage_message.contains(USAGE_MARKER));
+        assert!(!usage_message.contains(RESET_MARKER));
     }
 
     #[test]
@@ -3470,12 +3920,11 @@ mod tests {
             ..minimal_config()
         };
         let client = SamplingClient::new(cfg).expect("client should build");
-        assert!(
-            client
-                .default_headers
-                .get(HeaderName::from_static("x-api-key"))
-                .is_some()
-        );
+        let api_key = client
+            .default_headers
+            .get(HeaderName::from_static("x-api-key"))
+            .expect("API-key authentication should be configured");
+        assert!(api_key.is_sensitive());
         assert!(client.default_headers.get(AUTHORIZATION).is_none());
     }
 
@@ -3488,7 +3937,11 @@ mod tests {
             ..minimal_config()
         };
         let client = SamplingClient::new(cfg).expect("client should build");
-        assert!(client.default_headers.get(AUTHORIZATION).is_some());
+        let authorization = client
+            .default_headers
+            .get(AUTHORIZATION)
+            .expect("bearer authentication should be configured");
+        assert!(authorization.is_sensitive());
         assert!(
             client
                 .default_headers
@@ -3531,6 +3984,37 @@ mod tests {
             req.headers().contains_key("traceparent"),
             "HeaderInjector should inject traceparent into post() requests"
         );
+    }
+
+    #[test]
+    fn credential_header_replacement_by_injector_is_sensitive() {
+        #[derive(Debug)]
+        struct CredentialInjector;
+        impl crate::config::HeaderInjector for CredentialInjector {
+            fn inject(&self, headers: &mut HeaderMap) {
+                headers.insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_static("Bearer opaque-injected-credential"),
+                );
+                headers.insert(
+                    HeaderName::from_static("x-api-key-backup"),
+                    HeaderValue::from_static("opaque-injected-credential"),
+                );
+            }
+        }
+
+        let mut config = minimal_config();
+        config.header_injector = Some(std::sync::Arc::new(CredentialInjector));
+        let request = SamplingClient::new(config)
+            .expect("client should build")
+            .post("http://localhost/test")
+            .expect("injected headers should be accepted")
+            .builder
+            .build()
+            .expect("request should build");
+
+        assert!(request.headers()[AUTHORIZATION].is_sensitive());
+        assert!(request.headers()["x-api-key-backup"].is_sensitive());
     }
 
     #[test]
@@ -3592,12 +4076,15 @@ mod tests {
     }
 
     #[test]
-    fn live_bearer_resolver_uses_authorization_for_messages_plus_bearer() {
+    fn live_bearer_resolver_uses_sensitive_authorization_for_messages() {
+        const LIVE_INPUT: &str = "opaque-live-credential";
+        const LIVE_AUTHORIZATION: &[u8] = b"Bearer opaque-live-credential";
+
         let cfg = SamplerConfig {
-            api_key: Some("stale-bearer".to_string()),
+            api_key: Some("opaque-static-credential".to_string()),
             api_backend: ApiBackend::Messages,
             auth_scheme: AuthScheme::Bearer,
-            bearer_resolver: Some(std::sync::Arc::new(StaticBearerResolver("fresh-bearer"))),
+            bearer_resolver: Some(std::sync::Arc::new(StaticBearerResolver(LIVE_INPUT))),
             ..minimal_config()
         };
         let client = SamplingClient::new(cfg).expect("client should build");
@@ -3607,11 +4094,12 @@ mod tests {
             .builder
             .build()
             .expect("request should build");
-        let auth = request
+        let authorization = request
             .headers()
             .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok());
-        assert_eq!(auth, Some("Bearer fresh-bearer"));
+            .expect("live authorization should be present");
+        assert!(authorization.is_sensitive());
+        assert!(authorization.as_bytes() == LIVE_AUTHORIZATION);
         assert!(request.headers().get("x-api-key").is_none());
     }
 
@@ -3622,12 +4110,15 @@ mod tests {
     /// which appends rather than replaces, causing two identical
     /// `Authorization` headers and a 400 from cli-chat-proxy.
     #[test]
-    fn post_emits_single_authorization_with_api_key_and_bearer_resolver() {
+    fn post_emits_one_sensitive_authorization_with_live_bearer() {
+        const LIVE_INPUT: &str = "opaque-live-credential";
+        const LIVE_AUTHORIZATION: &[u8] = b"Bearer opaque-live-credential";
+
         let cfg = SamplerConfig {
-            api_key: Some("stale-bearer".to_string()),
+            api_key: Some("opaque-static-credential".to_string()),
             api_backend: ApiBackend::Responses,
             auth_scheme: AuthScheme::Bearer,
-            bearer_resolver: Some(std::sync::Arc::new(StaticBearerResolver("fresh-bearer"))),
+            bearer_resolver: Some(std::sync::Arc::new(StaticBearerResolver(LIVE_INPUT))),
             ..minimal_config()
         };
         let client = SamplingClient::new(cfg).expect("client should build");
@@ -3637,27 +4128,25 @@ mod tests {
             .builder
             .build()
             .expect("request should build");
-        let auth_count = request.headers().get_all(AUTHORIZATION).iter().count();
-        assert_eq!(
-            auth_count, 1,
-            "expected exactly one Authorization header, got {auth_count}"
-        );
-        assert_eq!(
-            request
-                .headers()
-                .get(AUTHORIZATION)
-                .and_then(|v| v.to_str().ok()),
-            Some("Bearer fresh-bearer"),
-        );
+        assert_eq!(request.headers().get_all(AUTHORIZATION).iter().count(), 1);
+        let authorization = request
+            .headers()
+            .get(AUTHORIZATION)
+            .expect("live authorization should be present");
+        assert!(authorization.is_sensitive());
+        assert!(authorization.as_bytes() == LIVE_AUTHORIZATION);
     }
 
     #[test]
-    fn live_bearer_resolver_uses_x_api_key_for_messages_plus_anthropic_api_key() {
+    fn live_bearer_resolver_uses_sensitive_x_api_key_for_messages() {
+        const LIVE_INPUT: &str = "opaque-live-credential";
+        const LIVE_API_KEY: &[u8] = b"opaque-live-credential";
+
         let cfg = SamplerConfig {
-            api_key: Some("stale-anthropic".to_string()),
+            api_key: Some("opaque-static-credential".to_string()),
             api_backend: ApiBackend::Messages,
             auth_scheme: AuthScheme::XApiKey,
-            bearer_resolver: Some(std::sync::Arc::new(StaticBearerResolver("fresh-anthropic"))),
+            bearer_resolver: Some(std::sync::Arc::new(StaticBearerResolver(LIVE_INPUT))),
             ..minimal_config()
         };
         let client = SamplingClient::new(cfg).expect("client should build");
@@ -3670,8 +4159,9 @@ mod tests {
         let api_key = request
             .headers()
             .get("x-api-key")
-            .and_then(|v| v.to_str().ok());
-        assert_eq!(api_key, Some("fresh-anthropic"));
+            .expect("live API-key authentication should be present");
+        assert!(api_key.is_sensitive());
+        assert!(api_key.as_bytes() == LIVE_API_KEY);
         assert!(request.headers().get(AUTHORIZATION).is_none());
     }
 
@@ -3704,7 +4194,10 @@ mod tests {
     /// append a second one. Duplicate Authorization headers cause
     /// Cloudflare to return 400 Bad Request.
     #[test]
-    fn bearer_resolver_replaces_authorization_header() {
+    fn bearer_resolver_replacement_remains_sensitive() {
+        const LIVE_INPUT: &str = "opaque-live-credential";
+        const LIVE_AUTHORIZATION: &[u8] = b"Bearer opaque-live-credential";
+
         #[derive(Debug)]
         struct StaticResolver(String);
         impl crate::config::BearerResolver for StaticResolver {
@@ -3714,38 +4207,30 @@ mod tests {
         }
 
         let resolver: crate::config::SharedBearerResolver =
-            std::sync::Arc::new(StaticResolver("fresh-token".to_string()));
+            std::sync::Arc::new(StaticResolver(LIVE_INPUT.to_string()));
         let cfg = SamplerConfig {
-            api_key: Some("stale-token".to_string()),
+            api_key: Some("opaque-static-credential".to_string()),
             api_backend: ApiBackend::Responses,
             bearer_resolver: Some(resolver),
             ..minimal_config()
         };
         let client = SamplingClient::new(cfg).expect("client should build");
 
-        // Build a request to inspect the final headers.
-        let builder = client
+        let request = client
             .post("https://example.test/v1/responses")
-            .expect("apply request auth");
-        let request = builder
+            .expect("apply request auth")
             .builder
             .body("")
             .build()
             .expect("request should build");
 
-        let auth_values: Vec<_> = request.headers().get_all(AUTHORIZATION).iter().collect();
-        assert_eq!(
-            auth_values.len(),
-            1,
-            "expected exactly one Authorization header, got {}: {:?}",
-            auth_values.len(),
-            auth_values
-        );
-        assert_eq!(
-            auth_values[0].to_str().unwrap(),
-            "Bearer fresh-token",
-            "Authorization header should contain the resolver's fresh token"
-        );
+        assert_eq!(request.headers().get_all(AUTHORIZATION).iter().count(), 1);
+        let authorization = request
+            .headers()
+            .get(AUTHORIZATION)
+            .expect("live authorization should be present");
+        assert!(authorization.is_sensitive());
+        assert!(authorization.as_bytes() == LIVE_AUTHORIZATION);
     }
 
     /// `record_401_attribution` is a no-op when `attribution_callback`

@@ -52,27 +52,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dedicated_client_never_follows_redirects() {
+    async fn dedicated_client_never_reaches_redirect_sink() {
         use axum::Router;
+        use axum::extract::State;
         use axum::http::{StatusCode, header};
         use axum::routing::{get, post};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
+        async fn sink(State(hits): State<Arc<AtomicUsize>>) -> StatusCode {
+            hits.fetch_add(1, Ordering::SeqCst);
+            StatusCode::OK
+        }
+
+        let sink_hits = Arc::new(AtomicUsize::new(0));
         let app = Router::new()
             .route(
                 "/start",
                 post(|| async { (StatusCode::FOUND, [(header::LOCATION, "/credential-sink")]) }),
             )
-            .route(
-                "/credential-sink",
-                get(|| async { StatusCode::OK }).post(|| async { StatusCode::OK }),
-            );
+            .route("/credential-sink", get(sink).post(sink))
+            .with_state(Arc::clone(&sink_hits));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
+        let mut credential = reqwest::header::HeaderValue::from_static("Bearer opaque-credential");
+        credential.set_sensitive(true);
         let response = http_client()
             .unwrap()
             .post(format!("http://{address}/start"))
+            .header(reqwest::header::AUTHORIZATION, credential)
             .send()
             .await
             .unwrap();
@@ -80,5 +90,6 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(response.url().path(), "/start");
+        assert_eq!(sink_hits.load(Ordering::SeqCst), 0);
     }
 }

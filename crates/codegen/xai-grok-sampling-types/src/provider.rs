@@ -115,6 +115,16 @@ impl CredentialBinding {
             && self.source == other.source
             && self.record_id == other.record_id
     }
+
+    /// Return whether this binding is a safe post-recovery successor to the
+    /// exact binding rejected by a provider.
+    ///
+    /// Recovery may advance only the monotonic generation. Provider, source,
+    /// and opaque local record identity must remain pinned, and merely
+    /// reloading the same (or an older) generation is not a recovery.
+    pub fn is_strict_successor_of(&self, rejected: &Self) -> bool {
+        self.same_record(rejected) && self.generation > rejected.generation
+    }
 }
 
 #[cfg(test)]
@@ -156,14 +166,51 @@ mod tests {
     }
 
     #[test]
-    fn record_identity_survives_rotation_but_rejects_account_rebind() {
-        let mut original = CredentialBinding::openai_codex(Some("record-a".to_owned()));
-        original.generation = 1;
-        let mut rotated = original.clone();
-        rotated.generation = 2;
-        assert!(original.same_record(&rotated));
+    fn strict_successor_requires_same_record_and_higher_generation() {
+        let mut rejected = CredentialBinding::openai_codex(Some("record-a".to_owned()));
+        rejected.generation = 7;
 
-        let switched = CredentialBinding::openai_codex(Some("record-b".to_owned()));
-        assert!(!original.same_record(&switched));
+        let mut successor = rejected.clone();
+        successor.generation = 8;
+        assert!(successor.is_strict_successor_of(&rejected));
+        assert!(rejected.same_record(&successor));
+
+        let mut same_generation = rejected.clone();
+        same_generation.generation = rejected.generation;
+        assert!(!same_generation.is_strict_successor_of(&rejected));
+
+        let mut older = rejected.clone();
+        older.generation = rejected.generation - 1;
+        assert!(!older.is_strict_successor_of(&rejected));
+
+        let mut switched_record = successor.clone();
+        switched_record.record_id = Some("record-b".to_owned());
+        assert!(!switched_record.is_strict_successor_of(&rejected));
+
+        let mut switched_source = successor.clone();
+        switched_source.source = CredentialSourceId::External;
+        assert!(!switched_source.is_strict_successor_of(&rejected));
+
+        let mut switched_provider = successor;
+        switched_provider.provider = ProviderId::Custom;
+        assert!(!switched_provider.is_strict_successor_of(&rejected));
+    }
+
+    #[test]
+    fn legacy_zero_generation_can_advance_without_changing_serde_shape() {
+        let rejected: CredentialBinding = serde_json::from_value(serde_json::json!({
+            "provider": "openai_codex",
+            "source": "openai_codex_subscription",
+            "record_id": "legacy-record"
+        }))
+        .unwrap();
+        let mut successor = rejected.clone();
+        successor.generation = 1;
+
+        assert!(successor.is_strict_successor_of(&rejected));
+        assert_eq!(
+            serde_json::to_value(&successor).unwrap()["generation"],
+            serde_json::json!(1)
+        );
     }
 }

@@ -95,6 +95,9 @@ mod tests {
 
     #[test]
     fn state_survives_clones_only_within_same_request_id() {
+        const FIRST_STATE: &str = "opaque-sticky-state";
+        const LATER_STATE: &str = "must-not-replace-first-state";
+
         let store = CodexTurnStateStore::default();
         assert!(
             build(&store, "request-1")
@@ -106,7 +109,7 @@ mod tests {
         let mut response_headers = HeaderMap::new();
         response_headers.insert(
             HeaderName::from_static(CODEX_TURN_STATE_HEADER),
-            HeaderValue::from_static("opaque-sticky-state"),
+            HeaderValue::from_static(FIRST_STATE),
         );
         store.capture(&response_headers, "request-1");
 
@@ -114,7 +117,7 @@ mod tests {
         let mut later_response_headers = HeaderMap::new();
         later_response_headers.insert(
             HeaderName::from_static(CODEX_TURN_STATE_HEADER),
-            HeaderValue::from_static("must-not-replace-first-state"),
+            HeaderValue::from_static(LATER_STATE),
         );
         cloned.capture(&later_response_headers, "request-1");
 
@@ -123,7 +126,7 @@ mod tests {
             .headers()
             .get(CODEX_TURN_STATE_HEADER)
             .expect("same turn should replay sticky state");
-        assert_eq!(replayed.as_bytes(), b"opaque-sticky-state");
+        assert!(replayed.as_bytes() == FIRST_STATE.as_bytes());
         assert!(replayed.is_sensitive());
 
         assert!(

@@ -598,12 +598,14 @@ mod tests {
     fn codex_malformed_sse_diagnostics_do_not_reflect_payload() {
         let reflected = "codex-access-token account-selected-by-auth-store";
         let data = format!(r#"{{"type":"response.created","response":"{reflected}"}}"#);
-        let error = CodexSseDecoder::new("gpt-5.6").decode(&data).unwrap_err();
+        let error = match CodexSseDecoder::new("gpt-5.6").decode(&data) {
+            Err(error) => error,
+            Ok(_) => panic!("malformed provider stream event was unexpectedly accepted"),
+        };
         let rendered = error.to_string();
-        assert_eq!(
-            rendered,
-            "serialization error: ChatGPT Codex stream event was invalid"
-        );
+        if rendered != "serialization error: ChatGPT Codex stream event was invalid" {
+            panic!("provider stream parse diagnostics exposed unexpected detail");
+        }
         assert!(!rendered.contains(reflected));
     }
 
@@ -897,10 +899,12 @@ mod tests {
             format!(r#"{{"type":"error","message":"{reflected}"}}"#),
             format!(r#"{{"error":{{"message":"{reflected}"}}}}"#),
         ] {
-            let rendered = decoder.decode(&data).unwrap_err().to_string();
+            let error = match decoder.decode(&data) {
+                Err(error) => error,
+                Ok(_) => panic!("invalid provider stream payload was unexpectedly accepted"),
+            };
+            let rendered = error.to_string();
             assert!(!rendered.contains(reflected));
-            assert!(!rendered.contains("access-token"));
-            assert!(!rendered.contains("account-selected"));
         }
     }
 

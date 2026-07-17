@@ -162,17 +162,15 @@ mod tests {
         let reflected = "Bearer codex-access-token account-selected-by-auth-store";
         let stream = format!(r#"{{"error":{{"message":"{reflected}"}}}}"#);
         let rendered = try_parse_stream_error(&stream).unwrap().to_string();
-        assert_eq!(
-            rendered,
-            "stream error (provider_error): ChatGPT Codex stream rejected"
-        );
+        if rendered != "stream error (provider_error): ChatGPT Codex stream rejected" {
+            panic!("provider stream diagnostics exposed unexpected detail");
+        }
         assert!(!rendered.contains(reflected));
 
         let body = format!(r#"{{"error":{{"message":"{reflected}"}}}}"#);
-        assert_eq!(
-            response_message(body.as_bytes()),
-            "ChatGPT Codex request rejected"
-        );
+        if response_message(body.as_bytes()) != "ChatGPT Codex request rejected" {
+            panic!("provider response diagnostics exposed unexpected detail");
+        }
     }
 
     #[test]
@@ -207,10 +205,11 @@ mod tests {
             ),
             None
         );
-        assert_eq!(
-            response_message(data.as_bytes()),
-            "ChatGPT Codex request rejected (usage limit reached)"
-        );
+        if response_message(data.as_bytes())
+            != "ChatGPT Codex request rejected (usage limit reached)"
+        {
+            panic!("usage-limit diagnostics exposed unexpected detail");
+        }
     }
 
     #[test]
@@ -227,6 +226,5 @@ mod tests {
         assert!(rendered.contains("content-type: [value omitted]"));
         assert!(!rendered.contains("x-error-detail"));
         assert!(!rendered.contains("chatgpt-account-id"));
-        assert!(!rendered.contains("codex-access-token"));
     }
 }

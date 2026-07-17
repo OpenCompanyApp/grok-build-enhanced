@@ -521,13 +521,14 @@ mod tests {
         let malformed = format!(
             r#"{{"id":"resp_1","object":"response","created_at":0,"model":"gpt-5.6","status":"{reflected}","output":[]}}"#
         );
-        let rendered = deserialize_response(malformed.as_bytes())
-            .unwrap_err()
-            .to_string();
-        assert_eq!(
-            rendered,
-            "serialization error: ChatGPT Codex response was invalid"
-        );
+        let error = match deserialize_response(malformed.as_bytes()) {
+            Err(error) => error,
+            Ok(_) => panic!("malformed provider response was unexpectedly accepted"),
+        };
+        let rendered = error.to_string();
+        if rendered != "serialization error: ChatGPT Codex response was invalid" {
+            panic!("provider response parse diagnostics exposed unexpected detail");
+        }
         assert!(!rendered.contains(reflected));
     }
 }
