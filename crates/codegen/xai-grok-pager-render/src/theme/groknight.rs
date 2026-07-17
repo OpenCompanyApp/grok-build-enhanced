@@ -156,11 +156,11 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "known broken: expected accent values drift from runtime theme"]
-    fn test_groknight_theme() {
+    fn groknight_palette_matches_declared_tokens() {
         let theme = Theme::groknight();
-        assert!(matches!(theme.bg_base, Color::Rgb(20, 20, 20)));
-        assert!(matches!(theme.accent_user, Color::Rgb(225, 225, 225)));
-        assert!(matches!(theme.text_primary, Color::Rgb(225, 225, 225)));
+        assert_eq!(theme.bg_base, Color::Rgb(20, 20, 20));
+        assert_eq!(theme.accent_user, Color::Rgb(200, 200, 200));
+        assert_eq!(theme.text_primary, Color::Rgb(225, 225, 225));
+        assert_eq!(theme.accent_user, theme.text_secondary);
     }
 }

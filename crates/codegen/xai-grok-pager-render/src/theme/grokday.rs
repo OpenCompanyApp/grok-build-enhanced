@@ -138,3 +138,17 @@ impl Theme {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grokday_palette_matches_declared_tokens() {
+        let theme = Theme::grokday();
+        assert_eq!(theme.bg_base, Color::Rgb(238, 238, 238));
+        assert_eq!(theme.accent_user, Color::Rgb(68, 68, 68));
+        assert_eq!(theme.text_primary, Color::Rgb(38, 38, 38));
+        assert_eq!(theme.accent_user, theme.text_secondary);
+    }
+}
