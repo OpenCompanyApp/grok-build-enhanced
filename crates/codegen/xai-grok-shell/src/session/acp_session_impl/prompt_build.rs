@@ -683,25 +683,10 @@ impl SessionActor {
         let current_query = crate::session::image_describe::strip_template_context_tags(
             &xai_chat_state::compaction_utils::extract_user_query(&original_user_message),
         );
-        let active_session_config = self.reconstruct_full_config().await;
-        let resolved_describe = self
-            .resolve_aux_sampler_config(&self.image_description_model)
-            .await;
-        let (describe_model, sampler_config) =
-            crate::agent::config::finalize_image_describe_sampler_config(
-                resolved_describe,
-                &active_session_config,
-                self.client_identifier.clone(),
-                Some(self.max_retries),
-            );
-        self.mark_codex_auxiliary_usage_incomplete(sampler_config.provider)
-            .await;
-        let client = xai_grok_sampler::SamplingClient::new(sampler_config).map_err(|e| {
-            acp::Error::internal_error().data(format!(
-                "failed to build image-describe sampling client: {e}"
-            ))
-        })?;
-        let model = &describe_model;
+        let (client, describe_route) = self
+            .prepare_aux_sampling_client(Some(&self.image_description_model), "image description")
+            .await?;
+        let model = &describe_route.model;
         let describe_session_id = self.session_info.id.to_string();
         let limit = crate::session::image_describe::IMAGE_DESCRIPTION_PROCESSING_LIMIT;
         let skip_count = persisted.len().saturating_sub(limit);

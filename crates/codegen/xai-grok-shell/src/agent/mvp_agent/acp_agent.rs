@@ -1128,7 +1128,8 @@ impl acp::Agent for MvpAgent {
             session_sampling.reasoning_effort = Some(effective_effort);
         }
         let (summary_client, summary_model) = self
-            .build_summary_client(&session_sampling)?;
+            .build_summary_client(&session_sampling)
+            .await?;
         let relay_sync = if let Some(sync) = self
             .create_relay_sync(&session_id.0, &session_info)
         {
@@ -1226,6 +1227,7 @@ impl acp::Agent for MvpAgent {
                         managed_mcp_expires_at,
                         model_agent_type: model_agent_type.as_deref(),
                         session_model_id,
+                        restored_credential_binding: None,
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd: None,
@@ -1450,13 +1452,20 @@ impl acp::Agent for MvpAgent {
             drop(flush_timer);
         }
         let origin_client = self.origin_client_info_from_meta(request_meta.as_ref());
-        let load_session_sampling = self
-            .resolve_sampling_config_for_model(
-                &self.models_manager.current_model_id(),
-                origin_client.clone(),
-            );
-        let (summary_client, summary_model) = self
-            .build_summary_client(&load_session_sampling)?;
+        // `load_light` needs a title-generator client before it can return the
+        // persisted provider/model/binding. Give it an inert, credential-free
+        // placeholder and replace it immediately after reading the summary;
+        // constructing a process-current Codex client here would bypass the
+        // restored session binding.
+        let summary_model = "__pending_restored_provider_binding__".to_owned();
+        let summary_client = OaiCompatClient::new(SamplingConfig {
+            provider: xai_grok_sampling_types::ProviderId::Custom,
+            credential_source: xai_grok_sampling_types::CredentialSourceId::External,
+            base_url: "http://127.0.0.1".to_owned(),
+            model: summary_model.clone(),
+            ..SamplingConfig::default()
+        })
+        .map_err(map_sampling_err_to_acp)?;
         let relay_sync = if let Some(sync) = self
             .create_relay_sync(&session_id.0, &session_info)
         {
@@ -1488,7 +1497,7 @@ impl acp::Agent for MvpAgent {
                     .current_or_expired()
                     .is_some_and(|a| a.is_zdr_team()),
             });
-        let (persistence_info, persistence) = crate::session::persistence::load_light(
+        let (persistence_info, mut persistence) = crate::session::persistence::load_light(
                 &session_info,
                 summary_client,
                 self.storage_mode,
@@ -1530,6 +1539,34 @@ impl acp::Agent for MvpAgent {
         } else {
             None
         };
+        // `load_light` must start before the summary is available. Replace its
+        // provisional title route now, while no session actor can have emitted
+        // a content chunk yet. Provider and model are resolved together, and a
+        // Codex fallback is pinned to the restored credential record.
+        let restored_summary_model_id = persisted_codex_model
+            .as_ref()
+            .unwrap_or(&summary.current_model_id);
+        let mut restored_sampling = self.resolve_sampling_config_for_model(
+            restored_summary_model_id,
+            origin_client.clone(),
+        );
+        restored_sampling.credential_binding = restored_sampling
+            .provider
+            .is_openai_codex()
+            .then(|| summary.credential_binding.clone())
+            .flatten();
+        let (summary_client, summary_model) =
+            self.build_summary_client(&restored_sampling).await?;
+        persistence
+            .replace_summary_runtime(
+                summary_client,
+                summary_model,
+                summary.display_title().trim().is_empty(),
+            )
+            .map_err(|_| {
+                acp::Error::internal_error()
+                    .data("failed to replace restored session summary runtime")
+            })?;
         let restored_compaction_count = persisted_signals
             .as_ref()
             .map(|s| s.compaction_count as u64)
@@ -1788,6 +1825,7 @@ impl acp::Agent for MvpAgent {
                         managed_mcp_expires_at,
                         model_agent_type: persisted_agent_name.as_deref(),
                         session_model_id: spawn_model_id,
+                        restored_credential_binding: summary.credential_binding.clone(),
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd,

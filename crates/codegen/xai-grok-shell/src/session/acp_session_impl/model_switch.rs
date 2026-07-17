@@ -349,16 +349,46 @@ impl SessionActor {
             && previous_sampling_config.as_ref().is_some_and(|previous| {
                 previous.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
             })
-            && let Some(previous_tier) = previous_sampling_config
+        {
+            if let Some(previous_tier) = previous_sampling_config
                 .as_ref()
                 .and_then(|previous| previous.service_tier.clone())
-        {
-            // Preserve the user's session selection across Codex model
-            // switches. Validation is intentionally deferred to the per-turn
-            // wire boundary so switching through a model without Fast support
-            // does not erase the preference before switching back.
-            sampling_config.service_tier = Some(previous_tier);
+            {
+                // Preserve the user's session selection across Codex model
+                // switches. Validation is intentionally deferred to the per-turn
+                // wire boundary so switching through a model without Fast support
+                // does not erase the preference before switching back.
+                sampling_config.service_tier = Some(previous_tier);
+            }
+            // A Codex-to-Codex switch belongs to the existing session record;
+            // never adopt a process-current account from model resolution.
+            if let Some(previous) = previous_sampling_config.as_ref() {
+                crate::session::provider::pin_codex_candidate_to_active_record(
+                    &mut sampling_config,
+                    previous.provider,
+                    previous.credential_binding.as_ref(),
+                );
+            }
         }
+        let generic_api_key_provider = (sampling_config.provider
+            == xai_grok_sampling_types::ProviderId::Xai)
+            .then(|| {
+                self.auth_manager.as_ref().map(|manager| {
+                    std::sync::Arc::new(crate::auth::manager::SharedAuthKeyProvider(
+                        manager.clone(),
+                    )) as xai_grok_tools::types::SharedApiKeyProvider
+                })
+            })
+            .flatten();
+        let bound_runtime = crate::session::provider::bind_provider_runtime(
+            sampling_config,
+            generic_api_key_provider,
+        )
+        .await
+        .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
+        let sampling_config = bound_runtime.sampler_config;
+        let provider_api_key_provider = bound_runtime.api_key_provider;
+
         let model_id =
             if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
                 acp::ModelId::new(format!("openai-codex/{}", sampling_config.model))
@@ -457,10 +487,14 @@ impl SessionActor {
                 alpha_test_key: existing.alpha_test_key,
                 client_version: sampling_config.client_version.clone(),
             });
-        self.refresh_provider_media_resources(&sampling_config)
+        self.refresh_provider_media_resources(&sampling_config, provider_api_key_provider.clone())
             .await;
-        self.refresh_provider_web_resources(&sampling_config, alpha_test_key.as_deref())
-            .await;
+        self.refresh_provider_web_resources(
+            &sampling_config,
+            alpha_test_key.as_deref(),
+            provider_api_key_provider,
+        )
+        .await;
         let bridge = self.agent.borrow().tool_bridge().clone();
         refresh_provider_memory_resource(self, &bridge, &sampling_config).await;
         self.model_auth_facts.replace(None);
@@ -494,6 +528,11 @@ impl SessionActor {
             );
         }
         let agent_name = self.agent.borrow().definition().name.clone();
+        let persisted_binding = sampling_config
+            .provider
+            .is_openai_codex()
+            .then(|| sampling_config.credential_binding.clone())
+            .flatten();
         let _ = self
             .notifications
             .persistence_tx
@@ -501,6 +540,7 @@ impl SessionActor {
                 model_id: model_id.clone(),
                 agent_name: Some(agent_name),
                 reasoning_effort: Some(sampling_config.reasoning_effort),
+                credential_binding: persisted_binding,
             });
         Ok(model_id)
     }
@@ -509,6 +549,7 @@ impl SessionActor {
         &self,
         sampling_config: &xai_grok_sampler::SamplerConfig,
         alpha_test_key: Option<&str>,
+        api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider>,
     ) {
         use xai_grok_tools::implementations::grok_build::web_fetch::{
             WebFetchClient, WebFetchParams,
@@ -526,19 +567,6 @@ impl SessionActor {
             self.session_info.id.0.as_ref(),
             alpha_test_key,
         );
-        let api_key_provider = match sampling_config.provider {
-            xai_grok_sampling_types::ProviderId::OpenAiCodex => {
-                crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home())
-                    .ok()
-                    .map(std::sync::Arc::new)
-                    .map(crate::auth::codex::shared_api_key_provider)
-            }
-            xai_grok_sampling_types::ProviderId::Xai => self.auth_manager.as_ref().map(|manager| {
-                std::sync::Arc::new(crate::auth::manager::SharedAuthKeyProvider(manager.clone()))
-                    as xai_grok_tools::types::SharedApiKeyProvider
-            }),
-            xai_grok_sampling_types::ProviderId::Custom => None,
-        };
         if sampling_config.provider.is_openai_codex() && api_key_provider.is_none() {
             tracing::warn!(
                 provider = "openai_codex",
@@ -636,6 +664,7 @@ impl SessionActor {
     async fn refresh_provider_media_resources(
         &self,
         sampling_config: &xai_grok_sampler::SamplerConfig,
+        api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider>,
     ) {
         use xai_grok_tools::implementations::grok_build::image_gen::{
             ImageGenClient, ImageGenConfig,
@@ -661,17 +690,14 @@ impl SessionActor {
             }
             // Image generation/editing uses the standalone Codex image model;
             // selected-model image-input support remains an input/read concern.
-            let manager =
-                crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home())
-                    .ok()
-                    .map(std::sync::Arc::new);
-            let provider = manager.map(crate::auth::codex::shared_api_key_provider);
+            // Reuse the binder-owned provider so sampler and tools cannot
+            // attest different credential records.
             let config = ImageGenConfig::OpenAiCodex {
                 base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
                 image_gen_enabled,
                 image_edit_enabled,
             };
-            if let Ok(client) = ImageGenClient::new(&config, provider) {
+            if let Ok(client) = ImageGenClient::new(&config, api_key_provider) {
                 bridge
                     .update_resource(client.with_attribution_callback(None))
                     .await;
@@ -691,10 +717,7 @@ impl SessionActor {
             return;
         }
 
-        let provider = self.auth_manager.as_ref().map(|manager| {
-            std::sync::Arc::new(crate::auth::manager::SharedAuthKeyProvider(manager.clone()))
-                as xai_grok_tools::types::SharedApiKeyProvider
-        });
+        let provider = api_key_provider;
         let (image_gen_enabled, image_edit_enabled) = self.models_manager.image_tool_gates();
         if let Some(api_key) = sampling_config.api_key.clone()
             && (image_gen_enabled || image_edit_enabled)

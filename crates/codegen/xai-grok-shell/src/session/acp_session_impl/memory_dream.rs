@@ -427,17 +427,19 @@ impl SessionActor {
             ));
 
             let requested_model = self.memory.flush_config.flush_model.as_deref();
-            let (sampling_client, model) = self
+            let (sampling_client, route) = self
                 .prepare_aux_sampling_client(requested_model, "memory flush")
                 .await?;
             tracing::info!(
                 target: xai_grok_telemetry::memory_log::TARGET,
-                "MEMORY_FLUSH: using model={model}"
+                provider = %route.provider,
+                model = %route.model,
+                "MEMORY_FLUSH: using provider-bound auxiliary route"
             );
             let session_id = self.session_info.id.to_string();
             let request = ConversationRequest {
                 items,
-                model: Some(model),
+                model: Some(route.model),
                 x_grok_conv_id: Some(session_id.clone()),
                 x_grok_req_id: Some(format!("xai-flush-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.clone()),
@@ -676,7 +678,7 @@ impl SessionActor {
             ));
         }
 
-        let (sampling_client, model) = self
+        let (sampling_client, route) = self
             .prepare_aux_sampling_client(None, "memory note rewrite")
             .await
             .map_err(|e| format!("failed to prepare client: {e}"))?;
@@ -705,7 +707,7 @@ impl SessionActor {
         let request = ConversationRequest {
             items,
             tools: vec![],
-            model: Some(model),
+            model: Some(route.model),
             temperature: Some(0.3),
             max_output_tokens: Some(1024),
             x_grok_conv_id: Some(session_id.clone()),

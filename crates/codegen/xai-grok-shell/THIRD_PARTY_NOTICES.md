@@ -10,9 +10,10 @@ This crate contains modified adaptations of public client behavior from the
   `src/agent/models/codex_catalog.rs`, adapted from
   `codex-rs/model-provider/` and `codex-rs/model-provider-info/` for
   authenticated account-scoped model discovery.
-- `src/agent/models.rs` and `src/session/acp_session_impl/turn.rs`, adapted
-  from the current Codex v2 multi-agent effort policy so Ultra uses Grok
-  Build's native subagent loop while preserving its permission and nesting
+- `src/agent/models.rs`, `src/session/provider/openai_codex.rs`, and
+  `src/session/acp_session_impl/turn.rs`, adapted from the current Codex v2
+  multi-agent effort and provider-session policies so Ultra uses Grok Build's
+  native subagent loop while preserving its permission, binding, and nesting
   rules.
 - `src/session/acp_session_impl/tool_calls.rs`, adapted from
   `codex-rs/ext/image-generation/src/tool.rs` so generated and edited images

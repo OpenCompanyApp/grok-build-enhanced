@@ -303,6 +303,28 @@ pub(crate) async fn spawn_session_actor(
     ),
     xai_grok_agent::AgentBuildError,
 > {
+    // Bind sampler and provider-owned tools from one credential attestation
+    // before constructing any session sampler/tool resources.
+    let bound_runtime =
+        crate::session::provider::bind_provider_runtime(sampling_config, api_key_provider)
+            .await
+            .map_err(|error| xai_grok_agent::AgentBuildError::InvalidConfig(error.to_string()))?;
+    let sampling_config = bound_runtime.sampler_config;
+    let api_key_provider = bound_runtime.api_key_provider;
+    let persisted_binding = sampling_config
+        .provider
+        .is_openai_codex()
+        .then(|| sampling_config.credential_binding.clone())
+        .flatten();
+    let initial_reasoning_effort = (conversation.is_empty() || startup_hints.is_subagent)
+        .then_some(sampling_config.reasoning_effort);
+    let _ = persistence.tx.send(PersistenceMsg::CurrentModel {
+        model_id: session_model_id.clone(),
+        agent_name: Some(agent_definition.name.clone()),
+        reasoning_effort: initial_reasoning_effort,
+        credential_binding: persisted_binding,
+    });
+
     if max_turns == Some(0) {
         return Err(xai_grok_agent::AgentBuildError::InvalidConfig(
             "max_turns must be greater than 0".to_string(),

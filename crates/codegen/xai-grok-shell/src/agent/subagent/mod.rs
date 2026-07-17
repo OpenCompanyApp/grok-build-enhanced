@@ -1027,16 +1027,8 @@ fn resolve_model_override_to_config(
         ctx.sampling_config.deployment_id.clone(),
         ctx.sampling_config.user_id.clone(),
     );
-    if config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
-        && let Ok(manager) =
-            crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home())
-    {
-        let manager = std::sync::Arc::new(manager);
-        if let Some(credentials) = manager.current() {
-            config.credential_binding = Some(credentials.credential_binding());
-            config.request_auth = Some(crate::auth::codex::shared_sampler_request_auth(manager));
-        }
-    }
+    // Provider auth is attached by the fallible session binder immediately
+    // before the child summary client and actor are constructed.
     xai_grok_telemetry::unified_log::debug(
         "subagent resolve_model_override_to_config",
         None,

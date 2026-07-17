@@ -518,21 +518,30 @@ pub trait StorageAdapter: Send + Sync {
     /// Update the current model in summary (delegates to
     /// `update_current_model_and_agent` with `agent_name = None`).
     async fn update_current_model(&self, info: &Info, model_id: &acp::ModelId) -> io::Result<()> {
-        self.update_current_model_and_agent(info, model_id, None, None)
+        self.update_current_model_and_agent(info, model_id, None, None, None)
             .await
     }
 
-    /// Update the current model and agent name in summary.
-    /// `agent_name` is the resolved agent definition name
-    /// persisted so session resume doesn't depend on the mutable model catalog.
-    /// `None` leaves the existing `agent_name` unchanged (used by legacy callers
-    /// that only update the model ID).
+    /// Update the current provider route in one summary patch.
+    /// `agent_name` is the resolved agent definition name persisted so session
+    /// resume doesn't depend on the mutable model catalog. `None` leaves the
+    /// existing `agent_name` unchanged (used by legacy callers that only update
+    /// the model ID). For `credential_binding`, outer `None` leaves the field
+    /// unchanged while `Some(None)` clears it.
     async fn update_current_model_and_agent(
         &self,
         info: &Info,
         model_id: &acp::ModelId,
         agent_name: Option<&str>,
         reasoning_effort: Option<Option<ReasoningEffort>>,
+        credential_binding: Option<Option<xai_grok_sampling_types::CredentialBinding>>,
+    ) -> io::Result<()>;
+
+    /// Persist or clear the non-secret provider credential-record binding.
+    async fn update_credential_binding(
+        &self,
+        info: &Info,
+        binding: Option<xai_grok_sampling_types::CredentialBinding>,
     ) -> io::Result<()>;
 
     /// Update the collection ID for telemetry tracing

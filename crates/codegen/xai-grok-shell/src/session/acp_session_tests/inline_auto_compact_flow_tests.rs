@@ -1657,6 +1657,7 @@ async fn compactions_remaining_header_flips_after_compaction() {
                 actor
                     .reconstruct_full_config()
                     .await
+                    .expect("provider binding should succeed")
                     .extra_headers
                     .get("x-compactions-remaining")
                     .cloned()
@@ -1669,6 +1670,7 @@ async fn compactions_remaining_header_flips_after_compaction() {
                 actor
                     .reconstruct_full_config()
                     .await
+                    .expect("provider binding should succeed")
                     .extra_headers
                     .get("x-compactions-remaining")
                     .cloned()
@@ -1697,6 +1699,7 @@ async fn compactions_remaining_fixed_does_not_flip_after_compaction() {
                 actor
                     .reconstruct_full_config()
                     .await
+                    .expect("provider binding should succeed")
                     .extra_headers
                     .get("x-compactions-remaining")
                     .cloned()
@@ -1709,6 +1712,7 @@ async fn compactions_remaining_fixed_does_not_flip_after_compaction() {
                 actor
                     .reconstruct_full_config()
                     .await
+                    .expect("provider binding should succeed")
                     .extra_headers
                     .get("x-compactions-remaining")
                     .cloned()
@@ -1738,6 +1742,7 @@ async fn compaction_at_tokens_header_flips_after_compaction() {
                 actor
                     .reconstruct_full_config()
                     .await
+                    .expect("provider binding should succeed")
                     .extra_headers
                     .get("x-compaction-at")
                     .cloned()
@@ -1750,6 +1755,7 @@ async fn compaction_at_tokens_header_flips_after_compaction() {
                 actor
                     .reconstruct_full_config()
                     .await
+                    .expect("provider binding should succeed")
                     .extra_headers
                     .get("x-compaction-at")
                     .is_none(),
@@ -1772,6 +1778,7 @@ async fn compaction_at_tokens_fixed_and_disabled() {
                 actor
                     .reconstruct_full_config()
                     .await
+                    .expect("provider binding should succeed")
                     .extra_headers
                     .get("x-compaction-at")
                     .is_none(),
@@ -1784,6 +1791,7 @@ async fn compaction_at_tokens_fixed_and_disabled() {
                 actor
                     .reconstruct_full_config()
                     .await
+                    .expect("provider binding should succeed")
                     .extra_headers
                     .get("x-compaction-at")
                     .cloned()

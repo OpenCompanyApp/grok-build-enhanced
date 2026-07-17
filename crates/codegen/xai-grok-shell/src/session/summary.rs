@@ -103,6 +103,15 @@ impl SummaryGenerator {
         }
     }
 
+    /// Replace the provider-qualified runtime before the first content chunk.
+    /// A generated/in-flight title is never retargeted across providers.
+    pub(crate) fn replace_runtime(&mut self, sampling_client: OaiCompatClient, model: String) {
+        if matches!(self.state, State::Idle) {
+            self.config.sampling_client = sampling_client;
+            self.config.model = model;
+        }
+    }
+
     /// Mark as Done (e.g. when disk already has a summary during load).
     pub(crate) fn mark_done(&mut self) {
         self.state = State::Done;

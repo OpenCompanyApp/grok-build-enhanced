@@ -439,6 +439,7 @@
         "crates/codegen/xai-grok-shell/src/extensions/billing.rs",
         "crates/codegen/xai-grok-shell/src/remote/mod.rs",
         "crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs",
+        "crates/codegen/xai-grok-shell/src/remote/pull.rs",
         "crates/codegen/xai-grok-shell/src/session/acp_session.rs",
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/laziness.rs",
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
@@ -448,8 +449,17 @@
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs",
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn.rs",
         "crates/codegen/xai-grok-shell/src/session/acp_session_tests/laziness/laziness_debug_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/rewind_cross_compaction_tests.rs",
         "crates/codegen/xai-grok-shell/src/session/helpers/session_summary.rs",
-        "crates/codegen/xai-grok-shell/src/session/persistence.rs"
+        "crates/codegen/xai-grok-shell/src/session/merge.rs",
+        "crates/codegen/xai-grok-shell/src/session/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/persistence.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/**",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/search.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/summary_write.rs"
       ],
       "integration_paths": [
         "crates/codegen/xai-grok-sampler/src/client.rs",

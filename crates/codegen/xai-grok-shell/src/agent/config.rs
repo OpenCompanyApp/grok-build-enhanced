@@ -4540,16 +4540,10 @@ pub fn resolve_aux_model_sampling_config(
             None,
         );
         if entry.info.provider == ProviderId::OpenAiCodex {
-            // Auxiliary model selection is provider-scoped too. Attach the
-            // dynamic ChatGPT credential owner instead of falling through to
-            // an xAI bearer or treating the access token as a static API key.
-            let manager = Arc::new(
-                crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home())
-                    .ok()?,
-            );
-            let credentials = manager.current()?;
-            sampler.credential_binding = Some(credentials.credential_binding());
-            sampler.request_auth = Some(crate::auth::codex::shared_sampler_request_auth(manager));
+            // Return provider/model routing only. The fallible session binder
+            // attests the restored record and attaches sampler + tool auth at
+            // the construction seam; resolving a catalog entry must not adopt
+            // the process-current account on its own.
             return Some(sampler);
         }
         if sampler.api_key.is_some() {

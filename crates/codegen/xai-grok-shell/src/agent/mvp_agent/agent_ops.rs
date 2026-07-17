@@ -20,7 +20,7 @@ impl MvpAgent {
             .unwrap_or(crate::models::default_session_summary_model())
             .to_owned()
     }
-    pub(super) fn build_summary_client(
+    pub(super) async fn build_summary_client(
         &self,
         primary: &SamplingConfig,
     ) -> Result<(OaiCompatClient, String), acp::Error> {
@@ -36,7 +36,7 @@ impl MvpAgent {
                 cfg.client_version.clone(),
             )
         };
-        let config = match crate::agent::config::resolve_aux_model_sampling_config(
+        let mut config = match crate::agent::config::resolve_aux_model_sampling_config(
             &slug,
             &models,
             &endpoints,
@@ -59,8 +59,15 @@ impl MvpAgent {
             // slug onto a Codex endpoint (or vice versa) is never valid.
             None => primary.clone(),
         };
-        let model = config.model.clone();
-        let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
+        if config.provider.is_openai_codex() && primary.provider.is_openai_codex() {
+            config.credential_binding = primary.credential_binding.clone();
+        }
+        let bound_runtime = crate::session::provider::bind_provider_runtime(config, None)
+            .await
+            .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
+        let model = bound_runtime.route.model;
+        let client = OaiCompatClient::new(bound_runtime.sampler_config)
+            .map_err(map_sampling_err_to_acp)?;
         Ok((client, model))
     }
     fn has_proxy_credentials(&self) -> bool {
@@ -1143,17 +1150,8 @@ impl MvpAgent {
             );
             drop(cfg);
             sampling.origin_client = origin_client;
-            if let Ok(manager) = crate::auth::codex::CodexAuthManager::new(
-                &crate::util::grok_home::grok_home(),
-            ) {
-                let manager = std::sync::Arc::new(manager);
-                if let Some(credentials) = manager.current() {
-                    sampling.credential_binding = Some(credentials.credential_binding());
-                    sampling.request_auth = Some(
-                        crate::auth::codex::shared_sampler_request_auth(manager),
-                    );
-                }
-            }
+            // The provider binder performs the credential attestation and
+            // attaches sampler/tool auth together at the construction seam.
             return sampling;
         }
         let preferred = self.cfg.borrow().grok_com_config.preferred_method;
@@ -3026,6 +3024,7 @@ impl MvpAgent {
             managed_mcp_expires_at,
             model_agent_type,
             session_model_id,
+            restored_credential_binding,
             session_yolo_mode,
             session_auto_mode,
             prompt_display_cwd,
@@ -3395,13 +3394,18 @@ impl MvpAgent {
             );
             agent_definition.user_message_template = template;
         }
-        let (session_model_id, sampling_config) = self
+        let (session_model_id, mut sampling_config) = self
             .apply_agent_model_override(
                 pinned_model.as_ref(),
                 session_model_id,
                 sampling_config,
                 origin_client.clone(),
             );
+        if sampling_config.provider.is_openai_codex()
+            && let Some(binding) = restored_credential_binding
+        {
+            sampling_config.credential_binding = Some(binding);
+        }
         self
             .ensure_provider_authenticated(sampling_config.provider)
             .await?;
@@ -3530,20 +3534,11 @@ impl MvpAgent {
         let handle_display_cwd = prompt_display_cwd.clone();
         let auth_manager = Some(self.auth_manager.clone());
         let tool_api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider> =
-            if sampling_config.provider
-                == xai_grok_sampling_types::ProviderId::OpenAiCodex
-            {
-                crate::auth::codex::CodexAuthManager::new(
-                    &crate::util::grok_home::grok_home(),
-                )
-                .ok()
-                .map(std::sync::Arc::new)
-                .map(crate::auth::codex::shared_api_key_provider)
-            } else {
-                Some(Arc::new(crate::auth::manager::SharedAuthKeyProvider(
+            (sampling_config.provider == xai_grok_sampling_types::ProviderId::Xai).then(|| {
+                Arc::new(crate::auth::manager::SharedAuthKeyProvider(
                     self.auth_manager.clone(),
-                )))
-            };
+                )) as xai_grok_tools::types::SharedApiKeyProvider
+            });
         let bash_params_json = {
             let cfg = self.cfg.borrow();
             let remote_auto_bg = cfg
@@ -3665,16 +3660,8 @@ impl MvpAgent {
                     }
                     Some(std::sync::Arc::new(merged))
                 });
-            let initial_reasoning_effort = chat_history
-                .is_empty()
-                .then_some(sampling_config.reasoning_effort);
-            let _ = persistence
-                .tx
-                .send(crate::session::persistence::PersistenceMsg::CurrentModel {
-                    model_id: session_model_id.clone(),
-                    agent_name: Some(agent_definition.name.clone()),
-                    reasoning_effort: initial_reasoning_effort,
-                });
+            // `spawn_session_actor` persists the provider/model/binding route
+            // atomically after the provider binder succeeds.
             let acp_mcp_servers = crate::session::acp_mcp::parse_acp_mcp_servers(
                 session_meta,
             );

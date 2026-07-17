@@ -40,6 +40,7 @@ type SubagentProviderTools = (
 fn resolve_effective_provider_tools(
     sampling: &xai_grok_sampler::SamplerConfig,
     ctx: &SubagentSpawnContext,
+    bound_api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider>,
 ) -> SubagentProviderTools {
     use xai_grok_sampling_types::ProviderId;
     use xai_grok_tools::implementations::grok_build::{
@@ -50,7 +51,7 @@ fn resolve_effective_provider_tools(
         return (
             ctx.image_gen_config.clone(),
             ctx.video_gen_config.clone(),
-            ctx.api_key_provider.clone(),
+            bound_api_key_provider,
         );
     }
 
@@ -68,12 +69,6 @@ fn resolve_effective_provider_tools(
             if !image_gen_enabled && !image_edit_enabled {
                 return (ImageGenConfig::Disabled, VideoGenConfig::Disabled, None);
             }
-            let provider = crate::auth::codex::CodexAuthManager::new(
-                &crate::util::grok_home::grok_home(),
-            )
-            .ok()
-            .map(std::sync::Arc::new)
-            .map(crate::auth::codex::shared_api_key_provider);
             (
                 // The selected coding model's image-input modality controls
                 // reading attachments, not the standalone gpt-image-2 tools.
@@ -83,7 +78,7 @@ fn resolve_effective_provider_tools(
                     image_edit_enabled,
                 },
                 VideoGenConfig::Disabled,
-                provider,
+                bound_api_key_provider,
             )
         }
         ProviderId::Xai => {
@@ -147,12 +142,7 @@ fn resolve_effective_provider_tools(
                 }
                 None => VideoGenConfig::Disabled,
             };
-            let provider = Some(
-                std::sync::Arc::new(crate::auth::manager::SharedAuthKeyProvider(
-                    ctx.auth_manager.clone(),
-                )) as xai_grok_tools::types::SharedApiKeyProvider,
-            );
-            (image, video, provider)
+            (image, video, bound_api_key_provider)
         }
         // A custom model may have arbitrary provider semantics. Fail closed
         // for provider-owned media rather than guessing from its URL/key.
@@ -642,6 +632,39 @@ pub(crate) async fn handle_subagent_request(
                     .model_default_reasoning_effort(effective_model_id.0.as_ref())
             });
     }
+    crate::session::provider::pin_codex_candidate_to_active_record(
+        &mut effective_sampling_config,
+        ctx.sampling_config.provider,
+        ctx.sampling_config.credential_binding.as_ref(),
+    );
+    let generic_api_key_provider =
+        (effective_sampling_config.provider == xai_grok_sampling_types::ProviderId::Xai)
+            .then(|| {
+                if effective_sampling_config.provider == ctx.sampling_config.provider {
+                    ctx.api_key_provider.clone()
+                } else {
+                    Some(
+                        std::sync::Arc::new(crate::auth::manager::SharedAuthKeyProvider(
+                            ctx.auth_manager.clone(),
+                        )) as xai_grok_tools::types::SharedApiKeyProvider,
+                    )
+                }
+            })
+            .flatten();
+    let bound_runtime = match crate::session::provider::bind_provider_runtime(
+        effective_sampling_config,
+        generic_api_key_provider,
+    )
+    .await
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            send_failure(request, &format!("Provider binding failed: {error}"));
+            return;
+        }
+    };
+    let effective_sampling_config = bound_runtime.sampler_config;
+    let effective_bound_api_key_provider = bound_runtime.api_key_provider;
     let subagent_id = request.id.clone();
     let child_session_id = acp::SessionId::new(subagent_id.clone());
     let override_cwd = select_override_cwd(
@@ -1195,14 +1218,13 @@ pub(crate) async fn handle_subagent_request(
         effective_image_gen_config,
         effective_video_gen_config,
         effective_api_key_provider,
-    ) = resolve_effective_provider_tools(&effective_sampling_config, &ctx);
-    let _ = persistence
-        .tx
-        .send(crate::session::persistence::PersistenceMsg::CurrentModel {
-            model_id: effective_model_id.clone(),
-            agent_name: Some(definition.name.clone()),
-            reasoning_effort: Some(effective_sampling_config.reasoning_effort),
-        });
+    ) = resolve_effective_provider_tools(
+        &effective_sampling_config,
+        &ctx,
+        effective_bound_api_key_provider,
+    );
+    // The session spawn seam persists this provider/model/binding route in one
+    // summary patch after the provider binder succeeds.
     let forked_tool_override = if verbatim_mirror_fork {
         ctx.parent_tool_snapshot.clone()
     } else {

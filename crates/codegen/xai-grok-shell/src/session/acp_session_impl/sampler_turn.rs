@@ -254,7 +254,7 @@ impl SessionActor {
     /// the actor's `SamplingConfig` and `Credentials`. Folds in the
     /// URL-derived headers (cli-chat-proxy auth, the staging auth header)
     /// so the sampler crate stays URL-agnostic.
-    pub(super) async fn reconstruct_full_config(&self) -> SamplingConfig {
+    pub(super) async fn reconstruct_full_config(&self) -> Result<SamplingConfig, acp::Error> {
         #[allow(clippy::items_after_statements)]
         #[derive(Debug)]
         struct TraceContextInjector;
@@ -338,60 +338,12 @@ impl SessionActor {
                 extra_headers.insert("x-compaction-at".to_string(), value.to_string());
             }
         }
-        let (credential_binding, request_auth) = if cfg.provider
-            == xai_grok_sampling_types::ProviderId::OpenAiCodex
-        {
-            match crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home()) {
-                Ok(manager) => {
-                    let manager = std::sync::Arc::new(manager);
-                    let disk_binding = manager
-                        .current()
-                        .map(|credentials| credentials.credential_binding());
-                    let same_record = match (&cfg.credential_binding, &disk_binding) {
-                        (Some(expected), Some(current)) => expected.same_record(current),
-                        // Legacy sessions without a binding are pinned on
-                        // their first successful reconstruction.
-                        (None, Some(_)) => true,
-                        _ => false,
-                    };
-                    if same_record {
-                        match manager.ensure_fresh().await {
-                            Ok(credentials) => {
-                                let current_binding = Some(credentials.credential_binding());
-                                if let Some(binding) = current_binding.clone()
-                                    && cfg.credential_binding.as_ref() != Some(&binding)
-                                {
-                                    cfg.credential_binding = Some(binding.clone());
-                                    self.chat_state_handle.update_sampling_config(cfg.clone());
-                                }
-                                (
-                                    current_binding.or(cfg.credential_binding.clone()),
-                                    Some(crate::auth::codex::shared_sampler_request_auth(manager)),
-                                )
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    session_id = %self.session_info.id.0,
-                                    provider = "openai_codex",
-                                    "Codex credentials could not be refreshed"
-                                );
-                                (cfg.credential_binding.clone(), None)
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            session_id = %self.session_info.id.0,
-                            provider = "openai_codex",
-                            "saved Codex account changed; refusing to rebind active session"
-                        );
-                        (cfg.credential_binding.clone(), None)
-                    }
-                }
-                Err(_) => (cfg.credential_binding.clone(), None),
-            }
-        } else {
-            (cfg.credential_binding.clone(), None)
-        };
+        // Provider binding is performed once the complete generic/session
+        // fields have been assembled below. Until then, preserve only the
+        // expected non-secret record metadata; never attach a partial Codex
+        // auth runtime here.
+        let credential_binding = cfg.credential_binding.clone();
+        let request_auth = None;
         // Last wire-boundary guard for legacy/restored chat state. Ingress
         // paths validate effort overrides, but an older persisted session may
         // still contain a value its current dynamic catalog no longer offers
@@ -446,7 +398,8 @@ impl SessionActor {
         } else {
             None
         };
-        SamplingConfig {
+        let mut state_cfg = cfg.clone();
+        let full_config = SamplingConfig {
             provider: cfg.provider,
             credential_source: if is_codex {
                 xai_grok_sampling_types::CredentialSourceId::OpenAiCodexSubscription
@@ -515,7 +468,23 @@ impl SessionActor {
                 .flatten(),
             doom_loop_recovery: (!is_codex).then_some(self.doom_loop_recovery).flatten(),
             header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
+        };
+        let bound_runtime = crate::session::provider::bind_provider_runtime(full_config, None)
+            .await
+            .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
+        if is_codex
+            && state_cfg.credential_binding != bound_runtime.sampler_config.credential_binding
+        {
+            state_cfg.credential_binding = bound_runtime.sampler_config.credential_binding.clone();
+            self.chat_state_handle.update_sampling_config(state_cfg);
+            let _ = self
+                .notifications
+                .persistence_tx
+                .send(PersistenceMsg::CredentialBinding(
+                    bound_runtime.sampler_config.credential_binding.clone(),
+                ));
         }
+        Ok(bound_runtime.sampler_config)
     }
     /// Install auto-mode permission classifier with a live LLM side-query
     /// (laziness-classifier pattern: `prepare_chat_completion` +
@@ -537,14 +506,19 @@ impl SessionActor {
             .map(|c| c.model)
             .unwrap_or_default();
         let aux_classifier_sampler = match auto_cfg.classifier_model.as_deref() {
-            Some(slug) => self.resolve_routed_aux_sampling_client(slug).await,
-            None => None,
+            Some(slug) => self
+                .resolve_routed_aux_sampling_client(slug)
+                .await
+                .map_err(|error| error.to_string()),
+            None => Ok(None),
         };
         let models = self.models_manager.models();
         let effective_supports_re = crate::agent::config::effective_classifier_supports_re(
             aux_classifier_sampler
                 .as_ref()
-                .map(|(_, model)| model.as_str()),
+                .ok()
+                .and_then(Option::as_ref)
+                .map(|(_, route)| route.model.as_str()),
             &session_model,
             &models,
         );
@@ -560,8 +534,8 @@ impl SessionActor {
             while let Some((messages, respond_to)) = rx.recv().await {
                 let result = async {
                     let (sampling_client, model) = match &aux_classifier_sampler {
-                        Some((client, model)) => (client.clone(), model.clone()),
-                        None => {
+                        Ok(Some((client, route))) => (client.clone(), route.model.clone()),
+                        Ok(None) => {
                             let client = session
                                 .prepare_chat_completion(false)
                                 .await
@@ -574,6 +548,7 @@ impl SessionActor {
                                 .unwrap_or_default();
                             (client, model)
                         }
+                        Err(error) => return Err(error.clone()),
                     };
                     let session_id = session.session_info.id.to_string();
                     let items = messages
@@ -668,28 +643,48 @@ impl SessionActor {
     pub(super) async fn resolve_routed_aux_sampling_client(
         &self,
         slug: &str,
-    ) -> Option<(xai_grok_sampler::SamplingClient, String)> {
-        let active_session_config = self.reconstruct_full_config().await;
-        let mut cfg = self.resolve_aux_sampler_config(slug).await?;
+    ) -> Result<
+        Option<(
+            xai_grok_sampler::SamplingClient,
+            crate::session::provider::ProviderModelRoute,
+        )>,
+        acp::Error,
+    > {
+        let active_session_config = self.reconstruct_full_config().await?;
+        let Some(mut cfg) = self.resolve_aux_sampler_config(slug).await else {
+            return Ok(None);
+        };
+        // A Codex auxiliary route inside a Codex session remains pinned to the
+        // restored session record. Catalog resolution must not silently adopt
+        // a process-current account.
+        crate::session::provider::pin_codex_candidate_to_active_record(
+            &mut cfg,
+            active_session_config.provider,
+            active_session_config.credential_binding.as_ref(),
+        );
         crate::agent::config::stamp_session_local_sampler_fields(
             &mut cfg,
             &active_session_config,
             self.client_identifier.clone(),
             Some(self.max_retries),
         );
-        self.mark_codex_auxiliary_usage_incomplete(cfg.provider)
+        let bound_runtime = crate::session::provider::bind_provider_runtime(cfg, None)
+            .await
+            .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
+        self.mark_codex_auxiliary_usage_incomplete(bound_runtime.route.provider)
             .await;
-        let model = cfg.model.clone();
-        let client = xai_grok_sampler::SamplingClient::new(cfg)
-            .map_err(|e| {
+        let route = bound_runtime.route;
+        let client = xai_grok_sampler::SamplingClient::new(bound_runtime.sampler_config).map_err(
+            |error| {
                 tracing::warn!(
-                    error = % e,
+                    %error,
                     aux_model = %slug,
-                    "auxiliary sampler build failed; using session model"
-                )
-            })
-            .ok()?;
-        Some((client, model))
+                    "provider-bound auxiliary sampler construction failed"
+                );
+                self.to_acp_error(error)
+            },
+        )?;
+        Ok(Some((client, route)))
     }
 
     /// Prepare an auxiliary sampler with provider-safe fallback. An explicit
@@ -700,9 +695,15 @@ impl SessionActor {
         &self,
         requested_model: Option<&str>,
         purpose: &'static str,
-    ) -> Result<(xai_grok_sampler::SamplingClient, String), acp::Error> {
+    ) -> Result<
+        (
+            xai_grok_sampler::SamplingClient,
+            crate::session::provider::ProviderModelRoute,
+        ),
+        acp::Error,
+    > {
         if let Some(slug) = requested_model {
-            if let Some(routed) = self.resolve_routed_aux_sampling_client(slug).await {
+            if let Some(routed) = self.resolve_routed_aux_sampling_client(slug).await? {
                 return Ok(routed);
             }
             tracing::warn!(
@@ -712,14 +713,12 @@ impl SessionActor {
             );
         }
 
-        let client = self.prepare_chat_completion(false).await?;
-        let model = self
-            .chat_state_handle
-            .get_sampling_config()
-            .await
-            .map(|c| c.model)
-            .unwrap_or_default();
-        Ok((client, model))
+        let (client, config) = self.prepare_bound_chat_completion(false).await?;
+        let route = crate::session::provider::ProviderModelRoute {
+            provider: config.provider,
+            model: config.model,
+        };
+        Ok((client, route))
     }
     #[tracing::instrument(
         name = "session.prepare_chat_completion",
@@ -730,14 +729,32 @@ impl SessionActor {
         &self,
         force_http1: bool,
     ) -> Result<xai_grok_sampler::SamplingClient, acp::Error> {
+        self.prepare_bound_chat_completion(force_http1)
+            .await
+            .map(|(client, _)| client)
+    }
+
+    /// Construct an auxiliary/compaction client and return the exact bound
+    /// config used for that client. This avoids a second credential snapshot
+    /// between route decisions and sampler construction.
+    pub(super) async fn prepare_bound_chat_completion(
+        &self,
+        force_http1: bool,
+    ) -> Result<
+        (
+            xai_grok_sampler::SamplingClient,
+            xai_grok_sampler::SamplerConfig,
+        ),
+        acp::Error,
+    > {
         self.refresh_token_if_expired().await;
-        let mut full_config = self.reconstruct_full_config().await;
+        let mut full_config = self.reconstruct_full_config().await?;
         self.mark_codex_auxiliary_usage_incomplete(full_config.provider)
             .await;
         full_config.force_http1 = force_http1;
-        let sampling_client =
-            xai_grok_sampler::SamplingClient::new(full_config).map_err(|e| self.to_acp_error(e))?;
-        Ok(sampling_client)
+        let sampling_client = xai_grok_sampler::SamplingClient::new(full_config.clone())
+            .map_err(|e| self.to_acp_error(e))?;
+        Ok((sampling_client, full_config))
     }
 
     /// Auxiliary and compaction samplers do not currently fold their response
@@ -767,11 +784,12 @@ impl SessionActor {
     /// newly issued session token. The previous client cache inside
     /// the sampler actor is invalidated automatically by
     /// `update_config`.
-    pub(crate) async fn prepare_sampler_for_turn(&self) {
+    pub(crate) async fn prepare_sampler_for_turn(&self) -> Result<(), acp::Error> {
         self.refresh_token_if_expired().await;
-        let mut sampler_config = self.reconstruct_full_config().await;
+        let mut sampler_config = self.reconstruct_full_config().await?;
         sampler_config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
         self.sampler_handle.update_config(sampler_config);
+        Ok(())
     }
     fn log_terminal_failure(
         &self,
@@ -965,7 +983,7 @@ impl SessionActor {
                         has_user_id = !auth.user_id.is_empty(),
                         "auth recovery: sampler 401, devbox re-mint, retrying"
                     );
-                    self.prepare_sampler_for_turn().await;
+                    self.prepare_sampler_for_turn().await?;
                     return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit);
                 }
                 Err(e) => {
@@ -995,7 +1013,7 @@ impl SessionActor {
                     Some(self.session_info.id.0.as_ref()),
                     None,
                 );
-                self.prepare_sampler_for_turn().await;
+                self.prepare_sampler_for_turn().await?;
                 return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit);
             }
             tracing::warn!(
@@ -1152,7 +1170,7 @@ impl SessionActor {
         request: ConversationRequest,
         allow_codex_auth_recovery: bool,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
-        self.prepare_sampler_for_turn().await;
+        self.prepare_sampler_for_turn().await?;
         let stream_drained_rx = {
             let (tx, rx) = tokio::sync::oneshot::channel();
             *self.turn_stream_drained.lock() = Some(tx);
@@ -1208,41 +1226,49 @@ impl SessionActor {
     }
     /// Proactively refresh the auth token if near expiry.
     pub(super) async fn refresh_token_if_expired(&self) {
-        if let Some(ref am) = self.auth_manager {
-            let creds = self.chat_state_handle.get_credentials().await;
-            let (model_id, base_url) = self
-                .chat_state_handle
-                .get_sampling_config()
-                .await
-                .map(|c| (c.model, c.base_url))
-                .unwrap_or_default();
-            if self.auth_gate(&model_id, &base_url).active()
-                && let Ok(key) = am.get_valid_token().await
-            {
-                if creds.api_key.as_deref() != Some(&key) {
-                    let mut creds = creds;
-                    creds.api_key = Some(key);
-                    self.chat_state_handle.update_credentials(creds);
+        let (provider, current_model_id, base_url) = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|selected| (selected.provider, selected.model, selected.base_url))
+            .unwrap_or_else(|| {
+                (
+                    xai_grok_sampling_types::ProviderId::Xai,
+                    String::new(),
+                    String::new(),
+                )
+            });
+        // Codex refresh belongs exclusively to `CodexAuthManager`, which the
+        // session binder invokes after reconstructing the request config. Do
+        // not even evaluate the global xAI refresh gate for a Codex session.
+        if provider.is_openai_codex() {
+            return;
+        }
+        if provider == xai_grok_sampling_types::ProviderId::Xai {
+            if let Some(ref am) = self.auth_manager {
+                let creds = self.chat_state_handle.get_credentials().await;
+                if self.auth_gate(&current_model_id, &base_url).active()
+                    && let Ok(key) = am.get_valid_token().await
+                {
+                    if creds.api_key.as_deref() != Some(&key) {
+                        let mut creds = creds;
+                        creds.api_key = Some(key);
+                        self.chat_state_handle.update_credentials(creds);
+                    }
+                    return;
                 }
-                return;
+            } else {
+                xai_grok_telemetry::unified_log::debug(
+                    "token refresh skipped: no auth manager",
+                    Some(self.session_info.id.0.as_ref()),
+                    None,
+                );
             }
-        } else {
-            xai_grok_telemetry::unified_log::debug(
-                "token refresh skipped: no auth manager",
-                Some(self.session_info.id.0.as_ref()),
-                None,
-            );
         }
         use crate::auth::{is_jwt_expired_or_near, parse_jwt_expiration};
         const REFRESH_THRESHOLD: chrono::Duration = chrono::Duration::minutes(5);
         let creds = self.chat_state_handle.get_credentials().await;
         let current_key = creds.api_key;
-        let current_model_id = self
-            .chat_state_handle
-            .get_sampling_config()
-            .await
-            .map(|c| c.model)
-            .unwrap_or_default();
         let Some(ref key) = current_key else { return };
         if !is_jwt_expired_or_near(key, REFRESH_THRESHOLD) {
             if let Some(exp) = parse_jwt_expiration(key) {

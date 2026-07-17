@@ -485,14 +485,12 @@ async fn codex_401_uses_provider_scoped_auth_label_and_login_commands() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let am = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
-            am.hot_swap(GrokAuth {
-                key: "unrelated-xai-token".into(),
-                auth_mode: AuthMode::WebLogin,
-                ..GrokAuth::test_default()
-            });
-
+            let xai_refresh_called = Arc::new(AtomicBool::new(false));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysSucceedRefresher {
+                    called: xai_refresh_called.clone(),
+                });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
             let mut sampling = actor
                 .chat_state_handle
@@ -503,6 +501,12 @@ async fn codex_401_uses_provider_scoped_auth_label_and_login_commands() {
             sampling.model = "gpt-5.6-luna".to_owned();
             sampling.base_url = xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned();
             actor.chat_state_handle.update_sampling_config(sampling);
+
+            actor.refresh_token_if_expired().await;
+            assert!(
+                !xai_refresh_called.load(Ordering::SeqCst),
+                "Codex pre-flight must never call the xAI refresher"
+            );
 
             let result = actor
                 .handle_sampling_failure(unauthorized_401_error())
@@ -531,6 +535,10 @@ async fn codex_401_uses_provider_scoped_auth_label_and_login_commands() {
                 "{message}"
             );
             assert!(!message.contains("Auth:      WebLogin"), "{message}");
+            assert!(
+                !xai_refresh_called.load(Ordering::SeqCst),
+                "Codex terminal auth failures must never call the xAI refresher"
+            );
         })
         .await;
 }
@@ -735,7 +743,10 @@ async fn reconstruct_full_config_wires_bearer_resolver_for_session_method_despit
             )
             .await;
 
-            let cfg = actor.reconstruct_full_config().await;
+            let cfg = actor
+                .reconstruct_full_config()
+                .await
+                .expect("provider binding should succeed");
 
             assert!(
                 cfg.bearer_resolver.is_some(),
@@ -761,7 +772,10 @@ async fn reconstruct_full_config_no_bearer_resolver_for_api_key_method() {
             )
             .await;
 
-            let cfg = actor.reconstruct_full_config().await;
+            let cfg = actor
+                .reconstruct_full_config()
+                .await
+                .expect("provider binding should succeed");
 
             assert!(
                 cfg.bearer_resolver.is_none(),
@@ -827,6 +841,7 @@ async fn session_born_on_api_key_recovers_after_oidc_login_without_restart() {
                 actor
                     .reconstruct_full_config()
                     .await
+                    .expect("provider binding should succeed")
                     .bearer_resolver
                     .is_none(),
                 "api-key session must not use the live resolver before login"
@@ -845,6 +860,7 @@ async fn session_born_on_api_key_recovers_after_oidc_login_without_restart() {
                 actor
                     .reconstruct_full_config()
                     .await
+                    .expect("provider binding should succeed")
                     .bearer_resolver
                     .is_some(),
                 "flipping the shared handle activates the resolver on the next turn"
@@ -935,7 +951,10 @@ async fn reconstruct_full_config_no_bearer_resolver_for_byok_model_on_session_me
                 },
             )));
 
-            let cfg = actor.reconstruct_full_config().await;
+            let cfg = actor
+                .reconstruct_full_config()
+                .await
+                .expect("provider binding should succeed");
 
             assert!(
                 cfg.bearer_resolver.is_none(),

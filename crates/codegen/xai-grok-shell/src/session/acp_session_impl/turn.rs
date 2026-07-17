@@ -1894,18 +1894,15 @@ impl SessionActor {
                     crate::managed_config::resolve_deployment_key().as_deref(),
                 );
             }
-            if let Some(config) = self.chat_state_handle.get_sampling_config().await
-                && let Some(instruction) = self.models_manager.codex_multi_agent_mode_instruction(
-                    config.provider,
-                    &config.model,
-                    config.reasoning_effort,
-                )
-            {
-                // Ephemeral and provider-scoped: do not persist this into the
-                // user's conversation. Recompute on every loop iteration so
-                // switching into or out of Ultra takes effect immediately.
-                request.items.push(ConversationItem::system(instruction));
-            }
+            // Ephemeral and provider-scoped: do not persist this into the
+            // user's conversation. Recompute on every loop iteration so
+            // switching into or out of Ultra takes effect immediately.
+            let sampling_config = self.chat_state_handle.get_sampling_config().await;
+            crate::session::provider::inject_codex_multi_agent_policy(
+                &self.models_manager,
+                sampling_config.as_ref(),
+                &mut request,
+            );
             if structured_output_native {
                 request.json_schema = json_schema.clone();
             }

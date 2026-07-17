@@ -444,18 +444,13 @@ impl MvpAgent {
             }
             None => (None, None),
         };
-        let api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider> = if parent_provider
-            == xai_grok_sampling_types::ProviderId::OpenAiCodex
-        {
-            crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home())
-                .ok()
-                .map(Arc::new)
-                .map(crate::auth::codex::shared_api_key_provider)
-        } else {
-            Some(Arc::new(crate::auth::manager::SharedAuthKeyProvider(
-                am.clone(),
-            )))
-        };
+        // Codex children receive sampler + tool auth from the session binder;
+        // do not preconstruct a second provider manager in the coordinator.
+        let api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider> =
+            (parent_provider == xai_grok_sampling_types::ProviderId::Xai).then(|| {
+                Arc::new(crate::auth::manager::SharedAuthKeyProvider(am.clone()))
+                    as xai_grok_tools::types::SharedApiKeyProvider
+            });
         Some(crate::agent::subagent::SubagentSpawnContext {
             lsp: parent_lsp,
             gateway: self.gateway.clone(),

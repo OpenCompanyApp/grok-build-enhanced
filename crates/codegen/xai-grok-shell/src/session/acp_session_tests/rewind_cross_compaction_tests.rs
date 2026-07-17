@@ -371,6 +371,7 @@ async fn run_clears_marker_scenario() {
     let header = actor
         .reconstruct_full_config()
         .await
+        .expect("provider binding should succeed")
         .extra_headers
         .get("x-compactions-remaining")
         .cloned();

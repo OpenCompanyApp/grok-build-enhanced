@@ -317,6 +317,20 @@ pub enum PersistenceMsg {
         /// on the mutable model catalog.
         agent_name: Option<String>,
         reasoning_effort: Option<Option<ReasoningEffort>>,
+        /// Written in the same summary patch as the model so a crash cannot
+        /// restore a Codex route without the credential record it belongs to.
+        credential_binding: Option<xai_grok_sampling_types::CredentialBinding>,
+    },
+    /// Persist or clear the non-secret credential-record binding independently
+    /// of model metadata. Same-record refresh advancement may update this on
+    /// any turn, not only during a model switch.
+    CredentialBinding(Option<xai_grok_sampling_types::CredentialBinding>),
+    /// Replace the title generator's provider/model route before it has seen
+    /// session content. Used on restore after persisted provider metadata is
+    /// available.
+    SummaryRuntime {
+        sampling_client: crate::sampling::Client,
+        model: String,
     },
     PlanState(TodoState),
     /// Plan mode lifecycle state to persist
@@ -893,6 +907,12 @@ pub struct Summary {
     pub sandbox_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Local-only, non-secret provider auth-store metadata used to fail closed
+    /// when a restored Codex session observes logout, account replacement, or
+    /// a credential-generation rollback. `ExportedMetadata::from_summary`
+    /// deliberately omits this field from remote/session exports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_binding: Option<xai_grok_sampling_types::CredentialBinding>,
 }
 
 /// Current `grok_home` as a UTF-8 string, or `None` if the path isn't valid UTF-8.
@@ -945,6 +965,7 @@ impl Summary {
             agent_name: None,
             sandbox_profile: None,
             reasoning_effort: None,
+            credential_binding: None,
         })
     }
 
@@ -1399,6 +1420,22 @@ impl PersistenceHandle {
     pub fn has_unobserved_codex_summary(&self) -> bool {
         self.unobserved_codex_summary
     }
+
+    /// Replace the provisional title route before session content can reach
+    /// the persistence actor, keeping usage completeness provider-aware.
+    pub fn replace_summary_runtime(
+        &mut self,
+        sampling_client: crate::sampling::Client,
+        model: String,
+        title_pending: bool,
+    ) -> Result<(), mpsc::error::SendError<PersistenceMsg>> {
+        self.unobserved_codex_summary =
+            title_pending && sampling_client.provider().is_openai_codex();
+        self.tx.send(PersistenceMsg::SummaryRuntime {
+            sampling_client,
+            model,
+        })
+    }
 }
 
 struct SessionPersistence {
@@ -1619,6 +1656,7 @@ impl SessionPersistence {
                     model_id,
                     agent_name,
                     reasoning_effort,
+                    credential_binding,
                 } => {
                     if let Err(e) = self
                         .storage
@@ -1627,6 +1665,7 @@ impl SessionPersistence {
                             &model_id,
                             agent_name.as_deref(),
                             reasoning_effort,
+                            Some(credential_binding),
                         )
                         .await
                     {
@@ -1635,6 +1674,21 @@ impl SessionPersistence {
                     if let Some(sync) = &self.remote_sync {
                         sync.set_model_id(model_id.0.to_string());
                     }
+                }
+                PersistenceMsg::CredentialBinding(binding) => {
+                    if let Err(e) = self
+                        .storage
+                        .update_credential_binding(&self.info, binding)
+                        .await
+                    {
+                        tracing::warn!(?e, "failed to update provider credential binding");
+                    }
+                }
+                PersistenceMsg::SummaryRuntime {
+                    sampling_client,
+                    model,
+                } => {
+                    self.summary.replace_runtime(sampling_client, model);
                 }
                 PersistenceMsg::PlanState(state) => {
                     if let Err(e) = self.storage.write_plan_state(&self.info, &state).await {

@@ -699,6 +699,13 @@ impl JsonlStorageAdapter {
             .new_model_id
             .map(acp::ModelId::new)
             .unwrap_or(source_summary.current_model_id);
+        // A forked Codex route remains pinned to the source session's local
+        // credential record. Switching the fork to any other provider clears
+        // the binding before the new session can be restored.
+        let target_credential_binding = target_model_id
+            .0
+            .strip_prefix("openai-codex/")
+            .and(source_summary.credential_binding);
         let target_summary = crate::session::persistence::Summary {
             info: target_info.clone(),
             session_summary: source_summary.session_summary,
@@ -732,6 +739,7 @@ impl JsonlStorageAdapter {
             agent_name: source_summary.agent_name,
             sandbox_profile: source_summary.sandbox_profile,
             reasoning_effort: source_summary.reasoning_effort,
+            credential_binding: target_credential_binding,
         };
         let summary_bytes = serde_json::to_vec_pretty(&target_summary)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -958,6 +966,7 @@ impl StorageAdapter for JsonlStorageAdapter {
         model_id: &acp::ModelId,
         agent_name: Option<&str>,
         reasoning_effort: Option<Option<xai_grok_sampling_types::ReasoningEffort>>,
+        credential_binding: Option<Option<xai_grok_sampling_types::CredentialBinding>>,
     ) -> io::Result<()> {
         self.apply_summary_patch(
             info,
@@ -967,6 +976,21 @@ impl StorageAdapter for JsonlStorageAdapter {
                     agent_name: agent_name.map(String::from),
                     reasoning_effort,
                 }),
+                credential_binding,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+    async fn update_credential_binding(
+        &self,
+        info: &Info,
+        binding: Option<xai_grok_sampling_types::CredentialBinding>,
+    ) -> io::Result<()> {
+        self.apply_summary_patch(
+            info,
+            super::summary_write::SummaryPatch {
+                credential_binding: Some(binding),
                 ..Default::default()
             },
         )

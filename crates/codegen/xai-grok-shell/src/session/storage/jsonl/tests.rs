@@ -70,25 +70,35 @@ async fn write_compaction_segment_numbers_and_indexes_resume_safely() {
     assert_eq!(index.lines().filter(| l | l.contains("segment_")).count(), 3);
 }
 #[tokio::test]
-async fn update_current_model_persists_leaves_and_clears_reasoning_effort() {
-    use xai_grok_sampling_types::ReasoningEffort;
+async fn update_current_route_persists_binding_and_reasoning_effort() {
+    use xai_grok_sampling_types::{CredentialBinding, ReasoningEffort};
     let temp_dir = TempDir::new().unwrap();
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
     let info = create_test_info();
     let model = default_model_id();
     adapter.init_session(&info, model.clone()).await.unwrap();
+    let mut binding = CredentialBinding::openai_codex(Some("local-route-record".to_owned()));
+    binding.generation = 3;
     adapter
         .update_current_model_and_agent(
             &info,
             &model,
             None,
             Some(Some(ReasoningEffort::High)),
+            Some(Some(binding.clone())),
         )
         .await
         .unwrap();
     assert_eq!(
-        adapter.read_summary_sync(& info).unwrap().reasoning_effort,
+        adapter.read_summary_sync(&info).unwrap().reasoning_effort,
         Some(ReasoningEffort::High),
+    );
+    assert_eq!(
+        adapter
+            .read_summary_sync(&info)
+            .unwrap()
+            .credential_binding,
+        Some(binding.clone()),
     );
     adapter.update_current_model(&info, &model).await.unwrap();
     assert_eq!(
@@ -97,10 +107,44 @@ async fn update_current_model_persists_leaves_and_clears_reasoning_effort() {
         "model-only update must not wipe the persisted effort",
     );
     adapter
-        .update_current_model_and_agent(&info, &model, None, Some(None))
+        .update_current_model_and_agent(&info, &model, None, Some(None), None)
         .await
         .unwrap();
-    assert_eq!(adapter.read_summary_sync(& info).unwrap().reasoning_effort, None,);
+    let summary = adapter.read_summary_sync(&info).unwrap();
+    assert_eq!(summary.reasoning_effort, None);
+    assert_eq!(
+        summary.credential_binding,
+        Some(binding),
+        "legacy model-only patches must not clear a provider binding"
+    );
+}
+#[tokio::test]
+async fn credential_binding_round_trips_and_can_be_cleared() {
+    use xai_grok_sampling_types::CredentialBinding;
+    let temp_dir = TempDir::new().unwrap();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    let info = create_test_info();
+    adapter.init_session(&info, default_model_id()).await.unwrap();
+    let mut binding = CredentialBinding::openai_codex(Some("local-record".to_owned()));
+    binding.generation = 4;
+
+    adapter
+        .update_credential_binding(&info, Some(binding.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        adapter.read_summary_sync(&info).unwrap().credential_binding,
+        Some(binding),
+    );
+
+    adapter.update_credential_binding(&info, None).await.unwrap();
+    assert!(
+        adapter
+            .read_summary_sync(&info)
+            .unwrap()
+            .credential_binding
+            .is_none()
+    );
 }
 #[tokio::test]
 async fn test_jsonl_round_trip() {
@@ -751,6 +795,71 @@ async fn test_copy_session_data_with_model_override() {
     assert_eq!(loaded.summary.current_model_id.0.as_ref(), "grok-3");
     assert_eq!(loaded.summary.parent_session_id, Some("source-model-test".to_string()));
 }
+#[tokio::test]
+async fn copy_session_keeps_binding_only_for_codex_routes() {
+    use xai_grok_sampling_types::CredentialBinding;
+
+    let temp_dir = TempDir::new().unwrap();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    let source = Info {
+        id: acp::SessionId::new("source-codex-binding"),
+        cwd: "/source".to_owned(),
+    };
+    adapter
+        .init_session(
+            &source,
+            acp::ModelId::new("openai-codex/gpt-5.6-luna"),
+        )
+        .await
+        .unwrap();
+    let mut binding = CredentialBinding::openai_codex(Some("local-record".to_owned()));
+    binding.generation = 7;
+    adapter
+        .update_credential_binding(&source, Some(binding.clone()))
+        .await
+        .unwrap();
+
+    let codex_target = Info {
+        id: acp::SessionId::new("fork-codex-binding"),
+        cwd: "/target/codex".to_owned(),
+    };
+    adapter
+        .copy_session_data(&source, &codex_target, CopySessionOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        adapter
+            .read_summary_sync(&codex_target)
+            .unwrap()
+            .credential_binding,
+        Some(binding),
+    );
+
+    let xai_target = Info {
+        id: acp::SessionId::new("fork-xai-binding"),
+        cwd: "/target/xai".to_owned(),
+    };
+    adapter
+        .copy_session_data(
+            &source,
+            &xai_target,
+            CopySessionOptions {
+                new_model_id: Some("grok-3".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        adapter
+            .read_summary_sync(&xai_target)
+            .unwrap()
+            .credential_binding
+            .is_none(),
+        "switching a copied session away from Codex must clear local binding metadata"
+    );
+}
+
 #[tokio::test]
 async fn test_load_prompts_only() {
     let temp_dir = TempDir::new().unwrap();
@@ -1794,6 +1903,7 @@ fn write_test_summary(
         agent_name: None,
         sandbox_profile: None,
         reasoning_effort: None,
+        credential_binding: None,
     };
     let json = serde_json::to_vec_pretty(&summary).unwrap();
     std::fs::write(session_dir.join("summary.json"), json).unwrap();

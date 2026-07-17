@@ -173,9 +173,8 @@ impl SessionActor {
     /// the turn loop; a long-lived borrow would race with turn/compact/cancel
     /// and panic on double-borrow.
     async fn two_pass_sample(&self, history: Vec<ConversationItem>) -> Option<CompactOutput> {
-        let sampling_config = self.reconstruct_full_config().await;
-        let client = match self.prepare_chat_completion(false).await {
-            Ok(c) => c,
+        let (client, sampling_config) = match self.prepare_bound_chat_completion(false).await {
+            Ok(bound) => bound,
             Err(e) => {
                 tracing::warn!(
                     error = % e, "two_pass: failed to prepare sampling client"
@@ -1030,8 +1029,7 @@ impl SessionActor {
             return Err(acp::Error::internal_error()
                 .data("Compaction failed: no system message in simplified conversation"));
         }
-        let sampling_config = self.reconstruct_full_config().await;
-        let sampling_client = self.prepare_chat_completion(false).await?;
+        let (sampling_client, sampling_config) = self.prepare_bound_chat_completion(false).await?;
         let use_backend_search =
             self.agent.borrow().backend_search_enabled() && self.supports_backend_search.get();
         let effective_tool_defs: Vec<xai_grok_sampling_types::ToolDefinition> = self

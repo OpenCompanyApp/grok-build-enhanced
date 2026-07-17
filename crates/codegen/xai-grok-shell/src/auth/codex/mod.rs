@@ -20,6 +20,8 @@ pub use adapters::{
     CodexApiKeyProvider, CodexSamplerRequestAuth, shared_api_key_provider,
     shared_sampler_request_auth,
 };
+#[cfg(test)]
+pub(crate) use credentials::credentials_for_test;
 pub use credentials::{
     CODEX_CREDENTIAL_SCHEMA_VERSION, CodexCredentialProvider, CodexCredentials, SecretString,
 };

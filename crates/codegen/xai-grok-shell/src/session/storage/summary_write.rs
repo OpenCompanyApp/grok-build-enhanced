@@ -19,7 +19,7 @@ use std::path::Path;
 use agent_client_protocol as acp;
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
-use xai_grok_sampling_types::ReasoningEffort;
+use xai_grok_sampling_types::{CredentialBinding, ReasoningEffort};
 
 use crate::session::persistence::Summary;
 
@@ -81,6 +81,8 @@ pub(crate) struct SummaryPatch {
     pub chat_format_version: Option<u8>,
     pub trace_turn: Option<TraceTurnPatch>,
     pub model: Option<ModelPatch>,
+    /// Outer `None` leaves the field unchanged; inner `None` clears it.
+    pub credential_binding: Option<Option<CredentialBinding>>,
     pub git_head: Option<GitHeadPatch>,
     pub collection_id: Option<String>,
     /// Set the session title unconditionally (last-writer-wins). Used by the
@@ -137,6 +139,9 @@ impl Summary {
             if let Some(reasoning_effort) = &model.reasoning_effort {
                 self.reasoning_effort = *reasoning_effort;
             }
+        }
+        if let Some(binding) = &patch.credential_binding {
+            self.credential_binding = binding.clone();
         }
         if let Some(git_head) = &patch.git_head {
             self.head_commit = git_head.commit.clone();

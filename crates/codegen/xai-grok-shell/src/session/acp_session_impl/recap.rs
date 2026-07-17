@@ -495,7 +495,7 @@ impl SessionActor {
         cwd: &str,
         model_override: Option<&str>,
     ) -> Option<String> {
-        let (sampling_client, model) = self
+        let (sampling_client, route) = self
             .prepare_aux_sampling_client(model_override, "shell command suggestion")
             .await
             .ok()?;
@@ -515,7 +515,7 @@ impl SessionActor {
         let request = ConversationRequest {
             items,
             tools: vec![],
-            model: Some(model),
+            model: Some(route.model),
             temperature: Some(0.1),
             max_output_tokens: Some(50),
             x_grok_conv_id: Some(session_id.clone()),
@@ -622,7 +622,7 @@ impl SessionActor {
             return None;
         };
 
-        let (sampling_client, model) = match self
+        let (sampling_client, route) = match self
             .prepare_aux_sampling_client(requested_model.as_deref(), "prompt suggestion")
             .await
         {
@@ -634,7 +634,8 @@ impl SessionActor {
         };
 
         tracing::debug!(
-            model = %model,
+            provider = %route.provider,
+            model = %route.model,
             transcript_len = transcript.len(),
             "prompt suggest: requesting"
         );
@@ -657,7 +658,7 @@ impl SessionActor {
         let request = ConversationRequest {
             items,
             tools: vec![],
-            model: Some(model),
+            model: Some(route.model),
             temperature: None,
             // Keep the conversation/session identity stable so Responses
             // providers can reuse the prompt cache across suggestion calls.
