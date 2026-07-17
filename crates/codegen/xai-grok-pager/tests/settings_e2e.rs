@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use xai_grok_pager::app::actions::Action;
 use xai_grok_pager::settings::{
-    EnumChoice, PagerLocalSnapshot, SettingCategory, SettingKind, SettingMeta, SettingOwner,
-    SettingValue, SettingsRegistry,
+    DynamicEnumSource, EnumChoice, PagerLocalSnapshot, SettingCategory, SettingKind, SettingMeta,
+    SettingOwner, SettingValue, SettingsRegistry, dynamic_enum_choices,
 };
 use xai_grok_pager::views::settings_modal::{
     RowEntry, SettingsKeyOutcome, SettingsModalMode, SettingsModalState, handle_settings_key,
@@ -109,7 +109,12 @@ fn matrix_is_subset_of_registry() {
 fn make_state() -> SettingsModalState {
     SettingsModalState::new(
         Arc::new(SettingsRegistry::defaults()),
-        UiConfig::default(),
+        // Pin the string-backed dynamic theme value so picker tests do not read
+        // process-global theme/cache state merely by constructing the modal.
+        UiConfig {
+            theme: Some("groknight".to_owned()),
+            ..UiConfig::default()
+        },
         // auto_mode_gate on so the permission_mode picker shows the full catalog
         // (including Auto); the gate-off filtering is covered by a dedicated test.
         PagerLocalSnapshot {
@@ -117,6 +122,10 @@ fn make_state() -> SettingsModalState {
             ..PagerLocalSnapshot::default()
         },
     )
+}
+
+fn pin_theme() -> std::sync::MutexGuard<'static, ()> {
+    xai_grok_pager::theme::cache::pin_theme()
 }
 
 fn press(key: KeyCode) -> KeyEvent {
@@ -1485,6 +1494,7 @@ fn esc_in_picking_enum_mode_returns_to_browse() {
     let mut s = make_state();
     s.mode = SettingsModalMode::PickingEnum {
         key: "compact_mode",
+        choices: Vec::new(),
         choices_idx: 0,
         original_value: SettingValue::Bool(false),
         supports_preview: true,
@@ -1580,8 +1590,6 @@ fn registry_kind_membership_through_pr_14() {
     assert_eq!(
         enum_keys,
         vec![
-            "auto_dark_theme",
-            "auto_light_theme",
             "coding_data_sharing",
             "default_selected_permission",
             "hunk_tracker_mode",
@@ -1590,7 +1598,6 @@ fn registry_kind_membership_through_pr_14() {
             "plan_mode",
             "render_mermaid",
             "scroll_mode",
-            "theme",
             "voice_capture_mode",
             "voice_stt_language",
         ],
@@ -1607,7 +1614,13 @@ fn registry_kind_membership_through_pr_14() {
     let dynamic_enum_keys = by_kind.remove("DynamicEnum").unwrap_or_default();
     assert_eq!(
         dynamic_enum_keys,
-        vec!["default_model", "fork_secondary_model",],
+        vec![
+            "auto_dark_theme",
+            "auto_light_theme",
+            "default_model",
+            "fork_secondary_model",
+            "theme",
+        ],
         "DynamicEnum kind membership drift",
     );
 
@@ -1648,8 +1661,6 @@ fn enum_settings_membership_through_pr_14() {
     assert_eq!(
         enum_keys,
         vec![
-            "auto_dark_theme",
-            "auto_light_theme",
             "coding_data_sharing",
             "default_selected_permission",
             "hunk_tracker_mode",
@@ -1658,21 +1669,83 @@ fn enum_settings_membership_through_pr_14() {
             "plan_mode",
             "render_mermaid",
             "scroll_mode",
-            "theme",
             "voice_capture_mode",
             "voice_stt_language",
         ],
     );
 }
 
-/// `current_value_for` and `default_value_for` must agree at
-/// `UiConfig::default()` with independently hard-coded expectations.
 #[test]
+#[serial_test::serial(THEME_CACHE)]
+fn theme_settings_use_owned_dynamic_enum_values() {
+    let _theme_guard = pin_theme();
+    let registry = SettingsRegistry::defaults();
+    let pager = PagerLocalSnapshot::default();
+    let ui = UiConfig {
+        theme: Some("groknight".to_owned()),
+        ..UiConfig::default()
+    };
+
+    for (key, expected_source, expected_default) in [
+        ("theme", DynamicEnumSource::ThemeCatalog, "groknight"),
+        (
+            "auto_dark_theme",
+            DynamicEnumSource::ConcreteThemeCatalog,
+            "groknight",
+        ),
+        (
+            "auto_light_theme",
+            DynamicEnumSource::ConcreteThemeCatalog,
+            "grokday",
+        ),
+    ] {
+        let meta = registry
+            .find(key)
+            .unwrap_or_else(|| panic!("missing `{key}`"));
+        let SettingKind::DynamicEnum {
+            default,
+            source,
+            supports_preview,
+        } = &meta.kind
+        else {
+            panic!("`{key}` must be DynamicEnum");
+        };
+        assert_eq!(*source, expected_source);
+        assert_eq!(*default, expected_default);
+        assert!(*supports_preview);
+        assert_eq!(
+            xai_grok_pager::settings::current_value_for(key, &ui, &pager),
+            Some(SettingValue::String(expected_default.to_owned()))
+        );
+        assert_eq!(
+            xai_grok_pager::settings::default_value_for(meta),
+            SettingValue::String(expected_default.to_owned())
+        );
+
+        let choices = dynamic_enum_choices(*source, &pager);
+        assert!(
+            choices
+                .iter()
+                .any(|choice| choice.canonical == expected_default),
+            "`{key}` default must resolve in its dynamic catalog"
+        );
+    }
+}
+
+/// Registry reset defaults stay pinned to independently hard-coded values.
+/// Runtime values normally match those defaults, except an unset `ui.theme`:
+/// that reflects the live canonical selection rather than implying a reset.
+#[test]
+#[serial_test::serial(THEME_CACHE)]
 fn defaults_round_trip_through_registry() {
+    let _theme_guard = pin_theme();
     use xai_grok_pager::settings::{SettingValue, current_value_for};
     let reg = SettingsRegistry::defaults();
     let ui = UiConfig::default();
     let pager = PagerLocalSnapshot::default();
+
+    assert!(ui.theme.is_none(), "test requires an unset runtime theme");
+    xai_grok_pager::theme::cache::set(xai_grok_pager::theme::ThemeKind::GrokDay);
 
     // `current_value_for` for these keys reads process-wide caches, not `ui`.
     // Reset to defaults so a sibling test on this worker thread can't leak in.
@@ -1689,8 +1762,20 @@ fn defaults_round_trip_through_registry() {
     // 3 = the registry default shown while the profile is in charge.
     xai_grok_pager::appearance::cache::set_scroll_lines(3);
 
-    // Hard-coded per-key expectations (independent of registry).
-    let expected = |key: &str| -> SettingValue {
+    let theme_meta = reg.find("theme").expect("theme setting");
+    assert_eq!(
+        xai_grok_pager::settings::default_value_for(theme_meta),
+        SettingValue::String("groknight".to_owned()),
+        "reset keeps the registry's Grok Night default",
+    );
+    assert_eq!(
+        current_value_for("theme", &ui, &pager),
+        Some(SettingValue::String("grokday".to_owned())),
+        "an unset ui.theme must expose the seeded live canonical",
+    );
+
+    // Hard-coded per-key reset defaults (independent of registry).
+    let expected_default = |key: &str| -> SettingValue {
         match key {
             "compact_mode" => SettingValue::Bool(false),
             "show_timestamps" => SettingValue::Bool(true),
@@ -1699,9 +1784,9 @@ fn defaults_round_trip_through_registry() {
             "remember_tool_approvals" => SettingValue::Bool(false),
             "toolset.ask_user_question.timeout_enabled" => SettingValue::Bool(true),
             "keep_text_selection" => SettingValue::Enum("flash"),
-            "theme" => SettingValue::Enum("groknight"),
-            "auto_dark_theme" => SettingValue::Enum("groknight"),
-            "auto_light_theme" => SettingValue::Enum("grokday"),
+            "theme" => SettingValue::String("groknight".to_owned()),
+            "auto_dark_theme" => SettingValue::String("groknight".to_owned()),
+            "auto_light_theme" => SettingValue::String("grokday".to_owned()),
             "render_mermaid" => SettingValue::Enum("auto"),
             "multiline_mode" => SettingValue::Bool(false),
             "permission_mode" => SettingValue::Enum("ask"),
@@ -1745,19 +1830,26 @@ fn defaults_round_trip_through_registry() {
         let live_value = current_value_for(meta.key, &ui, &pager)
             .unwrap_or_else(|| panic!("current_value_for(`{}`) returned None", meta.key));
         let default_value = xai_grok_pager::settings::default_value_for(meta);
-        let expected_value = expected(meta.key);
+        let expected_default_value = expected_default(meta.key);
+        let expected_live_value = if meta.key == "theme" {
+            SettingValue::String("grokday".to_owned())
+        } else {
+            expected_default_value.clone()
+        };
 
         assert_eq!(
-            live_value, expected_value,
-            "current_value_for(`{}`) drifted from expected",
+            live_value, expected_live_value,
+            "current_value_for(`{}`) drifted from expected live value",
             meta.key
         );
         assert_eq!(
-            default_value, expected_value,
-            "default_value_for(`{}`) drifted from expected",
+            default_value, expected_default_value,
+            "default_value_for(`{}`) drifted from expected reset default",
             meta.key
         );
     }
+
+    xai_grok_pager::theme::cache::set(xai_grok_pager::theme::ThemeKind::GrokNight);
 }
 
 /// Initial modal-open state selects the first setting row.
@@ -2069,9 +2161,9 @@ fn pr2_filter_matches_multi_word_and() {
 /// (`handle_browse::Enter` → `try_enter_picking_enum`) — the only
 /// place `try_enter_picking_enum` is reachable in production code.
 ///
-/// This verifies the *structural* outcome (mode + Changed); the
-/// Action variant assertion lands once
-/// `action_for_enum("theme", _)` ships.
+/// This verifies the synthetic static Enum's structural outcome (mode +
+/// Changed); the production theme DynamicEnum action variants are asserted by
+/// the dedicated tests below.
 #[test]
 fn pr3_esc_in_picker_reverts_to_original() {
     // Synthetic Enum registry — `action_for_enum` returns None for
@@ -2180,28 +2272,37 @@ fn pr3_esc_in_picker_reverts_to_original() {
 /// from the registry — a future catalog reorder doesn't break the
 /// test for a non-bug reason.
 #[test]
+#[serial_test::serial(THEME_CACHE)]
 fn pr4_theme_preview_and_commit_e2e() {
+    let _theme_guard = pin_theme();
     let reg = SettingsRegistry::defaults();
     let theme_meta = reg
         .find("theme")
         .expect("registry must contain `theme` for PR 4");
     let (default_canonical, default_idx, choices_count, next_canonical, next_idx) =
         match &theme_meta.kind {
-            SettingKind::Enum {
-                default, choices, ..
+            SettingKind::DynamicEnum {
+                default, source, ..
             } => {
+                let choices = dynamic_enum_choices(*source, &PagerLocalSnapshot::default());
                 let default_idx = choices
                     .iter()
-                    .position(|c| c.canonical == *default)
+                    .position(|choice| choice.canonical == *default)
                     .expect("theme default must exist in choices");
                 assert!(
                     default_idx + 1 < choices.len(),
                     "test requires at least one choice AFTER the default; reorder?"
                 );
-                let next = choices[default_idx + 1].canonical;
-                (*default, default_idx, choices.len(), next, default_idx + 1)
+                let next = choices[default_idx + 1].canonical.clone();
+                (
+                    (*default).to_owned(),
+                    default_idx,
+                    choices.len(),
+                    next,
+                    default_idx + 1,
+                )
             }
-            other => panic!("expected Enum kind for `theme`, got {other:?}"),
+            other => panic!("expected DynamicEnum kind for `theme`, got {other:?}"),
         };
     assert!(
         choices_count >= 3,
@@ -2215,7 +2316,7 @@ fn pr4_theme_preview_and_commit_e2e() {
         _ => panic!("expected to land on theme row"),
     }
 
-    // Enter on Enum row → PickingEnum, seeded to the default.
+    // Enter on DynamicEnum row → PickingEnum, seeded to the default.
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
     assert!(
         matches!(outcome, SettingsKeyOutcome::Changed),
@@ -2233,8 +2334,8 @@ fn pr4_theme_preview_and_commit_e2e() {
             // dynamically — no hardcoded "1").
             assert_eq!(*choices_idx, default_idx);
             match original_value {
-                SettingValue::Enum(s) => *s,
-                other => panic!("expected Enum original_value, got {other:?}"),
+                SettingValue::String(value) => value.clone(),
+                other => panic!("expected owned String original_value, got {other:?}"),
             }
         }
         ref other => panic!("expected PickingEnum mode, got {other:?}"),
@@ -2302,11 +2403,13 @@ fn pr4_theme_preview_and_commit_e2e() {
 /// Action (not a commit) — Esc revert
 /// is a preview-style restore, not a re-persist.
 #[test]
+#[serial_test::serial(THEME_CACHE)]
 fn pr4_theme_picker_esc_dispatches_revert_action() {
+    let _theme_guard = pin_theme();
     let reg = SettingsRegistry::defaults();
     let default_canonical = match &reg.find("theme").unwrap().kind {
-        SettingKind::Enum { default, .. } => *default,
-        _ => panic!("theme must be Enum"),
+        SettingKind::DynamicEnum { default, .. } => (*default).to_owned(),
+        _ => panic!("theme must be DynamicEnum"),
     };
 
     let mut s = make_state();
@@ -2339,98 +2442,203 @@ fn pr4_theme_picker_esc_dispatches_revert_action() {
     );
 }
 
-/// `action_for_enum` (preview) and
-/// `action_for_enum_commit` map every theme-family key to the
-/// matching typed Action variant:
-/// parameterised across keys AND derives expected next-canonical
-/// from the registry (catalog-reorder-resilient).
-///
-/// Also exercises EVERY choice (not just first Down), so
-/// a refactor that routes correctly for choice 0 but breaks for
-/// choice N>0 gets caught.
+/// The owned-string DynamicEnum preview and commit paths map every
+/// theme-family key to the matching typed Action variant. Expected values come
+/// from the runtime catalog, so the test remains resilient to catalog reorder.
 #[test]
+#[serial_test::serial(THEME_CACHE)]
 fn pr4_picker_dispatches_each_theme_settings_action_variant() {
-    let reg = SettingsRegistry::defaults();
+    let _theme_guard = pin_theme();
 
     for key in &["theme", "auto_dark_theme", "auto_light_theme"] {
-        let meta = reg
-            .find(key)
-            .unwrap_or_else(|| panic!("registry missing `{key}`"));
-        let (default_idx, choices) = match &meta.kind {
-            SettingKind::Enum {
-                default, choices, ..
-            } => {
-                let i = choices
-                    .iter()
-                    .position(|c| c.canonical == *default)
-                    .unwrap();
-                (i, *choices)
-            }
-            _ => panic!("`{key}` must be Enum"),
-        };
-
         let mut s = make_state();
         navigate_to(&mut s, key);
         let _ = handle_settings_key(&mut s, &press(KeyCode::Enter));
 
-        // Navigate forward through every remaining choice, asserting
-        // the variant on each Preview dispatch.
-        for (next_idx, choice) in choices.iter().enumerate().skip(default_idx + 1) {
-            let expected = choice.canonical;
-            let outcome = handle_settings_key(&mut s, &press(KeyCode::Down));
-            match (*key, outcome) {
-                ("theme", SettingsKeyOutcome::Action(Action::PreviewTheme(name))) => {
-                    assert_eq!(name, expected, "theme preview at idx {next_idx}");
-                }
-                (
-                    "auto_dark_theme",
-                    SettingsKeyOutcome::Action(Action::PreviewAutoDarkTheme(name)),
-                ) => {
-                    assert_eq!(name, expected, "auto_dark preview at idx {next_idx}");
-                }
-                (
-                    "auto_light_theme",
-                    SettingsKeyOutcome::Action(Action::PreviewAutoLightTheme(name)),
-                ) => {
-                    assert_eq!(name, expected, "auto_light preview at idx {next_idx}");
-                }
-                (k, other) => panic!(
-                    "Down on `{k}` at idx {next_idx} should dispatch matching Preview Action, got {other:?}"
-                ),
+        // Keep deep-catalog coverage cheap: position one row before a late
+        // official Warp choice, then exercise the real Down/preview + Enter/
+        // commit paths instead of replaying roughly 340 Down events.
+        let (next_idx, expected) = match &mut s.mode {
+            SettingsModalMode::PickingEnum {
+                key: picker_key,
+                choices,
+                choices_idx,
+                ..
+            } => {
+                assert_eq!(*picker_key, *key);
+                let target_idx = choices
+                    .iter()
+                    .rposition(|choice| choice.canonical.starts_with("warp:"))
+                    .unwrap_or_else(|| panic!("`{key}` needs an official Warp choice"));
+                assert!(target_idx > 0, "late Warp choice needs a predecessor");
+                *choices_idx = target_idx - 1;
+                (target_idx, choices[target_idx].canonical.clone())
             }
-        }
+            other => panic!("`{key}` must open PickingEnum, got {other:?}"),
+        };
 
-        // Enter at the LAST choice → COMMIT Action variant for that
-        // canonical.
-        let last_canonical = choices.last().unwrap().canonical;
-        let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
-        match (*key, outcome) {
-            ("theme", SettingsKeyOutcome::Action(Action::SetTheme(name))) => {
-                assert_eq!(name, last_canonical);
+        let preview = handle_settings_key(&mut s, &press(KeyCode::Down));
+        match (*key, preview) {
+            ("theme", SettingsKeyOutcome::Action(Action::PreviewTheme(name))) => {
+                assert_eq!(name, expected, "theme preview at idx {next_idx}");
             }
-            ("auto_dark_theme", SettingsKeyOutcome::Action(Action::SetAutoDarkTheme(name))) => {
-                assert_eq!(name, last_canonical);
+            ("auto_dark_theme", SettingsKeyOutcome::Action(Action::PreviewAutoDarkTheme(name))) => {
+                assert_eq!(name, expected, "auto_dark preview at idx {next_idx}");
             }
-            ("auto_light_theme", SettingsKeyOutcome::Action(Action::SetAutoLightTheme(name))) => {
-                assert_eq!(name, last_canonical);
+            (
+                "auto_light_theme",
+                SettingsKeyOutcome::Action(Action::PreviewAutoLightTheme(name)),
+            ) => {
+                assert_eq!(name, expected, "auto_light preview at idx {next_idx}");
             }
             (k, other) => panic!(
-                "Enter on `{k}` last choice should dispatch matching commit Action, got {other:?}"
+                "Down on `{k}` at idx {next_idx} should dispatch matching Preview Action, got {other:?}"
             ),
+        }
+
+        let commit = handle_settings_key(&mut s, &press(KeyCode::Enter));
+        match (*key, commit) {
+            ("theme", SettingsKeyOutcome::Action(Action::SetTheme(name))) => {
+                assert_eq!(name, expected);
+            }
+            ("auto_dark_theme", SettingsKeyOutcome::Action(Action::SetAutoDarkTheme(name))) => {
+                assert_eq!(name, expected);
+            }
+            ("auto_light_theme", SettingsKeyOutcome::Action(Action::SetAutoLightTheme(name))) => {
+                assert_eq!(name, expected);
+            }
+            (k, other) => {
+                panic!("Enter on `{k}` should dispatch matching commit Action, got {other:?}")
+            }
         }
     }
 }
 
+#[test]
+#[serial_test::serial(THEME_CACHE)]
+fn theme_picker_catalog_snapshot_survives_live_catalog_change() {
+    use ratatui::buffer::Buffer;
+    use xai_grok_pager::theme::{ThemeKind, ThemeSelection};
+
+    let _theme_guard = pin_theme();
+    const MISSING: &str = "warp-file:test-only/__grok_settings_snapshot_missing__.yaml";
+    let missing = xai_grok_pager::theme::cache::resolve_selection_for_display(
+        ThemeSelection::WarpFile(MISSING.to_owned()),
+        None,
+    );
+    xai_grok_pager::theme::cache::install_resolved(missing);
+
+    let mut s = make_state();
+    s.ui_snapshot.theme = Some(MISSING.to_owned());
+    navigate_to(&mut s, "theme");
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
+    assert!(matches!(outcome, SettingsKeyOutcome::Changed));
+
+    let (snapshot_canonicals, target_idx, expected) = match &mut s.mode {
+        SettingsModalMode::PickingEnum {
+            choices,
+            choices_idx,
+            ..
+        } => {
+            let missing_idx = choices
+                .iter()
+                .position(|choice| choice.canonical == MISSING)
+                .expect("open-time catalog must preserve the missing saved WarpFile");
+            assert_eq!(
+                *choices_idx, missing_idx,
+                "the missing selected WarpFile must seed picker focus",
+            );
+            let target_idx = choices
+                .iter()
+                .rposition(|choice| choice.canonical.starts_with("warp:"))
+                .expect("theme catalog needs an official Warp choice");
+            assert!(target_idx > 0, "late Warp choice needs a predecessor");
+            *choices_idx = target_idx - 1;
+            (
+                choices
+                    .iter()
+                    .map(|choice| choice.canonical.clone())
+                    .collect::<Vec<_>>(),
+                target_idx,
+                choices[target_idx].canonical.clone(),
+            )
+        }
+        other => panic!("theme must open PickingEnum, got {other:?}"),
+    };
+
+    // Removing the missing live selection changes a freshly discovered theme
+    // catalog and shifts every later index. The open picker must retain the old
+    // index space for render, navigation, preview, and commit.
+    xai_grok_pager::theme::cache::set(ThemeKind::GrokNight);
+    let rebuilt = dynamic_enum_choices(DynamicEnumSource::ThemeCatalog, &s.pager_snapshot);
+    assert!(!rebuilt.iter().any(|choice| choice.canonical == MISSING));
+    assert_eq!(snapshot_canonicals.len(), rebuilt.len() + 1);
+    assert_eq!(
+        snapshot_canonicals
+            .iter()
+            .filter(|canonical| canonical.as_str() != MISSING)
+            .cloned()
+            .collect::<Vec<_>>(),
+        rebuilt
+            .iter()
+            .map(|choice| choice.canonical.clone())
+            .collect::<Vec<_>>(),
+        "the missing WarpFile should be the only catalog change",
+    );
+
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 140,
+        height: 40,
+    };
+    let mut buf = Buffer::empty(area);
+    xai_grok_pager::views::settings_modal::render_settings_modal(
+        &mut buf, area, &mut s, false, None,
+    );
+    assert_eq!(
+        s.picker_choice_rects.len(),
+        snapshot_canonicals.len(),
+        "render must use the open-time catalog snapshot",
+    );
+
+    let preview = handle_settings_key(&mut s, &press(KeyCode::Down));
+    assert!(
+        matches!(
+            &preview,
+            SettingsKeyOutcome::Action(Action::PreviewTheme(name)) if name == &expected
+        ),
+        "preview must retain the late Warp canonical, got {preview:?}",
+    );
+    assert!(
+        matches!(
+            &s.mode,
+            SettingsModalMode::PickingEnum { choices_idx, .. } if *choices_idx == target_idx
+        ),
+        "navigation must retain the snapshot index",
+    );
+
+    let commit = handle_settings_key(&mut s, &press(KeyCode::Enter));
+    assert!(
+        matches!(
+            &commit,
+            SettingsKeyOutcome::Action(Action::SetTheme(name)) if name == &expected
+        ),
+        "commit must retain the previewed Warp canonical, got {commit:?}",
+    );
+    assert!(matches!(s.mode, SettingsModalMode::Browse));
+}
+
 // ---------------------------------------------------------------------------
-// Mouse-path coverage for the new Enum settings.
+// Mouse-path coverage for the theme DynamicEnum settings.
 // The `every_registered_setting_is_exercised`
 // test's docstring promises "keyboard test + mouse test" per
-// registered key. Earlier only keyboard tests shipped for the 3 new
-// enums; these tests close that gap.
+// registered key. These tests keep that contract after the choices moved from
+// static Enum slices to owned runtime catalogs.
 // ---------------------------------------------------------------------------
 
-/// Clicking on an Enum row in Browse mode selects it without firing
-/// any Action — Enum rows require an explicit Enter to open the
+/// Clicking on a DynamicEnum row in Browse mode selects it without firing
+/// any Action — DynamicEnum rows require an explicit Enter to open the
 /// picker (mouse picker-entry is deferred to a future change). The body
 /// click outside the indicator hit-rect (cols 0-4) is a
 /// select-only event.
@@ -2495,8 +2703,9 @@ fn pr4_mouse_click_in_theme_picker_is_no_op() {
     let mut s = make_state();
     s.mode = SettingsModalMode::PickingEnum {
         key: "theme",
+        choices: Vec::new(),
         choices_idx: 0,
-        original_value: SettingValue::Enum("groknight"),
+        original_value: SettingValue::String("groknight".to_owned()),
         supports_preview: true,
     };
     synth_rects(&mut s);
@@ -3548,7 +3757,9 @@ fn reset_overlay_dims_all_rows_except_target() {
 /// needs every line for input + validation. This pins the
 /// discoverability contract.
 #[test]
+#[serial_test::serial(THEME_CACHE)]
 fn docs_footer_renders_for_browse_and_picker() {
+    let _theme_guard = pin_theme();
     use ratatui::buffer::Buffer;
     let area = Rect {
         x: 0,
@@ -3559,7 +3770,7 @@ fn docs_footer_renders_for_browse_and_picker() {
     for fixture_label in ["browse", "picker"] {
         let mut s = make_state();
         if fixture_label == "picker" {
-            // Navigate to a row with an Enum kind (theme).
+            // Navigate to a row with a DynamicEnum kind (theme).
             navigate_to(&mut s, "theme");
             let _ = handle_settings_key(&mut s, &press(KeyCode::Enter));
             assert!(matches!(s.mode, SettingsModalMode::PickingEnum { .. }));

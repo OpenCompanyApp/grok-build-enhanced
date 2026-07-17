@@ -159,6 +159,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn theme_unavailable_in_minimal() {
         assert!(!ThemeCommand.available_in_minimal());
     }
@@ -166,6 +167,7 @@ mod tests {
     // -- suggest_args ---------------------------------------------------------
 
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn suggest_args_prepends_auto_option() {
         with_test_env(|| {
             let cmd = ThemeCommand;
@@ -184,6 +186,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn suggest_args_auto_active_when_auto_mode() {
         with_test_env(|| {
             theme_cache::apply_selection(ThemeSelection::Auto, system_appearance::detect());
@@ -196,18 +199,23 @@ mod tests {
                 screen_mode: crate::app::ScreenMode::Fullscreen,
             };
             let items = cmd.suggest_args(&ctx, "").expect("should return items");
-            assert!(
-                items[0].description.contains("(active)"),
-                "auto should show (active), got: {}",
-                items[0].description
-            );
+            let active = items
+                .iter()
+                .filter(|item| item.description.ends_with(" (active)"))
+                .collect::<Vec<_>>();
+            assert_eq!(active.len(), 1, "exactly one theme choice must be active");
+            assert_eq!(active[0].insert_text, "auto");
         });
     }
 
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn suggest_args_auto_not_active_when_explicit() {
         with_test_env(|| {
-            theme_cache::set_auto_mode(false);
+            theme_cache::apply_selection(
+                ThemeSelection::BuiltIn(ThemeKind::GrokNight),
+                system_appearance::detect(),
+            );
             let cmd = ThemeCommand;
             let models = crate::acp::model_state::ModelState::default();
             let ctx = AppCtx {
@@ -226,10 +234,13 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn suggest_args_explicit_active_when_not_auto() {
         with_test_env(|| {
-            theme_cache::set_auto_mode(false);
-            theme_cache::set(ThemeKind::GrokNight);
+            theme_cache::apply_selection(
+                ThemeSelection::BuiltIn(ThemeKind::GrokNight),
+                system_appearance::detect(),
+            );
             let cmd = ThemeCommand;
             let models = crate::acp::model_state::ModelState::default();
             let ctx = AppCtx {
@@ -252,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn suggest_args_no_explicit_active_when_auto() {
         with_test_env(|| {
             theme_cache::apply_selection(ThemeSelection::Auto, system_appearance::detect());
@@ -280,6 +292,7 @@ mod tests {
     /// `/theme <name>` returns `Action::SetTheme(<canonical>)` —
     /// the dispatcher handles in-memory state + disk write + toast.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn run_explicit_dispatches_set_theme_action() {
         with_test_env(|| {
             let cmd = ThemeCommand;
@@ -311,6 +324,7 @@ mod tests {
     /// otherwise the previous `unwrap_or` masked a broken upstream
     /// invariant.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn run_toggle_dispatches_set_theme_action() {
         with_test_env(|| {
             theme_cache::set(ThemeKind::GrokNight);
@@ -351,6 +365,7 @@ mod tests {
 
     /// `/theme auto` dispatches `SetTheme("auto")`.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn run_auto_dispatches_set_theme_auto() {
         with_test_env(|| {
             let cmd = ThemeCommand;
@@ -379,6 +394,7 @@ mod tests {
 
     /// Aliases normalise to canonical `display_name` before dispatch.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn run_alias_normalises_to_canonical() {
         with_test_env(|| {
             let cmd = ThemeCommand;
@@ -409,6 +425,7 @@ mod tests {
     // -- preview_arg ----------------------------------------------------------
 
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn preview_auto_applies_resolved_theme() {
         with_test_env(|| {
             system_appearance::set_mock(Some(system_appearance::SystemAppearance::Light));
@@ -421,6 +438,7 @@ mod tests {
 
     /// `preview_arg` applies the named theme directly.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn preview_explicit_theme_applies_directly() {
         with_test_env(|| {
             theme_cache::set(ThemeKind::GrokNight);
@@ -432,6 +450,7 @@ mod tests {
 
     /// `preview_arg` with unknown theme is a no-op.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn preview_unknown_theme_is_no_op() {
         with_test_env(|| {
             theme_cache::set(ThemeKind::GrokNight);
@@ -449,6 +468,7 @@ mod tests {
 
     /// `cancel_preview` restores the previously-applied theme.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn cancel_preview_restores_previous_kind() {
         with_test_env(|| {
             theme_cache::set(ThemeKind::GrokNight);
@@ -469,6 +489,7 @@ mod tests {
 
     /// `cancel_preview` with unknown theme is a no-op.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn cancel_preview_unknown_theme_is_no_op() {
         with_test_env(|| {
             theme_cache::set(ThemeKind::GrokDay);
@@ -485,7 +506,8 @@ mod tests {
     // -- error handling -------------------------------------------------------
 
     #[test]
-    fn run_unknown_lists_auto_in_available() {
+    #[serial_test::serial(THEME_CACHE)]
+    fn run_unknown_returns_concise_search_guidance() {
         with_test_env(|| {
             let cmd = ThemeCommand;
             let models = crate::acp::model_state::ModelState::default();
@@ -503,13 +525,15 @@ mod tests {
             };
             let result = cmd.run(&mut ctx, "nonexistent");
             if let CommandResult::Error(msg) = result {
-                assert!(
-                    msg.contains("Run /theme"),
-                    "error should point to /theme: {msg}"
+                assert_eq!(
+                    msg,
+                    "Unknown theme: nonexistent. Run /theme to search built-in, installed, and \
+                     official Warp themes."
                 );
+                assert!(msg.len() < 120, "guidance should stay concise: {msg}");
                 assert!(
-                    msg.contains("official Warp themes"),
-                    "error should describe the searchable catalog: {msg}"
+                    !msg.contains("warp:"),
+                    "guidance must not enumerate the 340-theme catalog: {msg}"
                 );
             } else {
                 panic!("expected Error, got: {result:?}");
@@ -519,6 +543,7 @@ mod tests {
 
     /// Truecolor-only themes are accepted; clamping happens downstream.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn run_truecolor_theme_dispatches_set_theme_action() {
         with_test_env(|| {
             let cmd = ThemeCommand;

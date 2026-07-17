@@ -109,10 +109,12 @@ pub enum SettingsModalMode {
     Browse,
     /// `/` was pressed; chars filter the visible rows.
     FilterFocused,
-    /// Enum chooser sub-pane. `supports_preview` is cached at open
-    /// time to avoid per-keystroke registry lookups.
+    /// Enum chooser sub-pane. The resolved choices and `supports_preview` are
+    /// snapshotted at open time so every index keeps the same meaning until the
+    /// picker closes, even if a runtime catalog changes between frames.
     PickingEnum {
         key: SettingKey,
+        choices: Vec<OwnedEnumChoice>,
         choices_idx: usize,
         original_value: SettingValue,
         supports_preview: bool,
@@ -358,32 +360,13 @@ impl SettingsModalState {
             let Some((key, meta)) = self.focused_setting() else {
                 return false;
             };
-            // Handles both static `Enum` and `DynamicEnum` catalogs.
-            let (supports_preview, resolved): (bool, Vec<OwnedEnumChoice>) = match &meta.kind {
-                SettingKind::Enum {
-                    choices,
-                    supports_preview,
-                    ..
-                } => (
-                    *supports_preview,
-                    effective_enum_choices(key, choices, &self.pager_snapshot)
-                        .into_iter()
-                        .map(|c| OwnedEnumChoice {
-                            canonical: c.canonical.to_string(),
-                            display: c.display.to_string(),
-                            description: c.description.to_string(),
-                        })
-                        .collect(),
-                ),
-                SettingKind::DynamicEnum {
-                    source,
-                    supports_preview,
-                    ..
-                } => (
-                    *supports_preview,
-                    dynamic_enum_choices(*source, &self.pager_snapshot),
-                ),
-                _ => return false,
+            // Handles both static `Enum` and `DynamicEnum` catalogs. Dynamic
+            // catalogs are resolved exactly once here; all picker paths retain
+            // this owned snapshot rather than rediscovering choices by index.
+            let Some((supports_preview, resolved)) =
+                resolve_picker_choices(key, &meta.kind, &self.pager_snapshot)
+            else {
+                return false;
             };
             // Soft-fail if a static catalog exceeds the product cap. DynamicEnum
             // (e.g. models) is exempt — those lists are runtime-sized and always
@@ -458,6 +441,7 @@ impl SettingsModalState {
         });
         self.mode = SettingsModalMode::PickingEnum {
             key,
+            choices: resolved_choices,
             choices_idx,
             supports_preview,
             original_value,
@@ -672,7 +656,7 @@ fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
 /// Construct `Action::Preview*` for an Enum setting — used by the
 /// picker's Up/Down (live preview) and Esc (revert). Preview actions
 /// never persist; they only mutate the live visual.
-fn action_for_enum(key: SettingKey, choice: &'static str) -> Option<Action> {
+fn action_for_enum(key: SettingKey, choice: &str) -> Option<Action> {
     match key {
         "theme" => Some(Action::PreviewTheme(choice.to_string())),
         "auto_dark_theme" => Some(Action::PreviewAutoDarkTheme(choice.to_string())),
@@ -707,7 +691,7 @@ fn action_for_picker_preview_revert(key: SettingKey, original: &SettingValue) ->
     }
 }
 
-fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> Option<Action> {
+fn action_for_enum_commit(key: SettingKey, choice: &str) -> Option<Action> {
     match key {
         "theme" => Some(Action::SetTheme(choice.to_string())),
         "auto_dark_theme" => Some(Action::SetAutoDarkTheme(choice.to_string())),
@@ -1807,31 +1791,17 @@ fn render_picking_enum(buf: &mut Buffer, area: Rect, state: &SettingsModalState,
         "PICKER_SEPARATOR_W drifted from PICKER_SEPARATOR width",
     );
 
-    let (setting_key, choices_idx) = match &state.mode {
+    let (setting_key, choices_idx, choices) = match &state.mode {
         SettingsModalMode::PickingEnum {
-            key, choices_idx, ..
-        } => (*key, *choices_idx),
+            key,
+            choices,
+            choices_idx,
+            ..
+        } => (*key, *choices_idx, choices.as_slice()),
         _ => return,
     };
     let Some(meta) = state.registry.find(setting_key) else {
         return;
-    };
-
-    let choices: Vec<OwnedEnumChoice> = match &meta.kind {
-        SettingKind::Enum { choices, .. } => {
-            effective_enum_choices(setting_key, choices, &state.pager_snapshot)
-                .into_iter()
-                .map(|c| OwnedEnumChoice {
-                    canonical: c.canonical.to_string(),
-                    display: c.display.to_string(),
-                    description: c.description.to_string(),
-                })
-                .collect()
-        }
-        SettingKind::DynamicEnum { source, .. } => {
-            dynamic_enum_choices(*source, &state.pager_snapshot)
-        }
-        _ => return,
     };
 
     if area.width == 0 || area.height == 0 {
@@ -3900,17 +3870,29 @@ pub fn handle_settings_key(state: &mut SettingsModalState, key: &KeyEvent) -> Se
 /// Enum chooser key routing. Up/Down dispatches preview actions,
 /// Enter commits current choice, Esc reverts to original value.
 fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyOutcome {
-    // Snapshot the current picker state under an immutable borrow so
-    // the subsequent `state.mode = ...` writes are unambiguous.
-    let (setting_key, choices_idx, original_value, supports_preview) = match &state.mode {
+    // Snapshot the scalar picker state and focused canonical under an
+    // immutable borrow. The complete choice catalog stays owned by the mode.
+    let (
+        setting_key,
+        choices_idx,
+        choices_len,
+        current_canonical,
+        original_value,
+        supports_preview,
+    ) = match &state.mode {
         SettingsModalMode::PickingEnum {
             key,
+            choices,
             choices_idx,
             original_value,
             supports_preview,
         } => (
             *key,
             *choices_idx,
+            choices.len(),
+            choices
+                .get(*choices_idx)
+                .map(|choice| choice.canonical.clone()),
             original_value.clone(),
             *supports_preview,
         ),
@@ -3919,29 +3901,16 @@ fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> Settin
 
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => {
-            let len = picker_choices_len(state, setting_key);
-            if choices_idx + 1 >= len {
+            if choices_idx + 1 >= choices_len {
                 return SettingsKeyOutcome::Unchanged;
             }
-            set_picker_idx(
-                state,
-                setting_key,
-                choices_idx + 1,
-                original_value,
-                supports_preview,
-            )
+            set_picker_idx(state, choices_idx + 1)
         }
         KeyCode::Up | KeyCode::Char('k') => {
             if choices_idx == 0 {
                 return SettingsKeyOutcome::Unchanged;
             }
-            set_picker_idx(
-                state,
-                setting_key,
-                choices_idx - 1,
-                original_value,
-                supports_preview,
-            )
+            set_picker_idx(state, choices_idx - 1)
         }
         KeyCode::Enter => {
             // Commit: dispatch the typed COMMIT Action for the
@@ -3966,22 +3935,18 @@ fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> Settin
                 Some(SettingKind::DynamicEnum { .. })
             );
             state.transition_to_browse();
+            let Some(current_canonical) = current_canonical else {
+                return SettingsKeyOutcome::Changed;
+            };
             if kind_is_dynamic {
-                let Some(canonical) = picker_choice_at_owned(state, setting_key, choices_idx)
-                else {
-                    return SettingsKeyOutcome::Changed;
-                };
                 if let Some(action) =
-                    action_for_string(setting_key, canonical, &state.pager_snapshot)
+                    action_for_string(setting_key, current_canonical, &state.pager_snapshot)
                 {
                     return SettingsKeyOutcome::Action(action);
                 }
                 return SettingsKeyOutcome::Changed;
             }
-            let Some(current_canonical) = picker_choice_at(state, setting_key, choices_idx) else {
-                return SettingsKeyOutcome::Changed;
-            };
-            if let Some(action) = action_for_enum_commit(setting_key, current_canonical) {
+            if let Some(action) = action_for_enum_commit(setting_key, &current_canonical) {
                 return SettingsKeyOutcome::Action(action);
             }
             SettingsKeyOutcome::Changed
@@ -4081,45 +4046,40 @@ fn handle_picking_group(state: &mut SettingsModalState, key: &KeyEvent) -> Setti
     }
 }
 
-/// Common nav body for Up/Down (and j/k aliases) in the picker:
-/// update `choices_idx` in-place, look up the new canonical, fire
-/// the preview dispatch via `action_for_enum`. Extracted from the
-/// Update picker index and optionally dispatch a preview action.
-/// `new_idx` must be in-bounds. Preview only fires for Enums with
-/// `supports_preview: true`; side-effecting Enums skip preview.
-fn set_picker_idx(
-    state: &mut SettingsModalState,
-    setting_key: SettingKey,
-    new_idx: usize,
-    original_value: SettingValue,
-    supports_preview: bool,
-) -> SettingsKeyOutcome {
-    let in_bounds = new_idx < picker_choices_len(state, setting_key);
-    if !in_bounds {
-        // Caller bounds-checks before calling; belt-and-suspenders
-        // for refactor safety.
-        return SettingsKeyOutcome::Unchanged;
-    }
-    state.mode = SettingsModalMode::PickingEnum {
-        key: setting_key,
-        choices_idx: new_idx,
-        supports_preview,
-        original_value,
+/// Update the picker index against its open-time choice snapshot and optionally
+/// dispatch a preview action. `new_idx` must be in-bounds. Preview only fires
+/// for Enums with `supports_preview: true`; side-effecting Enums skip preview.
+fn set_picker_idx(state: &mut SettingsModalState, new_idx: usize) -> SettingsKeyOutcome {
+    let (setting_key, supports_preview, canonical) = match &mut state.mode {
+        SettingsModalMode::PickingEnum {
+            key,
+            choices,
+            choices_idx,
+            supports_preview,
+            ..
+        } => {
+            let Some(choice) = choices.get(new_idx) else {
+                // Callers bounds-check first; keep this defensive guard so a
+                // future entry path cannot install an invalid index.
+                return SettingsKeyOutcome::Unchanged;
+            };
+            *choices_idx = new_idx;
+            (*key, *supports_preview, choice.canonical.clone())
+        }
+        _ => return SettingsKeyOutcome::Unchanged,
     };
+
     if supports_preview {
         let is_dynamic = matches!(
             state.registry.find(setting_key).map(|meta| &meta.kind),
             Some(SettingKind::DynamicEnum { .. })
         );
-        if is_dynamic {
-            if let Some(canonical) = picker_choice_at_owned(state, setting_key, new_idx)
-                && let Some(action) = action_for_dynamic_enum_preview(setting_key, canonical)
-            {
-                return SettingsKeyOutcome::Action(action);
-            }
-        } else if let Some(new_canonical) = picker_choice_at(state, setting_key, new_idx)
-            && let Some(action) = action_for_enum(setting_key, new_canonical)
-        {
+        let action = if is_dynamic {
+            action_for_dynamic_enum_preview(setting_key, canonical)
+        } else {
+            action_for_enum(setting_key, &canonical)
+        };
+        if let Some(action) = action {
             return SettingsKeyOutcome::Action(action);
         }
     }
@@ -4433,8 +4393,8 @@ fn enum_choice_gated_off(
 }
 
 /// The effective static Enum choices for a picker, hiding gated-off options so
-/// the modal never offers a choice the setter would silently no-op. Every
-/// index-based picker path (len / at / render / seed) routes through this.
+/// the modal never offers a choice the setter would silently no-op. Filtering
+/// happens once while the picker snapshot is built.
 fn effective_enum_choices<'a>(
     key: SettingKey,
     choices: &'a [EnumChoice],
@@ -4449,73 +4409,35 @@ fn effective_enum_choices<'a>(
         .collect()
 }
 
-/// Number of choices for the picker. Handles both
-/// `SettingKind::Enum` (static catalog) and `SettingKind::DynamicEnum`
-/// (catalog built from the snapshot at picker-open time).
-fn picker_choices_len(state: &SettingsModalState, key: SettingKey) -> usize {
-    state
-        .registry
-        .find(key)
-        .and_then(|m| match &m.kind {
-            SettingKind::Enum { choices, .. } => {
-                Some(effective_enum_choices(key, choices, &state.pager_snapshot).len())
-            }
-            SettingKind::DynamicEnum { source, .. } => {
-                Some(dynamic_enum_choices(*source, &state.pager_snapshot).len())
-            }
-            _ => None,
-        })
-        .unwrap_or(0)
-}
-
-/// Canonical value at index `idx` in the picker's choices, or `None`
-/// if the key isn't a registered Enum/DynamicEnum or `idx` is out of
-/// bounds.
-///
-/// Returns `Option<&'static str>` for static `SettingKind::Enum`
-/// settings (zero allocation, since each `EnumChoice.canonical` is
-/// itself `&'static str`).
-fn picker_choice_at(
-    state: &SettingsModalState,
+/// Resolve an Enum catalog into the owned snapshot retained by
+/// `SettingsModalMode::PickingEnum`. Static choices are copied once so render,
+/// navigation, preview, and commit share one index space with DynamicEnum.
+fn resolve_picker_choices(
     key: SettingKey,
-    idx: usize,
-) -> Option<&'static str> {
-    let meta = state.registry.find(key)?;
-    let SettingKind::Enum { choices, .. } = &meta.kind else {
-        return None;
-    };
-    effective_enum_choices(key, choices, &state.pager_snapshot)
-        .get(idx)
-        .map(|c| c.canonical)
-}
-
-/// Owned-string variant of `picker_choice_at` for picker kinds whose
-/// canonicals are runtime-built (`SettingKind::DynamicEnum`).
-///
-/// Returns the canonical at `idx` as an owned `String`. Allocates one
-/// `String` per call — the picker calls this on commit + per-Up/Down
-/// only when `supports_preview = true`, so the cost is bounded.
-///
-/// For static `SettingKind::Enum`, this also resolves correctly
-/// (clones the `&'static str` into a `String`), giving the picker
-/// a single unified read path when the caller doesn't need to
-/// distinguish static vs. dynamic.
-fn picker_choice_at_owned(
-    state: &SettingsModalState,
-    key: SettingKey,
-    idx: usize,
-) -> Option<String> {
-    let meta = state.registry.find(key)?;
-    match &meta.kind {
-        SettingKind::Enum { choices, .. } => {
-            effective_enum_choices(key, choices, &state.pager_snapshot)
-                .get(idx)
-                .map(|c| c.canonical.to_string())
-        }
-        SettingKind::DynamicEnum { source, .. } => {
-            let resolved = dynamic_enum_choices(*source, &state.pager_snapshot);
-            resolved.get(idx).map(|c| c.canonical.clone())
-        }
+    kind: &SettingKind,
+    snapshot: &PagerLocalSnapshot,
+) -> Option<(bool, Vec<OwnedEnumChoice>)> {
+    match kind {
+        SettingKind::Enum {
+            choices,
+            supports_preview,
+            ..
+        } => Some((
+            *supports_preview,
+            effective_enum_choices(key, choices, snapshot)
+                .into_iter()
+                .map(|choice| OwnedEnumChoice {
+                    canonical: choice.canonical.to_owned(),
+                    display: choice.display.to_owned(),
+                    description: choice.description.to_owned(),
+                })
+                .collect(),
+        )),
+        SettingKind::DynamicEnum {
+            source,
+            supports_preview,
+            ..
+        } => Some((*supports_preview, dynamic_enum_choices(*source, snapshot))),
         _ => None,
     }
 }
@@ -5074,19 +4996,10 @@ fn handle_picker_mouse(
     let MouseEventKind::Down(crossterm::event::MouseButton::Left) = kind else {
         return SettingsKeyOutcome::Unchanged;
     };
-    // Snapshot the picker payload under the immutable borrow.
-    let (setting_key, current_idx, original_value, supports_preview) = match &state.mode {
-        SettingsModalMode::PickingEnum {
-            key,
-            choices_idx,
-            original_value,
-            supports_preview,
-        } => (
-            *key,
-            *choices_idx,
-            original_value.clone(),
-            *supports_preview,
-        ),
+    // Snapshot the focused index under the immutable borrow. The navigation
+    // helper reads the remaining payload directly from the retained mode.
+    let current_idx = match &state.mode {
+        SettingsModalMode::PickingEnum { choices_idx, .. } => *choices_idx,
         _ => return SettingsKeyOutcome::Unchanged,
     };
     let clicked_idx = state
@@ -5105,13 +5018,7 @@ fn handle_picker_mouse(
     }
     // Reuse the keyboard nav helper to update `choices_idx` AND
     // fire the matching preview Action (when the kind supports it).
-    set_picker_idx(
-        state,
-        setting_key,
-        target_idx,
-        original_value,
-        supports_preview,
-    )
+    set_picker_idx(state, target_idx)
 }
 
 /// Handle a mouse event while the modal is in `PickingGroup` mode.
@@ -5229,9 +5136,31 @@ mod tests {
     fn make_state() -> SettingsModalState {
         SettingsModalState::new(
             Arc::new(SettingsRegistry::defaults()),
-            UiConfig::default(),
+            // Keep ordinary modal tests independent of process-global theme
+            // state; tests that open the runtime theme catalog are serialized.
+            UiConfig {
+                theme: Some("groknight".to_owned()),
+                ..UiConfig::default()
+            },
             PagerLocalSnapshot::default(),
         )
+    }
+
+    fn theme_state_guard() -> std::sync::MutexGuard<'static, ()> {
+        crate::theme::cache::pin_theme()
+    }
+
+    fn picker_choices_for_test(
+        state: &SettingsModalState,
+        key: SettingKey,
+    ) -> Vec<OwnedEnumChoice> {
+        let meta = state
+            .registry
+            .find(key)
+            .unwrap_or_else(|| panic!("missing test picker setting `{key}`"));
+        resolve_picker_choices(key, &meta.kind, &state.pager_snapshot)
+            .unwrap_or_else(|| panic!("test picker setting `{key}` is not an Enum/DynamicEnum"))
+            .1
     }
 
     /// The contextual-hints group renders as a single top-level row (children
@@ -7442,6 +7371,7 @@ mod tests {
             let mut s = make_state();
             s.mode = SettingsModalMode::PickingEnum {
                 key,
+                choices: Vec::new(),
                 choices_idx: 0,
                 original_value: SettingValue::String(original.to_owned()),
                 supports_preview: true,
@@ -7484,6 +7414,7 @@ mod tests {
         let mut s = make_state();
         s.mode = SettingsModalMode::PickingEnum {
             key: "theme",
+            choices: Vec::new(),
             choices_idx: 0,
             original_value: SettingValue::String("groknight".to_owned()),
             supports_preview: true,
@@ -7564,8 +7495,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "test_enum");
         s.mode = SettingsModalMode::PickingEnum {
             key: "test_enum",
+            choices,
             choices_idx: 0,
             original_value: SettingValue::Enum("first"),
             supports_preview: true,
@@ -8172,8 +8105,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "long_enum");
         s.mode = SettingsModalMode::PickingEnum {
             key: "long_enum",
+            choices,
             choices_idx: 0,
             original_value: SettingValue::Enum("wide"),
             supports_preview: true,
@@ -8269,8 +8204,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "wrap_enum");
         s.mode = SettingsModalMode::PickingEnum {
             key: "wrap_enum",
+            choices,
             choices_idx: 1,
             original_value: SettingValue::Enum("opt-out"),
             supports_preview: false,
@@ -8331,8 +8268,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "wrap_enum");
         s.mode = SettingsModalMode::PickingEnum {
             key: "wrap_enum",
+            choices,
             choices_idx: 1,
             original_value: SettingValue::Enum("opt-out"),
             supports_preview: false,
@@ -8467,8 +8406,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "short_enum");
         s.mode = SettingsModalMode::PickingEnum {
             key: "short_enum",
+            choices,
             choices_idx: 0,
             original_value: SettingValue::Enum("a"),
             supports_preview: true,
@@ -8541,8 +8482,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "nodesc_enum");
         s.mode = SettingsModalMode::PickingEnum {
             key: "nodesc_enum",
+            choices,
             choices_idx: 0,
             original_value: SettingValue::Enum("a"),
             supports_preview: true,
@@ -8616,8 +8559,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "wrap_enum");
         s.mode = SettingsModalMode::PickingEnum {
             key: "wrap_enum",
+            choices,
             choices_idx: 0,
             original_value: SettingValue::Enum("opt-in"),
             supports_preview: false,
@@ -8742,8 +8687,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "many_wrap");
         s.mode = SettingsModalMode::PickingEnum {
             key: "many_wrap",
+            choices,
             choices_idx: 4,
             original_value: SettingValue::Enum("c4"),
             supports_preview: true,
@@ -8814,8 +8761,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "long_enum");
         s.mode = SettingsModalMode::PickingEnum {
             key: "long_enum",
+            choices,
             choices_idx: 0,
             original_value: SettingValue::Enum("wide"),
             supports_preview: true,
@@ -8869,8 +8818,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "long_enum");
         s.mode = SettingsModalMode::PickingEnum {
             key: "long_enum",
+            choices,
             choices_idx: 0,
             original_value: SettingValue::Enum("a"),
             supports_preview: true,
@@ -8954,8 +8905,10 @@ mod tests {
             UiConfig::default(),
             PagerLocalSnapshot::default(),
         );
+        let choices = picker_choices_for_test(&s, "long_enum");
         s.mode = SettingsModalMode::PickingEnum {
             key: "long_enum",
+            choices,
             choices_idx: 0,
             original_value: SettingValue::Enum("c0"),
             supports_preview: true,
@@ -9177,29 +9130,27 @@ mod tests {
 
     // -- helper-function coverage --
 
-    /// `picker_choices_len` returns 0 for an unknown key, a non-Enum
-    /// key, and a zero-choice Enum.
     #[test]
-    fn picker_choices_len_handles_missing_and_non_enum() {
+    fn resolve_picker_choices_owns_enum_catalog_and_rejects_non_enum() {
         let s = picker_test_state_in_browse();
-        // Unknown key → 0.
-        assert_eq!(picker_choices_len(&s, "unknown-key-xyzzy"), 0);
-        // The synthetic registry contains only "test_enum" — there's
-        // no Bool to test against without rebuilding. Test the
-        // non-Enum case via the default registry instead.
-        let bool_state = make_state();
-        assert_eq!(picker_choices_len(&bool_state, "compact_mode"), 0);
-    }
-
-    #[test]
-    fn picker_choice_at_returns_none_for_oob_and_missing() {
-        let s = picker_test_state_in_browse();
-        assert_eq!(picker_choice_at(&s, "test_enum", 0), Some("first"));
-        assert_eq!(picker_choice_at(&s, "test_enum", 99), None);
-        assert_eq!(picker_choice_at(&s, "unknown-key", 0), None);
+        let meta = s.registry.find("test_enum").expect("synthetic Enum");
+        let (supports_preview, choices) =
+            resolve_picker_choices("test_enum", &meta.kind, &s.pager_snapshot)
+                .expect("Enum resolves to a picker snapshot");
+        assert!(supports_preview);
+        assert_eq!(choices.len(), TEST_ENUM_CHOICES.len());
+        assert_eq!(choices[0].canonical, "first");
+        assert_eq!(choices[0].display, "First Option");
 
         let bool_state = make_state();
-        assert_eq!(picker_choice_at(&bool_state, "compact_mode", 0), None);
+        let bool_meta = bool_state
+            .registry
+            .find("compact_mode")
+            .expect("compact_mode setting");
+        assert!(
+            resolve_picker_choices("compact_mode", &bool_meta.kind, &bool_state.pager_snapshot)
+                .is_none()
+        );
     }
 
     #[test]
@@ -11095,7 +11046,9 @@ mod tests {
     /// spans the FULL breadcrumb (`Settings › <label>`) so any
     /// click on the breadcrumb routes back to Browse.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn settings_breadcrumb_rect_set_in_sub_pane_modes() {
+        let _theme_guard = theme_state_guard();
         let area = Rect {
             x: 0,
             y: 0,
@@ -11174,7 +11127,9 @@ mod tests {
     /// version accepted `Action(_) | Changed` which masked a
     /// regression where the revert was forgotten entirely.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn click_settings_breadcrumb_collapses_picker_to_browse() {
+        let _theme_guard = theme_state_guard();
         let area = Rect {
             x: 0,
             y: 0,
@@ -11235,7 +11190,9 @@ mod tests {
     /// Action MUST carry the ORIGINAL value (default theme), not
     /// the navigated-to value.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn click_settings_breadcrumb_after_nav_reverts_to_original() {
+        let _theme_guard = theme_state_guard();
         let area = Rect {
             x: 0,
             y: 0,
@@ -11306,7 +11263,9 @@ mod tests {
     /// Browse so the dispatch arm finds an
     /// `ActiveModal::Settings { state: Browse }`.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn d_key_in_picking_enum_dispatches_open_reset_confirm() {
+        let _theme_guard = theme_state_guard();
         let mut s = enter_picker_for("theme");
         let original = match &s.mode {
             SettingsModalMode::PickingEnum { original_value, .. } => match original_value {
@@ -11453,7 +11412,9 @@ mod tests {
     /// the FULL breadcrumb; the widening shifted the "outside"
     /// boundaries but the no-op contract is unchanged.
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn click_outside_settings_breadcrumb_is_noop() {
+        let _theme_guard = theme_state_guard();
         let area = Rect {
             x: 0,
             y: 0,
@@ -11509,7 +11470,9 @@ mod tests {
     /// runs and Bazel CI (theme preview for the "theme" picker can
     /// swap the active theme mid-test).
     #[test]
+    #[serial_test::serial(THEME_CACHE)]
     fn hover_breadcrumb_flips_state_and_returns_changed() {
+        let _theme_guard = theme_state_guard();
         let area = Rect {
             x: 0,
             y: 0,

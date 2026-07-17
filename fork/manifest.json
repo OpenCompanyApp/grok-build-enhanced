@@ -926,8 +926,11 @@
         "crates/codegen/xai-grok-pager-render/src/theme/warp/**",
         "crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md",
         "crates/codegen/xai-grok-pager/src/diagnostics.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/bg_task.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/text_selection.rs",
         "crates/codegen/xai-grok-pager/src/slash/commands/theme.rs",
-        "crates/codegen/xai-grok-pager/src/views/settings_modal.rs"
+        "crates/codegen/xai-grok-pager/src/views/settings_modal.rs",
+        "crates/codegen/xai-grok-pager/tests/settings_e2e.rs"
       ],
       "integration_paths": [
         "crates/codegen/xai-grok-pager-render/build.rs",

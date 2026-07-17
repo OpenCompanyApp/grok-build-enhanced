@@ -583,7 +583,60 @@ pub fn format_themes_env_line(level: ColorLevel) -> String {
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WarpEnvDiagnostics<'a> {
+    Inactive {
+        detected: bool,
+    },
+    Active {
+        channel: &'a str,
+        is_local: bool,
+        selected_name: &'a str,
+        settings_path: Option<&'a str>,
+        official_theme_count: usize,
+        installed_theme_count: usize,
+        fallback_reason: Option<&'a str>,
+    },
+}
+
+/// Format already-collected Warp diagnostics. Keeping formatting pure makes
+/// exact output fixtures independent of the host filesystem and process cache.
+fn format_warp_env_diagnostics(diagnostics: &WarpEnvDiagnostics<'_>) -> String {
+    match diagnostics {
+        WarpEnvDiagnostics::Inactive { detected: true } => {
+            "  warp         detected (inactive)\n".to_owned()
+        }
+        WarpEnvDiagnostics::Inactive { detected: false } => String::new(),
+        WarpEnvDiagnostics::Active {
+            channel,
+            is_local,
+            selected_name,
+            settings_path,
+            official_theme_count,
+            installed_theme_count,
+            fallback_reason,
+        } => {
+            let mut out = String::new();
+            let locality = if *is_local { "local" } else { "not local" };
+            out.push_str(&format!("  warp         {channel} ({locality})\n"));
+            out.push_str(&format!("  warp theme   {selected_name}\n"));
+            if let Some(path) = settings_path {
+                out.push_str(&format!("  warp config  {path}\n"));
+            }
+            out.push_str(&format!(
+                "  warp themes  {} official, {} installed\n",
+                official_theme_count, installed_theme_count
+            ));
+            if let Some(reason) = fallback_reason {
+                out.push_str(&format!("  warp status  fallback: {reason}\n"));
+            }
+            out
+        }
+    }
+}
+
 /// `/terminal-setup` Warp rows. Empty outside Warp-related sessions/themes.
+/// Runtime discovery is confined to this wrapper; formatting is pure above.
 pub fn format_warp_env_lines() -> String {
     let resolved = crate::theme::cache::current_resolved();
     let is_warp = crate::theme::warp::settings::is_local_warp();
@@ -595,40 +648,27 @@ pub fn format_warp_env_lines() -> String {
         ..
     } = &resolved.status
     else {
-        return if is_warp {
-            "  warp         detected (inactive)\n".to_owned()
-        } else {
-            String::new()
-        };
+        return format_warp_env_diagnostics(&WarpEnvDiagnostics::Inactive { detected: is_warp });
     };
 
-    let mut out = String::new();
     let channel = channel
         .map(|value| value.display_name())
         .unwrap_or("unknown channel");
-    let locality = if is_warp { "local" } else { "not local" };
-    out.push_str(&format!("  warp         {channel} ({locality})\n"));
-    out.push_str(&format!(
-        "  warp theme   {}\n",
-        selected_name
-            .as_deref()
-            .unwrap_or(resolved.display_name.as_str())
-    ));
-    if let Some(path) = settings_path {
-        out.push_str(&format!(
-            "  warp config  {}\n",
-            crate::theme::warp::settings::display_path(path)
-        ));
-    }
-    out.push_str(&format!(
-        "  warp themes  {} official, {} installed\n",
-        crate::theme::warp::catalog::all().len(),
-        crate::theme::warp::discovery::discover_all().len()
-    ));
-    if let Some(reason) = fallback_reason {
-        out.push_str(&format!("  warp status  fallback: {reason}\n"));
-    }
-    out
+    let selected_name = selected_name
+        .as_deref()
+        .unwrap_or(resolved.display_name.as_str());
+    let settings_path = settings_path
+        .as_deref()
+        .map(crate::theme::warp::settings::display_path);
+    format_warp_env_diagnostics(&WarpEnvDiagnostics::Active {
+        channel,
+        is_local: is_warp,
+        selected_name,
+        settings_path: settings_path.as_deref(),
+        official_theme_count: crate::theme::warp::catalog::all().len(),
+        installed_theme_count: crate::theme::warp::discovery::discover_all().len(),
+        fallback_reason: fallback_reason.as_deref(),
+    })
 }
 
 /// `/terminal-setup` warning when truecolor themes are locked out.
@@ -2120,6 +2160,41 @@ mod tests {
             assert!(line.contains("terminal") && line.contains("warp-sync"));
             assert!(!line.contains("tokyonight"));
         }
+    }
+
+    #[test]
+    fn format_warp_env_diagnostics_inactive_fixtures() {
+        assert_eq!(
+            format_warp_env_diagnostics(&WarpEnvDiagnostics::Inactive { detected: false }),
+            ""
+        );
+        assert_eq!(
+            format_warp_env_diagnostics(&WarpEnvDiagnostics::Inactive { detected: true }),
+            "  warp         detected (inactive)\n"
+        );
+    }
+
+    #[test]
+    fn format_warp_env_diagnostics_active_fixture() {
+        let fixture = WarpEnvDiagnostics::Active {
+            channel: "Preview",
+            is_local: true,
+            selected_name: "Fixture Gradient",
+            settings_path: Some("~/.warp-terminal-preview/settings.json"),
+            official_theme_count: 340,
+            installed_theme_count: 2,
+            fallback_reason: Some("fixture theme missing"),
+        };
+        assert_eq!(
+            format_warp_env_diagnostics(&fixture),
+            concat!(
+                "  warp         Preview (local)\n",
+                "  warp theme   Fixture Gradient\n",
+                "  warp config  ~/.warp-terminal-preview/settings.json\n",
+                "  warp themes  340 official, 2 installed\n",
+                "  warp status  fallback: fixture theme missing\n",
+            )
+        );
     }
 
     #[test]
