@@ -16,6 +16,7 @@ use xai_grok_sampling_types::{
 
 use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
+use crate::provider::openai_codex::{errors as codex_errors, responses as codex_responses};
 use crate::types::RequestId;
 
 /// Returns whether a Responses API event reflects real model progress
@@ -75,21 +76,6 @@ pub(crate) fn responses_event_has_meaningful_content(event: &rs::ResponseStreamE
         | ResponseStreamEvent::ResponseCodeInterpreterCallCompleted(_)
         | ResponseStreamEvent::ResponseOutputTextAnnotationAdded(_)
         | ResponseStreamEvent::ResponseError(_) => true,
-    }
-}
-
-/// Static, non-retryable failure for a Codex custom/freeform call.
-///
-/// The message deliberately excludes the tool name, call identifiers, and raw
-/// input. Custom input can contain generated code or data returned by another
-/// tool and must not escape into logs through an error string.
-fn unsupported_codex_custom_tool_call() -> SamplingError {
-    SamplingError::Api {
-        status: reqwest::StatusCode::BAD_REQUEST,
-        message: "OpenAI Codex returned a custom/freeform tool call, but this build is using the Grok direct-function compatibility loop".to_string(),
-        model_metadata: None,
-        retry_after_secs: None,
-        should_retry: Some(false),
     }
 }
 
@@ -390,7 +376,7 @@ pub fn stream_responses<'a>(
                             };
                         }
                         rs::OutputItem::CustomToolCall(_) if provider.is_openai_codex() => {
-                            let err = unsupported_codex_custom_tool_call();
+                            let err = codex_errors::unsupported_custom_tool_call();
                             yield SamplingEvent::Failed {
                                 request_id: request_id.clone(),
                                 error: SamplingErrorInfo::from(&err),
@@ -604,7 +590,7 @@ pub fn stream_responses<'a>(
                 ResponseStreamEvent::ResponseCustomToolCallInputDone(_)
                     if provider.is_openai_codex() =>
                 {
-                    let err = unsupported_codex_custom_tool_call();
+                    let err = codex_errors::unsupported_custom_tool_call();
                     yield SamplingEvent::Failed {
                         request_id: request_id.clone(),
                         error: SamplingErrorInfo::from(&err),
@@ -614,7 +600,7 @@ pub fn stream_responses<'a>(
                 ResponseStreamEvent::ResponseCustomToolCallInputDelta(_)
                     if provider.is_openai_codex() =>
                 {
-                    let err = unsupported_codex_custom_tool_call();
+                    let err = codex_errors::unsupported_custom_tool_call();
                     yield SamplingEvent::Failed {
                         request_id: request_id.clone(),
                         error: SamplingErrorInfo::from(&err),
@@ -678,14 +664,8 @@ pub fn stream_responses<'a>(
         // the terminal copy at the same index. This preserves terminal-only
         // items while making `response.output_item.done` authoritative for all
         // message, function-call, and reasoning items it delivered.
-        if provider.is_openai_codex() && !completed_output.is_empty() {
-            let mut merged_output: BTreeMap<u32, rs::OutputItem> = std::mem::take(&mut response.output)
-                .into_iter()
-                .enumerate()
-                .map(|(index, item)| (index as u32, item))
-                .collect();
-            merged_output.extend(completed_output);
-            response.output = merged_output.into_values().collect();
+        if provider.is_openai_codex() {
+            codex_responses::merge_completed_output(&mut response, completed_output);
         } else if response.output.is_empty() && !completed_output.is_empty() {
             response.output = completed_output.into_values().collect();
         }
@@ -697,12 +677,9 @@ pub fn stream_responses<'a>(
         // xAI's backend-hosted x_search. Never include the custom input in the
         // error or logs.
         if provider.is_openai_codex()
-            && response
-                .output
-                .iter()
-                .any(|item| matches!(item, rs::OutputItem::CustomToolCall(_)))
+            && codex_responses::has_unsupported_custom_tool_call(&response)
         {
-            let err = unsupported_codex_custom_tool_call();
+            let err = codex_errors::unsupported_custom_tool_call();
             yield SamplingEvent::Failed {
                 request_id: request_id.clone(),
                 error: SamplingErrorInfo::from(&err),
@@ -737,15 +714,7 @@ pub fn stream_responses<'a>(
             .and_then(|s| s.parse::<i64>().ok());
         let provider_end_turn = provider
             .is_openai_codex()
-            .then(|| {
-                response
-                    .metadata
-                    .as_mut()
-                    .and_then(|metadata| {
-                        metadata.remove(crate::client::CODEX_END_TURN_METADATA_KEY)
-                    })
-                    .and_then(|value| value.parse::<bool>().ok())
-            })
+            .then(|| codex_responses::take_end_turn(&mut response))
             .flatten();
 
         let status = response.status.clone();
@@ -1043,7 +1012,7 @@ mod tests {
     async fn codex_end_turn_false_requests_agent_follow_up_without_empty_retry() {
         let mut terminal = empty_completed_response();
         terminal.metadata = Some(std::collections::HashMap::from([(
-            crate::client::CODEX_END_TURN_METADATA_KEY.to_string(),
+            codex_responses::CODEX_END_TURN_METADATA_KEY.to_string(),
             "false".to_string(),
         )]));
         let raw = stream::iter(vec![Ok(rs::ResponseStreamEvent::ResponseCompleted(

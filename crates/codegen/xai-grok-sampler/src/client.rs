@@ -12,12 +12,9 @@
 //! headers (proxy auth, OTel context, etc.)
 //! into [`SamplerConfig::extra_headers`] before constructing the client.
 
-use std::collections::HashMap;
-
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
-use reqwest::StatusCode;
 use reqwest::header::{
     ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
 };
@@ -26,13 +23,19 @@ use serde::Serialize;
 use xai_grok_sampling_types::error::{parse_error_bytes, try_parse_stream_error};
 use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
-    ConversationResponse, CreateResponseWrapper, CredentialBinding, CredentialSourceId,
-    DOOM_LOOP_CHECK_HEADER, MessagesRequestWrapper, OPENAI_CODEX_COMPATIBILITY_VERSION,
-    OPENAI_CODEX_RESPONSES_LITE_HEADER, ProviderId, ReasoningEffort, ResponseModelMetadata, Result,
-    SamplingError, build_messages_request, is_check_event, messages, rs,
+    ConversationResponse, CreateResponseWrapper, CredentialBinding, DOOM_LOOP_CHECK_HEADER,
+    MessagesRequestWrapper, OPENAI_CODEX_RESPONSES_LITE_HEADER, ProviderId, ReasoningEffort,
+    ResponseModelMetadata, Result, SamplingError, build_messages_request, is_check_event, messages,
+    rs,
 };
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
+pub(crate) use crate::provider::openai_codex::turn_state::CodexTurnStateStore;
+use crate::provider::openai_codex::{
+    endpoint as codex_endpoint, errors as codex_errors, headers as codex_headers,
+    responses as codex_responses, sse::CodexSseDecoder,
+};
+use codex_headers::{CHATGPT_ACCOUNT_ID_HEADER, CODEX_TURN_STATE_HEADER};
 
 // Re-export ApiBackend from the shared types crate for downstream callers.
 pub use xai_grok_sampling_types::ApiBackend;
@@ -43,14 +46,6 @@ const DEFAULT_CLIENT_IDENTIFIER: &str = "grok-shell";
 /// Product identifier baked into User-Agent strings.
 const AGENT_PRODUCT: &str = "grok-shell";
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 128_000;
-const CHATGPT_ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
-const OPENAI_FEDRAMP_HEADER: &str = "x-openai-fedramp";
-const OPENAI_CODEX_ORIGINATOR: &str = "grok_build_codex";
-const CODEX_SESSION_ID_HEADER: &str = "session-id";
-const CODEX_THREAD_ID_HEADER: &str = "thread-id";
-const CODEX_CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
-const CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
-
 /// Normalize provider-specific reasoning semantics before serialization.
 /// Historically Grok Build accepted `max` as an alias for `xhigh`; Codex now
 /// advertises a genuinely distinct Max tier, so only that provider preserves
@@ -70,479 +65,6 @@ fn normalize_reasoning_effort_for_provider(
         effort => Ok(effort),
     }
 }
-const CODEX_DIAGNOSTIC_RESPONSE_HEADERS: &[&str] = &[
-    "content-length",
-    "content-type",
-    "retry-after",
-    "x-request-id",
-    "x-should-retry",
-];
-
-/// Inject Codex reasoning tiers newer than the pinned `async-openai` request
-/// type at the final JSON boundary. Current openai/codex treats `ultra` as a
-/// client-side orchestration policy and sends `max` to the backend, so this
-/// preserved Grok loop mirrors that wire contract without importing Codex's
-/// app-server/multi-agent runtime. Keeping this provider-scoped prevents an
-/// xAI/custom Responses request from receiving an unsupported tier.
-fn apply_extended_codex_reasoning_effort(
-    provider: ProviderId,
-    effort: Option<ReasoningEffort>,
-    body: &mut serde_json::Value,
-) -> Result<()> {
-    let Some(effort @ (ReasoningEffort::Max | ReasoningEffort::Ultra)) = effort else {
-        return Ok(());
-    };
-    if !provider.is_openai_codex() && effort == ReasoningEffort::Ultra {
-        return Err(SamplingError::InvalidConfiguration(
-            "ultra Responses reasoning effort requires the OpenAI Codex provider",
-        ));
-    }
-
-    let Some(root) = body.as_object_mut() else {
-        return Err(SamplingError::InvalidConfiguration(
-            "Responses request body must be a JSON object",
-        ));
-    };
-    let reasoning = root
-        .entry("reasoning")
-        .or_insert_with(|| serde_json::Value::Object(Default::default()));
-    let Some(reasoning) = reasoning.as_object_mut() else {
-        return Err(SamplingError::InvalidConfiguration(
-            "Responses reasoning configuration must be a JSON object",
-        ));
-    };
-    let wire_effort = match (provider, effort) {
-        (provider, ReasoningEffort::Max) if !provider.is_openai_codex() => ReasoningEffort::Xhigh,
-        (_, ReasoningEffort::Ultra) => ReasoningEffort::Max,
-        (_, effort) => effort,
-    };
-    reasoning.insert(
-        "effort".to_string(),
-        serde_json::Value::String(wire_effort.as_str().to_string()),
-    );
-    Ok(())
-}
-
-/// Apply the Codex Responses transport contract at the final provider JSON
-/// boundary. The stable prompt cache key belongs to every Codex Responses
-/// request; the remaining rewrite is gated by Responses Lite so Grok Build's
-/// conversation, tool registry, persistence, and execution loop remain intact.
-fn apply_codex_responses_lite_contract(
-    provider: ProviderId,
-    enabled: bool,
-    prompt_cache_key: Option<&str>,
-    body: &mut serde_json::Value,
-) -> Result<()> {
-    if !provider.is_openai_codex() {
-        if !enabled {
-            return Ok(());
-        }
-        return Err(SamplingError::InvalidConfiguration(
-            "Responses Lite requires the OpenAI Codex provider",
-        ));
-    }
-
-    let Some(root) = body.as_object_mut() else {
-        return Err(SamplingError::InvalidConfiguration(
-            "Responses request body must be a JSON object",
-        ));
-    };
-
-    // Responses Lite rejects sampling temperature for current Codex models.
-    // The ordinary Grok defaults can populate it for auxiliary calls (notably
-    // title generation), so omit it at this provider-specific wire boundary.
-    root.remove("temperature");
-    if let Some(prompt_cache_key) = prompt_cache_key.filter(|value| !value.is_empty()) {
-        root.insert(
-            "prompt_cache_key".to_string(),
-            serde_json::Value::String(prompt_cache_key.to_string()),
-        );
-    }
-    if !enabled {
-        return Ok(());
-    }
-
-    let mut tools = match root.remove("tools") {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(serde_json::Value::Array(tools)) => tools,
-        Some(_) => {
-            return Err(SamplingError::InvalidConfiguration(
-                "Responses tools must be a JSON array",
-            ));
-        }
-    };
-    // The Codex client deliberately sends non-strict function definitions.
-    // Preserve newer tool kinds verbatim, but normalize ordinary function
-    // tools to the exact Responses Lite shape.
-    for tool in &mut tools {
-        if tool.get("type").and_then(serde_json::Value::as_str) == Some("function")
-            && let Some(tool) = tool.as_object_mut()
-        {
-            tool.insert("strict".to_string(), serde_json::Value::Bool(false));
-        }
-    }
-    let has_tools = !tools.is_empty();
-    let instructions = match root.remove("instructions") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::String(instructions)) if instructions.is_empty() => None,
-        Some(serde_json::Value::String(instructions)) => Some(instructions),
-        Some(_) => {
-            return Err(SamplingError::InvalidConfiguration(
-                "Responses instructions must be a string",
-            ));
-        }
-    };
-
-    let mut input = match root.remove("input") {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(serde_json::Value::Array(input)) => input,
-        Some(serde_json::Value::String(text)) => vec![serde_json::json!({
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": text}],
-        })],
-        Some(_) => {
-            return Err(SamplingError::InvalidConfiguration(
-                "Responses Lite input must be text or an item array",
-            ));
-        }
-    };
-    for item in &mut input {
-        if item.get("role").and_then(serde_json::Value::as_str) == Some("system")
-            && let Some(item) = item.as_object_mut()
-        {
-            item.insert(
-                "role".to_string(),
-                serde_json::Value::String("developer".to_string()),
-            );
-        }
-        strip_input_image_details(item);
-    }
-
-    let mut prefix = vec![serde_json::json!({
-        "type": "additional_tools",
-        "role": "developer",
-        "tools": tools,
-    })];
-    if let Some(instructions) = instructions {
-        prefix.push(serde_json::json!({
-            "type": "message",
-            "role": "developer",
-            "content": [{"type": "input_text", "text": instructions}],
-        }));
-    }
-    prefix.append(&mut input);
-    root.insert("input".to_string(), serde_json::Value::Array(prefix));
-    root.insert(
-        "parallel_tool_calls".to_string(),
-        serde_json::Value::Bool(false),
-    );
-    // Responses Lite expects the same explicit string used by the current
-    // openai/codex client. Omitting this field can make `additional_tools`
-    // advisory only, allowing the model to stop after a planning preamble
-    // instead of entering Grok Build's function-tool loop.
-    if has_tools {
-        root.insert(
-            "tool_choice".to_string(),
-            serde_json::Value::String("auto".to_string()),
-        );
-    } else {
-        // Auxiliary calls (for example title generation) intentionally have
-        // no tool registry. Responses Lite rejects `auto` when no callable
-        // tool exists, so leave the field absent for those requests.
-        root.remove("tool_choice");
-    }
-
-    let reasoning = root
-        .entry("reasoning")
-        .or_insert_with(|| serde_json::Value::Object(Default::default()));
-    let Some(reasoning) = reasoning.as_object_mut() else {
-        return Err(SamplingError::InvalidConfiguration(
-            "Responses reasoning configuration must be a JSON object",
-        ));
-    };
-    reasoning.insert(
-        "context".to_string(),
-        serde_json::Value::String("all_turns".to_string()),
-    );
-    Ok(())
-}
-
-fn codex_prompt_cache_key<'a>(conversation_id: &'a str, session_id: &'a str) -> Option<&'a str> {
-    (!conversation_id.is_empty())
-        .then_some(conversation_id)
-        .or_else(|| (!session_id.is_empty()).then_some(session_id))
-}
-
-fn strip_input_image_details(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(object) => {
-            if object.get("type").and_then(serde_json::Value::as_str) == Some("input_image") {
-                object.remove("detail");
-            }
-            for value in object.values_mut() {
-                strip_input_image_details(value);
-            }
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                strip_input_image_details(value);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The pinned `async-openai` version cannot deserialize the newer Codex `max`/`ultra`
-/// values echoed in `response.reasoning.effort`. Normalize only that typed
-/// compatibility seam. Preserve the raw value in response metadata so the
-/// conversation records true `max`/`ultra` provenance rather than falsely
-/// claiming `xhigh`. `ultra` follows current Codex behavior and maps to `max`
-/// on the request wire.
-fn normalize_extended_codex_response_effort(value: &mut serde_json::Value) {
-    fn normalize_response_object(object: &mut serde_json::Map<String, serde_json::Value>) {
-        let extended = object
-            .get("reasoning")
-            .and_then(serde_json::Value::as_object)
-            .and_then(|reasoning| reasoning.get("effort"))
-            .and_then(serde_json::Value::as_str)
-            .filter(|effort| matches!(*effort, "max" | "ultra"))
-            .map(str::to_owned);
-        let Some(extended) = extended else {
-            return;
-        };
-        let metadata = object
-            .entry("metadata")
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if !metadata.is_object() {
-            *metadata = serde_json::Value::Object(serde_json::Map::new());
-        }
-        if let Some(metadata) = metadata.as_object_mut() {
-            metadata.insert(
-                xai_grok_sampling_types::OPENAI_CODEX_EXTENDED_REASONING_EFFORT_METADATA_KEY
-                    .to_owned(),
-                serde_json::Value::String(extended),
-            );
-        }
-        if let Some(effort) = object
-            .get_mut("reasoning")
-            .and_then(serde_json::Value::as_object_mut)
-            .and_then(|reasoning| reasoning.get_mut("effort"))
-        {
-            *effort = serde_json::Value::String("xhigh".to_string());
-        }
-    }
-
-    if let Some(object) = value.as_object_mut() {
-        normalize_response_object(object);
-    }
-    if let Some(object) = value
-        .get_mut("response")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        normalize_response_object(object);
-    }
-}
-
-fn valid_openai_codex_base_url(base_url: &str) -> bool {
-    let production =
-        base_url.trim_end_matches('/') == xai_grok_sampling_types::OPENAI_CODEX_BASE_URL;
-    #[cfg(any(test, feature = "test-support"))]
-    let loopback = reqwest::Url::parse(base_url).ok().is_some_and(|url| {
-        url.scheme() == "http"
-            && url.query().is_none()
-            && url.fragment().is_none()
-            && url
-                .host_str()
-                .is_some_and(|host| matches!(host, "127.0.0.1" | "localhost" | "::1"))
-    });
-    #[cfg(not(any(test, feature = "test-support")))]
-    let loopback = false;
-    production || loopback
-}
-
-fn is_protected_credential_header(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "authorization"
-            | "proxy-authorization"
-            | "x-api-key"
-            | CHATGPT_ACCOUNT_ID_HEADER
-            | "openai-organization"
-            | "openai-project"
-            | "x-openai-actor-authorization"
-            | OPENAI_FEDRAMP_HEADER
-            | "cookie"
-            | "x-xai-token-auth"
-            | "x-userid"
-            | "x-email"
-    )
-}
-
-fn is_allowed_codex_credential_header(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "authorization" | CHATGPT_ACCOUNT_ID_HEADER | OPENAI_FEDRAMP_HEADER
-    )
-}
-
-/// Detect credential-bearing aliases that must never escape a provider auth
-/// hook. Header names are case-insensitive already; removing punctuation also
-/// catches variants such as `x-api-key`, `x-apikey`, and `x-api-key-backup`.
-///
-/// This intentionally does not treat request identity/correlation headers as
-/// credentials. Codex protocol headers are sealed separately after auth and
-/// ordinary transport headers such as `traceparent` remain available.
-fn is_codex_credential_header_or_alias(name: &HeaderName) -> bool {
-    if is_protected_credential_header(name) {
-        return true;
-    }
-
-    let compact: String = name
-        .as_str()
-        .bytes()
-        .filter(u8::is_ascii_alphanumeric)
-        .map(char::from)
-        .collect();
-
-    compact.contains("authorization")
-        || compact.contains("authentication")
-        || compact.contains("apikey")
-        || compact.contains("token")
-        || compact.contains("secret")
-        || compact.contains("credential")
-        || compact.contains("cookie")
-        || compact.contains("account")
-        || compact.contains("organization")
-        || compact.contains("project")
-}
-
-fn validate_codex_request_auth_headers(headers: &mut HeaderMap) -> Result<()> {
-    if headers.keys().any(|name| {
-        is_codex_credential_header_or_alias(name) && !is_allowed_codex_credential_header(name)
-    }) {
-        return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication emitted an unsupported credential header",
-        ));
-    }
-    if headers.keys().any(is_xai_specific_header) {
-        return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication emitted an xAI-specific header",
-        ));
-    }
-
-    let authorization_count = headers.get_all(AUTHORIZATION).iter().count();
-    if authorization_count == 0 {
-        return Err(SamplingError::Auth(
-            "OpenAI Codex authorization is unavailable".to_string(),
-        ));
-    }
-    if authorization_count != 1 {
-        return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication emitted duplicate credential headers",
-        ));
-    }
-    let has_bearer = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| !token.is_empty());
-    if !has_bearer {
-        return Err(SamplingError::Auth(
-            "OpenAI Codex authorization is unavailable".to_string(),
-        ));
-    }
-
-    let account_count = headers.get_all(CHATGPT_ACCOUNT_ID_HEADER).iter().count();
-    if account_count == 0 {
-        return Err(SamplingError::Auth(
-            "OpenAI Codex account selection is unavailable".to_string(),
-        ));
-    }
-    if account_count != 1 {
-        return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication emitted duplicate credential headers",
-        ));
-    }
-    let has_account = headers
-        .get(CHATGPT_ACCOUNT_ID_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|account_id| !account_id.trim().is_empty());
-    if !has_account {
-        return Err(SamplingError::Auth(
-            "OpenAI Codex account selection is unavailable".to_string(),
-        ));
-    }
-
-    let fedramp_values = headers.get_all(OPENAI_FEDRAMP_HEADER);
-    let fedramp_count = fedramp_values.iter().count();
-    if fedramp_count > 1 {
-        return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication emitted duplicate credential headers",
-        ));
-    }
-    if fedramp_values
-        .iter()
-        .next()
-        .is_some_and(|value| value.as_bytes() != b"true")
-    {
-        return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex FedRAMP authentication state must be exactly true when present",
-        ));
-    }
-
-    // These values are sensitive even when a RequestAuth implementation did
-    // not mark them itself. This prevents future request-debug output from
-    // exposing either the bearer token or selected ChatGPT account.
-    if let Some(value) = headers.get_mut(AUTHORIZATION) {
-        value.set_sensitive(true);
-    }
-    if let Some(value) = headers.get_mut(CHATGPT_ACCOUNT_ID_HEADER) {
-        value.set_sensitive(true);
-    }
-    if let Some(value) = headers.get_mut(OPENAI_FEDRAMP_HEADER) {
-        value.set_sensitive(true);
-    }
-
-    Ok(())
-}
-
-fn validate_codex_credential_binding(binding: &CredentialBinding) -> Result<()> {
-    if binding.provider != ProviderId::OpenAiCodex
-        || binding.source != CredentialSourceId::OpenAiCodexSubscription
-        || binding
-            .record_id
-            .as_deref()
-            .is_none_or(|record_id| record_id.trim().is_empty())
-        || binding.generation == 0
-    {
-        return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication omitted its credential generation",
-        ));
-    }
-    Ok(())
-}
-
-fn is_xai_specific_header(name: &HeaderName) -> bool {
-    let name = name.as_str();
-    name.starts_with("x-grok-")
-        || name.starts_with("x-xai-")
-        || matches!(name, "x-api-key" | "x-userid" | "x-email")
-}
-
-fn is_codex_provider_identity_header(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "originator"
-            | "version"
-            | OPENAI_CODEX_RESPONSES_LITE_HEADER
-            | CODEX_SESSION_ID_HEADER
-            | CODEX_THREAD_ID_HEADER
-            | CODEX_CLIENT_REQUEST_ID_HEADER
-            | CODEX_TURN_STATE_HEADER
-    )
-}
-
 /// Per-request `x-grok-*` headers. Optional fields are skipped when empty/`None`.
 struct GrokRequestHeaders<'a> {
     conv_id: &'a str,
@@ -574,41 +96,6 @@ impl GrokRequestHeaders<'_> {
         }
         b
     }
-
-    fn apply_codex(
-        &self,
-        builder: reqwest::RequestBuilder,
-        responses_lite: bool,
-    ) -> Result<reqwest::RequestBuilder> {
-        let sensitive_value = |raw: &str| {
-            HeaderValue::from_str(raw)
-                .map(|mut value| {
-                    value.set_sensitive(true);
-                    value
-                })
-                .map_err(|_| {
-                    SamplingError::InvalidConfiguration(
-                        "OpenAI Codex request identity contains an invalid header value",
-                    )
-                })
-        };
-        let mut builder = builder;
-        if !self.session_id.is_empty() {
-            builder = builder.header(CODEX_SESSION_ID_HEADER, sensitive_value(self.session_id)?);
-        }
-        if !self.conv_id.is_empty() {
-            builder = builder
-                .header(CODEX_THREAD_ID_HEADER, sensitive_value(self.conv_id)?)
-                .header(
-                    CODEX_CLIENT_REQUEST_ID_HEADER,
-                    sensitive_value(self.conv_id)?,
-                );
-        }
-        if responses_lite {
-            builder = builder.header(OPENAI_CODEX_RESPONSES_LITE_HEADER, "true");
-        }
-        Ok(builder)
-    }
 }
 
 /// Parse the `Retry-After` response header as delta-seconds.
@@ -634,636 +121,7 @@ impl GrokRequestHeaders<'_> {
 /// `ResponseUsage` unchanged so billing telemetry stays correct. When
 /// the API doesn't emit `context_details` (older deployments) `total_tokens`
 /// passes through unchanged.
-#[cfg(test)]
 fn deserialize_response_event(data: &str) -> Result<rs::ResponseStreamEvent> {
-    deserialize_response_event_for_provider(data, false)
-}
-
-/// Stateful compatibility decoder for the deliberately sparse Responses SSE
-/// frames emitted by the ChatGPT Codex backend.
-///
-/// The pinned `async-openai` stream types model the public API's fully
-/// populated envelopes. The Codex client protocol instead omits bookkeeping
-/// fields such as sequence/output indexes, and its terminal response commonly
-/// contains only an id and usage. Keep that tolerance provider-scoped: xAI
-/// continues through the strict decoder below.
-#[derive(Debug)]
-struct CodexSseDecoder {
-    fallback_model: String,
-    next_sequence_number: u64,
-    next_output_index: u32,
-    item_output_indexes: HashMap<String, u32>,
-    active_output_index: Option<u32>,
-    active_item_id: Option<String>,
-}
-
-/// Private typed-response metadata seam for the sparse Codex terminal flag.
-/// The pinned Responses type has no `end_turn` field; the layer-2 stream
-/// transformer removes this value before producing the public response.
-pub(crate) const CODEX_END_TURN_METADATA_KEY: &str = "__grok_codex_end_turn";
-
-impl CodexSseDecoder {
-    fn new(fallback_model: impl Into<String>) -> Self {
-        let fallback_model = fallback_model.into();
-        Self {
-            fallback_model: if fallback_model.is_empty() {
-                "openai-codex".to_string()
-            } else {
-                fallback_model
-            },
-            next_sequence_number: 0,
-            next_output_index: 0,
-            item_output_indexes: HashMap::new(),
-            active_output_index: None,
-            active_item_id: None,
-        }
-    }
-
-    /// Decode one raw Codex data frame. Unknown non-terminal frames (including
-    /// `response.metadata`) are intentionally ignored, matching the official
-    /// client's forward-compatible behavior. No provider-controlled value is
-    /// included in an error or log message.
-    fn decode(&mut self, data: &str) -> Result<Option<rs::ResponseStreamEvent>> {
-        let mut value = serde_json::from_str::<serde_json::Value>(data)
-            .map_err(|_| codex_invalid_stream_event())?;
-
-        if value
-            .get("error")
-            .is_some_and(|error| error.is_object() || error.is_string())
-        {
-            return Err(codex_rejected_stream());
-        }
-
-        let kind = value
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(codex_invalid_stream_event)?
-            .to_owned();
-
-        if kind == "error" {
-            return Err(codex_rejected_stream());
-        }
-        if kind == "response.failed" {
-            return Err(codex_failed_stream());
-        }
-        if kind == "response.incomplete" {
-            return Err(codex_incomplete_stream());
-        }
-
-        let supported = matches!(
-            kind.as_str(),
-            "response.created"
-                | "response.in_progress"
-                | "response.queued"
-                | "response.completed"
-                | "response.output_item.added"
-                | "response.output_item.done"
-                | "response.output_text.delta"
-                | "response.output_text.done"
-                | "response.function_call_arguments.delta"
-                | "response.function_call_arguments.done"
-                | "response.reasoning_summary_text.delta"
-                | "response.reasoning_summary_text.done"
-                | "response.reasoning_text.delta"
-                | "response.reasoning_text.done"
-                | "response.custom_tool_call_input.delta"
-                | "response.custom_tool_call_input.done"
-                | "response.web_search_call.in_progress"
-                | "response.web_search_call.searching"
-                | "response.web_search_call.completed"
-                | "response.image_generation_call.in_progress"
-                | "response.image_generation_call.generating"
-                | "response.image_generation_call.completed"
-                | "response.image_generation_call.partial_image"
-        );
-        if !supported {
-            return Ok(None);
-        }
-
-        let sequence_number = self.sequence_number(&value);
-        let object = value
-            .as_object_mut()
-            .ok_or_else(codex_invalid_stream_event)?;
-        object.insert(
-            "sequence_number".to_string(),
-            serde_json::Value::from(sequence_number),
-        );
-
-        match kind.as_str() {
-            "response.created"
-            | "response.in_progress"
-            | "response.queued"
-            | "response.completed" => {
-                let status = match kind.as_str() {
-                    "response.completed" => "completed",
-                    "response.queued" => "queued",
-                    _ => "in_progress",
-                };
-                let response = object
-                    .get_mut("response")
-                    .ok_or_else(codex_invalid_stream_event)?;
-                normalize_codex_response(response, &self.fallback_model, status)?;
-            }
-            "response.output_item.added" | "response.output_item.done" => {
-                let output_index = self.item_output_index(&value);
-                let object = value
-                    .as_object_mut()
-                    .ok_or_else(codex_invalid_stream_event)?;
-                object.insert(
-                    "output_index".to_string(),
-                    serde_json::Value::from(output_index),
-                );
-                let item = object
-                    .get_mut("item")
-                    .ok_or_else(codex_invalid_stream_event)?;
-                let item_status = if kind == "response.output_item.done" {
-                    "completed"
-                } else {
-                    "in_progress"
-                };
-                normalize_codex_output_item(item, output_index, item_status)?;
-                self.remember_item_aliases(&value, output_index);
-                self.active_output_index = Some(output_index);
-                self.active_item_id = primary_codex_item_id(&value)
-                    .or_else(|| Some(format!("codex-item-{output_index}")));
-            }
-            "response.output_text.delta" | "response.output_text.done" => {
-                let output_index = self.delta_output_index(&value);
-                let item_id = self.item_id(&value, output_index);
-                let object = value
-                    .as_object_mut()
-                    .ok_or_else(codex_invalid_stream_event)?;
-                insert_u32(object, "output_index", output_index);
-                insert_u32_if_missing(object, "content_index", 0);
-                insert_string(object, "item_id", item_id);
-                if kind == "response.output_text.delta" {
-                    insert_string_if_missing(object, "delta", "");
-                    insert_null_if_missing(object, "logprobs");
-                } else {
-                    insert_string_if_missing(object, "text", "");
-                    insert_null_if_missing(object, "logprobs");
-                }
-            }
-            "response.function_call_arguments.delta" | "response.function_call_arguments.done" => {
-                let output_index = self.delta_output_index(&value);
-                let item_id = self.item_id(&value, output_index);
-                let object = value
-                    .as_object_mut()
-                    .ok_or_else(codex_invalid_stream_event)?;
-                insert_u32(object, "output_index", output_index);
-                insert_string(object, "item_id", item_id);
-                if kind == "response.function_call_arguments.delta" {
-                    insert_string_if_missing(object, "delta", "");
-                } else {
-                    insert_string_if_missing(object, "arguments", "");
-                }
-            }
-            "response.reasoning_summary_text.delta" | "response.reasoning_summary_text.done" => {
-                let output_index = self.delta_output_index(&value);
-                let item_id = self.item_id(&value, output_index);
-                let object = value
-                    .as_object_mut()
-                    .ok_or_else(codex_invalid_stream_event)?;
-                insert_u32(object, "output_index", output_index);
-                insert_u32_if_missing(object, "summary_index", 0);
-                insert_string(object, "item_id", item_id);
-                if kind == "response.reasoning_summary_text.delta" {
-                    insert_string_if_missing(object, "delta", "");
-                } else {
-                    insert_string_if_missing(object, "text", "");
-                }
-            }
-            "response.reasoning_text.delta" | "response.reasoning_text.done" => {
-                let output_index = self.delta_output_index(&value);
-                let item_id = self.item_id(&value, output_index);
-                let object = value
-                    .as_object_mut()
-                    .ok_or_else(codex_invalid_stream_event)?;
-                insert_u32(object, "output_index", output_index);
-                insert_u32_if_missing(object, "content_index", 0);
-                insert_string(object, "item_id", item_id);
-                if kind == "response.reasoning_text.delta" {
-                    insert_string_if_missing(object, "delta", "");
-                } else {
-                    insert_string_if_missing(object, "text", "");
-                }
-            }
-            "response.custom_tool_call_input.delta" | "response.custom_tool_call_input.done" => {
-                let output_index = self.delta_output_index(&value);
-                let item_id = self.item_id(&value, output_index);
-                let object = value
-                    .as_object_mut()
-                    .ok_or_else(codex_invalid_stream_event)?;
-                insert_u32(object, "output_index", output_index);
-                insert_string(object, "item_id", item_id);
-                if kind == "response.custom_tool_call_input.delta" {
-                    insert_string_if_missing(object, "delta", "");
-                } else {
-                    insert_string_if_missing(object, "input", "");
-                }
-            }
-            "response.web_search_call.in_progress"
-            | "response.web_search_call.searching"
-            | "response.web_search_call.completed"
-            | "response.image_generation_call.in_progress"
-            | "response.image_generation_call.generating"
-            | "response.image_generation_call.completed" => {
-                let output_index = self.delta_output_index(&value);
-                let item_id = self.item_id(&value, output_index);
-                let object = value
-                    .as_object_mut()
-                    .ok_or_else(codex_invalid_stream_event)?;
-                insert_u32(object, "output_index", output_index);
-                insert_string(object, "item_id", item_id);
-            }
-            "response.image_generation_call.partial_image" => {
-                let output_index = self.delta_output_index(&value);
-                let item_id = self.item_id(&value, output_index);
-                let object = value
-                    .as_object_mut()
-                    .ok_or_else(codex_invalid_stream_event)?;
-                insert_u32(object, "output_index", output_index);
-                insert_u32_if_missing(object, "partial_image_index", 0);
-                insert_string(object, "item_id", item_id);
-                insert_string_if_missing(object, "partial_image_b64", "");
-            }
-            _ => return Ok(None),
-        }
-
-        normalize_extended_codex_response_effort(&mut value);
-        let mut event = serde_json::from_value::<rs::ResponseStreamEvent>(value)
-            .map_err(|_| codex_invalid_stream_event())?;
-        apply_terminal_event_overrides(&mut event, data);
-        Ok(Some(event))
-    }
-
-    fn sequence_number(&mut self, value: &serde_json::Value) -> u64 {
-        if let Some(sequence_number) = value
-            .get("sequence_number")
-            .and_then(serde_json::Value::as_u64)
-        {
-            self.next_sequence_number = self
-                .next_sequence_number
-                .max(sequence_number.saturating_add(1));
-            sequence_number
-        } else {
-            let sequence_number = self.next_sequence_number;
-            self.next_sequence_number = self.next_sequence_number.saturating_add(1);
-            sequence_number
-        }
-    }
-
-    fn item_output_index(&mut self, value: &serde_json::Value) -> u32 {
-        let explicit = json_u32(value.get("output_index"));
-        let aliases = codex_item_aliases(value);
-        let output_index = explicit
-            .or_else(|| {
-                aliases
-                    .iter()
-                    .find_map(|alias| self.item_output_indexes.get(alias).copied())
-            })
-            .unwrap_or_else(|| self.allocate_output_index());
-        self.advance_output_index(output_index);
-        for alias in aliases {
-            self.item_output_indexes.insert(alias, output_index);
-        }
-        output_index
-    }
-
-    fn delta_output_index(&mut self, value: &serde_json::Value) -> u32 {
-        let explicit = json_u32(value.get("output_index"));
-        let aliases = codex_item_aliases(value);
-        let output_index = explicit
-            .or_else(|| {
-                aliases
-                    .iter()
-                    .find_map(|alias| self.item_output_indexes.get(alias).copied())
-            })
-            .or(self.active_output_index)
-            .unwrap_or_else(|| self.allocate_output_index());
-        self.advance_output_index(output_index);
-        for alias in aliases {
-            self.item_output_indexes.insert(alias, output_index);
-        }
-        self.active_output_index = Some(output_index);
-        output_index
-    }
-
-    fn allocate_output_index(&mut self) -> u32 {
-        let output_index = self.next_output_index;
-        self.next_output_index = self.next_output_index.saturating_add(1);
-        output_index
-    }
-
-    fn advance_output_index(&mut self, output_index: u32) {
-        self.next_output_index = self.next_output_index.max(output_index.saturating_add(1));
-    }
-
-    fn remember_item_aliases(&mut self, value: &serde_json::Value, output_index: u32) {
-        for alias in codex_item_aliases(value) {
-            self.item_output_indexes.insert(alias, output_index);
-        }
-    }
-
-    fn item_id(&mut self, value: &serde_json::Value, output_index: u32) -> String {
-        let item_id = primary_codex_item_id(value)
-            .or_else(|| self.active_item_id.clone())
-            .unwrap_or_else(|| format!("codex-item-{output_index}"));
-        self.item_output_indexes
-            .insert(item_id.clone(), output_index);
-        self.active_item_id = Some(item_id.clone());
-        item_id
-    }
-}
-
-fn codex_invalid_stream_event() -> SamplingError {
-    SamplingError::serialization_message("ChatGPT Codex stream event was invalid")
-}
-
-fn codex_rejected_stream() -> SamplingError {
-    SamplingError::StreamError {
-        error_type: "provider_error".to_string(),
-        message: "ChatGPT Codex stream rejected".to_string(),
-    }
-}
-
-fn codex_failed_stream() -> SamplingError {
-    SamplingError::StreamError {
-        error_type: "provider_error".to_string(),
-        message: "ChatGPT Codex response failed".to_string(),
-    }
-}
-
-fn codex_incomplete_stream() -> SamplingError {
-    SamplingError::StreamError {
-        error_type: "provider_error".to_string(),
-        message: "ChatGPT Codex response was incomplete".to_string(),
-    }
-}
-
-fn json_u32(value: Option<&serde_json::Value>) -> Option<u32> {
-    value
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-}
-
-fn codex_item_aliases(value: &serde_json::Value) -> Vec<String> {
-    [
-        value.pointer("/item/id"),
-        value.pointer("/item/call_id"),
-        value.get("item_id"),
-        value.get("call_id"),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(serde_json::Value::as_str)
-    .filter(|value| !value.is_empty())
-    .map(str::to_owned)
-    .collect()
-}
-
-fn primary_codex_item_id(value: &serde_json::Value) -> Option<String> {
-    codex_item_aliases(value).into_iter().next()
-}
-
-fn insert_u32(object: &mut serde_json::Map<String, serde_json::Value>, key: &str, value: u32) {
-    object.insert(key.to_string(), serde_json::Value::from(value));
-}
-
-fn insert_u32_if_missing(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    value: u32,
-) {
-    if object.get(key).is_none_or(serde_json::Value::is_null) {
-        insert_u32(object, key, value);
-    }
-}
-
-fn insert_string(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    value: String,
-) {
-    object.insert(key.to_string(), serde_json::Value::String(value));
-}
-
-fn insert_string_if_missing(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    value: &str,
-) {
-    if object.get(key).is_none_or(serde_json::Value::is_null) {
-        object.insert(
-            key.to_string(),
-            serde_json::Value::String(value.to_string()),
-        );
-    }
-}
-
-fn insert_null_if_missing(object: &mut serde_json::Map<String, serde_json::Value>, key: &str) {
-    if !object.contains_key(key) {
-        object.insert(key.to_string(), serde_json::Value::Null);
-    }
-}
-
-fn normalize_codex_response(
-    response: &mut serde_json::Value,
-    fallback_model: &str,
-    status: &str,
-) -> Result<()> {
-    let response = response
-        .as_object_mut()
-        .ok_or_else(codex_invalid_stream_event)?;
-    insert_u32_if_missing(response, "created_at", 0);
-    insert_string_if_missing(response, "id", "codex-response");
-    insert_string_if_missing(response, "model", fallback_model);
-    insert_string_if_missing(response, "object", "response");
-    insert_string_if_missing(response, "status", status);
-
-    // Never forward arbitrary provider metadata through the compatibility
-    // envelope. Preserve only the protocol bit the Grok loop needs, encoded
-    // as a string because async-openai models metadata as `Map<String,
-    // String>`. Extended reasoning provenance is added separately after this
-    // normalization step.
-    let end_turn = response
-        .remove("end_turn")
-        .and_then(|value| value.as_bool());
-    response.remove("metadata");
-    if let Some(end_turn) = end_turn {
-        let mut metadata = serde_json::Map::new();
-        metadata.insert(
-            CODEX_END_TURN_METADATA_KEY.to_string(),
-            serde_json::Value::String(end_turn.to_string()),
-        );
-        response.insert("metadata".to_string(), serde_json::Value::Object(metadata));
-    }
-
-    if response
-        .get("output")
-        .is_none_or(serde_json::Value::is_null)
-    {
-        response.insert("output".to_string(), serde_json::Value::Array(Vec::new()));
-    }
-    let output = response
-        .get_mut("output")
-        .and_then(serde_json::Value::as_array_mut)
-        .ok_or_else(codex_invalid_stream_event)?;
-    for (output_index, item) in output.iter_mut().enumerate() {
-        let output_index = u32::try_from(output_index).map_err(|_| codex_invalid_stream_event())?;
-        normalize_codex_output_item(item, output_index, status)?;
-    }
-
-    if let Some(usage) = response.get_mut("usage")
-        && !usage.is_null()
-    {
-        normalize_codex_usage(usage)?;
-    }
-    Ok(())
-}
-
-fn normalize_codex_usage(usage: &mut serde_json::Value) -> Result<()> {
-    let usage = usage
-        .as_object_mut()
-        .ok_or_else(codex_invalid_stream_event)?;
-    insert_u32_if_missing(usage, "input_tokens", 0);
-    insert_u32_if_missing(usage, "output_tokens", 0);
-    insert_u32_if_missing(usage, "total_tokens", 0);
-
-    if usage
-        .get("input_tokens_details")
-        .is_none_or(serde_json::Value::is_null)
-    {
-        usage.insert(
-            "input_tokens_details".to_string(),
-            serde_json::json!({"cached_tokens": 0}),
-        );
-    } else {
-        let details = usage
-            .get_mut("input_tokens_details")
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(codex_invalid_stream_event)?;
-        insert_u32_if_missing(details, "cached_tokens", 0);
-    }
-
-    if usage
-        .get("output_tokens_details")
-        .is_none_or(serde_json::Value::is_null)
-    {
-        usage.insert(
-            "output_tokens_details".to_string(),
-            serde_json::json!({"reasoning_tokens": 0}),
-        );
-    } else {
-        let details = usage
-            .get_mut("output_tokens_details")
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(codex_invalid_stream_event)?;
-        insert_u32_if_missing(details, "reasoning_tokens", 0);
-    }
-    Ok(())
-}
-
-fn normalize_codex_output_item(
-    item: &mut serde_json::Value,
-    output_index: u32,
-    status: &str,
-) -> Result<()> {
-    let item = item
-        .as_object_mut()
-        .ok_or_else(codex_invalid_stream_event)?;
-    let kind = item
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(codex_invalid_stream_event)?
-        .to_owned();
-    let item_id = format!("codex-item-{output_index}");
-
-    match kind.as_str() {
-        "message" => {
-            insert_string_if_missing(item, "id", &item_id);
-            insert_string_if_missing(item, "role", "assistant");
-            insert_string_if_missing(item, "status", status);
-            if item.get("content").is_none_or(serde_json::Value::is_null) {
-                item.insert("content".to_string(), serde_json::Value::Array(Vec::new()));
-            }
-            let content = item
-                .get_mut("content")
-                .and_then(serde_json::Value::as_array_mut)
-                .ok_or_else(codex_invalid_stream_event)?;
-            for part in content {
-                if part.get("type").and_then(serde_json::Value::as_str) == Some("output_text") {
-                    let part = part
-                        .as_object_mut()
-                        .ok_or_else(codex_invalid_stream_event)?;
-                    if part
-                        .get("annotations")
-                        .is_none_or(serde_json::Value::is_null)
-                    {
-                        part.insert(
-                            "annotations".to_string(),
-                            serde_json::Value::Array(Vec::new()),
-                        );
-                    }
-                    insert_null_if_missing(part, "logprobs");
-                    insert_string_if_missing(part, "text", "");
-                }
-            }
-        }
-        "reasoning" => {
-            insert_string_if_missing(item, "id", &item_id);
-            if item.get("summary").is_none_or(serde_json::Value::is_null) {
-                item.insert("summary".to_string(), serde_json::Value::Array(Vec::new()));
-            }
-        }
-        "function_call" => {
-            insert_string_if_missing(item, "call_id", &format!("codex-call-{output_index}"));
-            insert_string_if_missing(item, "name", "");
-            insert_string_if_missing(item, "arguments", "");
-        }
-        "custom_tool_call" => {
-            insert_string_if_missing(item, "id", &item_id);
-            insert_string_if_missing(item, "call_id", &format!("codex-call-{output_index}"));
-            insert_string_if_missing(item, "name", "");
-            insert_string_if_missing(item, "input", "");
-        }
-        "image_generation_call" => {
-            insert_string_if_missing(item, "id", &item_id);
-            insert_string_if_missing(item, "status", status);
-            insert_null_if_missing(item, "result");
-        }
-        "web_search_call" => {
-            insert_string_if_missing(item, "id", &item_id);
-            insert_string_if_missing(item, "status", status);
-            if item.get("action").is_none_or(serde_json::Value::is_null) {
-                item.insert(
-                    "action".to_string(),
-                    serde_json::json!({"type": "search", "query": "", "sources": null}),
-                );
-            }
-        }
-        "file_search_call" => {
-            insert_string_if_missing(item, "id", &item_id);
-            insert_string_if_missing(item, "status", status);
-            if item.get("queries").is_none_or(serde_json::Value::is_null) {
-                item.insert("queries".to_string(), serde_json::Value::Array(Vec::new()));
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn deserialize_response_event_for_provider(
-    data: &str,
-    redact_provider_payload: bool,
-) -> Result<rs::ResponseStreamEvent> {
-    if redact_provider_payload {
-        return CodexSseDecoder::new("openai-codex")
-            .decode(data)?
-            .ok_or_else(codex_invalid_stream_event);
-    }
-
     let first_parse = serde_json::from_str::<rs::ResponseStreamEvent>(data);
     let mut event = match first_parse {
         Ok(event) => event,
@@ -1298,20 +156,11 @@ fn deserialize_response_event_for_provider(
 }
 
 fn deserialize_response_for_provider(bytes: &[u8], provider: ProviderId) -> Result<rs::Response> {
-    let parsed = if provider.is_openai_codex() {
-        serde_json::from_slice::<serde_json::Value>(bytes).and_then(|mut value| {
-            normalize_extended_codex_response_effort(&mut value);
-            serde_json::from_value::<rs::Response>(value)
-        })
-    } else {
-        serde_json::from_slice::<rs::Response>(bytes)
-    };
+    if provider.is_openai_codex() {
+        return codex_responses::deserialize_response(bytes);
+    }
 
-    parsed.map_err(|error| {
-        if provider.is_openai_codex() {
-            tracing::error!("Failed to deserialize Codex rs::Response");
-            return SamplingError::serialization_message("ChatGPT Codex response was invalid");
-        }
+    serde_json::from_slice::<rs::Response>(bytes).map_err(|error| {
         let raw_body = String::from_utf8_lossy(bytes);
         tracing::error!(
             error = %error,
@@ -1319,82 +168,6 @@ fn deserialize_response_for_provider(bytes: &[u8], provider: ProviderId) -> Resu
             "Failed to deserialize rs::Response"
         );
         SamplingError::Serialization(error)
-    })
-}
-
-/// Return whether a Codex error envelope carries one of the small, fixed
-/// subscription-exhaustion codes published by the open-source Codex client.
-///
-/// Provider-controlled messages are deliberately ignored: an error may echo
-/// request text, bearer material, or account metadata. Matching only an
-/// allowlist of structural codes lets callers distinguish a durable usage
-/// block from a short rolling 429 without reflecting any response content.
-fn is_codex_usage_limit_error(value: &serde_json::Value) -> bool {
-    [
-        value.pointer("/error/type"),
-        value.pointer("/error/code"),
-        value.get("code"),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(serde_json::Value::as_str)
-    .any(|kind| {
-        matches!(
-            kind,
-            "usage_limit_reached"
-                | "insufficient_quota"
-                | "credits_depleted"
-                | "workspace_owner_credits_depleted"
-                | "workspace_member_credits_depleted"
-                | "workspace_owner_usage_limit_reached"
-                | "workspace_member_usage_limit_reached"
-                | "spend_control_limit_reached"
-                | "spending_limit_reached"
-        )
-    })
-}
-
-fn codex_usage_limit_should_retry(
-    provider: ProviderId,
-    status: StatusCode,
-    body: &[u8],
-    server_hint: Option<bool>,
-) -> Option<bool> {
-    if provider.is_openai_codex()
-        && status == StatusCode::TOO_MANY_REQUESTS
-        && serde_json::from_slice::<serde_json::Value>(body)
-            .ok()
-            .as_ref()
-            .is_some_and(is_codex_usage_limit_error)
-    {
-        // Subscription exhaustion is durable until the provider's reset. The
-        // current openai/codex client treats this structural error as terminal;
-        // retrying it only burns another request and can leave the TUI appearing
-        // to loop. Do not inspect or retain the provider-controlled message.
-        Some(false)
-    } else {
-        server_hint
-    }
-}
-
-/// Recognize the two server-error envelope shapes without logging or
-/// retaining any provider-controlled string. The ChatGPT backend can reflect
-/// request material, so even an error field is treated as sensitive.
-fn try_parse_codex_stream_error(data: &str) -> Option<SamplingError> {
-    let value = serde_json::from_str::<serde_json::Value>(data).ok()?;
-    let error = value.get("error")?;
-    if !(error.is_object() || error.is_string()) {
-        return None;
-    }
-    if is_codex_usage_limit_error(&value) {
-        return Some(SamplingError::StreamError {
-            error_type: "usage_limit_reached".to_owned(),
-            message: "ChatGPT Codex stream rejected (usage limit reached)".to_owned(),
-        });
-    }
-    Some(SamplingError::StreamError {
-        error_type: "provider_error".to_owned(),
-        message: "ChatGPT Codex stream rejected".to_owned(),
     })
 }
 
@@ -1419,7 +192,7 @@ fn try_parse_codex_stream_error(data: &str) -> Option<SamplingError> {
 /// - `context_details` is absent (older backends / non-loop responses),
 /// - or either of `context_details.{input_tokens, output_tokens}` is
 ///   missing — we don't guess the missing half.
-fn apply_terminal_event_overrides(event: &mut rs::ResponseStreamEvent, data: &str) {
+pub(crate) fn apply_terminal_event_overrides(event: &mut rs::ResponseStreamEvent, data: &str) {
     let response = match event {
         rs::ResponseStreamEvent::ResponseCompleted(e) => &mut e.response,
         rs::ResponseStreamEvent::ResponseIncomplete(e) => &mut e.response,
@@ -1553,26 +326,6 @@ struct StreamOptions {
 struct PreparedRequest {
     builder: reqwest::RequestBuilder,
     credential_binding: Option<CredentialBinding>,
-}
-
-/// Sticky-routing state returned by the ChatGPT Codex backend. The value is
-/// opaque and credential-adjacent: it is kept only in memory, marked
-/// sensitive, and scoped to the request ID shared by one Grok user/tool turn.
-struct CodexTurnState {
-    request_id: String,
-    value: HeaderValue,
-}
-
-/// Actor-scoped owner for the opaque ChatGPT sticky-routing value.
-///
-/// A [`SamplingClient`] is rebuilt for every sampler submission (and may also
-/// be rebuilt during transport recovery), while one user turn spans several
-/// submissions when tools are called. Keeping the state in this shared owner
-/// preserves the provider's per-turn contract without persisting or exposing
-/// the value.
-#[derive(Clone, Default)]
-pub(crate) struct CodexTurnStateStore {
-    inner: std::sync::Arc<std::sync::Mutex<Option<CodexTurnState>>>,
 }
 
 #[derive(Clone)]
@@ -1730,7 +483,7 @@ impl SamplingClient {
         }
 
         if config.provider.is_openai_codex() {
-            if !valid_openai_codex_base_url(&config.base_url) {
+            if !codex_endpoint::is_valid_base_url(&config.base_url) {
                 return Err(SamplingError::InvalidConfiguration(
                     "OpenAI Codex credentials may only be sent to the ChatGPT Codex endpoint",
                 ));
@@ -1806,9 +559,9 @@ impl SamplingClient {
                 continue;
             }
             if config.provider.is_openai_codex()
-                && (is_codex_credential_header_or_alias(&header_name)
-                    || is_xai_specific_header(&header_name)
-                    || is_codex_provider_identity_header(&header_name))
+                && (codex_headers::is_credential_header_or_alias(&header_name)
+                    || codex_headers::is_xai_specific_header(&header_name)
+                    || codex_headers::is_provider_identity_header(&header_name))
             {
                 return Err(SamplingError::InvalidConfiguration(
                     "OpenAI Codex protected/provider headers cannot be set via extra_headers",
@@ -1856,14 +609,7 @@ impl SamplingClient {
                 );
             }
         } else {
-            headers.insert(
-                HeaderName::from_static("originator"),
-                HeaderValue::from_static(OPENAI_CODEX_ORIGINATOR),
-            );
-            headers.insert(
-                HeaderName::from_static("version"),
-                HeaderValue::from_static(OPENAI_CODEX_COMPATIBILITY_VERSION),
-            );
+            codex_headers::insert_provider_identity(&mut headers);
         }
 
         // Always set User-Agent: per-session origin if available, else fallback.
@@ -1881,10 +627,7 @@ impl SamplingClient {
         }
 
         let http = if config.provider.is_openai_codex() {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(SamplingError::Http)?
+            codex_endpoint::http_client()?
         } else if config.force_http1 {
             tracing::info!("Using HTTP/1.1 for sampling client (force_http1=true)");
             crate::shared_http::client_http1().map_err(SamplingError::Http)?
@@ -1980,31 +723,7 @@ impl SamplingClient {
         }
 
         if self.defaults.provider.is_openai_codex() {
-            // Ordinary injectors may add tracing/correlation headers, but they
-            // never own provider credentials. Strip protected and xAI-specific
-            // names before the provider hook gets exclusive ownership.
-            let forbidden: Vec<HeaderName> = headers
-                .keys()
-                .filter(|name| {
-                    is_codex_credential_header_or_alias(name)
-                        || is_xai_specific_header(name)
-                        || is_codex_provider_identity_header(name)
-                })
-                .cloned()
-                .collect();
-            for name in forbidden {
-                headers.remove(name);
-            }
-            // Provider identity is fixed to this client implementation even
-            // when a generic tracing injector attempted to replace it.
-            headers.insert(
-                HeaderName::from_static("originator"),
-                HeaderValue::from_static(OPENAI_CODEX_ORIGINATOR),
-            );
-            headers.insert(
-                HeaderName::from_static("version"),
-                HeaderValue::from_static(OPENAI_CODEX_COMPATIBILITY_VERSION),
-            );
+            codex_headers::prepare_for_request_auth(&mut headers);
         }
 
         let credential_binding = self
@@ -2018,36 +737,7 @@ impl SamplingClient {
             .transpose()?;
 
         if self.defaults.provider.is_openai_codex() {
-            // Request-auth implementations own credentials, not transport
-            // identity or request correlation. Clear any attempted poisoning
-            // after the hook, then seal the provider-owned values again.
-            for name in [
-                OPENAI_CODEX_RESPONSES_LITE_HEADER,
-                CODEX_SESSION_ID_HEADER,
-                CODEX_THREAD_ID_HEADER,
-                CODEX_CLIENT_REQUEST_ID_HEADER,
-                CODEX_TURN_STATE_HEADER,
-                "originator",
-                "version",
-            ] {
-                headers.remove(name);
-            }
-            headers.insert(
-                HeaderName::from_static("originator"),
-                HeaderValue::from_static(OPENAI_CODEX_ORIGINATOR),
-            );
-            headers.insert(
-                HeaderName::from_static("version"),
-                HeaderValue::from_static(OPENAI_CODEX_COMPATIBILITY_VERSION),
-            );
-            validate_codex_request_auth_headers(&mut headers)?;
-            let binding =
-                credential_binding
-                    .as_ref()
-                    .ok_or(SamplingError::InvalidConfiguration(
-                        "OpenAI Codex request authentication omitted its credential generation",
-                    ))?;
-            validate_codex_credential_binding(binding)?;
+            codex_headers::seal_after_request_auth(&mut headers, credential_binding.as_ref())?;
         }
 
         tracing::info!(
@@ -2077,65 +767,21 @@ impl SamplingClient {
         grok_headers: &GrokRequestHeaders<'_>,
     ) -> Result<reqwest::RequestBuilder> {
         if self.defaults.provider.is_openai_codex() {
-            let builder = grok_headers.apply_codex(builder, self.defaults.responses_lite)?;
-            Ok(self.apply_codex_turn_state(builder, grok_headers.req_id))
+            let builder = codex_headers::apply_request_identity(
+                builder,
+                grok_headers.session_id,
+                grok_headers.conv_id,
+                self.defaults.responses_lite,
+            )?;
+            Ok(self.codex_turn_state.apply(builder, grok_headers.req_id))
         } else {
             Ok(grok_headers.apply(builder))
         }
     }
 
-    fn apply_codex_turn_state(
-        &self,
-        builder: reqwest::RequestBuilder,
-        request_id: &str,
-    ) -> reqwest::RequestBuilder {
-        if request_id.is_empty() {
-            return builder;
-        }
-        let mut state = self
-            .codex_turn_state
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match state.as_ref() {
-            Some(turn_state) if turn_state.request_id == request_id => {
-                builder.header(CODEX_TURN_STATE_HEADER, turn_state.value.clone())
-            }
-            Some(_) => {
-                // A new Grok prompt gets a fresh Codex turn. Never replay the
-                // sticky-routing value across that boundary.
-                *state = None;
-                builder
-            }
-            None => builder,
-        }
-    }
-
     fn capture_codex_turn_state(&self, headers: &HeaderMap, request_id: &str) {
-        if !self.defaults.provider.is_openai_codex() || request_id.is_empty() {
-            return;
-        }
-        let Some(value) = headers.get(CODEX_TURN_STATE_HEADER) else {
-            return;
-        };
-        let mut value = value.clone();
-        value.set_sensitive(true);
-        let mut state = self
-            .codex_turn_state
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match state.as_ref() {
-            // Match the official once-per-turn behavior: the first value is
-            // authoritative and remains unchanged throughout tool rounds and
-            // retries in this request ID.
-            Some(turn_state) if turn_state.request_id == request_id => {}
-            _ => {
-                *state = Some(CodexTurnState {
-                    request_id: request_id.to_string(),
-                    value,
-                });
-            }
+        if self.defaults.provider.is_openai_codex() {
+            self.codex_turn_state.capture(headers, request_id);
         }
     }
 
@@ -2260,11 +906,7 @@ impl SamplingClient {
     /// headers. Other providers retain the existing value-bearing diagnostics.
     fn format_response_headers(headers: &HeaderMap, provider: ProviderId) -> Vec<String> {
         if provider.is_openai_codex() {
-            return headers
-                .keys()
-                .filter(|name| CODEX_DIAGNOSTIC_RESPONSE_HEADERS.contains(&name.as_str()))
-                .map(|name| format!("  {}: [value omitted]", name.as_str()))
-                .collect();
+            return codex_errors::response_header_diagnostics(headers);
         }
 
         headers
@@ -2325,20 +967,7 @@ impl SamplingClient {
     /// into logs and user-visible errors.
     fn provider_error_message(&self, body: &[u8]) -> String {
         if self.defaults.provider.is_openai_codex() {
-            if serde_json::from_slice::<serde_json::Value>(body)
-                .ok()
-                .as_ref()
-                .is_some_and(is_codex_usage_limit_error)
-            {
-                "ChatGPT Codex request rejected (usage limit reached)".to_owned()
-            } else if body
-                .windows(b"encrypted_content".len())
-                .any(|window| window == b"encrypted_content")
-            {
-                "ChatGPT Codex request rejected (encrypted_content)".to_owned()
-            } else {
-                "ChatGPT Codex request rejected".to_owned()
-            }
+            codex_errors::response_message(body)
         } else {
             parse_error_bytes(body)
         }
@@ -2692,21 +1321,8 @@ impl SamplingClient {
         // or custom-provider traffic.
         if request.inner.service_tier.is_none() && self.defaults.provider == ProviderId::OpenAiCodex
         {
-            request.inner.service_tier = match self.defaults.service_tier.as_deref() {
-                Some("priority") => Some(rs::ServiceTier::Priority),
-                Some("flex") => Some(rs::ServiceTier::Flex),
-                Some("scale") => Some(rs::ServiceTier::Scale),
-                Some("auto") => Some(rs::ServiceTier::Auto),
-                Some(xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER) | None => None,
-                Some(tier) => {
-                    tracing::warn!(
-                        provider = "openai_codex",
-                        service_tier = tier,
-                        "catalog service tier is not supported by this client; omitting it"
-                    );
-                    None
-                }
-            };
+            request.inner.service_tier =
+                codex_responses::service_tier(self.defaults.service_tier.as_deref());
         }
 
         // Set store to false if not specified (default is true, but that breaks ZDR compliance)
@@ -2763,15 +1379,15 @@ impl SamplingClient {
             tracing::error!("Failed to serialize responses request: {}", e);
             SamplingError::Serialization(e)
         })?;
-        apply_extended_codex_reasoning_effort(
+        codex_responses::apply_extended_codex_reasoning_effort(
             self.defaults.provider,
             request.wire_reasoning_effort,
             &mut request_body,
         )?;
-        apply_codex_responses_lite_contract(
+        codex_responses::apply_codex_responses_lite_contract(
             self.defaults.provider,
             self.defaults.responses_lite,
-            codex_prompt_cache_key(
+            codex_responses::codex_prompt_cache_key(
                 x_grok_conv_id,
                 request.x_grok_session_id.as_deref().unwrap_or_default(),
             ),
@@ -2805,7 +1421,7 @@ impl SamplingClient {
             self.capture_codex_turn_state(response.headers(), x_grok_req_id);
         }
         let bytes = response.bytes().await?;
-        let should_retry = codex_usage_limit_should_retry(
+        let should_retry = codex_errors::usage_limit_should_retry(
             self.defaults.provider,
             status,
             bytes.as_ref(),
@@ -2929,7 +1545,7 @@ impl SamplingClient {
             tracing::error!("Failed to serialize responses request: {}", e);
             SamplingError::Serialization(e)
         })?;
-        apply_extended_codex_reasoning_effort(
+        codex_responses::apply_extended_codex_reasoning_effort(
             self.defaults.provider,
             request.wire_reasoning_effort,
             &mut request_body,
@@ -2947,10 +1563,10 @@ impl SamplingClient {
                 request_body["tools"] = serde_json::Value::Array(extra_raw_tools);
             }
         }
-        apply_codex_responses_lite_contract(
+        codex_responses::apply_codex_responses_lite_contract(
             self.defaults.provider,
             self.defaults.responses_lite,
-            codex_prompt_cache_key(
+            codex_responses::codex_prompt_cache_key(
                 x_grok_conv_id,
                 request.x_grok_session_id.as_deref().unwrap_or_default(),
             ),
@@ -3028,7 +1644,7 @@ impl SamplingClient {
             let resp_headers =
                 Self::format_response_headers(response.headers(), self.defaults.provider);
             let bytes = response.bytes().await?;
-            let should_retry = codex_usage_limit_should_retry(
+            let should_retry = codex_errors::usage_limit_should_retry(
                 self.defaults.provider,
                 status,
                 bytes.as_ref(),
@@ -3140,7 +1756,7 @@ impl SamplingClient {
                             // frames, not malformed model output.
                             Some(None)
                         } else if let Some(stream_error) = if redact_provider_payload {
-                            try_parse_codex_stream_error(data)
+                            codex_errors::try_parse_stream_error(data)
                         } else {
                             try_parse_stream_error(data)
                         } {
@@ -3152,7 +1768,7 @@ impl SamplingClient {
                                 Err(error) => Some(Some(Err(error))),
                             }
                         } else {
-                            Some(Some(deserialize_response_event_for_provider(data, false)))
+                            Some(Some(deserialize_response_event(data)))
                         }
                     }
                     Err(e) => {
@@ -3779,7 +2395,12 @@ impl SamplingClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::openai_codex::headers::{
+        CODEX_CLIENT_REQUEST_ID_HEADER, CODEX_SESSION_ID_HEADER, CODEX_THREAD_ID_HEADER,
+        OPENAI_CODEX_ORIGINATOR, OPENAI_FEDRAMP_HEADER,
+    };
     use indexmap::IndexMap;
+    use xai_grok_sampling_types::OPENAI_CODEX_COMPATIBILITY_VERSION;
     use xai_grok_sampling_types::types::ChatRequestMessage;
 
     fn minimal_config() -> SamplerConfig {
@@ -3993,444 +2614,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_response_header_diagnostics_never_render_provider_values() {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::CONTENT_TYPE,
-            "text/plain; reflected=codex-access-token".parse().unwrap(),
-        );
-        headers.insert(reqwest::header::RETRY_AFTER, "30".parse().unwrap());
-        headers.insert(
-            "x-error-detail",
-            "Bearer codex-access-token".parse().unwrap(),
-        );
-        headers.insert(
-            "chatgpt-account-id",
-            "account-selected-by-auth-store".parse().unwrap(),
-        );
-
-        let rendered =
-            SamplingClient::format_response_headers(&headers, ProviderId::OpenAiCodex).join("\n");
-
-        assert!(rendered.contains("content-type: [value omitted]"));
-        assert!(rendered.contains("retry-after: [value omitted]"));
-        assert!(!rendered.contains("x-error-detail"));
-        assert!(!rendered.contains("chatgpt-account-id"));
-        assert!(!rendered.contains("codex-access-token"));
-        assert!(!rendered.contains("account-selected-by-auth-store"));
-    }
-
-    #[test]
-    fn codex_malformed_sse_diagnostics_do_not_reflect_payload() {
-        let reflected = "codex-access-token account-selected-by-auth-store";
-        let data = format!(r#"{{"type":"unknown.provider.event","value":"{reflected}"}}"#);
-        let error = deserialize_response_event_for_provider(&data, true).unwrap_err();
-        let rendered = error.to_string();
-        assert_eq!(
-            rendered,
-            "serialization error: ChatGPT Codex stream event was invalid"
-        );
-        assert!(!rendered.contains(reflected));
-    }
-
-    #[test]
-    fn codex_sparse_official_wire_fixtures_decode_statefully() {
-        fn decode(
-            decoder: &mut CodexSseDecoder,
-            value: serde_json::Value,
-        ) -> rs::ResponseStreamEvent {
-            decoder
-                .decode(&value.to_string())
-                .expect("fixture should decode")
-                .expect("fixture should produce an event")
-        }
-
-        let mut decoder = CodexSseDecoder::new("gpt-5.6");
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.created",
-                "response": {"id": "resp_1"}
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseCreated(created) = event else {
-            panic!("expected response.created");
-        };
-        assert_eq!(created.sequence_number, 0);
-        assert_eq!(created.response.id, "resp_1");
-        assert_eq!(created.response.model, "gpt-5.6");
-        assert_eq!(created.response.status, rs::Status::InProgress);
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.output_item.added",
-                "item": {"type": "reasoning", "id": "reason_1", "summary": []}
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseOutputItemAdded(reasoning) = event else {
-            panic!("expected reasoning output_item.added");
-        };
-        assert_eq!(reasoning.sequence_number, 1);
-        assert_eq!(reasoning.output_index, 0);
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.reasoning_summary_text.delta",
-                "delta": "summary ",
-                "summary_index": 0
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseReasoningSummaryTextDelta(summary) = event else {
-            panic!("expected reasoning summary delta");
-        };
-        assert_eq!(summary.output_index, 0);
-        assert_eq!(summary.item_id, "reason_1");
-        assert_eq!(summary.delta, "summary ");
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.reasoning_summary_text.done",
-                "text": "summary complete",
-                "summary_index": 0
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseReasoningSummaryTextDone(summary) = event else {
-            panic!("expected reasoning summary done");
-        };
-        assert_eq!(summary.output_index, 0);
-        assert_eq!(summary.item_id, "reason_1");
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.reasoning_text.delta",
-                "delta": "private reasoning",
-                "content_index": 0
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseReasoningTextDelta(reasoning) = event else {
-            panic!("expected reasoning text delta");
-        };
-        assert_eq!(reasoning.output_index, 0);
-        assert_eq!(reasoning.item_id, "reason_1");
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "shell",
-                    "arguments": "{}"
-                }
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseOutputItemDone(first_call) = event else {
-            panic!("expected first function output_item.done");
-        };
-        assert_eq!(first_call.output_index, 1);
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "function_call",
-                    "call_id": "call_2",
-                    "name": "read_file",
-                    "arguments": "{\"path\":\"README.md\"}"
-                }
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseOutputItemDone(second_call) = event else {
-            panic!("expected second function output_item.done");
-        };
-        assert_eq!(second_call.output_index, 2);
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.function_call_arguments.done",
-                "item_id": "call_2",
-                "arguments": "{\"path\":\"README.md\"}"
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseFunctionCallArgumentsDone(arguments) = event else {
-            panic!("expected function arguments done");
-        };
-        assert_eq!(arguments.output_index, 2);
-        assert_eq!(arguments.item_id, "call_2");
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.output_item.added",
-                "item": {
-                    "type": "message",
-                    "role": "assistant",
-                    "id": "msg_1",
-                    "content": []
-                }
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseOutputItemAdded(message_added) = event else {
-            panic!("expected message output_item.added");
-        };
-        assert_eq!(message_added.output_index, 3);
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.output_text.delta",
-                "delta": "hello"
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseOutputTextDelta(text) = event else {
-            panic!("expected output text delta");
-        };
-        assert_eq!(text.output_index, 3);
-        assert_eq!(text.item_id, "msg_1");
-        assert_eq!(text.content_index, 0);
-        assert_eq!(text.logprobs, None);
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "message",
-                    "role": "assistant",
-                    "id": "msg_1",
-                    "content": [{"type": "output_text", "text": "hello"}]
-                }
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseOutputItemDone(message_done) = event else {
-            panic!("expected message output_item.done");
-        };
-        assert_eq!(message_done.output_index, 3);
-        let rs::OutputItem::Message(message) = message_done.item else {
-            panic!("expected normalized message");
-        };
-        assert_eq!(message.status, rs::OutputStatus::Completed);
-        let rs::OutputMessageContent::OutputText(text) = &message.content[0] else {
-            panic!("expected output text content");
-        };
-        assert!(text.annotations.is_empty());
-        assert_eq!(text.logprobs, None);
-
-        let event = decode(
-            &mut decoder,
-            serde_json::json!({
-                "type": "response.completed",
-                "response": {
-                    "id": "resp_1",
-                    "end_turn": false,
-                    "metadata": {"provider_secret": "must-not-survive"},
-                    "usage": {
-                        "input_tokens": 7,
-                        "input_tokens_details": null,
-                        "output_tokens": 3,
-                        "output_tokens_details": null,
-                        "total_tokens": 10
-                    }
-                }
-            }),
-        );
-        let rs::ResponseStreamEvent::ResponseCompleted(completed) = event else {
-            panic!("expected sparse response.completed");
-        };
-        assert_eq!(completed.response.model, "gpt-5.6");
-        assert_eq!(completed.response.status, rs::Status::Completed);
-        assert!(completed.response.output.is_empty());
-        let usage = completed.response.usage.expect("usage");
-        assert_eq!(usage.input_tokens_details.cached_tokens, 0);
-        assert_eq!(usage.output_tokens_details.reasoning_tokens, 0);
-        let metadata = completed.response.metadata.expect("end_turn metadata");
-        assert_eq!(
-            metadata
-                .get(CODEX_END_TURN_METADATA_KEY)
-                .map(String::as_str),
-            Some("false")
-        );
-        assert!(!metadata.contains_key("provider_secret"));
-    }
-
-    #[test]
-    fn codex_decoder_ignores_unknown_nonterminal_metadata() {
-        let reflected = "codex-access-token account-selected-by-auth-store";
-        let mut decoder = CodexSseDecoder::new("gpt-5.6");
-        let data =
-            format!(r#"{{"type":"response.metadata","metadata":{{"reflected":"{reflected}"}}}}"#);
-        assert!(
-            decoder
-                .decode(&data)
-                .expect("metadata is ignored")
-                .is_none()
-        );
-
-        let data = format!(r#"{{"type":"response.future_event","value":"{reflected}"}}"#);
-        assert!(decoder.decode(&data).expect("unknown is ignored").is_none());
-    }
-
-    #[test]
-    fn codex_decoder_preserves_both_end_turn_values_without_provider_metadata() {
-        for (end_turn, expected) in [(true, "true"), (false, "false")] {
-            let mut decoder = CodexSseDecoder::new("gpt-5.6");
-            let event = decoder
-                .decode(
-                    &serde_json::json!({
-                        "type": "response.completed",
-                        "response": {
-                            "id": "resp_1",
-                            "end_turn": end_turn,
-                            "metadata": {"provider_value": "must-not-survive"}
-                        }
-                    })
-                    .to_string(),
-                )
-                .expect("terminal fixture should decode")
-                .expect("terminal fixture should produce an event");
-            let rs::ResponseStreamEvent::ResponseCompleted(completed) = event else {
-                panic!("expected response.completed");
-            };
-            let metadata = completed.response.metadata.expect("private metadata");
-            assert_eq!(
-                metadata
-                    .get(CODEX_END_TURN_METADATA_KEY)
-                    .map(String::as_str),
-                Some(expected)
-            );
-            assert!(!metadata.contains_key("provider_value"));
-        }
-    }
-
-    #[test]
-    fn codex_decoder_failures_never_reflect_provider_payload() {
-        let reflected = "codex-access-token account-selected-by-auth-store";
-        let mut decoder = CodexSseDecoder::new("gpt-5.6");
-
-        for data in [
-            format!(r#"{{"type":"response.output_text.delta","delta":{{"value":"{reflected}"}}}}"#),
-            format!(
-                r#"{{"type":"response.failed","response":{{"error":{{"message":"{reflected}"}}}}}}"#
-            ),
-            format!(r#"{{"type":"error","message":"{reflected}"}}"#),
-            format!(r#"{{"error":{{"message":"{reflected}"}}}}"#),
-        ] {
-            let rendered = decoder.decode(&data).unwrap_err().to_string();
-            assert!(!rendered.contains(reflected));
-            assert!(!rendered.contains("access-token"));
-            assert!(!rendered.contains("account-selected"));
-        }
-    }
-
-    #[test]
-    fn codex_malformed_response_diagnostics_do_not_reflect_payload() {
-        let reflected = "codex-access-token account-selected-by-auth-store";
-        let body = format!(
-            r#"{{
-                "id": "resp_1",
-                "object": "response",
-                "created_at": 0,
-                "model": "gpt-5.6",
-                "status": "{reflected}",
-                "output": []
-            }}"#
-        );
-        let error = deserialize_response_for_provider(body.as_bytes(), ProviderId::OpenAiCodex)
-            .unwrap_err();
-        let rendered = error.to_string();
-        assert_eq!(
-            rendered,
-            "serialization error: ChatGPT Codex response was invalid"
-        );
-        assert!(!rendered.contains(reflected));
-    }
-
-    #[test]
-    fn codex_stream_error_diagnostics_do_not_reflect_payload() {
-        let reflected = "codex-access-token account-selected-by-auth-store";
-        let data = format!(r#"{{"error":{{"message":"{reflected}"}}}}"#);
-        let error = try_parse_codex_stream_error(&data).expect("error envelope");
-        let rendered = error.to_string();
-        assert!(rendered.contains("ChatGPT Codex stream rejected"));
-        assert!(!rendered.contains(reflected));
-    }
-
-    #[test]
-    fn codex_usage_limit_errors_keep_only_the_safe_structured_classification() {
-        let reflected = "Bearer codex-access-token account-selected-by-auth-store";
-        let data = format!(
-            r#"{{"type":"error","status":429,"error":{{"type":"usage_limit_reached","message":"{reflected}","resets_at":1704067242}}}}"#
-        );
-        let error = try_parse_codex_stream_error(&data).expect("usage-limit envelope");
-        let rendered = format!("{error:?} {error}");
-        assert!(rendered.contains("usage_limit_reached"));
-        assert!(rendered.contains("usage limit reached"));
-        assert!(
-            !error.is_retryable(),
-            "a structural Codex SSE usage limit must stop after one request"
-        );
-        assert!(!rendered.contains(reflected));
-        assert!(!rendered.contains("1704067242"));
-
-        assert_eq!(
-            codex_usage_limit_should_retry(
-                ProviderId::OpenAiCodex,
-                StatusCode::TOO_MANY_REQUESTS,
-                data.as_bytes(),
-                None,
-            ),
-            Some(false),
-            "a structural Codex HTTP usage limit must stop after one request"
-        );
-        assert_eq!(
-            codex_usage_limit_should_retry(
-                ProviderId::Xai,
-                StatusCode::TOO_MANY_REQUESTS,
-                data.as_bytes(),
-                None,
-            ),
-            None,
-            "the Codex structural rule must not change xAI retry behavior"
-        );
-
-        let (config, _) = codex_config();
-        let client = SamplingClient::new(config).unwrap();
-        let message = client.provider_error_message(data.as_bytes());
-        assert_eq!(
-            message,
-            "ChatGPT Codex request rejected (usage limit reached)"
-        );
-        assert!(!message.contains(reflected));
-    }
-
-    #[test]
-    fn codex_extended_reasoning_efforts_match_current_codex_wire_contract() {
-        for (effort, expected) in [
-            (ReasoningEffort::Max, "max"),
-            (ReasoningEffort::Ultra, "max"),
-        ] {
-            let mut body = serde_json::json!({
-                "model": "gpt-5.6",
-                "reasoning": {"summary": "auto"}
-            });
-            apply_extended_codex_reasoning_effort(ProviderId::OpenAiCodex, Some(effort), &mut body)
-                .unwrap();
-            assert_eq!(
-                body.pointer("/reasoning/effort").and_then(|v| v.as_str()),
-                Some(expected)
-            );
-        }
-    }
-
-    #[test]
     fn legacy_xai_max_alias_still_serializes_as_xhigh() {
         assert_eq!(
             normalize_reasoning_effort_for_provider(ProviderId::Xai, ReasoningEffort::Max).unwrap(),
@@ -4446,7 +2629,7 @@ mod tests {
             "model": "grok-4",
             "reasoning": {"summary": "auto"}
         });
-        apply_extended_codex_reasoning_effort(
+        codex_responses::apply_extended_codex_reasoning_effort(
             ProviderId::Xai,
             Some(ReasoningEffort::Max),
             &mut body,
@@ -4457,129 +2640,6 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("xhigh"),
         );
-    }
-
-    #[test]
-    fn extended_reasoning_efforts_are_not_injected_into_xai_responses() {
-        let mut body = serde_json::json!({"model": "grok-4"});
-        let error = apply_extended_codex_reasoning_effort(
-            ProviderId::Xai,
-            Some(ReasoningEffort::Ultra),
-            &mut body,
-        )
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("requires the OpenAI Codex provider")
-        );
-        assert!(body.pointer("/reasoning/effort").is_none());
-    }
-
-    #[test]
-    fn codex_responses_lite_rewrites_only_the_transport_contract() {
-        let mut body = serde_json::json!({
-            "model": "gpt-5.6",
-            "instructions": "follow the repository instructions",
-            "tools": [{"type": "function", "name": "read_file"}],
-            "input": [
-                {
-                    "type": "message",
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": "system context"}],
-                },
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{
-                        "type": "input_image",
-                        "image_url": "data:image/png;base64,AA==",
-                        "detail": "high",
-                    }],
-                },
-            ],
-            "parallel_tool_calls": true,
-            "temperature": 1.0,
-            "reasoning": {"effort": "ultra"},
-        });
-
-        apply_codex_responses_lite_contract(
-            ProviderId::OpenAiCodex,
-            true,
-            Some("conversation-cache-key"),
-            &mut body,
-        )
-        .unwrap();
-
-        assert!(body.get("tools").is_none());
-        assert!(body.get("instructions").is_none());
-        assert!(body.get("temperature").is_none());
-        assert_eq!(body["prompt_cache_key"], "conversation-cache-key");
-        assert_eq!(body["parallel_tool_calls"], false);
-        assert_eq!(body["tool_choice"], "auto");
-        assert_eq!(body["reasoning"]["effort"], "ultra");
-        assert_eq!(body["reasoning"]["context"], "all_turns");
-        assert_eq!(
-            body["input"][0],
-            serde_json::json!({
-                "type": "additional_tools",
-                "role": "developer",
-                "tools": [{"type": "function", "name": "read_file", "strict": false}],
-            })
-        );
-        assert_eq!(body["input"][1]["type"], "message");
-        assert_eq!(body["input"][1]["role"], "developer");
-        assert_eq!(
-            body["input"][1]["content"][0]["text"],
-            "follow the repository instructions"
-        );
-        assert_eq!(body["input"][2]["role"], "developer");
-        assert_eq!(body["input"][3]["role"], "user");
-        assert!(body["input"][3]["content"][0].get("detail").is_none());
-    }
-
-    #[test]
-    fn codex_prompt_cache_key_prefers_conversation_then_session() {
-        assert_eq!(
-            codex_prompt_cache_key("conversation-id", "session-id"),
-            Some("conversation-id")
-        );
-        assert_eq!(codex_prompt_cache_key("", "session-id"), Some("session-id"));
-        assert_eq!(codex_prompt_cache_key("", ""), None);
-    }
-
-    #[test]
-    fn responses_lite_is_provider_scoped_and_non_lite_keeps_normal_shape_with_cache_key() {
-        let original = serde_json::json!({
-            "model": "grok-4",
-            "tools": [{"type": "function", "name": "read_file"}],
-            "input": [],
-        });
-        let mut non_lite = original.clone();
-        apply_codex_responses_lite_contract(ProviderId::OpenAiCodex, false, None, &mut non_lite)
-            .unwrap();
-        assert_eq!(non_lite, original);
-
-        let mut cached_non_lite = original.clone();
-        apply_codex_responses_lite_contract(
-            ProviderId::OpenAiCodex,
-            false,
-            Some("stable-thread-key"),
-            &mut cached_non_lite,
-        )
-        .unwrap();
-        assert_eq!(cached_non_lite["prompt_cache_key"], "stable-thread-key");
-        cached_non_lite
-            .as_object_mut()
-            .unwrap()
-            .remove("prompt_cache_key");
-        assert_eq!(cached_non_lite, original);
-
-        let mut xai = original.clone();
-        let error =
-            apply_codex_responses_lite_contract(ProviderId::Xai, true, None, &mut xai).unwrap_err();
-        assert!(error.to_string().contains("OpenAI Codex provider"));
-        assert_eq!(xai, original);
     }
 
     #[test]
@@ -4654,98 +2714,6 @@ mod tests {
             assert!(
                 request.headers()[name].is_sensitive(),
                 "{name} must be sensitive at the HTTP layer"
-            );
-        }
-    }
-
-    #[test]
-    fn codex_extended_reasoning_efforts_decode_from_response_and_sse() {
-        for effort in ["max", "ultra"] {
-            let response = format!(
-                r#"{{
-                    "id": "resp_1",
-                    "object": "response",
-                    "created_at": 0,
-                    "model": "gpt-5.6",
-                    "status": "completed",
-                    "metadata": null,
-                    "output": [],
-                    "reasoning": {{"effort": "{effort}"}}
-                }}"#
-            );
-            let response =
-                deserialize_response_for_provider(response.as_bytes(), ProviderId::OpenAiCodex)
-                    .expect("Codex response should normalize into async-openai");
-            assert_eq!(
-                response
-                    .reasoning
-                    .as_ref()
-                    .and_then(|reasoning| reasoning.effort.clone()),
-                Some(rs::ReasoningEffort::Xhigh)
-            );
-            assert_eq!(
-                response
-                    .metadata
-                    .as_ref()
-                    .and_then(|metadata| {
-                        metadata.get(
-                        xai_grok_sampling_types::OPENAI_CODEX_EXTENDED_REASONING_EFFORT_METADATA_KEY
-                    )
-                    })
-                    .map(String::as_str),
-                Some(effort)
-            );
-            let items =
-                xai_grok_sampling_types::conversation::response_to_conversation_items(response);
-            let assistant_effort = items.iter().find_map(|item| match item {
-                xai_grok_sampling_types::conversation::ConversationItem::Assistant(assistant) => {
-                    assistant.reasoning_effort
-                }
-                _ => None,
-            });
-            assert_eq!(assistant_effort, effort.parse().ok());
-
-            let event = format!(
-                r#"{{
-                    "type": "response.completed",
-                    "sequence_number": 0,
-                    "response": {{
-                        "id": "resp_1",
-                        "object": "response",
-                        "created_at": 0,
-                        "model": "gpt-5.6",
-                        "status": "completed",
-                        "metadata": null,
-                        "output": [],
-                        "reasoning": {{"effort": "{effort}"}}
-                    }}
-                }}"#
-            );
-            let event = deserialize_response_event_for_provider(&event, true)
-                .expect("Codex SSE should normalize into async-openai");
-            let rs::ResponseStreamEvent::ResponseCompleted(event) = event else {
-                panic!("expected response.completed");
-            };
-            assert_eq!(
-                event
-                    .response
-                    .reasoning
-                    .as_ref()
-                    .and_then(|reasoning| reasoning.effort.clone()),
-                Some(rs::ReasoningEffort::Xhigh)
-            );
-            assert_eq!(
-                event
-                    .response
-                    .metadata
-                    .as_ref()
-                    .and_then(|metadata| {
-                        metadata.get(
-                        xai_grok_sampling_types::OPENAI_CODEX_EXTENDED_REASONING_EFFORT_METADATA_KEY
-                    )
-                    })
-                    .map(String::as_str),
-                Some(effort)
             );
         }
     }
@@ -4974,103 +2942,6 @@ mod tests {
         assert!(request.inner.service_tier.is_none());
         let body = serde_json::to_value(&request.inner).expect("request should serialize");
         assert!(body.get("service_tier").is_none());
-    }
-
-    #[test]
-    fn codex_turn_state_survives_client_rebuilds_only_within_same_request_id() {
-        let (config, _) = codex_config();
-        let turn_state = CodexTurnStateStore::default();
-        let first_round =
-            SamplingClient::new_with_codex_turn_state(config.clone(), turn_state.clone())
-                .expect("first Codex client should build");
-        fn headers_for(request_id: &str) -> GrokRequestHeaders<'_> {
-            GrokRequestHeaders {
-                conv_id: "thread-1",
-                req_id: request_id,
-                model_id: "gpt-5.6-luna",
-                session_id: "session-1",
-                turn_idx: None,
-                agent_id: "agent-1",
-                deployment_id: None,
-                user_id: None,
-            }
-        }
-        fn build(client: &SamplingClient, request_id: &str) -> reqwest::Request {
-            client
-                .apply_provider_request_headers(
-                    client.http.post("https://example.test/responses"),
-                    &headers_for(request_id),
-                )
-                .expect("Codex request identity should be valid")
-                .build()
-                .expect("request should build")
-        }
-
-        assert!(
-            build(&first_round, "request-1")
-                .headers()
-                .get(CODEX_TURN_STATE_HEADER)
-                .is_none()
-        );
-
-        let mut response_headers = HeaderMap::new();
-        response_headers.insert(
-            HeaderName::from_static(CODEX_TURN_STATE_HEADER),
-            HeaderValue::from_static("opaque-sticky-state"),
-        );
-        first_round.capture_codex_turn_state(&response_headers, "request-1");
-
-        // Tool results cause a fresh sampler submission and therefore a fresh
-        // SamplingClient. It must inherit the actor-owned state from round one.
-        let second_round =
-            SamplingClient::new_with_codex_turn_state(config.clone(), turn_state.clone())
-                .expect("second Codex client should build");
-        let mut later_response_headers = HeaderMap::new();
-        later_response_headers.insert(
-            HeaderName::from_static(CODEX_TURN_STATE_HEADER),
-            HeaderValue::from_static("must-not-replace-first-state"),
-        );
-        second_round.capture_codex_turn_state(&later_response_headers, "request-1");
-
-        let same_turn = build(&second_round, "request-1");
-        let replayed = same_turn
-            .headers()
-            .get(CODEX_TURN_STATE_HEADER)
-            .expect("same turn should replay sticky state");
-        assert_eq!(replayed.as_bytes(), b"opaque-sticky-state");
-        assert!(replayed.is_sensitive());
-
-        // Auxiliary calls have no Grok request ID and must not consume or
-        // clear the active user turn's routing state.
-        assert!(
-            build(&second_round, "")
-                .headers()
-                .get(CODEX_TURN_STATE_HEADER)
-                .is_none()
-        );
-        assert!(
-            build(&second_round, "request-1")
-                .headers()
-                .get(CODEX_TURN_STATE_HEADER)
-                .is_some()
-        );
-
-        // A new user turn clears the old value before sending and cannot
-        // regain it by presenting the previous request ID later.
-        assert!(
-            build(&second_round, "request-2")
-                .headers()
-                .get(CODEX_TURN_STATE_HEADER)
-                .is_none()
-        );
-        let third_round = SamplingClient::new_with_codex_turn_state(config, turn_state)
-            .expect("third Codex client should build");
-        assert!(
-            build(&third_round, "request-1")
-                .headers()
-                .get(CODEX_TURN_STATE_HEADER)
-                .is_none()
-        );
     }
 
     #[tokio::test]
@@ -5448,7 +3319,9 @@ mod tests {
             Some("00-safe-trace-context-00")
         );
         assert!(
-            headers.keys().all(|name| !is_xai_specific_header(name)),
+            headers
+                .keys()
+                .all(|name| !codex_headers::is_xai_specific_header(name)),
             "Codex requests must not contain any xAI-specific header"
         );
         assert_eq!(body["model"], "gpt-5.6-terra");
