@@ -304,3 +304,47 @@ async fn retry_is_bounded_at_one_even_if_retry_also_fails_with_auth() {
     assert!(r.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 2, "exactly one retry");
 }
+
+/// A Codex image request owns its reload/refresh/replay internally. Once that
+/// scoped retry is exhausted, the session wrapper must surface the 401 and
+/// must not invoke or replay through the simultaneously configured xAI
+/// `AuthManager`.
+#[tokio::test]
+async fn provider_owned_codex_401_never_falls_through_to_xai_auth_manager() {
+    let am = succeeding_am();
+    let calls = AtomicUsize::new(0);
+    let mut details = serde_json::json!({
+        "code": "http_failure",
+        HTTP_STATUS_DETAILS_KEY: 401,
+    });
+    details[xai_grok_tools::types::AUTH_RECOVERY_PROVIDER_DETAILS_KEY] =
+        serde_json::json!("openai_codex");
+    details[xai_grok_tools::types::AUTH_RECOVERY_EXHAUSTED_DETAILS_KEY] = serde_json::json!(true);
+
+    let r = call_with_auth_retry(Some(&am), None, "image_gen", || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        let details = details.clone();
+        async move {
+            Err(xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Custom,
+                "Image generation failed with HTTP 401 Unauthorized",
+            )
+            .with_details(details))
+        }
+    })
+    .await;
+
+    assert!(r.is_err());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the xAI manager must not cause a cross-provider replay"
+    );
+    assert_eq!(
+        am.current_or_expired()
+            .expect("xAI auth remains loaded")
+            .key,
+        "expired",
+        "the unrelated xAI credential must not be refreshed"
+    );
+}

@@ -1,30 +1,37 @@
-//! `image_edit` tool — edits or transforms images via the xAI Imagine
-//! `/images/edits` endpoint using one or more reference images.
+//! `image_edit` tool — edits or transforms images through the configured
+//! image provider's `/images/edits` endpoint using one or more references.
 //!
 //! Use cases include likeness preservation, style transfer, subject lock,
 //! remixing, and general image-to-image editing. The model chooses this
 //! tool (instead of `image_gen`) when the user provides reference photos.
 //!
 //! Reference images are specified as filesystem paths or
-//! `data:image/...;base64,...` URLs. The tool reads the bytes, compresses
-//! them to fit API limits, and POSTs to the edit endpoint.
+//! `data:image/...;base64,...` URLs. The tool reads through the shared
+//! filesystem abstraction, applies provider-specific preparation, and POSTs
+//! to the edit endpoint. xAI references are compressed to Imagine limits;
+//! Codex-native PNG/JPEG/WebP bytes are preserved within explicit safety caps.
 //!
 //! Shares the same [`ImageGenClient`] and session credentials as
 //! `image_gen` — no additional configuration is needed.
 
 use std::io::Cursor;
+use std::path::Path;
 
-use base64::Engine as _;
-use image::ImageReader;
-use reqwest::header::AUTHORIZATION;
-
-use crate::attribution::ToolConsumer;
-use crate::implementations::grok_build::image_gen::{ImageGenClient, ImageGenResponse};
+use crate::computer::types::AsyncFileSystem;
+use crate::implementations::grok_build::image_gen::{
+    ImageGenBackend, ImageGenClient, OPENAI_CODEX_IMAGE_MODEL, read_image_response,
+    validate_generated_image,
+};
 use crate::types::output::{MediaGenOutput, ToolOutput};
 use crate::types::requirements::{Expr, ToolRequirement};
-use crate::types::resources::SessionFolder;
+use crate::types::resources::{FileSystem, SessionFolder};
 use crate::types::tool::{ToolKind, ToolNamespace};
 use crate::util::image_compress::{FilterType, ReEncodeParams, re_encode_under_limit};
+use crate::util::image_validate::{
+    format_structurally_complete, transcode_to_endpoint_png, validate_image_bytes_unrestricted,
+};
+use base64::Engine as _;
+use image::{ImageFormat, ImageReader};
 
 const XAI_IMAGINE_MODEL: &str = "grok-imagine-image-quality";
 
@@ -35,6 +42,18 @@ const MAX_REF_DIMENSION: u32 = 768;
 const MIN_REF_DIMENSION: u32 = 256;
 const REF_QUALITY_STEPS: &[u8] = &[80, 65, 50, 35];
 const MAX_REF_DECODE_PIXELS: u64 = 12_000_000;
+const MAX_REF_INPUT_BYTES: usize = 24 * 1024 * 1024;
+/// Combined raw-byte budget across all references in one Codex edit. This
+/// bounds the base64 strings, cloned JSON values, and serialized request that
+/// coexist while reqwest builds the body, while still allowing two maximum-
+/// sized source images or five typical references.
+const MAX_CODEX_REF_TOTAL_BYTES: usize = 48 * 1024 * 1024;
+/// Codex reference images remain byte-for-byte original up to this decoded
+/// pixel ceiling. Native PNG/JPEG/WebP inputs are only header/structure
+/// checked locally, so the cap prevents pathological headers without forcing
+/// the lossy 768 px Imagine preparation path onto Codex edits.
+const MAX_CODEX_REF_PIXELS: u64 = 178_956_970;
+const MAX_REFERENCE_IMAGES: usize = 5;
 
 pub const IMAGE_EDIT_TOOL_NAME: &str = "image_edit";
 
@@ -105,13 +124,119 @@ fn compress_reference(
     Ok((buf, mime))
 }
 
+/// Prepare an edit reference for the ChatGPT Codex image endpoint.
+///
+/// Current Codex behavior uses prompt-image `Original` mode: PNG, JPEG, and
+/// WebP source bytes are preserved, while formats that the endpoint does not
+/// consume natively are converted to PNG. Keep a fork-local byte ceiling so a
+/// model cannot turn an arbitrary filesystem read into an unbounded request.
+fn prepare_codex_reference(
+    raw_bytes: Vec<u8>,
+) -> Result<(Vec<u8>, &'static str), xai_tool_runtime::ToolError> {
+    if raw_bytes.is_empty() {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            "image reference contained no data",
+        ));
+    }
+    if raw_bytes.len() > MAX_REF_INPUT_BYTES {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            "image reference exceeds the configured size limit",
+        ));
+    }
+
+    let (width, height, format) =
+        validate_image_bytes_unrestricted(&raw_bytes, false).map_err(|e| {
+            xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "could not validate image reference: {e}"
+            ))
+        })?;
+    let pixels = (width as u64).saturating_mul(height as u64);
+    if pixels > MAX_CODEX_REF_PIXELS {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+            "image reference is too large to process ({width}\u{00d7}{height} pixels)",
+        )));
+    }
+
+    if matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
+    ) {
+        if !format_structurally_complete(format, &raw_bytes) {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "image reference is truncated or structurally incomplete",
+            ));
+        }
+        let mime = match format {
+            ImageFormat::Png => "image/png",
+            ImageFormat::Jpeg => "image/jpeg",
+            ImageFormat::WebP => "image/webp",
+            _ => unreachable!("native Codex image formats were matched above"),
+        };
+        return Ok((raw_bytes, mime));
+    }
+
+    let encoded = transcode_to_endpoint_png(&raw_bytes)
+        .ok_or_else(|| {
+            xai_tool_runtime::ToolError::invalid_arguments(
+                "unsupported image format for Codex image editing",
+            )
+        })?
+        .map_err(|e| {
+            xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "could not convert image reference for Codex: {e}"
+            ))
+        })?;
+    if encoded.len() > MAX_REF_INPUT_BYTES {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            "converted image reference exceeds the configured size limit",
+        ));
+    }
+    Ok((encoded, "image/png"))
+}
+
+fn prepare_reference(
+    backend: ImageGenBackend,
+    raw_bytes: Vec<u8>,
+) -> Result<(Vec<u8>, &'static str), xai_tool_runtime::ToolError> {
+    match backend {
+        ImageGenBackend::XaiImagine => compress_reference(raw_bytes),
+        ImageGenBackend::OpenAiCodex => prepare_codex_reference(raw_bytes),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reference resolution
 // ---------------------------------------------------------------------------
 
+struct ResolvedReference {
+    data_url: String,
+    prepared_bytes: usize,
+}
+
+fn checked_codex_reference_total(
+    current: usize,
+    next: usize,
+) -> Result<usize, xai_tool_runtime::ToolError> {
+    let total = current.checked_add(next).ok_or_else(|| {
+        xai_tool_runtime::ToolError::invalid_arguments(
+            "combined image references exceed the configured size limit",
+        )
+    })?;
+    if total > MAX_CODEX_REF_TOTAL_BYTES {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            "combined image references exceed the configured size limit",
+        ));
+    }
+    Ok(total)
+}
+
 /// Resolve a reference (filesystem path or `data:image/...;base64,...` URL)
-/// into a compressed data URL for the Imagine API.
-async fn resolve_to_data_url(value: &str) -> Result<String, xai_tool_runtime::ToolError> {
+/// into a provider-ready data URL.
+async fn resolve_to_data_url(
+    value: &str,
+    backend: ImageGenBackend,
+    file_system: &dyn AsyncFileSystem,
+) -> Result<ResolvedReference, xai_tool_runtime::ToolError> {
     let value = value.trim();
     // Accept `file://` URIs (e.g. an attachment's durable URI) by reading
     // the underlying path. Data URLs and bare paths are untouched.
@@ -126,6 +251,11 @@ async fn resolve_to_data_url(value: &str) -> Result<String, xai_tool_runtime::To
                 "image references only support base64 data URLs",
             ));
         }
+        if value.len().saturating_sub(comma + 1) > MAX_REF_INPUT_BYTES * 4 / 3 + 8 {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "image reference exceeds the configured size limit",
+            ));
+        }
         base64::engine::general_purpose::STANDARD
             .decode(&value[comma + 1..])
             .map_err(|e| {
@@ -134,11 +264,14 @@ async fn resolve_to_data_url(value: &str) -> Result<String, xai_tool_runtime::To
                 ))
             })?
     } else {
-        tokio::fs::read(value).await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
-                "image reference not readable: {value} ({e})"
-            ))
-        })?
+        file_system
+            .read_file_limited(Path::new(value), MAX_REF_INPUT_BYTES)
+            .await
+            .map_err(|e| {
+                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                    "image reference not readable: {value} ({e})"
+                ))
+            })?
     };
 
     if raw_bytes.is_empty() {
@@ -146,10 +279,19 @@ async fn resolve_to_data_url(value: &str) -> Result<String, xai_tool_runtime::To
             "image reference contained no data",
         ));
     }
+    if raw_bytes.len() > MAX_REF_INPUT_BYTES {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            "image reference exceeds the configured size limit",
+        ));
+    }
 
-    let (compressed, mime) = compress_reference(raw_bytes)?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&compressed);
-    Ok(format!("data:{mime};base64,{b64}"))
+    let (prepared, mime) = prepare_reference(backend, raw_bytes)?;
+    let prepared_bytes = prepared.len();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&prepared);
+    Ok(ResolvedReference {
+        data_url: format!("data:{mime};base64,{b64}"),
+        prepared_bytes,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +407,7 @@ impl crate::types::tool_metadata::ToolMetadata for ImageEditTool {
     }
 
     fn description_template(&self) -> &str {
-        r##"Edit or transform existing image(s) via the xAI Imagine API; use instead of image_gen for image-to-image work (preserve likeness, transfer style, remix). Returns the saved image's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `images/1.jpg`) rather than the absolute path, so it renders as a clickable link that opens the image. Each required `image` is one reference — a user-attachment token (e.g. "[Image #1]"), an absolute filesystem path, or a `data:image/...;base64,...` URL (see the `image` parameter for the resolution order and details)."##
+        r##"Edit or transform existing image(s) with the selected image provider; use instead of image_gen for image-to-image work (preserve likeness, transfer style, remix). Returns the saved image's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `images/1.jpg`) rather than the absolute path, so it renders as a clickable link that opens the image. Each required `image` is one reference — a user-attachment token (e.g. "[Image #1]"), an absolute filesystem path, or a `data:image/...;base64,...` URL (see the `image` parameter for the resolution order and details)."##
     }
 
     fn requires_expr(&self) -> Expr<ToolRequirement> {
@@ -318,6 +460,11 @@ impl xai_tool_runtime::Tool for ImageEditTool {
                  Use image_gen for text-only generation.",
             ));
         }
+        if input.image.len() > MAX_REFERENCE_IMAGES {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "image_edit accepts at most {MAX_REFERENCE_IMAGES} reference images",
+            )));
+        }
 
         let client = {
             let res = resources.lock().await;
@@ -341,80 +488,52 @@ impl xai_tool_runtime::Tool for ImageEditTool {
                 .cloned()
         };
 
-        // Resolve all references to compressed data URLs.
+        // Use the same filesystem abstraction as the other local tools. The
+        // host wires this to its sandbox-aware implementation; direct
+        // `tokio::fs` reads would bypass that boundary.
+        let file_system = {
+            let res = resources.lock().await;
+            res.require::<FileSystem>()?.0.clone()
+        };
+
+        // Resolve all references to provider-ready data URLs.
         let mut data_urls = Vec::with_capacity(input.image.len());
+        let mut codex_reference_bytes = 0;
         for r in &input.image {
             let resolved = resolve_attachment_reference(r, attached_images.as_ref())?;
-            data_urls.push(resolve_to_data_url(&resolved).await?);
+            let reference =
+                resolve_to_data_url(&resolved, client.backend(), file_system.as_ref()).await?;
+            if client.backend() == ImageGenBackend::OpenAiCodex {
+                codex_reference_bytes =
+                    checked_codex_reference_total(codex_reference_bytes, reference.prepared_bytes)?;
+            }
+            data_urls.push(reference.data_url);
         }
         tracing::info!(count = data_urls.len(), "resolved image references");
 
-        let base = client.base_url().trim_end_matches('/');
-        let url = format!("{base}/images/edits");
+        let payload = build_edit_payload(
+            client.backend(),
+            &input.prompt,
+            &data_urls,
+            &input.aspect_ratio,
+        );
+        // `serde_json::Value` owns its image URL strings; release the source
+        // vector before reqwest serializes another copy of the request body.
+        drop(data_urls);
 
-        let mut payload = serde_json::json!({
-            "model": XAI_IMAGINE_MODEL,
-            "prompt": input.prompt,
-            "n": 1,
-            "resolution": "1k",
-            "response_format": "b64_json",
-        });
-
-        // API: single ref → "image" object; multiple → "images" array.
-        // For single-image edits the API auto-detects aspect ratio from the
-        // input image and ignores the `aspect_ratio` field. Only send it
-        // for multi-image edits where the API needs an explicit ratio.
-        let mut imgs: Vec<serde_json::Value> = data_urls
-            .iter()
-            .map(|u| serde_json::json!({ "url": u }))
-            .collect();
-        if imgs.len() == 1 {
-            payload["image"] = imgs.pop().unwrap();
-        } else {
-            payload["images"] = serde_json::Value::Array(imgs);
-            payload["aspect_ratio"] = serde_json::json!(input.aspect_ratio);
-        }
-
-        let sent_bearer = client.current_bearer().await;
-        let mut req = client.http().post(&url).json(&payload);
-        if let Some(ref key) = sent_bearer {
-            req = req.header(AUTHORIZATION, format!("Bearer {key}"));
-        }
-
-        let response = req.send().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
-                "Image edit API request failed: {e}"
-            ))
-        })?;
+        let response = client.post_json("images/edits", &payload).await?;
 
         let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            client.record_401_attribution(ToolConsumer::ImageGen, sent_bearer.as_deref());
-        }
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let truncated: String = body.chars().take(200).collect();
-            tracing::warn!(http_status = %status, "Imagine edit API error: {truncated}");
+            tracing::warn!(http_status = %status, "image provider edit request failed");
             return Err(xai_tool_runtime::ToolError::new(
                 xai_tool_runtime::ToolErrorKind::Custom,
-                format!("Image edit failed with HTTP {status}: {truncated}"),
+                format!("Image edit failed with HTTP {status}"),
             )
-            .with_details(serde_json::json!({"code": "http_failure", "status": status.as_u16()})));
+            .with_details(client.http_failure_details(status)));
         }
 
-        let body = response.text().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
-                "Failed to read image edit response body: {e}"
-            ))
-        })?;
-
-        let resp_json: ImageGenResponse = serde_json::from_str(&body).map_err(|e| {
-            let preview: String = body.chars().take(500).collect();
-            tracing::warn!("Imagine edit API returned unparseable body: {preview}");
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
-                "Failed to parse image edit response: {e} — body preview: {preview}"
-            ))
-        })?;
+        let resp_json = read_image_response(response).await?;
 
         let b64_data = resp_json.b64_data().unwrap_or("");
         if b64_data.is_empty() {
@@ -430,15 +549,17 @@ impl xai_tool_runtime::Tool for ImageEditTool {
                     "Failed to decode base64 image data: {e}"
                 ))
             })?;
+        validate_generated_image(&image_bytes)?;
 
         let session_folder = {
             let res = resources.lock().await;
             res.require::<SessionFolder>()?.0.clone()
         };
 
+        let extension = super::image_gen::generated_image_extension(&image_bytes);
         let absolute_path = client
             .writer()
-            .save(&session_folder, &image_bytes, None)
+            .save(&session_folder, &image_bytes, extension)
             .await
             .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
 
@@ -452,10 +573,103 @@ impl xai_tool_runtime::Tool for ImageEditTool {
     }
 }
 
+fn build_edit_payload(
+    backend: ImageGenBackend,
+    prompt: &str,
+    data_urls: &[String],
+    aspect_ratio: &str,
+) -> serde_json::Value {
+    match backend {
+        ImageGenBackend::XaiImagine => {
+            let mut payload = serde_json::json!({
+                "model": XAI_IMAGINE_MODEL,
+                "prompt": prompt,
+                "n": 1,
+                "resolution": "1k",
+                "response_format": "b64_json",
+            });
+            // xAI API: single ref → `image`; multiple → `images`.
+            let mut imgs: Vec<serde_json::Value> = data_urls
+                .iter()
+                .map(|u| serde_json::json!({ "url": u }))
+                .collect();
+            if imgs.len() == 1 {
+                payload["image"] = imgs.pop().expect("one image");
+            } else {
+                payload["images"] = serde_json::Value::Array(imgs);
+                payload["aspect_ratio"] = serde_json::json!(aspect_ratio);
+            }
+            payload
+        }
+        ImageGenBackend::OpenAiCodex => serde_json::json!({
+            "model": OPENAI_CODEX_IMAGE_MODEL,
+            "prompt": prompt,
+            "background": "auto",
+            "quality": "auto",
+            "size": super::image_gen::codex_image_size(aspect_ratio),
+            "images": data_urls
+                .iter()
+                .map(|image_url| serde_json::json!({"image_url": image_url}))
+                .collect::<Vec<_>>(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx_with_call_id;
+
+    struct CodexEditTestAuth;
+
+    impl crate::types::ApiKeyProvider for CodexEditTestAuth {
+        fn current_api_key(&self) -> Option<String> {
+            None
+        }
+
+        fn current_request_auth_async(
+            &self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<crate::types::RequestAuth>> + Send + '_>,
+        > {
+            Box::pin(std::future::ready(Some(
+                crate::types::RequestAuth::for_provider_snapshot(
+                    "openai_codex",
+                    crate::types::RequestCredentialSnapshot::new("edit-credential", 3),
+                    [
+                        ("authorization".to_owned(), "Bearer edit-access".to_owned()),
+                        ("chatgpt-account-id".to_owned(), "edit-account".to_owned()),
+                        ("x-openai-fedramp".to_owned(), "true".to_owned()),
+                    ],
+                ),
+            )))
+        }
+    }
+
+    struct ZeroGenerationCodexEditTestAuth;
+
+    impl crate::types::ApiKeyProvider for ZeroGenerationCodexEditTestAuth {
+        fn current_api_key(&self) -> Option<String> {
+            None
+        }
+
+        fn current_request_auth_async(
+            &self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<crate::types::RequestAuth>> + Send + '_>,
+        > {
+            Box::pin(std::future::ready(Some(
+                crate::types::RequestAuth::for_provider_snapshot(
+                    "openai_codex",
+                    crate::types::RequestCredentialSnapshot::new("edit-credential", 0),
+                    [
+                        ("authorization".to_owned(), "Bearer edit-access".to_owned()),
+                        ("chatgpt-account-id".to_owned(), "edit-account".to_owned()),
+                    ],
+                ),
+            )))
+        }
+    }
 
     #[test]
     fn tool_name_and_description() {
@@ -473,6 +687,123 @@ mod tests {
         assert_eq!(input.prompt, "anime style");
         assert_eq!(input.image, vec!["/Users/me/photo.jpg"]);
         assert_eq!(input.aspect_ratio, "auto");
+    }
+
+    #[test]
+    fn codex_edit_payload_matches_current_contract() {
+        let payload = build_edit_payload(
+            ImageGenBackend::OpenAiCodex,
+            "make it nocturnal",
+            &["data:image/png;base64,AAAA".to_owned()],
+            "16:9",
+        );
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "model": OPENAI_CODEX_IMAGE_MODEL,
+                "prompt": "make it nocturnal",
+                "background": "auto",
+                "quality": "auto",
+                "size": "1280x720",
+                "images": [{"image_url": "data:image/png;base64,AAAA"}],
+            })
+        );
+        assert!(payload.get("aspect_ratio").is_none());
+        assert!(payload.get("response_format").is_none());
+    }
+
+    #[tokio::test]
+    async fn codex_edit_uses_exact_provider_contract_without_xai_headers() {
+        use std::sync::Arc;
+        use wiremock::matchers::{body_json, header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let payload = build_edit_payload(
+            ImageGenBackend::OpenAiCodex,
+            "make it nocturnal",
+            &["data:image/png;base64,AAAA".to_owned()],
+            "16:9",
+        );
+        Mock::given(method("POST"))
+            .and(path("/images/edits"))
+            .and(header("authorization", "Bearer edit-access"))
+            .and(header("chatgpt-account-id", "edit-account"))
+            .and(header("x-openai-fedramp", "true"))
+            .and(header("originator", "grok_build_codex"))
+            .and(header(
+                "version",
+                xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION,
+            ))
+            .and(header(
+                "user-agent",
+                format!("grok-build-codex/{}", xai_grok_version::VERSION),
+            ))
+            .and(body_json(payload.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"b64_json": "unused-by-this-contract-test"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let config = super::super::image_gen::ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: crate::types::SharedApiKeyProvider = Arc::new(CodexEditTestAuth);
+        let client = ImageGenClient::new(&config, Some(provider)).unwrap();
+        let response = client.post_json("images/edits", &payload).await.unwrap();
+        assert!(response.status().is_success());
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let headers = &requests[0].headers;
+        assert!(
+            headers
+                .keys()
+                .all(|name| !name.as_str().starts_with("x-grok-"))
+        );
+        assert!(!headers.contains_key("x-xai-token-auth"));
+    }
+
+    #[tokio::test]
+    async fn codex_edit_rejects_zero_credential_generation_before_request() {
+        use std::sync::Arc;
+
+        let server = wiremock::MockServer::start().await;
+        let config = super::super::image_gen::ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: crate::types::SharedApiKeyProvider =
+            Arc::new(ZeroGenerationCodexEditTestAuth);
+        let client = ImageGenClient::new(&config, Some(provider)).unwrap();
+        let error = client
+            .post_json("images/edits", &serde_json::json!({}))
+            .await
+            .expect_err("generation-zero credentials must fail before edit dispatch");
+
+        assert!(error.to_string().contains("credential generation"));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn codex_edit_rejects_noncanonical_provider_origin() {
+        use std::sync::Arc;
+
+        let config = super::super::image_gen::ImageGenConfig::OpenAiCodex {
+            base_url: "https://chatgpt.com:444/backend-api/codex".to_owned(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: crate::types::SharedApiKeyProvider = Arc::new(CodexEditTestAuth);
+        let error = ImageGenClient::new(&config, Some(provider))
+            .err()
+            .expect("edit credentials must not be bound to a noncanonical origin");
+
+        assert!(error.to_string().contains("ChatGPT Codex endpoint"));
     }
 
     #[test]
@@ -542,6 +873,21 @@ mod tests {
         buf
     }
 
+    fn noisy_png() -> Vec<u8> {
+        use image::{DynamicImage, Rgb, RgbImage};
+
+        let mut state = 0x1234_5678_u32;
+        let image = RgbImage::from_fn(512, 512, |_x, _y| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            Rgb([(state >> 24) as u8, (state >> 16) as u8, (state >> 8) as u8])
+        });
+        let mut original = Vec::new();
+        DynamicImage::ImageRgb8(image)
+            .write_to(&mut std::io::Cursor::new(&mut original), ImageFormat::Png)
+            .unwrap();
+        original
+    }
+
     #[test]
     fn compress_small_jpeg_passthrough() {
         let jpeg = tiny_jpeg();
@@ -578,15 +924,254 @@ mod tests {
         assert!(mime == "image/jpeg" || mime == "image/png");
     }
 
+    #[test]
+    fn codex_preserves_native_reference_above_imagine_limit() {
+        let original = noisy_png();
+        assert!(original.len() > MAX_REF_RAW_BYTES);
+
+        let (prepared, mime) = prepare_codex_reference(original.clone()).unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(prepared, original, "Codex edit input must remain original");
+    }
+
+    #[test]
+    fn codex_converts_non_native_reference_to_png() {
+        use image::{DynamicImage, RgbaImage};
+
+        let image = DynamicImage::ImageRgba8(RgbaImage::new(32, 32));
+        let mut gif = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut gif), ImageFormat::Gif)
+            .unwrap();
+
+        let (prepared, mime) = prepare_codex_reference(gif).unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(image::guess_format(&prepared).unwrap(), ImageFormat::Png);
+    }
+
+    #[test]
+    fn codex_reference_input_has_explicit_byte_cap() {
+        let err = prepare_codex_reference(vec![0; MAX_REF_INPUT_BYTES + 1])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("size limit"), "got: {err}");
+    }
+
+    #[test]
+    fn codex_reference_set_has_aggregate_byte_cap() {
+        assert_eq!(
+            checked_codex_reference_total(MAX_CODEX_REF_TOTAL_BYTES - 1, 1).unwrap(),
+            MAX_CODEX_REF_TOTAL_BYTES
+        );
+        let err = checked_codex_reference_total(MAX_CODEX_REF_TOTAL_BYTES - 1, 2)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("combined image references"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn codex_edit_tool_reads_virtual_fs_and_sends_original_source() {
+        use crate::computer::local::MockFs;
+        use crate::types::resources::{FileSystem, SessionFolder};
+        use std::sync::Arc;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let output_png = tiny_png();
+        Mock::given(method("POST"))
+            .and(path("/images/edits"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{
+                    "b64_json": base64::engine::general_purpose::STANDARD.encode(&output_png)
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let original = noisy_png();
+        assert!(original.len() > MAX_REF_RAW_BYTES);
+        let fs = Arc::new(MockFs::new());
+        fs.set_file("/sandbox/source.png", &original).await;
+        let session = tempfile::tempdir().unwrap();
+        let config = super::super::image_gen::ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: crate::types::SharedApiKeyProvider = Arc::new(CodexEditTestAuth);
+        let mut resources = crate::types::resources::Resources::new();
+        resources.insert(ImageGenClient::new(&config, Some(provider)).unwrap());
+        resources.insert(FileSystem(fs));
+        resources.insert(SessionFolder(session.path().to_path_buf()));
+
+        let output = xai_tool_runtime::Tool::run(
+            &ImageEditTool,
+            test_ctx_with_call_id(resources.into_shared(), "codex-edit"),
+            ImageEditInput {
+                prompt: "preserve every source detail".to_owned(),
+                image: vec!["/sandbox/source.png".to_owned()],
+                aspect_ratio: "auto".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        let ToolOutput::ImageEdit(media) = output else {
+            panic!("expected image edit output");
+        };
+        assert!(media.path.is_file());
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let data_url = body["images"][0]["image_url"].as_str().unwrap();
+        let encoded = data_url.strip_prefix("data:image/png;base64,").unwrap();
+        let sent = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        assert_eq!(sent, original, "Codex request must retain source bytes");
+    }
+
+    #[tokio::test]
+    async fn generated_output_path_is_reusable_by_later_codex_edit() {
+        use crate::computer::local::LocalFs;
+        use crate::implementations::grok_build::image_gen::{ImageGenInput, ImageGenTool};
+        use crate::types::resources::{FileSystem, SessionFolder};
+        use std::sync::Arc;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let generated = noisy_png();
+        let edited = tiny_png();
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{
+                    "b64_json": base64::engine::general_purpose::STANDARD.encode(&generated)
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/images/edits"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{
+                    "b64_json": base64::engine::general_purpose::STANDARD.encode(&edited)
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let config = super::super::image_gen::ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: crate::types::SharedApiKeyProvider = Arc::new(CodexEditTestAuth);
+        let session = tempfile::tempdir().unwrap();
+        let mut resources = crate::types::resources::Resources::new();
+        resources.insert(ImageGenClient::new(&config, Some(provider)).unwrap());
+        resources.insert(FileSystem(Arc::new(LocalFs)));
+        resources.insert(SessionFolder(session.path().to_path_buf()));
+        let resources = resources.into_shared();
+
+        let generated_output = xai_tool_runtime::Tool::run(
+            &ImageGenTool,
+            test_ctx_with_call_id(resources.clone(), "generate"),
+            ImageGenInput {
+                prompt: "a reusable source".to_owned(),
+                aspect_ratio: "auto".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        let ToolOutput::ImageGen(generated_media) = generated_output else {
+            panic!("expected generated image output");
+        };
+
+        let edited_output = xai_tool_runtime::Tool::run(
+            &ImageEditTool,
+            test_ctx_with_call_id(resources, "edit-later"),
+            ImageEditInput {
+                prompt: "edit the generated source".to_owned(),
+                image: vec![generated_media.path.to_string_lossy().into_owned()],
+                aspect_ratio: "auto".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(edited_output, ToolOutput::ImageEdit(_)));
+
+        let requests = server.received_requests().await.unwrap();
+        let edit_request = requests
+            .iter()
+            .find(|request| request.url.path() == "/images/edits")
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&edit_request.body).unwrap();
+        let data_url = body["images"][0]["image_url"].as_str().unwrap();
+        let encoded = data_url.strip_prefix("data:image/png;base64,").unwrap();
+        let sent = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        assert_eq!(sent, generated);
+    }
+
     // ── resolve_to_data_url ──────────────────────────────────────────
+
+    struct LimitedReadOnlyFs(Vec<u8>);
+
+    #[async_trait::async_trait]
+    impl crate::computer::types::AsyncFileSystem for LimitedReadOnlyFs {
+        async fn read_file(
+            &self,
+            _path: &std::path::Path,
+        ) -> Result<Vec<u8>, crate::computer::types::ComputerError> {
+            panic!("image_edit must not use the unbounded read_file method")
+        }
+
+        async fn read_file_limited(
+            &self,
+            _path: &std::path::Path,
+            max_bytes: usize,
+        ) -> Result<Vec<u8>, crate::computer::types::ComputerError> {
+            assert_eq!(max_bytes, MAX_REF_INPUT_BYTES);
+            Ok(self.0.clone())
+        }
+
+        async fn write_file(
+            &self,
+            _path: &std::path::Path,
+            _data: &[u8],
+        ) -> Result<(), crate::computer::types::ComputerError> {
+            unreachable!()
+        }
+
+        async fn delete_file(
+            &self,
+            _path: &std::path::Path,
+        ) -> Result<(), crate::computer::types::ComputerError> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_filesystem_path_uses_bounded_fs_read() {
+        let fs = LimitedReadOnlyFs(tiny_jpeg());
+        let reference = resolve_to_data_url("/virtual/test.jpg", ImageGenBackend::XaiImagine, &fs)
+            .await
+            .unwrap();
+        assert!(reference.data_url.starts_with("data:image/jpeg;base64,"));
+    }
 
     #[tokio::test]
     async fn resolve_filesystem_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.jpg");
-        std::fs::write(&path, tiny_jpeg()).unwrap();
-        let url = resolve_to_data_url(path.to_str().unwrap()).await.unwrap();
-        assert!(url.starts_with("data:image/jpeg;base64,"));
+        let fs = crate::computer::local::MockFs::new();
+        fs.set_file("/virtual/test.jpg", &tiny_jpeg()).await;
+        let url = resolve_to_data_url("/virtual/test.jpg", ImageGenBackend::XaiImagine, &fs)
+            .await
+            .unwrap();
+        assert!(url.data_url.starts_with("data:image/jpeg;base64,"));
     }
 
     #[tokio::test]
@@ -594,28 +1179,41 @@ mod tests {
         let jpeg = tiny_jpeg();
         let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
         let input = format!("data:image/jpeg;base64,{b64}");
-        let url = resolve_to_data_url(&input).await.unwrap();
-        assert!(url.starts_with("data:image/jpeg;base64,"));
+        let fs = crate::computer::local::MockFs::new();
+        let url = resolve_to_data_url(&input, ImageGenBackend::XaiImagine, &fs)
+            .await
+            .unwrap();
+        assert!(url.data_url.starts_with("data:image/jpeg;base64,"));
     }
 
     #[tokio::test]
     async fn resolve_missing_file_errors() {
-        assert!(resolve_to_data_url("/nonexistent/image.jpg").await.is_err());
+        let fs = crate::computer::local::MockFs::new();
+        assert!(
+            resolve_to_data_url("/nonexistent/image.jpg", ImageGenBackend::XaiImagine, &fs)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn resolve_malformed_data_url_errors() {
-        assert!(resolve_to_data_url("data:image/jpeg").await.is_err());
+        let fs = crate::computer::local::MockFs::new();
+        assert!(
+            resolve_to_data_url("data:image/jpeg", ImageGenBackend::XaiImagine, &fs)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn resolve_file_uri_reads_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.jpg");
-        std::fs::write(&path, tiny_jpeg()).unwrap();
-        let uri = format!("file://{}", path.display());
-        let url = resolve_to_data_url(&uri).await.unwrap();
-        assert!(url.starts_with("data:image/jpeg;base64,"));
+        let fs = crate::computer::local::MockFs::new();
+        fs.set_file("/virtual/test.jpg", &tiny_jpeg()).await;
+        let url = resolve_to_data_url("file:///virtual/test.jpg", ImageGenBackend::XaiImagine, &fs)
+            .await
+            .unwrap();
+        assert!(url.data_url.starts_with("data:image/jpeg;base64,"));
     }
 
     // ── parse_attachment_token ───────────────────────────────────────
