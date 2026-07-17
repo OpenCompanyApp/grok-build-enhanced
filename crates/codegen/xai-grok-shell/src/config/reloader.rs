@@ -18,6 +18,12 @@ pub enum ConfigUpdate {
     Auth(Box<GrokAuth>),
     /// Auth scope was removed (user logged out).
     AuthCleared,
+    /// The stable OpenAI Codex subscription identity changed on disk.
+    ///
+    /// This is provider-scoped and deliberately carries no credential or
+    /// account material. Access-token refreshes retain the same identity and
+    /// therefore do not emit this update.
+    OpenAiCodexAuthChanged,
     /// A **broadcast** MCP reload — applies to every active session
     /// regardless of cwd. Fires for two cases:
     ///
@@ -78,17 +84,57 @@ pub enum ConfigUpdate {
     },
 }
 
+/// Stable, non-secret identity for the OpenAI Codex auth record.
+///
+/// The digest excludes every token and expiry. It covers the opaque local
+/// credential ID, its monotonic revision, entitlement metadata, and the
+/// account identity fields whose change constitutes a login/account/record
+/// switch. Including the revision deliberately turns same-account relogins and
+/// refresh-token rotations into a provider-local catalog revalidation. The
+/// digest remains private to the reloader and is never logged or sent to the
+/// agent.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OpenAiCodexAuthFingerprint([u8; 32]);
+
+fn openai_codex_auth_fingerprint(
+    credentials: &crate::auth::codex::CodexCredentials,
+) -> OpenAiCodexAuthFingerprint {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"grok-build/openai-codex-auth-identity/v1\0");
+    hasher.update(credentials.credential_id().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(&credentials.revision.to_le_bytes());
+    hasher.update(b"\0");
+    hasher.update(credentials.account_id().as_bytes());
+    hasher.update(b"\0");
+    if let Some(user_id) = credentials.user_id() {
+        hasher.update(user_id.as_bytes());
+    }
+    hasher.update(b"\0");
+    if let Some(plan_type) = credentials.plan_type.as_deref() {
+        hasher.update(plan_type.as_bytes());
+    }
+    hasher.update(b"\0");
+    hasher.update(&[u8::from(credentials.is_fedramp)]);
+    OpenAiCodexAuthFingerprint(*hasher.finalize().as_bytes())
+}
+
 /// Runs on `tokio::spawn` (`Send`). Receives raw [`ConfigChangeEvent`]s from
 /// the file watcher, diffs against last-known state, and sends [`ConfigUpdate`]
 /// messages to the agent via an `mpsc` channel.
 pub struct ConfigReloader {
     last_auth_key_hash: u64,
+    /// OpenAI Codex identity is tracked independently from xAI's key hash so
+    /// either provider can change without disturbing the other.
+    last_openai_codex_auth_fingerprint: Option<OpenAiCodexAuthFingerprint>,
     last_global_config: toml::Value,
     /// Per-cwd content hash of the project MCP config files, used to
     /// to diff (the dedup lives in `ModelsManager::reload_from_disk_cache`),
     /// mtime-only touches (see `hash_project_mcp_config`).
     last_project_mcp_hashes: HashMap<PathBuf, u64>,
-    grok_home: PathBuf,
+    /// Resolved once at startup so reads and watcher events cannot disagree
+    /// when `GROK_AUTH_PATH` is configured.
+    auth_path: PathBuf,
     auth_scope: String,
     remote_settings: Option<crate::util::config::RemoteSettings>,
     config_update_tx: mpsc::UnboundedSender<ConfigUpdate>,
@@ -109,11 +155,16 @@ impl ConfigReloader {
         experimental_memory: bool,
         no_memory: bool,
     ) -> Self {
+        let auth_path = crate::auth::resolved_auth_path(&grok_home);
+        let last_openai_codex_auth_fingerprint = read_auth_json(&auth_path)
+            .ok()
+            .and_then(|store| store.get_codex().map(openai_codex_auth_fingerprint));
         Self {
             last_auth_key_hash: initial_auth_key_hash,
+            last_openai_codex_auth_fingerprint,
             last_global_config: initial_config,
             last_project_mcp_hashes: HashMap::new(),
-            grok_home,
+            auth_path,
             auth_scope,
             remote_settings,
             config_update_tx,
@@ -182,7 +233,7 @@ impl ConfigReloader {
                         // Whole-file deletion (NotFound) and corrupt JSON
                         // land here. The resulting memory/disk divergence
                         // must be visible in unified.jsonl.
-                        let path = self.grok_home.join("auth.json");
+                        let path = self.auth_path.clone();
                         xai_grok_telemetry::unified_log::error(
                             "auth reload: auth.json unreadable, keeping previous credentials",
                             None,
@@ -274,8 +325,23 @@ impl ConfigReloader {
     }
 
     fn reload_auth(&mut self) -> anyhow::Result<()> {
-        let auth_path = self.grok_home.join("auth.json");
-        let store = read_auth_json(&auth_path)?;
+        let store = match read_auth_json(&self.auth_path) {
+            Ok(store) => store,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A Codex-only logout removes auth.json entirely. Preserve
+                // the existing xAI missing-file behavior when xAI credentials
+                // were present, while treating the expected Codex-only file
+                // removal as a successful provider-local logout.
+                let was_codex_only_logout = self.last_openai_codex_auth_fingerprint.is_some()
+                    && self.last_auth_key_hash == 0;
+                self.update_openai_codex_auth_fingerprint(None);
+                if was_codex_only_logout {
+                    return Ok(());
+                }
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         match crate::auth::lookup_auth(&store, &self.auth_scope) {
             Some(auth) => {
@@ -283,14 +349,13 @@ impl ConfigReloader {
 
                 if new_hash == self.last_auth_key_hash {
                     debug!("auth.json changed but token key is identical, skipping");
-                    return Ok(());
+                } else {
+                    self.last_auth_key_hash = new_hash;
+                    let _ = self
+                        .config_update_tx
+                        .send(ConfigUpdate::Auth(Box::new(auth.clone())));
+                    info!("auth token change detected, sent update to agent");
                 }
-
-                self.last_auth_key_hash = new_hash;
-                let _ = self
-                    .config_update_tx
-                    .send(ConfigUpdate::Auth(Box::new(auth.clone())));
-                info!("auth token change detected, sent update to agent");
             }
             None => {
                 if self.last_auth_key_hash != 0 {
@@ -311,7 +376,36 @@ impl ConfigReloader {
                 }
             }
         }
+
+        if let Some(credentials) = store.get_codex() {
+            self.update_openai_codex_auth_fingerprint(Some(openai_codex_auth_fingerprint(
+                credentials,
+            )));
+        } else if store.contains_key(crate::auth::codex::OPENAI_CODEX_SCOPE) {
+            // AuthStore preserves malformed provider records as opaque JSON.
+            // Never reinterpret one as logout: keep the last-known identity
+            // until a valid record or an actual removal is observed.
+            error!("OpenAI Codex auth record is invalid, keeping previous identity");
+        } else {
+            self.update_openai_codex_auth_fingerprint(None);
+        }
         Ok(())
+    }
+
+    fn update_openai_codex_auth_fingerprint(
+        &mut self,
+        new_fingerprint: Option<OpenAiCodexAuthFingerprint>,
+    ) {
+        if new_fingerprint == self.last_openai_codex_auth_fingerprint {
+            debug!("OpenAI Codex auth identity is unchanged, skipping");
+            return;
+        }
+
+        self.last_openai_codex_auth_fingerprint = new_fingerprint;
+        let _ = self
+            .config_update_tx
+            .send(ConfigUpdate::OpenAiCodexAuthChanged);
+        info!("OpenAI Codex auth identity change detected, sent provider update to agent");
     }
 
     fn reload_config(&mut self) -> anyhow::Result<()> {
@@ -536,6 +630,9 @@ fn extract_ui_fields(config: &toml::Value) -> (Option<String>, bool, Option<Stri
 mod tests {
     use super::*;
     use crate::auth::GrokAuth;
+    use crate::auth::codex::{
+        CodexCredentialProvider, CodexCredentials, OPENAI_CODEX_SCOPE, SecretString,
+    };
     use std::collections::BTreeMap;
 
     fn make_auth(key: &str) -> GrokAuth {
@@ -544,6 +641,259 @@ mod tests {
             email: Some("test@test.com".to_string()),
             ..GrokAuth::test_default()
         }
+    }
+
+    fn make_codex_auth(
+        account_id: &str,
+        credential_id: &str,
+        revision: u64,
+        access_token: &str,
+    ) -> CodexCredentials {
+        let now = chrono::Utc::now();
+        CodexCredentials {
+            schema_version: crate::auth::codex::CODEX_CREDENTIAL_SCHEMA_VERSION,
+            provider: CodexCredentialProvider::OpenAiCodex,
+            credential_id: credential_id.to_owned(),
+            access_token: SecretString::new(access_token).unwrap(),
+            refresh_token: SecretString::new("refresh-token").unwrap(),
+            id_token: SecretString::new("id-token").unwrap(),
+            expires_at: now + chrono::Duration::hours(1),
+            created_at: now,
+            updated_at: now,
+            last_refresh_at: now,
+            revision,
+            chatgpt_account_id: SecretString::new(account_id).unwrap(),
+            chatgpt_user_id: Some(SecretString::new(format!("user-{account_id}")).unwrap()),
+            email: None,
+            plan_type: Some("plus".to_owned()),
+            is_fedramp: false,
+            additional_fields: BTreeMap::new(),
+        }
+    }
+
+    fn write_auth_records(
+        path: &Path,
+        xai: Option<(&str, GrokAuth)>,
+        codex: Option<CodexCredentials>,
+    ) {
+        let mut records = BTreeMap::<String, serde_json::Value>::new();
+        if let Some((scope, auth)) = xai {
+            records.insert(scope.to_owned(), serde_json::to_value(auth).unwrap());
+        }
+        if let Some(credentials) = codex {
+            records.insert(
+                OPENAI_CODEX_SCOPE.to_owned(),
+                serde_json::to_value(credentials).unwrap(),
+            );
+        }
+        std::fs::write(path, serde_json::to_vec_pretty(&records).unwrap()).unwrap();
+    }
+
+    fn test_reloader(
+        grok_home: &Path,
+        initial_xai_hash: u64,
+    ) -> (ConfigReloader, mpsc::UnboundedReceiver<ConfigUpdate>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let empty_config = toml::Value::Table(toml::map::Map::new());
+        (
+            ConfigReloader::new(
+                grok_home.to_path_buf(),
+                initial_xai_hash,
+                empty_config,
+                "https://test.example.com".to_owned(),
+                None,
+                tx,
+                false,
+                false,
+            ),
+            rx,
+        )
+    }
+
+    #[test]
+    fn reloader_detects_openai_codex_login_without_xai_update() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (mut reloader, mut rx) = test_reloader(tmp.path(), 0);
+        write_auth_records(
+            &tmp.path().join("auth.json"),
+            None,
+            Some(make_codex_auth(
+                "acct-one",
+                "00000000-0000-4000-8000-000000000001",
+                1,
+                "access-one",
+            )),
+        );
+
+        reloader.reload_auth().unwrap();
+
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ConfigUpdate::OpenAiCodexAuthChanged
+        ));
+        assert!(rx.try_recv().is_err(), "must not emit an xAI auth update");
+    }
+
+    #[test]
+    fn reloader_revalidates_openai_codex_catalog_after_token_rotation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("auth.json");
+        let credentials = make_codex_auth(
+            "acct-one",
+            "00000000-0000-4000-8000-000000000001",
+            1,
+            "access-one",
+        );
+        write_auth_records(&path, None, Some(credentials.clone()));
+        let (mut reloader, mut rx) = test_reloader(tmp.path(), 0);
+
+        let mut rotated = credentials;
+        rotated.access_token = SecretString::new("access-two").unwrap();
+        rotated.refresh_token = SecretString::new("refresh-two").unwrap();
+        rotated.id_token = SecretString::new("id-two").unwrap();
+        rotated.revision += 1;
+        rotated.updated_at = chrono::Utc::now();
+        rotated.last_refresh_at = rotated.updated_at;
+        write_auth_records(&path, None, Some(rotated));
+
+        reloader.reload_auth().unwrap();
+
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ConfigUpdate::OpenAiCodexAuthChanged
+        ));
+        assert!(rx.try_recv().is_err(), "must not emit an xAI auth update");
+    }
+
+    #[test]
+    fn reloader_detects_openai_codex_account_and_record_switches() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("auth.json");
+        let initial_id = "00000000-0000-4000-8000-000000000001";
+        write_auth_records(
+            &path,
+            None,
+            Some(make_codex_auth("acct-one", initial_id, 1, "access-one")),
+        );
+        let (mut reloader, mut rx) = test_reloader(tmp.path(), 0);
+
+        // The account component independently detects a defensive/manual
+        // account switch even if a writer incorrectly retained the record ID.
+        write_auth_records(
+            &path,
+            None,
+            Some(make_codex_auth("acct-two", initial_id, 2, "access-two")),
+        );
+        reloader.reload_auth().unwrap();
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ConfigUpdate::OpenAiCodexAuthChanged
+        ));
+
+        // A new record for the same account is also a provider identity change.
+        write_auth_records(
+            &path,
+            None,
+            Some(make_codex_auth(
+                "acct-two",
+                "00000000-0000-4000-8000-000000000002",
+                1,
+                "access-three",
+            )),
+        );
+        reloader.reload_auth().unwrap();
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ConfigUpdate::OpenAiCodexAuthChanged
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn reloader_detects_openai_codex_logout_without_clearing_xai() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("auth.json");
+        let xai = make_auth("same-xai-key");
+        write_auth_records(
+            &path,
+            Some(("https://test.example.com", xai.clone())),
+            Some(make_codex_auth(
+                "acct-one",
+                "00000000-0000-4000-8000-000000000001",
+                1,
+                "access-one",
+            )),
+        );
+        let (mut reloader, mut rx) = test_reloader(tmp.path(), hash_auth_key(&xai.key));
+
+        write_auth_records(&path, Some(("https://test.example.com", xai)), None);
+        reloader.reload_auth().unwrap();
+
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ConfigUpdate::OpenAiCodexAuthChanged
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "Codex logout must not clear or replace xAI credentials"
+        );
+    }
+
+    #[test]
+    fn reloader_detects_codex_only_logout_when_auth_file_is_removed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("auth.json");
+        write_auth_records(
+            &path,
+            None,
+            Some(make_codex_auth(
+                "acct-one",
+                "00000000-0000-4000-8000-000000000001",
+                1,
+                "access-one",
+            )),
+        );
+        let (mut reloader, mut rx) = test_reloader(tmp.path(), 0);
+        std::fs::remove_file(&path).unwrap();
+
+        reloader.reload_auth().unwrap();
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ConfigUpdate::OpenAiCodexAuthChanged
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn malformed_openai_codex_record_does_not_look_like_logout() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("auth.json");
+        write_auth_records(
+            &path,
+            None,
+            Some(make_codex_auth(
+                "acct-one",
+                "00000000-0000-4000-8000-000000000001",
+                1,
+                "access-one",
+            )),
+        );
+        let (mut reloader, mut rx) = test_reloader(tmp.path(), 0);
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                (OPENAI_CODEX_SCOPE): { "provider": "openai_codex" }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        reloader.reload_auth().unwrap();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "an invalid record must preserve the last-known Codex identity"
+        );
     }
 
     #[tokio::test]

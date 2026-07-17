@@ -30,8 +30,8 @@ use std::env;
 use std::net::SocketAddr;
 use tokio_util::sync::CancellationToken;
 use xai_grok_pager::app::{
-    AgentCmd, Command, HeadlessArgs, LeaderTargetArgs, PagerArgs, join_early_prefetch,
-    resolve_use_leader,
+    AgentCmd, AuthProviderArg, Command, HeadlessArgs, LeaderTargetArgs, PagerArgs,
+    join_early_prefetch, resolve_use_leader,
 };
 use xai_grok_pager::app::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
 use xai_grok_pager::client_identity::PAGER_CLIENT_VERSION;
@@ -1657,14 +1657,21 @@ async fn async_main() -> Result<()> {
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 return xai_grok_pager::plugin_cmd::run(plugin_args).await;
             }
-            Command::Models => {
+            Command::Models { provider } => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-                let config = xai_grok_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let agent_config = AgentConfig::new_from_toml_cfg(&config)
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                return xai_grok_pager::models::list_available_models(&agent_config).await;
+                return match provider {
+                    AuthProviderArg::Xai => {
+                        let config = xai_grok_shell::config::load_effective_config_disk_only()
+                            .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+                        let agent_config = AgentConfig::new_from_toml_cfg(&config)
+                            .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+                        xai_grok_pager::models::list_available_models(&agent_config).await
+                    }
+                    AuthProviderArg::OpenAiCodex => {
+                        xai_grok_pager::models::list_available_codex_models().await
+                    }
+                };
             }
             Command::Worktree(worktree_args) => {
                 init_tracing_simple("cli");
@@ -1737,6 +1744,7 @@ async fn async_main() -> Result<()> {
                 .await;
             }
             Command::Login {
+                provider,
                 legacy: _,
                 oauth,
                 device_auth,
@@ -1744,21 +1752,46 @@ async fn async_main() -> Result<()> {
             } => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-                let config = xai_grok_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let config = AgentConfig::new_from_toml_cfg(&config)
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                xai_grok_shell::auth::run_cli_login(&config, oauth, device_auth, devbox).await?;
+                match provider {
+                    AuthProviderArg::Xai => {
+                        let config = xai_grok_shell::config::load_effective_config_disk_only()
+                            .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+                        let config = AgentConfig::new_from_toml_cfg(&config)
+                            .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+                        xai_grok_shell::auth::run_cli_login(&config, oauth, device_auth, devbox)
+                            .await?;
+                    }
+                    AuthProviderArg::OpenAiCodex => {
+                        xai_grok_shell::auth::codex::run_codex_cli_login(device_auth).await?;
+                        println!("Logged in to ChatGPT Codex.");
+                    }
+                }
                 println!();
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
-            Command::Logout => {
+            Command::Logout { provider } => {
                 init_tracing_simple("cli");
-                let config = xai_grok_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let config = AgentConfig::new_from_toml_cfg(&config)
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                xai_grok_shell::auth::run_cli_logout(&config)?;
+                match provider {
+                    AuthProviderArg::Xai => {
+                        let config = xai_grok_shell::config::load_effective_config_disk_only()
+                            .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+                        let config = AgentConfig::new_from_toml_cfg(&config)
+                            .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+                        xai_grok_shell::auth::run_cli_logout(&config)?;
+                    }
+                    AuthProviderArg::OpenAiCodex => {
+                        let result = xai_grok_shell::auth::codex::run_codex_cli_logout().await?;
+                        if !result.removed {
+                            println!("No ChatGPT Codex login was stored.");
+                        } else if result.revoke_succeeded {
+                            println!("Logged out of ChatGPT Codex.");
+                        } else {
+                            println!(
+                                "Removed the local ChatGPT Codex login; remote revocation was unavailable."
+                            );
+                        }
+                    }
+                }
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
             Command::Wrap(ref wrap_args) => {
