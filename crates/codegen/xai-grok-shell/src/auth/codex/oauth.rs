@@ -5,9 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::Html;
+use axum::extract::{Query, Request, State};
+use axum::http::header::{CACHE_CONTROL, HeaderName};
+use axum::http::{HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -29,6 +31,7 @@ const FALLBACK_CALLBACK_PORT: u16 = 1457;
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const AUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const DEVICE_FLOW_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const REFERRER_POLICY: HeaderName = HeaderName::from_static("referrer-policy");
 
 #[derive(Clone, Debug)]
 struct OAuthEndpoints {
@@ -405,7 +408,11 @@ impl PendingCodexBrowserLogin {
         };
         let app = Router::new()
             .route("/auth/callback", get(handle_browser_callback))
-            .with_state(callback_state);
+            .with_state(callback_state)
+            // Extractor rejections and router-generated 404/405 responses never
+            // enter `handle_browser_callback`; apply the privacy contract to
+            // every response emitted by this loopback-only server.
+            .layer(middleware::from_fn(add_browser_callback_privacy_headers));
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let _ = axum::serve(listener, app)
@@ -440,42 +447,63 @@ struct CallbackState {
     tx: tokio::sync::mpsc::Sender<Result<String, CodexAuthError>>,
 }
 
+fn set_browser_callback_privacy_headers(response: &mut Response) {
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+}
+
+fn browser_callback_response(status: StatusCode, message: &'static str) -> Response {
+    let mut response = (status, Html(message)).into_response();
+    set_browser_callback_privacy_headers(&mut response);
+    response
+}
+
+async fn add_browser_callback_privacy_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    set_browser_callback_privacy_headers(&mut response);
+    response
+}
+
 async fn handle_browser_callback(
     State(state): State<CallbackState>,
     Query(query): Query<HashMap<String, String>>,
-) -> (StatusCode, Html<&'static str>) {
+) -> Response {
     let received_state = query.get("state").map(String::as_str);
     if received_state != Some(state.expected_state.as_ref()) {
         // A stray or attacker-controlled request must not consume/cancel the
         // real pending login. Ignore it and keep waiting for the valid state.
-        return (
+        return browser_callback_response(
             StatusCode::BAD_REQUEST,
-            Html("Sign-in could not be verified. Return to Grok Build and try again."),
+            "Sign-in could not be verified. Return to Grok Build and try again.",
         );
     }
     if query.get("error").is_some() {
         let _ = state.tx.try_send(Err(CodexAuthError::AuthorizationDenied));
-        return (
+        return browser_callback_response(
             StatusCode::FORBIDDEN,
-            Html("Sign-in was not completed. Return to Grok Build."),
+            "Sign-in was not completed. Return to Grok Build.",
         );
     }
     let Some(code) = query.get("code").filter(|code| !code.is_empty()) else {
         let _ = state.tx.try_send(Err(CodexAuthError::AuthorizationDenied));
-        return (
+        return browser_callback_response(
             StatusCode::BAD_REQUEST,
-            Html("Sign-in returned no authorization code. Return to Grok Build."),
+            "Sign-in returned no authorization code. Return to Grok Build.",
         );
     };
     if state.tx.try_send(Ok(code.clone())).is_err() {
-        return (
+        return browser_callback_response(
             StatusCode::CONFLICT,
-            Html("This sign-in callback was already used."),
+            "This sign-in callback was already used.",
         );
     }
-    (
+    browser_callback_response(
         StatusCode::OK,
-        Html("Signed in. You can close this window and return to Grok Build."),
+        "Signed in. You can close this window and return to Grok Build.",
     )
 }
 
@@ -673,8 +701,10 @@ impl fmt::Debug for CodexDeviceAuthorization {
 mod tests {
     use super::*;
     use crate::auth::codex::credentials::jwt_for_test;
+    use axum::body::Body;
     use axum::extract::{Form, Json};
     use axum::routing::post;
+    use tower::ServiceExt as _;
 
     fn login_tokens(account: &str, refresh: &str) -> TokenResponse {
         TokenResponse {
@@ -687,6 +717,60 @@ mod tests {
             }))),
             refresh_token: Some(refresh.to_owned()),
             expires_in: Some(3600),
+        }
+    }
+
+    fn assert_private_callback_response(response: &Response, status: StatusCode) {
+        assert_eq!(response.status(), status);
+        assert_eq!(
+            response
+                .headers()
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(REFERRER_POLICY)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-referrer")
+        );
+    }
+
+    fn callback_router_for_test() -> Router {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        Router::new()
+            .route("/auth/callback", get(handle_browser_callback))
+            .with_state(CallbackState {
+                expected_state: Arc::from("expected"),
+                tx,
+            })
+            .layer(middleware::from_fn(add_browser_callback_privacy_headers))
+    }
+
+    async fn callback_router_response(method: &str, uri: &str) -> Response {
+        callback_router_for_test()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("valid callback test request"),
+            )
+            .await
+            .expect("callback router is infallible")
+    }
+
+    #[tokio::test]
+    async fn router_generated_callback_errors_set_privacy_headers() {
+        for (method, uri, status) in [
+            ("GET", "/auth/callback?state=%FF", StatusCode::BAD_REQUEST),
+            ("GET", "/not-the-callback", StatusCode::NOT_FOUND),
+            ("POST", "/auth/callback", StatusCode::METHOD_NOT_ALLOWED),
+        ] {
+            let response = callback_router_response(method, uri).await;
+            assert_private_callback_response(&response, status);
         }
     }
 
@@ -752,7 +836,7 @@ mod tests {
             expected_state: Arc::from("expected"),
             tx,
         };
-        let (status, _) = handle_browser_callback(
+        let response = handle_browser_callback(
             State(state.clone()),
             Query(HashMap::from([
                 ("state".to_owned(), "attacker".to_owned()),
@@ -760,13 +844,13 @@ mod tests {
             ])),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_private_callback_response(&response, StatusCode::BAD_REQUEST);
         assert!(matches!(
             rx.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
 
-        let (status, _) = handle_browser_callback(
+        let response = handle_browser_callback(
             State(state),
             Query(HashMap::from([
                 ("state".to_owned(), "expected".to_owned()),
@@ -774,8 +858,59 @@ mod tests {
             ])),
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
+        assert_private_callback_response(&response, StatusCode::OK);
         assert_eq!(rx.recv().await.unwrap().unwrap(), "valid-code");
+    }
+
+    #[tokio::test]
+    async fn every_terminal_callback_branch_sets_privacy_headers() {
+        let (denied_tx, mut denied_rx) = tokio::sync::mpsc::channel(1);
+        let denied = handle_browser_callback(
+            State(CallbackState {
+                expected_state: Arc::from("expected"),
+                tx: denied_tx,
+            }),
+            Query(HashMap::from([
+                ("state".to_owned(), "expected".to_owned()),
+                ("error".to_owned(), "denied".to_owned()),
+            ])),
+        )
+        .await;
+        assert_private_callback_response(&denied, StatusCode::FORBIDDEN);
+        assert!(matches!(
+            denied_rx.try_recv(),
+            Ok(Err(CodexAuthError::AuthorizationDenied))
+        ));
+
+        let (missing_tx, mut missing_rx) = tokio::sync::mpsc::channel(1);
+        let missing = handle_browser_callback(
+            State(CallbackState {
+                expected_state: Arc::from("expected"),
+                tx: missing_tx,
+            }),
+            Query(HashMap::from([("state".to_owned(), "expected".to_owned())])),
+        )
+        .await;
+        assert_private_callback_response(&missing, StatusCode::BAD_REQUEST);
+        assert!(matches!(
+            missing_rx.try_recv(),
+            Ok(Err(CodexAuthError::AuthorizationDenied))
+        ));
+
+        let (used_tx, used_rx) = tokio::sync::mpsc::channel(1);
+        drop(used_rx);
+        let used = handle_browser_callback(
+            State(CallbackState {
+                expected_state: Arc::from("expected"),
+                tx: used_tx,
+            }),
+            Query(HashMap::from([
+                ("state".to_owned(), "expected".to_owned()),
+                ("code".to_owned(), "unused-code".to_owned()),
+            ])),
+        )
+        .await;
+        assert_private_callback_response(&used, StatusCode::CONFLICT);
     }
 
     #[test]

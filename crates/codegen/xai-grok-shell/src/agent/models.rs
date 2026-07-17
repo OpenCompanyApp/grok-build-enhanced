@@ -334,12 +334,13 @@ impl CodexCatalogIdentity {
 
 impl std::fmt::Debug for CodexCatalogIdentity {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Preserve safe structural diagnostics without exposing identity or
+        // routing metadata, including presence bits.
         formatter
             .debug_struct("CodexCatalogIdentity")
             .field("credential_id", &"<redacted>")
             .field("account_id", &"<redacted>")
             .field("user_id", &"<redacted>")
-            .field("is_fedramp", &self.is_fedramp)
             .finish()
     }
 }
@@ -4473,6 +4474,33 @@ mod tests {
             fallback["openai-codex/no-window"].info.context_window.get(),
             crate::remote::DEFAULT_CONTEXT_WINDOW
         );
+    }
+
+    #[test]
+    fn codex_catalog_identity_debug_is_useful_but_routing_opaque() {
+        let identity = CodexCatalogIdentity {
+            credential_id: "private-credential".to_owned(),
+            account_id: "private-account".to_owned(),
+            user_id: Some("private-user".to_owned()),
+            is_fedramp: false,
+        };
+        let mut alternate_routing = identity.clone();
+        alternate_routing.is_fedramp = !alternate_routing.is_fedramp;
+        let rendered = format!("{identity:?}");
+        let alternate = format!("{alternate_routing:?}");
+
+        assert!(
+            rendered == alternate,
+            "catalog identity debug changed with private routing metadata"
+        );
+        assert!(rendered.starts_with("CodexCatalogIdentity"));
+        assert!(rendered.contains("credential_id: \"<redacted>\""));
+        assert!(rendered.contains("account_id: \"<redacted>\""));
+        assert!(rendered.contains("user_id: \"<redacted>\""));
+        assert!(!rendered.to_ascii_lowercase().contains("fedramp"));
+        assert!(!rendered.contains("private-credential"));
+        assert!(!rendered.contains("private-account"));
+        assert!(!rendered.contains("private-user"));
     }
 
     #[test]

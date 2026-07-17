@@ -14,14 +14,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use blake3::Hasher;
 use futures_util::StreamExt;
-use reqwest::header::{
-    ACCEPT, AUTHORIZATION, ETAG, HeaderName, HeaderValue, IF_NONE_MATCH, USER_AGENT,
-};
+use reqwest::header::{ACCEPT, ETAG, HeaderName, HeaderValue, IF_NONE_MATCH, USER_AGENT};
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
-use xai_grok_sampling_types::{CredentialBinding, CredentialSourceId, ProviderId};
+use xai_grok_sampling_types::CredentialBinding;
 
 pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
 pub const OPENAI_CODEX_MODEL_NAMESPACE: &str = "openai-codex";
@@ -32,28 +30,17 @@ pub const OPENAI_CODEX_CATALOG_CACHE_TTL: Duration = Duration::from_secs(300);
 const CACHE_SCHEMA_VERSION: u32 = 2;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CACHE_BYTES: u64 = 16 * 1024 * 1024;
-const CHATGPT_ACCOUNT_ID: HeaderName = HeaderName::from_static("chatgpt-account-id");
-const OPENAI_FEDRAMP: HeaderName = HeaderName::from_static("x-openai-fedramp");
 const ORIGINATOR: HeaderName = HeaderName::from_static("originator");
 const CODEX_VERSION: HeaderName = HeaderName::from_static("version");
 
-fn sensitive_fedramp_header() -> HeaderValue {
-    let mut value = HeaderValue::from_static("true");
-    value.set_sensitive(true);
-    value
-}
+/// Compatibility alias for the common provider-scoped auth acquisition error.
+pub type CodexCatalogAuthError = crate::auth::codex::CodexAuthSnapshotError;
 
-/// A failure while obtaining request authentication.
+/// Compatibility alias for the common provider-scoped request snapshot.
 ///
-/// This error intentionally cannot carry provider error strings: token and
-/// account material must not become printable through an error chain.
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub enum CodexCatalogAuthError {
-    #[error("OpenAI Codex authentication is unavailable")]
-    Unavailable,
-    #[error("OpenAI Codex authentication is temporarily unavailable")]
-    Transient,
-}
+/// Catalog, usage, sampler, and tools adapters now share one exact credential
+/// binding and one sensitive-header source.
+pub type CodexCatalogAuthSnapshot = crate::auth::codex::CodexAuthSnapshot;
 
 fn map_auth_error(error: CodexCatalogAuthError) -> CodexCatalogError {
     match error {
@@ -84,84 +71,6 @@ pub trait CodexCatalogAuthProvider: Send + Sync {
         _rejected: CredentialBinding,
     ) -> Result<bool, CodexCatalogAuthError> {
         Ok(false)
-    }
-}
-
-/// Sensitive request headers plus a non-secret, already-hashed cache identity.
-///
-/// Constructing a snapshot validates the header values and immediately hashes
-/// the opaque credential identity together with the ChatGPT account ID. Raw
-/// account and credential identifiers are never persisted in the model cache.
-#[derive(Clone)]
-pub struct CodexCatalogAuthSnapshot {
-    authorization: HeaderValue,
-    account_id: HeaderValue,
-    fedramp: bool,
-    cache_identity: [u8; 32],
-    credential_binding: CredentialBinding,
-}
-
-impl CodexCatalogAuthSnapshot {
-    pub fn new(
-        access_token: &str,
-        chatgpt_account_id: &str,
-        chatgpt_user_id: Option<&str>,
-        credential_binding: CredentialBinding,
-        fedramp: bool,
-    ) -> Result<Self, CodexCatalogAuthError> {
-        let credential_id = credential_binding
-            .record_id
-            .as_deref()
-            .filter(|record_id| !record_id.trim().is_empty());
-        if access_token.trim().is_empty()
-            || chatgpt_account_id.trim().is_empty()
-            || credential_binding.provider != ProviderId::OpenAiCodex
-            || credential_binding.source != CredentialSourceId::OpenAiCodexSubscription
-            || credential_binding.generation == 0
-            || credential_id.is_none()
-        {
-            return Err(CodexCatalogAuthError::Unavailable);
-        }
-
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {access_token}"))
-            .map_err(|_| CodexCatalogAuthError::Unavailable)?;
-        authorization.set_sensitive(true);
-        let mut account_id = HeaderValue::from_str(chatgpt_account_id)
-            .map_err(|_| CodexCatalogAuthError::Unavailable)?;
-        account_id.set_sensitive(true);
-
-        let mut scope = Hasher::new_derive_key("grok-build-codex catalog credential scope v1");
-        hash_len_prefixed(&mut scope, credential_id.unwrap_or_default().as_bytes());
-        hash_len_prefixed(&mut scope, chatgpt_account_id.as_bytes());
-        hash_len_prefixed(&mut scope, chatgpt_user_id.unwrap_or_default().as_bytes());
-        scope.update(&[u8::from(fedramp)]);
-
-        Ok(Self {
-            authorization,
-            account_id,
-            fedramp,
-            cache_identity: *scope.finalize().as_bytes(),
-            credential_binding,
-        })
-    }
-}
-
-impl fmt::Debug for CodexCatalogAuthSnapshot {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CodexCatalogAuthSnapshot")
-            .field("authorization", &"<redacted>")
-            .field("account_id", &"<redacted>")
-            .field("fedramp", &self.fedramp)
-            .field("cache_identity", &"<redacted>")
-            .field("credential_binding", &self.credential_binding)
-            .finish()
-    }
-}
-
-#[async_trait]
-impl CodexCatalogAuthProvider for CodexCatalogAuthSnapshot {
-    async fn catalog_auth(&self) -> Result<CodexCatalogAuthSnapshot, CodexCatalogAuthError> {
-        Ok(self.clone())
     }
 }
 
@@ -293,7 +202,7 @@ impl CodexCatalogClient {
         let mut auth = auth_provider.catalog_auth().await.map_err(map_auth_error)?;
         match self.fetch_with_auth(&auth).await {
             Err(CodexCatalogError::Unauthorized) => {
-                let rejected = auth.credential_binding.clone();
+                let rejected = auth.credential_binding().clone();
                 let recovered = auth_provider
                     .recover_unauthorized(rejected)
                     .await
@@ -337,10 +246,10 @@ impl CodexCatalogClient {
             return Err(CodexCatalogError::CacheUnavailable);
         }
         cached.fetched_at_unix_ms = now_unix_ms();
-        cached.credential_generation = auth.credential_binding.generation;
+        cached.credential_generation = auth.credential_binding().generation;
         self.write_cache(&scope, &cached)
             .map_err(|_| CodexCatalogError::CacheUnavailable)?;
-        Ok(auth.credential_binding)
+        Ok(auth.credential_binding().clone())
     }
 
     fn load_cached_with_auth(
@@ -353,7 +262,7 @@ impl CodexCatalogClient {
             .map_err(|_| CodexCatalogError::CacheUnavailable)?
             .ok_or(CodexCatalogError::CacheUnavailable)?;
         if !self.cache_is_fresh(&cached)
-            || cached.credential_generation != auth.credential_binding.generation
+            || cached.credential_generation != auth.credential_binding().generation
         {
             return Err(CodexCatalogError::CacheUnavailable);
         }
@@ -361,7 +270,7 @@ impl CodexCatalogClient {
             catalog: cached.catalog,
             fetched_at_unix_ms: cached.fetched_at_unix_ms,
             etag: cached.etag,
-            credential_binding: auth.credential_binding.clone(),
+            credential_binding: auth.credential_binding().clone(),
         })
     }
 
@@ -382,15 +291,11 @@ impl CodexCatalogClient {
             .http
             .get(request_url)
             .timeout(self.config.timeout)
+            .headers(auth.request_headers())
             .header(ACCEPT, HeaderValue::from_static("application/json"))
-            .header(AUTHORIZATION, auth.authorization.clone())
-            .header(CHATGPT_ACCOUNT_ID, auth.account_id.clone())
             .header(USER_AGENT, self.config.user_agent.clone())
             .header(ORIGINATOR, self.config.originator.clone())
             .header(CODEX_VERSION, client_version);
-        if auth.fedramp {
-            request = request.header(OPENAI_FEDRAMP, sensitive_fedramp_header());
-        }
         if let Some(etag) = cached.as_ref().and_then(|cached| cached.etag.as_deref())
             && let Ok(value) = HeaderValue::from_str(etag)
         {
@@ -405,7 +310,7 @@ impl CodexCatalogClient {
             // The live authenticated 304 is the only operation allowed to
             // adopt cache bytes produced by an older same-account credential
             // generation. It attests that the ETag is still authoritative.
-            cached.credential_generation = auth.credential_binding.generation;
+            cached.credential_generation = auth.credential_binding().generation;
             let cache_status = match self.write_cache(&scope, &cached) {
                 Ok(()) => CodexCatalogCacheStatus::Updated,
                 Err(_) => CodexCatalogCacheStatus::WriteFailed,
@@ -416,7 +321,7 @@ impl CodexCatalogClient {
                 etag: cached.etag,
                 source: CodexCatalogFetchSource::NotModified,
                 cache_status,
-                credential_binding: auth.credential_binding.clone(),
+                credential_binding: auth.credential_binding().clone(),
             });
         }
         if status == StatusCode::UNAUTHORIZED {
@@ -440,7 +345,7 @@ impl CodexCatalogClient {
             schema_version: CACHE_SCHEMA_VERSION,
             scope: scope.digest.clone(),
             fetched_at_unix_ms,
-            credential_generation: auth.credential_binding.generation,
+            credential_generation: auth.credential_binding().generation,
             etag: etag.clone(),
             catalog: catalog.clone(),
         };
@@ -455,7 +360,7 @@ impl CodexCatalogClient {
             etag,
             source: CodexCatalogFetchSource::Network,
             cache_status,
-            credential_binding: auth.credential_binding.clone(),
+            credential_binding: auth.credential_binding().clone(),
         })
     }
 
@@ -473,7 +378,7 @@ impl CodexCatalogClient {
         hash_len_prefixed(&mut hasher, OPENAI_CODEX_PROVIDER_ID.as_bytes());
         hash_len_prefixed(&mut hasher, self.config.base_url.as_str().as_bytes());
         hash_len_prefixed(&mut hasher, self.config.client_version.as_bytes());
-        hash_len_prefixed(&mut hasher, &auth.cache_identity);
+        hash_len_prefixed(&mut hasher, auth.catalog_cache_identity());
         let digest = hasher.finalize().to_hex().to_string();
         let path = self
             .config
@@ -882,11 +787,15 @@ mod tests {
     use axum::extract::{Request, State};
     use axum::http::Response;
     use axum::routing::get;
-    use reqwest::header::HeaderMap;
+    use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName};
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
+    use xai_grok_sampling_types::{CredentialSourceId, ProviderId};
 
     use super::*;
+
+    const CHATGPT_ACCOUNT_ID: HeaderName = HeaderName::from_static("chatgpt-account-id");
+    const OPENAI_FEDRAMP: HeaderName = HeaderName::from_static("x-openai-fedramp");
 
     #[derive(Clone)]
     struct MockState {
@@ -979,6 +888,12 @@ mod tests {
         CodexCatalogAuthSnapshot::new(token, account, None, binding, fedramp).unwrap()
     }
 
+    fn header_value_is(headers: &HeaderMap, name: &HeaderName, expected: &str) -> bool {
+        headers
+            .get(name)
+            .is_some_and(|value| value.as_bytes() == expected.as_bytes())
+    }
+
     fn client(cache_dir: &Path, base_url: Url) -> Result<CodexCatalogClient, CodexCatalogError> {
         let config = CodexCatalogClientConfig::new(cache_dir)?
             .with_base_url(base_url)?
@@ -1067,7 +982,6 @@ mod tests {
 
     #[tokio::test]
     async fn sends_exact_scoped_headers_and_parses_rich_catalog() {
-        assert!(sensitive_fedramp_header().is_sensitive());
         let (base_url, state) =
             spawn_server(vec![reply(StatusCode::OK, rich_body("gpt-codex"))]).await;
         let cache = tempfile::tempdir().unwrap();
@@ -1099,9 +1013,24 @@ mod tests {
             request.path_and_query,
             "/backend-api/codex/models?client_version=9.8.7"
         );
-        assert_eq!(request.headers[AUTHORIZATION], "Bearer top-secret-token");
-        assert_eq!(request.headers[CHATGPT_ACCOUNT_ID], "acct-secret");
-        assert_eq!(request.headers[OPENAI_FEDRAMP], "true");
+        let expected_authorization = "Bearer top-secret-token";
+        let expected_account = "acct-secret";
+        let expected_fedramp = "true";
+        assert!(header_value_is(
+            &request.headers,
+            &AUTHORIZATION,
+            expected_authorization
+        ));
+        assert!(header_value_is(
+            &request.headers,
+            &CHATGPT_ACCOUNT_ID,
+            expected_account
+        ));
+        assert!(header_value_is(
+            &request.headers,
+            &OPENAI_FEDRAMP,
+            expected_fedramp
+        ));
         assert_eq!(request.headers.get_all(OPENAI_FEDRAMP).iter().count(), 1);
         assert_eq!(request.headers[ORIGINATOR], "grok-build-codex-test");
         assert_eq!(request.headers[CODEX_VERSION], "9.8.7");
@@ -1741,17 +1670,42 @@ mod tests {
         assert_eq!(recovery_calls.load(Ordering::Relaxed), 1);
         let rejected = rejected_bindings.lock().await;
         assert_eq!(rejected.len(), 1);
-        assert_eq!(rejected[0].record_id.as_deref(), Some("old-credential"));
+        assert!(rejected[0].record_id.as_deref() == Some("old-credential"));
         assert_eq!(rejected[0].generation, 7);
         drop(rejected);
 
         let requests = state.requests.lock().await;
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].headers[AUTHORIZATION], "Bearer expired-token");
-        assert_eq!(requests[0].headers[CHATGPT_ACCOUNT_ID], "old-account");
-        assert_eq!(requests[1].headers[AUTHORIZATION], "Bearer refreshed-token");
-        assert_eq!(requests[1].headers[CHATGPT_ACCOUNT_ID], "new-account");
-        assert_eq!(requests[1].headers[OPENAI_FEDRAMP], "true");
+        let first_authorization = "Bearer expired-token";
+        let first_account = "old-account";
+        let second_authorization = "Bearer refreshed-token";
+        let second_account = "new-account";
+        let second_fedramp = "true";
+        assert!(header_value_is(
+            &requests[0].headers,
+            &AUTHORIZATION,
+            first_authorization
+        ));
+        assert!(header_value_is(
+            &requests[0].headers,
+            &CHATGPT_ACCOUNT_ID,
+            first_account
+        ));
+        assert!(header_value_is(
+            &requests[1].headers,
+            &AUTHORIZATION,
+            second_authorization
+        ));
+        assert!(header_value_is(
+            &requests[1].headers,
+            &CHATGPT_ACCOUNT_ID,
+            second_account
+        ));
+        assert!(header_value_is(
+            &requests[1].headers,
+            &OPENAI_FEDRAMP,
+            second_fedramp
+        ));
     }
 
     #[tokio::test]

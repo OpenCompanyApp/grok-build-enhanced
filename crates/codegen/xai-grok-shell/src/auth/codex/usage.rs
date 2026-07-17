@@ -4,11 +4,11 @@
 //! contract. It is intentionally isolated from xAI billing and authentication.
 
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{CredentialBinding, CredentialSourceId, ProviderId};
 
-use super::{CodexAuthError, CodexAuthManager, OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_USAGE_URL};
+use super::{CodexAuthError, CodexAuthManager, CodexAuthSnapshot, OPENAI_CODEX_USAGE_URL};
 
 /// One server-advertised rate-limit window. Durations and reset timestamps are
 /// kept exactly as returned so callers do not have to infer a five-hour or
@@ -132,6 +132,8 @@ pub enum CodexUsageError {
     Auth(#[from] CodexAuthError),
     #[error("OpenAI Codex usage authentication was invalid")]
     InvalidAuth,
+    #[error("OpenAI Codex usage credentials were rejected and recovery did not complete")]
+    CredentialRejected,
     #[error("OpenAI Codex usage request returned HTTP {0}")]
     HttpStatus(u16),
     #[error("OpenAI Codex usage request failed")]
@@ -154,6 +156,21 @@ struct CachedUsage {
     binding: CredentialBinding,
     fetched_at: std::time::Instant,
     snapshot: CodexUsageSnapshot,
+}
+
+struct FetchedUsage {
+    binding: CredentialBinding,
+    snapshot: CodexUsageSnapshot,
+}
+
+impl std::fmt::Debug for FetchedUsage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Test failure output must not expose credential record IDs,
+        // generations, account scope, or usage payload details.
+        formatter
+            .debug_struct("FetchedUsage")
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Default)]
@@ -215,17 +232,13 @@ fn validate_binding(binding: &CredentialBinding) -> Result<(), CodexUsageError> 
 }
 
 fn validate_auth_binding(
-    auth: &xai_grok_tools::types::RequestAuth,
+    auth: &CodexAuthSnapshot,
     expected: &CredentialBinding,
 ) -> Result<(), CodexUsageError> {
     validate_binding(expected)?;
-    let snapshot = auth
-        .credential_snapshot()
-        .ok_or(CodexUsageError::InvalidAuth)?;
-    let mut actual = CredentialBinding::openai_codex(Some(snapshot.opaque_id().to_owned()));
-    actual.generation = snapshot.generation();
-    validate_binding(&actual)?;
-    if !expected.same_record(&actual) || actual.generation < expected.generation {
+    let actual = auth.credential_binding();
+    validate_binding(actual)?;
+    if !expected.same_record(actual) || actual.generation < expected.generation {
         return Err(CodexAuthError::AccountChanged.into());
     }
     Ok(())
@@ -238,90 +251,84 @@ fn backoff_for_failures(failures: u32) -> std::time::Duration {
         .min(USAGE_BACKOFF_MAX)
 }
 
+fn is_transient_service_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500..=599)
+}
+
+fn auth_error_allows_stale(error: &CodexAuthError) -> bool {
+    match error {
+        CodexAuthError::Transport(_) => true,
+        CodexAuthError::HttpStatus(status) => is_transient_service_status(*status),
+        _ => false,
+    }
+}
+
+fn usage_error_allows_stale(error: &CodexUsageError) -> bool {
+    match error {
+        CodexUsageError::Transport(_) => true,
+        CodexUsageError::HttpStatus(status) => is_transient_service_status(*status),
+        CodexUsageError::Auth(error) => auth_error_allows_stale(error),
+        _ => false,
+    }
+}
+
+fn usage_error_invalidates_cached_identity(error: &CodexUsageError) -> bool {
+    match error {
+        CodexUsageError::InvalidAuth
+        | CodexUsageError::CredentialRejected
+        | CodexUsageError::HttpStatus(401 | 403) => true,
+        CodexUsageError::Auth(error) => !auth_error_allows_stale(error),
+        _ => false,
+    }
+}
+
+async fn clear_usage_cache(cache: &tokio::sync::Mutex<CodexUsageCache>) {
+    *cache.lock().await = CodexUsageCache::default();
+}
+
 #[async_trait]
 trait UsageAuthProvider: Sync {
-    async fn request_auth(&self) -> Result<xai_grok_tools::types::RequestAuth, CodexUsageError>;
+    type IdentityLease;
+
+    async fn auth_snapshot(&self) -> Result<CodexAuthSnapshot, CodexUsageError>;
 
     async fn recover_unauthorized(
         &self,
-        rejected: xai_grok_tools::types::RequestCredentialSnapshot,
+        rejected: CredentialBinding,
     ) -> Result<bool, CodexUsageError>;
+
+    async fn attest_binding(
+        &self,
+        expected: &CredentialBinding,
+    ) -> Result<Self::IdentityLease, CodexUsageError>;
 }
 
 #[async_trait]
 impl UsageAuthProvider for CodexAuthManager {
-    async fn request_auth(&self) -> Result<xai_grok_tools::types::RequestAuth, CodexUsageError> {
-        Ok(CodexAuthManager::request_auth(self).await?)
+    type IdentityLease = super::manager::CodexUsageIdentityLease;
+
+    async fn auth_snapshot(&self) -> Result<CodexAuthSnapshot, CodexUsageError> {
+        Ok(CodexAuthManager::auth_snapshot(self).await?)
     }
 
     async fn recover_unauthorized(
         &self,
-        rejected: xai_grok_tools::types::RequestCredentialSnapshot,
+        rejected: CredentialBinding,
     ) -> Result<bool, CodexUsageError> {
-        let mut binding = xai_grok_sampling_types::CredentialBinding::openai_codex(Some(
-            rejected.opaque_id().to_owned(),
-        ));
-        binding.generation = rejected.generation();
-        Ok(self.recover_after_unauthorized(binding).await?)
+        Ok(self.recover_after_unauthorized(rejected).await?)
+    }
+
+    async fn attest_binding(
+        &self,
+        expected: &CredentialBinding,
+    ) -> Result<Self::IdentityLease, CodexUsageError> {
+        Ok(self.lock_usage_binding(expected).await?)
     }
 }
 
-fn request_headers(
-    auth: &xai_grok_tools::types::RequestAuth,
-) -> Result<HeaderMap, CodexUsageError> {
-    if auth.provider() != Some(OPENAI_CODEX_PROVIDER_ID) {
-        return Err(CodexUsageError::InvalidAuth);
-    }
-
-    let mut headers = HeaderMap::new();
-    let account_header = HeaderName::from_static("chatgpt-account-id");
-    let fedramp_header = HeaderName::from_static("x-openai-fedramp");
-    for (name, raw_value) in auth.headers() {
-        let name =
-            HeaderName::from_bytes(name.as_bytes()).map_err(|_| CodexUsageError::InvalidAuth)?;
-        if headers.contains_key(&name) {
-            return Err(CodexUsageError::InvalidAuth);
-        }
-
-        if name == reqwest::header::AUTHORIZATION {
-            if raw_value
-                .strip_prefix("Bearer ")
-                .is_none_or(|token| token.trim().is_empty())
-            {
-                return Err(CodexUsageError::InvalidAuth);
-            }
-            let mut value =
-                HeaderValue::from_str(raw_value).map_err(|_| CodexUsageError::InvalidAuth)?;
-            value.set_sensitive(true);
-            headers.insert(name, value);
-        } else if name == account_header {
-            if raw_value.trim().is_empty() {
-                return Err(CodexUsageError::InvalidAuth);
-            }
-            let mut value =
-                HeaderValue::from_str(raw_value).map_err(|_| CodexUsageError::InvalidAuth)?;
-            value.set_sensitive(true);
-            headers.insert(name, value);
-        } else if name == fedramp_header {
-            if raw_value != "true" {
-                return Err(CodexUsageError::InvalidAuth);
-            }
-            let mut value = HeaderValue::from_static("true");
-            value.set_sensitive(true);
-            headers.insert(name, value);
-        } else {
-            // `RequestAuth` is a provider boundary. Never forward a newly
-            // introduced or xAI-specific header to the ChatGPT backend until
-            // this contract explicitly opts into it.
-            return Err(CodexUsageError::InvalidAuth);
-        }
-    }
-    if !headers.contains_key(reqwest::header::AUTHORIZATION)
-        || !headers.contains_key(account_header)
-    {
-        return Err(CodexUsageError::InvalidAuth);
-    }
-    Ok(headers)
+fn request_headers(auth: &CodexAuthSnapshot) -> Result<HeaderMap, CodexUsageError> {
+    validate_binding(auth.credential_binding())?;
+    Ok(auth.request_headers())
 }
 
 #[cfg(test)]
@@ -330,7 +337,11 @@ async fn fetch_from_url<A: UsageAuthProvider + ?Sized>(
     auth_provider: &A,
     url: &str,
 ) -> Result<CodexUsageSnapshot, CodexUsageError> {
-    fetch_from_url_with_binding(client, auth_provider, url, None).await
+    Ok(
+        fetch_from_url_with_binding(client, auth_provider, url, None)
+            .await?
+            .snapshot,
+    )
 }
 
 async fn fetch_from_url_with_binding<A: UsageAuthProvider + ?Sized>(
@@ -338,13 +349,13 @@ async fn fetch_from_url_with_binding<A: UsageAuthProvider + ?Sized>(
     auth_provider: &A,
     url: &str,
     expected: Option<&CredentialBinding>,
-) -> Result<CodexUsageSnapshot, CodexUsageError> {
+) -> Result<FetchedUsage, CodexUsageError> {
     for attempt in 0..=1 {
-        let auth = auth_provider.request_auth().await?;
+        let auth = auth_provider.auth_snapshot().await?;
         if let Some(expected) = expected {
             validate_auth_binding(&auth, expected)?;
         }
-        let rejected = auth.credential_snapshot().cloned();
+        let rejected = auth.credential_binding().clone();
         let response = client
             .get(url)
             .headers(request_headers(&auth)?)
@@ -353,11 +364,14 @@ async fn fetch_from_url_with_binding<A: UsageAuthProvider + ?Sized>(
             .await
             .map_err(CodexUsageError::Transport)?;
 
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-            let rejected = rejected.ok_or(CodexUsageError::InvalidAuth)?;
-            if auth_provider.recover_unauthorized(rejected).await? {
-                continue;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            if attempt == 0 {
+                match auth_provider.recover_unauthorized(rejected.clone()).await {
+                    Ok(true) => continue,
+                    Ok(false) | Err(_) => return Err(CodexUsageError::CredentialRejected),
+                }
             }
+            return Err(CodexUsageError::CredentialRejected);
         }
 
         if !response.status().is_success() {
@@ -366,13 +380,40 @@ async fn fetch_from_url_with_binding<A: UsageAuthProvider + ?Sized>(
             return Err(CodexUsageError::HttpStatus(response.status().as_u16()));
         }
 
-        return response
+        let snapshot = response
             .json::<CodexUsageSnapshot>()
             .await
-            .map_err(|_| CodexUsageError::InvalidResponse);
+            .map_err(|_| CodexUsageError::InvalidResponse)?;
+        return Ok(FetchedUsage {
+            binding: rejected,
+            snapshot,
+        });
     }
 
     unreachable!("the bounded Codex usage retry loop always returns")
+}
+
+fn strongest_same_record_binding(
+    expected: &CredentialBinding,
+    cached: &CredentialBinding,
+) -> CredentialBinding {
+    let mut binding = expected.clone();
+    binding.generation = binding.generation.max(cached.generation);
+    binding
+}
+
+async fn attest_usage_binding<A: UsageAuthProvider + ?Sized>(
+    auth_provider: &A,
+    expected: &CredentialBinding,
+    cache: &mut CodexUsageCache,
+) -> Result<A::IdentityLease, CodexUsageError> {
+    match auth_provider.attest_binding(expected).await {
+        Ok(lease) => Ok(lease),
+        Err(error) => {
+            *cache = CodexUsageCache::default();
+            Err(error)
+        }
+    }
 }
 
 async fn fetch_cached_from_url<A: UsageAuthProvider + ?Sized>(
@@ -383,7 +424,10 @@ async fn fetch_cached_from_url<A: UsageAuthProvider + ?Sized>(
     mode: UsageFetchMode,
     cache: &tokio::sync::Mutex<CodexUsageCache>,
 ) -> Result<CodexUsageSnapshot, CodexUsageError> {
-    validate_binding(expected)?;
+    if let Err(error) = validate_binding(expected) {
+        clear_usage_cache(cache).await;
+        return Err(error);
+    }
     let now = std::time::Instant::now();
     let mut cache = cache.lock().await;
 
@@ -400,7 +444,10 @@ async fn fetch_cached_from_url<A: UsageAuthProvider + ?Sized>(
     if let Some(entry) = cache.entry.as_ref()
         && now.saturating_duration_since(entry.fetched_at) <= USAGE_CACHE_TTL
     {
-        return Ok(entry.snapshot.clone());
+        let snapshot = entry.snapshot.clone();
+        let binding = strongest_same_record_binding(expected, &entry.binding);
+        let _identity_lease = attest_usage_binding(auth_provider, &binding, &mut cache).await?;
+        return Ok(snapshot);
     }
 
     if mode == UsageFetchMode::Silent
@@ -408,32 +455,48 @@ async fn fetch_cached_from_url<A: UsageAuthProvider + ?Sized>(
             .retry_not_before
             .is_some_and(|retry_at| now < retry_at)
     {
-        return cache
-            .entry
-            .as_ref()
-            .map(|entry| entry.snapshot.clone())
-            .ok_or(CodexUsageError::TemporarilyUnavailable);
+        let Some(entry) = cache.entry.as_ref() else {
+            return Err(CodexUsageError::TemporarilyUnavailable);
+        };
+        let snapshot = entry.snapshot.clone();
+        let binding = strongest_same_record_binding(expected, &entry.binding);
+        let _identity_lease = attest_usage_binding(auth_provider, &binding, &mut cache).await?;
+        return Ok(snapshot);
     }
 
     match fetch_from_url_with_binding(client, auth_provider, url, Some(expected)).await {
-        Ok(snapshot) => {
+        Ok(fetched) => {
+            let _identity_lease =
+                attest_usage_binding(auth_provider, &fetched.binding, &mut cache).await?;
             cache.entry = Some(CachedUsage {
-                binding: expected.clone(),
+                binding: fetched.binding,
                 fetched_at: std::time::Instant::now(),
-                snapshot: snapshot.clone(),
+                snapshot: fetched.snapshot.clone(),
             });
             cache.consecutive_failures = 0;
             cache.retry_not_before = None;
-            Ok(snapshot)
+            Ok(fetched.snapshot)
         }
-        Err(error) => {
+        Err(error) if usage_error_allows_stale(&error) => {
             cache.consecutive_failures = cache.consecutive_failures.saturating_add(1);
             let backoff = backoff_for_failures(cache.consecutive_failures);
             cache.retry_not_before = Some(std::time::Instant::now() + backoff);
             if mode == UsageFetchMode::Silent
                 && let Some(entry) = cache.entry.as_ref()
             {
-                return Ok(entry.snapshot.clone());
+                let snapshot = entry.snapshot.clone();
+                let binding = strongest_same_record_binding(expected, &entry.binding);
+                let _identity_lease =
+                    attest_usage_binding(auth_provider, &binding, &mut cache).await?;
+                return Ok(snapshot);
+            }
+            Err(error)
+        }
+        Err(error) => {
+            cache.consecutive_failures = 0;
+            cache.retry_not_before = None;
+            if usage_error_invalidates_cached_identity(&error) {
+                *cache = CodexUsageCache::default();
             }
             Err(error)
         }
@@ -458,7 +521,15 @@ async fn fetch_codex_usage_for_current_from_url(
     // Snapshot the verified provider-scoped record before the first await.
     // The cache and every outbound request remain pinned to this record even
     // if another process logs out or changes accounts while this request runs.
-    let expected = snapshot_current_usage_binding(manager)?;
+    let expected = match snapshot_current_usage_binding(manager) {
+        Ok(expected) => expected,
+        Err(error) => {
+            if usage_error_invalidates_cached_identity(&error) {
+                clear_usage_cache(cache).await;
+            }
+            return Err(error);
+        }
+    };
     fetch_cached_from_url(
         client,
         manager,
@@ -501,33 +572,64 @@ pub async fn fetch_codex_usage_for_current(
     .await
 }
 
-/// Fetch usage for the exact credential record pinned to an active session.
-/// Same-record refresh generations may advance, but a logout/relogin or account
-/// switch fails before any usage HTTP request is sent. Silent callers use a
-/// one-minute cache plus 1m/2m/4m/.../15m capped retry backoff; explicit callers
-/// use a fresh cache hit but otherwise attempt an immediate refresh.
-pub async fn fetch_codex_usage_for_session(
+async fn fetch_codex_usage_for_session_from_url(
+    client: &reqwest::Client,
     manager: &CodexAuthManager,
+    url: &str,
     expected: &CredentialBinding,
     silent: bool,
+    cache: &tokio::sync::Mutex<CodexUsageCache>,
 ) -> Result<CodexUsageSnapshot, CodexUsageError> {
-    validate_binding(expected)?;
-    let current = manager.current().ok_or(CodexAuthError::NotLoggedIn)?;
-    let actual = current.credential_binding();
-    if !expected.same_record(&actual) || actual.generation < expected.generation {
-        return Err(CodexAuthError::AccountChanged.into());
+    let verified: Result<(), CodexUsageError> = (|| {
+        validate_binding(expected)?;
+        let actual = manager.current_verified()?.credential_binding();
+        validate_binding(&actual)?;
+        if !expected.same_record(&actual) || actual.generation < expected.generation {
+            return Err(CodexAuthError::AccountChanged.into());
+        }
+        Ok(())
+    })();
+    if let Err(error) = verified {
+        if usage_error_invalidates_cached_identity(&error) {
+            clear_usage_cache(cache).await;
+        }
+        return Err(error);
     }
-    let client = codex_usage_http_client();
+
     fetch_cached_from_url(
-        &client,
+        client,
         manager,
-        OPENAI_CODEX_USAGE_URL,
+        url,
         expected,
         if silent {
             UsageFetchMode::Silent
         } else {
             UsageFetchMode::Explicit
         },
+        cache,
+    )
+    .await
+}
+
+/// Fetch usage for the exact credential record pinned to an active session.
+/// Same-record refresh generations may advance, but the provider-scoped disk
+/// record is reverified before every cache hit or usage HTTP request. A sibling
+/// logout/relogin or account switch therefore cannot reuse prior-record usage.
+/// Silent callers use a one-minute cache plus 1m/2m/4m/.../15m capped retry
+/// backoff; explicit callers use a fresh cache hit but otherwise attempt an
+/// immediate refresh.
+pub async fn fetch_codex_usage_for_session(
+    manager: &CodexAuthManager,
+    expected: &CredentialBinding,
+    silent: bool,
+) -> Result<CodexUsageSnapshot, CodexUsageError> {
+    let client = codex_usage_http_client();
+    fetch_codex_usage_for_session_from_url(
+        &client,
+        manager,
+        OPENAI_CODEX_USAGE_URL,
+        expected,
+        silent,
         usage_cache(),
     )
     .await

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use axum::Router;
 use axum::extract::State;
-use axum::http::header::LOCATION;
+use axum::http::header::{HeaderName, LOCATION};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -115,32 +115,170 @@ fn binding(record_id: &str, generation: u64) -> CredentialBinding {
     binding
 }
 
+fn cached_usage(binding: CredentialBinding, age: std::time::Duration) -> CodexUsageCache {
+    CodexUsageCache {
+        entry: Some(CachedUsage {
+            binding,
+            fetched_at: std::time::Instant::now()
+                .checked_sub(age)
+                .expect("cache fixture age must fit"),
+            snapshot: CodexUsageSnapshot {
+                plan_type: Some("cached-plan".to_owned()),
+                rate_limit: None,
+                credits: None,
+                spend_control: None,
+                additional_rate_limits: Vec::new(),
+                rate_limit_reached_type: None,
+                rate_limit_reset_credits: None,
+            },
+        }),
+        ..CodexUsageCache::default()
+    }
+}
+
 #[async_trait]
 impl UsageAuthProvider for FakeAuth {
-    async fn request_auth(&self) -> Result<xai_grok_tools::types::RequestAuth, CodexUsageError> {
+    type IdentityLease = ();
+
+    async fn auth_snapshot(&self) -> Result<CodexAuthSnapshot, CodexUsageError> {
         let generation = self.auth_calls.fetch_add(1, Ordering::SeqCst) as u64 + 1;
-        Ok(xai_grok_tools::types::RequestAuth::for_provider_snapshot(
-            OPENAI_CODEX_PROVIDER_ID,
-            xai_grok_tools::types::RequestCredentialSnapshot::new("record-id", generation),
-            [
-                (
-                    "Authorization".to_owned(),
-                    format!("Bearer token-{generation}"),
-                ),
-                ("ChatGPT-Account-ID".to_owned(), "account-id".to_owned()),
-                ("X-OpenAI-Fedramp".to_owned(), "true".to_owned()),
-            ],
-        ))
+        CodexAuthSnapshot::new(
+            &format!("token-{generation}"),
+            "account-id",
+            None,
+            binding("record-id", generation),
+            true,
+        )
+        .map_err(|_| CodexUsageError::InvalidAuth)
     }
 
     async fn recover_unauthorized(
         &self,
-        rejected: xai_grok_tools::types::RequestCredentialSnapshot,
+        rejected: CredentialBinding,
     ) -> Result<bool, CodexUsageError> {
-        assert_eq!(rejected.opaque_id(), "record-id");
-        assert_eq!(rejected.generation(), 1);
+        assert!(rejected == binding("record-id", 1));
         self.recoveries.fetch_add(1, Ordering::SeqCst);
         Ok(true)
+    }
+
+    async fn attest_binding(
+        &self,
+        expected: &CredentialBinding,
+    ) -> Result<Self::IdentityLease, CodexUsageError> {
+        validate_binding(expected)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DiskTransition {
+    Logout,
+    Replace,
+}
+
+async fn apply_disk_transition(store: &CodexCredentialStore, transition: DiskTransition) {
+    match transition {
+        DiskTransition::Logout => {
+            assert!(store.remove().await.unwrap().is_some());
+        }
+        DiskTransition::Replace => {
+            store
+                .save(credentials_for_test(
+                    "replacement-account",
+                    "replacement-refresh",
+                    Utc::now() + Duration::hours(1),
+                ))
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PausingManagerAuth {
+    manager: Arc<CodexAuthManager>,
+    attestation_reached: Arc<tokio::sync::Barrier>,
+    resume_attestation: Arc<tokio::sync::Barrier>,
+}
+
+#[async_trait]
+impl UsageAuthProvider for PausingManagerAuth {
+    type IdentityLease = <CodexAuthManager as UsageAuthProvider>::IdentityLease;
+
+    async fn auth_snapshot(&self) -> Result<CodexAuthSnapshot, CodexUsageError> {
+        Ok(self.manager.auth_snapshot().await?)
+    }
+
+    async fn recover_unauthorized(
+        &self,
+        rejected: CredentialBinding,
+    ) -> Result<bool, CodexUsageError> {
+        Ok(self.manager.recover_after_unauthorized(rejected).await?)
+    }
+
+    async fn attest_binding(
+        &self,
+        expected: &CredentialBinding,
+    ) -> Result<Self::IdentityLease, CodexUsageError> {
+        self.attestation_reached.wait().await;
+        self.resume_attestation.wait().await;
+        Ok(self.manager.lock_usage_binding(expected).await?)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RecoveryFailure {
+    Transport,
+    Service,
+}
+
+struct RecoveryFailingAuth {
+    failure: RecoveryFailure,
+}
+
+#[async_trait]
+impl UsageAuthProvider for RecoveryFailingAuth {
+    type IdentityLease = ();
+
+    async fn auth_snapshot(&self) -> Result<CodexAuthSnapshot, CodexUsageError> {
+        CodexAuthSnapshot::new(
+            "rejected-token",
+            "rejected-account",
+            None,
+            binding("record-id", 1),
+            false,
+        )
+        .map_err(|_| CodexUsageError::InvalidAuth)
+    }
+
+    async fn recover_unauthorized(
+        &self,
+        _rejected: CredentialBinding,
+    ) -> Result<bool, CodexUsageError> {
+        match self.failure {
+            RecoveryFailure::Transport => {
+                let unavailable = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                    .await
+                    .unwrap();
+                let address = unavailable.local_addr().unwrap();
+                drop(unavailable);
+                let source = reqwest::Client::new()
+                    .get(format!("http://{address}/recovery"))
+                    .send()
+                    .await
+                    .expect_err("released loopback port must reject recovery");
+                Err(CodexAuthError::Transport(source).into())
+            }
+            RecoveryFailure::Service => Err(CodexAuthError::HttpStatus(503).into()),
+        }
+    }
+
+    async fn attest_binding(
+        &self,
+        expected: &CredentialBinding,
+    ) -> Result<Self::IdentityLease, CodexUsageError> {
+        validate_binding(expected)?;
+        Ok(())
     }
 }
 
@@ -151,6 +289,34 @@ async fn mock_server(state: MockState) -> (String, tokio::task::JoinHandle<()>) 
     let address = listener.local_addr().unwrap();
     let app = Router::new()
         .route("/backend-api/wham/usage", get(usage_fixture))
+        .with_state(state);
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{address}/backend-api/wham/usage"), task)
+}
+
+#[derive(Clone)]
+struct PausedUsageState {
+    requests: Arc<AtomicUsize>,
+    request_reached: Arc<tokio::sync::Barrier>,
+    release_response: Arc<tokio::sync::Barrier>,
+}
+
+async fn paused_usage_fixture(State(state): State<PausedUsageState>) -> impl IntoResponse {
+    state.requests.fetch_add(1, Ordering::SeqCst);
+    state.request_reached.wait().await;
+    state.release_response.wait().await;
+    axum::Json(json!({ "plan_type": "network-plan" }))
+}
+
+async fn paused_usage_server(state: PausedUsageState) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/backend-api/wham/usage", get(paused_usage_fixture))
         .with_state(state);
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -326,56 +492,16 @@ async fn upstream_error_body_is_never_exposed() {
 }
 
 #[test]
-fn request_headers_rejects_unexpected_and_xai_headers() {
-    for (name, value) in [
-        ("X-XAI-Token-Auth", "session"),
-        ("x-userid", "user"),
-        ("X-Future-Provider-Header", "value"),
-    ] {
-        let auth = xai_grok_tools::types::RequestAuth::for_provider_snapshot(
-            OPENAI_CODEX_PROVIDER_ID,
-            xai_grok_tools::types::RequestCredentialSnapshot::new("record-id", 1),
-            [
-                ("Authorization".to_owned(), "Bearer secret".to_owned()),
-                ("ChatGPT-Account-ID".to_owned(), "account-id".to_owned()),
-                (name.to_owned(), value.to_owned()),
-            ],
-        );
-
-        assert!(matches!(
-            request_headers(&auth),
-            Err(CodexUsageError::InvalidAuth)
-        ));
-    }
-}
-
-#[test]
-fn request_headers_accepts_only_exact_true_fedramp_value() {
-    let auth = xai_grok_tools::types::RequestAuth::for_provider_snapshot(
-        OPENAI_CODEX_PROVIDER_ID,
-        xai_grok_tools::types::RequestCredentialSnapshot::new("record-id", 1),
-        [
-            ("Authorization".to_owned(), "Bearer secret".to_owned()),
-            ("ChatGPT-Account-ID".to_owned(), "account-id".to_owned()),
-            ("X-OpenAI-Fedramp".to_owned(), "false".to_owned()),
-        ],
-    );
-
-    assert!(matches!(
-        request_headers(&auth),
-        Err(CodexUsageError::InvalidAuth)
-    ));
-
-    let valid = xai_grok_tools::types::RequestAuth::for_provider_snapshot(
-        OPENAI_CODEX_PROVIDER_ID,
-        xai_grok_tools::types::RequestCredentialSnapshot::new("record-id", 1),
-        [
-            ("Authorization".to_owned(), "Bearer secret".to_owned()),
-            ("ChatGPT-Account-ID".to_owned(), "account-id".to_owned()),
-            ("X-OpenAI-Fedramp".to_owned(), "true".to_owned()),
-        ],
-    );
-    let headers = request_headers(&valid).unwrap();
+fn usage_headers_come_only_from_the_common_sensitive_snapshot() {
+    let snapshot = CodexAuthSnapshot::new(
+        "sentinel-access-token",
+        "sentinel-account-id",
+        None,
+        binding("record-id", 1),
+        true,
+    )
+    .unwrap();
+    let headers = request_headers(&snapshot).unwrap();
     for name in [
         reqwest::header::AUTHORIZATION,
         HeaderName::from_static("chatgpt-account-id"),
@@ -383,6 +509,11 @@ fn request_headers_accepts_only_exact_true_fedramp_value() {
     ] {
         assert!(headers[&name].is_sensitive(), "{name} must be redacted");
     }
+    assert!(headers.get("x-xai-token-auth").is_none());
+    assert!(headers.get("x-userid").is_none());
+    let rendered = format!("{headers:?}");
+    assert!(!rendered.contains("sentinel-access-token"));
+    assert!(!rendered.contains("sentinel-account-id"));
 }
 
 #[tokio::test]
@@ -471,6 +602,226 @@ async fn no_session_usage_snapshots_current_record_and_rejects_account_switch() 
         1,
         "a switched account must be rejected before cache or HTTP access"
     );
+    assert!(
+        cache.lock().await.entry.is_none(),
+        "an account failure must evict prior-record usage"
+    );
+}
+
+async fn assert_session_cache_rechecks_disk(stale: bool, replace_record: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodexCredentialStore::from_auth_path(dir.path().join("auth.json"));
+    let credentials = credentials_for_test(
+        "session-account",
+        "session-refresh",
+        Utc::now() + Duration::hours(1),
+    );
+    let expected = credentials.credential_binding();
+    store.save(credentials).await.unwrap();
+    let manager = CodexAuthManager::from_store(store.clone()).unwrap();
+
+    let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let state = MockState {
+        requests: requests.clone(),
+        reject_first: false,
+        response_status: StatusCode::OK,
+    };
+    let (url, task) = mock_server(state).await;
+    let age = if stale {
+        USAGE_CACHE_TTL + std::time::Duration::from_secs(1)
+    } else {
+        std::time::Duration::ZERO
+    };
+    let cache = tokio::sync::Mutex::new(cached_usage(expected.clone(), age));
+
+    if replace_record {
+        store
+            .save(credentials_for_test(
+                "replacement-account",
+                "replacement-refresh",
+                Utc::now() + Duration::hours(1),
+            ))
+            .await
+            .unwrap();
+    } else {
+        assert!(store.remove().await.unwrap().is_some());
+    }
+
+    let error = fetch_codex_usage_for_session_from_url(
+        &reqwest::Client::new(),
+        &manager,
+        &url,
+        &expected,
+        true,
+        &cache,
+    )
+    .await
+    .expect_err("a disk credential change must reject cached session usage");
+    task.abort();
+
+    if replace_record {
+        assert!(matches!(
+            error,
+            CodexUsageError::Auth(CodexAuthError::AccountChanged)
+        ));
+    } else {
+        assert!(matches!(
+            error,
+            CodexUsageError::Auth(CodexAuthError::NotLoggedIn)
+        ));
+    }
+    assert!(
+        requests.lock().is_empty(),
+        "disk verification must fail before any usage request"
+    );
+    assert!(
+        cache.lock().await.entry.is_none(),
+        "prior-record usage must be evicted after disk verification fails"
+    );
+}
+
+#[tokio::test]
+async fn active_session_fresh_cache_rechecks_disk_before_returning() {
+    assert_session_cache_rechecks_disk(false, false).await;
+    assert_session_cache_rechecks_disk(false, true).await;
+}
+
+#[tokio::test]
+async fn active_session_stale_cache_rechecks_disk_before_fallback() {
+    assert_session_cache_rechecks_disk(true, false).await;
+    assert_session_cache_rechecks_disk(true, true).await;
+}
+
+async fn assert_fresh_cache_transition_is_linearized(transition: DiskTransition) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodexCredentialStore::from_auth_path(dir.path().join("auth.json"));
+    let credentials = credentials_for_test(
+        "session-account",
+        "session-refresh",
+        Utc::now() + Duration::hours(1),
+    );
+    let expected = credentials.credential_binding();
+    store.save(credentials).await.unwrap();
+    let manager = Arc::new(CodexAuthManager::from_store(store.clone()).unwrap());
+
+    // This is the active-session precheck. The test then pauses the final
+    // cache-return attestation so the disk transition deterministically wins.
+    assert!(manager.current_verified().is_ok());
+    let attestation_reached = Arc::new(tokio::sync::Barrier::new(2));
+    let resume_attestation = Arc::new(tokio::sync::Barrier::new(2));
+    let auth = PausingManagerAuth {
+        manager,
+        attestation_reached: attestation_reached.clone(),
+        resume_attestation: resume_attestation.clone(),
+    };
+    let cache = Arc::new(tokio::sync::Mutex::new(cached_usage(
+        expected.clone(),
+        std::time::Duration::ZERO,
+    )));
+    let fetch_cache = cache.clone();
+    let fetch = tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        fetch_cached_from_url(
+            &client,
+            &auth,
+            "http://127.0.0.1:9/backend-api/wham/usage",
+            &expected,
+            UsageFetchMode::Silent,
+            &fetch_cache,
+        )
+        .await
+    });
+
+    attestation_reached.wait().await;
+    apply_disk_transition(&store, transition).await;
+    resume_attestation.wait().await;
+    let error = fetch
+        .await
+        .unwrap()
+        .expect_err("a transition that wins before cache attestation must reject usage");
+
+    match transition {
+        DiskTransition::Logout => assert!(matches!(
+            error,
+            CodexUsageError::Auth(CodexAuthError::NotLoggedIn)
+        )),
+        DiskTransition::Replace => assert!(matches!(
+            error,
+            CodexUsageError::Auth(CodexAuthError::AccountChanged)
+        )),
+    }
+    assert!(cache.lock().await.entry.is_none());
+}
+
+#[tokio::test]
+async fn fresh_cache_return_is_linearized_against_logout_and_replacement() {
+    for transition in [DiskTransition::Logout, DiskTransition::Replace] {
+        assert_fresh_cache_transition_is_linearized(transition).await;
+    }
+}
+
+async fn assert_in_flight_result_transition_is_linearized(transition: DiskTransition) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodexCredentialStore::from_auth_path(dir.path().join("auth.json"));
+    let credentials = credentials_for_test(
+        "session-account",
+        "session-refresh",
+        Utc::now() + Duration::hours(1),
+    );
+    let expected = credentials.credential_binding();
+    store.save(credentials).await.unwrap();
+    let manager = Arc::new(CodexAuthManager::from_store(store.clone()).unwrap());
+
+    let state = PausedUsageState {
+        requests: Arc::new(AtomicUsize::new(0)),
+        request_reached: Arc::new(tokio::sync::Barrier::new(2)),
+        release_response: Arc::new(tokio::sync::Barrier::new(2)),
+    };
+    let (url, server) = paused_usage_server(state.clone()).await;
+    let cache = Arc::new(tokio::sync::Mutex::new(CodexUsageCache::default()));
+    let fetch_cache = cache.clone();
+    let fetch_manager = manager.clone();
+    let fetch = tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        fetch_codex_usage_for_session_from_url(
+            &client,
+            &fetch_manager,
+            &url,
+            &expected,
+            false,
+            &fetch_cache,
+        )
+        .await
+    });
+
+    state.request_reached.wait().await;
+    apply_disk_transition(&store, transition).await;
+    state.release_response.wait().await;
+    let error = fetch
+        .await
+        .unwrap()
+        .expect_err("a transition that wins during HTTP must reject the old result");
+    server.abort();
+
+    match transition {
+        DiskTransition::Logout => assert!(matches!(
+            error,
+            CodexUsageError::Auth(CodexAuthError::NotLoggedIn)
+        )),
+        DiskTransition::Replace => assert!(matches!(
+            error,
+            CodexUsageError::Auth(CodexAuthError::AccountChanged)
+        )),
+    }
+    assert_eq!(state.requests.load(Ordering::SeqCst), 1);
+    assert!(cache.lock().await.entry.is_none());
+}
+
+#[tokio::test]
+async fn in_flight_result_publication_is_linearized_against_logout_and_replacement() {
+    for transition in [DiskTransition::Logout, DiskTransition::Replace] {
+        assert_in_flight_result_transition_is_linearized(transition).await;
+    }
 }
 
 #[tokio::test]
@@ -561,6 +912,173 @@ async fn usage_cache_never_crosses_credential_record_boundaries() {
         cache.lock().await.entry.is_none(),
         "record A data must be evicted before record B is considered"
     );
+}
+
+#[tokio::test]
+async fn invalid_binding_never_uses_or_retains_cached_usage() {
+    let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let state = MockState {
+        requests: requests.clone(),
+        reject_first: false,
+        response_status: StatusCode::OK,
+    };
+    let (url, task) = mock_server(state).await;
+    let auth = FakeAuth::new();
+    let expected = binding("", 1);
+    let cache = tokio::sync::Mutex::new(cached_usage(
+        expected.clone(),
+        USAGE_CACHE_TTL + std::time::Duration::from_secs(1),
+    ));
+
+    let error = fetch_cached_from_url(
+        &reqwest::Client::new(),
+        &auth,
+        &url,
+        &expected,
+        UsageFetchMode::Silent,
+        &cache,
+    )
+    .await
+    .expect_err("an invalid binding must not receive stale usage");
+    task.abort();
+
+    assert!(matches!(
+        error,
+        CodexUsageError::Auth(CodexAuthError::AccountChanged)
+    ));
+    assert!(requests.lock().is_empty());
+    assert!(cache.lock().await.entry.is_none());
+}
+
+#[tokio::test]
+async fn transient_service_failure_can_use_same_record_stale_usage() {
+    let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let state = MockState {
+        requests: requests.clone(),
+        reject_first: false,
+        response_status: StatusCode::SERVICE_UNAVAILABLE,
+    };
+    let (url, task) = mock_server(state).await;
+    let auth = FakeAuth::new();
+    let expected = binding("record-id", 1);
+    let cache = tokio::sync::Mutex::new(cached_usage(
+        expected.clone(),
+        USAGE_CACHE_TTL + std::time::Duration::from_secs(1),
+    ));
+    let expected_snapshot = cache.lock().await.entry.as_ref().unwrap().snapshot.clone();
+
+    let stale = fetch_cached_from_url(
+        &reqwest::Client::new(),
+        &auth,
+        &url,
+        &expected,
+        UsageFetchMode::Silent,
+        &cache,
+    )
+    .await
+    .unwrap();
+    task.abort();
+
+    assert_eq!(stale, expected_snapshot);
+    assert_eq!(requests.lock().len(), 1);
+    assert!(cache.lock().await.entry.is_some());
+}
+
+async fn assert_recovery_failure_preserves_rejection(failure: RecoveryFailure) {
+    let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let state = MockState {
+        requests: requests.clone(),
+        reject_first: false,
+        response_status: StatusCode::UNAUTHORIZED,
+    };
+    let (url, task) = mock_server(state).await;
+    let auth = RecoveryFailingAuth { failure };
+    let expected = binding("record-id", 1);
+    let cache = tokio::sync::Mutex::new(cached_usage(
+        expected.clone(),
+        USAGE_CACHE_TTL + std::time::Duration::from_secs(1),
+    ));
+
+    let error = fetch_cached_from_url(
+        &reqwest::Client::new(),
+        &auth,
+        &url,
+        &expected,
+        UsageFetchMode::Silent,
+        &cache,
+    )
+    .await
+    .expect_err("failed recovery after rejection must never unlock stale usage");
+    task.abort();
+
+    assert!(matches!(error, CodexUsageError::CredentialRejected));
+    assert!(!usage_error_allows_stale(&error));
+    assert_eq!(requests.lock().len(), 1);
+    assert!(cache.lock().await.entry.is_none());
+}
+
+#[tokio::test]
+async fn usage_401_then_recovery_transport_never_returns_stale_usage() {
+    assert_recovery_failure_preserves_rejection(RecoveryFailure::Transport).await;
+}
+
+#[tokio::test]
+async fn usage_401_then_recovery_service_failure_never_returns_stale_usage() {
+    assert_recovery_failure_preserves_rejection(RecoveryFailure::Service).await;
+}
+
+#[tokio::test]
+async fn final_authorization_failures_never_use_or_retain_stale_usage() {
+    for status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+        let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let state = MockState {
+            requests: requests.clone(),
+            reject_first: false,
+            response_status: status,
+        };
+        let (url, task) = mock_server(state).await;
+        let auth = FakeAuth::new();
+        let expected = binding("record-id", 1);
+        let cache = tokio::sync::Mutex::new(cached_usage(
+            expected.clone(),
+            USAGE_CACHE_TTL + std::time::Duration::from_secs(1),
+        ));
+
+        let error = fetch_cached_from_url(
+            &reqwest::Client::new(),
+            &auth,
+            &url,
+            &expected,
+            UsageFetchMode::Silent,
+            &cache,
+        )
+        .await
+        .expect_err("an authorization failure must not receive stale usage");
+        task.abort();
+
+        if status == StatusCode::UNAUTHORIZED {
+            assert!(matches!(error, CodexUsageError::CredentialRejected));
+        } else {
+            assert!(matches!(
+                error,
+                CodexUsageError::HttpStatus(code) if code == status.as_u16()
+            ));
+        }
+        let expected_requests = if status == StatusCode::UNAUTHORIZED {
+            2
+        } else {
+            1
+        };
+        assert_eq!(requests.lock().len(), expected_requests);
+        assert!(cache.lock().await.entry.is_none());
+    }
+}
+
+#[test]
+fn invalid_auth_is_not_stale_eligible_and_invalidates_identity_cache() {
+    let error = CodexUsageError::InvalidAuth;
+    assert!(!usage_error_allows_stale(&error));
+    assert!(usage_error_invalidates_cached_identity(&error));
 }
 
 #[tokio::test]

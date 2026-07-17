@@ -107,6 +107,8 @@ pub struct CodexCredentials {
 
 impl fmt::Debug for CodexCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Identity and routing metadata are omitted entirely, including
+        // presence bits; retain only safe lifecycle/type diagnostics.
         f.debug_struct("CodexCredentials")
             .field("schema_version", &self.schema_version)
             .field("provider", &self.provider)
@@ -116,7 +118,6 @@ impl fmt::Debug for CodexCredentials {
             .field("updated_at", &self.updated_at)
             .field("last_refresh_at", &self.last_refresh_at)
             .field("revision", &self.revision)
-            .field("is_fedramp", &self.is_fedramp)
             .field("has_access_token", &true)
             .field("has_refresh_token", &true)
             .field("has_id_token", &true)
@@ -345,7 +346,7 @@ struct AuthClaims {
     #[serde(default)]
     chatgpt_account_id: Option<String>,
     #[serde(default)]
-    chatgpt_account_is_fedramp: bool,
+    chatgpt_account_is_fedramp: Option<bool>,
 }
 
 struct TokenIdentity {
@@ -381,6 +382,16 @@ fn token_identity(id_token: &str, access_token: &str) -> Result<TokenIdentity, C
     let access = decode_claims(access_token)?;
     let id_auth = id.auth.unwrap_or_default();
     let access_auth = access.auth.unwrap_or_default();
+    let is_fedramp = match (
+        id_auth.chatgpt_account_is_fedramp,
+        access_auth.chatgpt_account_is_fedramp,
+    ) {
+        (Some(from_id), Some(from_access)) if from_id != from_access => {
+            return Err(CodexAuthError::AccountChanged);
+        }
+        (Some(value), _) | (_, Some(value)) => value,
+        (None, None) => false,
+    };
 
     if let (Some(from_id), Some(from_access)) = (
         id_auth.chatgpt_account_id.as_deref(),
@@ -417,7 +428,7 @@ fn token_identity(id_token: &str, access_token: &str) -> Result<TokenIdentity, C
         user_id: id_user.or(access_user),
         email,
         plan_type: id_auth.chatgpt_plan_type.or(access_auth.chatgpt_plan_type),
-        is_fedramp: id_auth.chatgpt_account_is_fedramp || access_auth.chatgpt_account_is_fedramp,
+        is_fedramp,
         access_expires_at,
     })
 }
@@ -490,6 +501,32 @@ mod tests {
         }
     }
 
+    fn response_with_fedramp_claims(
+        id_fedramp: Option<bool>,
+        access_fedramp: Option<bool>,
+    ) -> TokenResponse {
+        let mut id_auth = serde_json::json!({ "chatgpt_account_id": "claim-account" });
+        if let Some(value) = id_fedramp {
+            id_auth["chatgpt_account_is_fedramp"] = serde_json::Value::Bool(value);
+        }
+        let mut access_auth = serde_json::json!({ "chatgpt_account_id": "claim-account" });
+        if let Some(value) = access_fedramp {
+            access_auth["chatgpt_account_is_fedramp"] = serde_json::Value::Bool(value);
+        }
+
+        TokenResponse {
+            id_token: Some(jwt_for_test(serde_json::json!({
+                "https://api.openai.com/auth": id_auth,
+            }))),
+            access_token: Some(jwt_for_test(serde_json::json!({
+                "exp": (Utc::now() + Duration::hours(1)).timestamp(),
+                "https://api.openai.com/auth": access_auth,
+            }))),
+            refresh_token: Some("claim-refresh".to_owned()),
+            expires_in: Some(3600),
+        }
+    }
+
     #[test]
     fn extracts_account_user_plan_fedramp_and_expiry() {
         let credentials = CodexCredentials::from_token_response(
@@ -506,6 +543,64 @@ mod tests {
         assert!(credentials.expires_at > Utc::now() + Duration::minutes(50));
         assert_eq!(credentials.revision, 1);
         assert!(!credentials.credential_id().is_empty());
+    }
+
+    #[test]
+    fn equal_fedramp_claims_are_accepted() {
+        let enabled = CodexCredentials::from_token_response(
+            response_with_fedramp_claims(Some(true), Some(true)),
+            None,
+            None,
+        )
+        .unwrap();
+        let disabled = CodexCredentials::from_token_response(
+            response_with_fedramp_claims(Some(false), Some(false)),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(enabled.is_fedramp);
+        assert!(!disabled.is_fedramp);
+    }
+
+    #[test]
+    fn one_present_fedramp_claim_is_authoritative() {
+        let from_id = CodexCredentials::from_token_response(
+            response_with_fedramp_claims(Some(true), None),
+            None,
+            None,
+        )
+        .unwrap();
+        let from_access = CodexCredentials::from_token_response(
+            response_with_fedramp_claims(None, Some(true)),
+            None,
+            None,
+        )
+        .unwrap();
+        let explicit_disabled = CodexCredentials::from_token_response(
+            response_with_fedramp_claims(Some(false), None),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(from_id.is_fedramp);
+        assert!(from_access.is_fedramp);
+        assert!(!explicit_disabled.is_fedramp);
+    }
+
+    #[test]
+    fn conflicting_fedramp_claims_fail_closed() {
+        for response in [
+            response_with_fedramp_claims(Some(true), Some(false)),
+            response_with_fedramp_claims(Some(false), Some(true)),
+        ] {
+            assert!(matches!(
+                CodexCredentials::from_token_response(response, None, None),
+                Err(CodexAuthError::AccountChanged)
+            ));
+        }
     }
 
     #[test]
@@ -589,6 +684,9 @@ mod tests {
         let id_token = credentials.id_token.expose_secret().to_owned();
         let credential_id = credentials.credential_id().to_owned();
         let credential_debug = format!("{credentials:?}");
+        let mut alternate_routing = credentials.clone();
+        alternate_routing.is_fedramp = !alternate_routing.is_fedramp;
+        let alternate_debug = format!("{alternate_routing:?}");
         let secret_debug = format!("{:?}", SecretString::new("sentinel-secret").unwrap());
 
         for rendered in [&response_debug, &credential_debug, &secret_debug] {
@@ -600,16 +698,37 @@ mod tests {
             ] {
                 assert!(
                     !rendered.contains(forbidden),
-                    "leaked {forbidden}: {rendered}"
+                    "credential debug output exposed private material"
                 );
             }
             for forbidden in [&access_token, &id_token, &credential_id] {
                 assert!(
                     !rendered.contains(forbidden),
-                    "leaked credential material: {rendered}"
+                    "credential debug output exposed credential material"
                 );
             }
         }
-        assert_eq!(secret_debug, "<redacted>");
+        assert!(
+            credential_debug == alternate_debug,
+            "credential debug output changed with private routing metadata"
+        );
+        assert!(credential_debug.starts_with("CodexCredentials"));
+        for diagnostic in [
+            "schema_version",
+            "provider",
+            "expires_at",
+            "revision",
+            "has_access_token",
+        ] {
+            assert!(credential_debug.contains(diagnostic));
+        }
+        assert!(
+            !credential_debug.to_ascii_lowercase().contains("fedramp"),
+            "credential debug output named private routing metadata"
+        );
+        assert!(
+            secret_debug == "<redacted>",
+            "secret debug output must be fully redacted"
+        );
     }
 }
