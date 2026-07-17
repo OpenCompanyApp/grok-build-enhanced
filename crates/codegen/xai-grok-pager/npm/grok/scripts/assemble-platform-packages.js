@@ -4,6 +4,7 @@
 // For each supported (platform, arch) target this:
 //   1. Brotli-compresses the built binary into `../grok-<platform>/bin/<bin>.br`
 //   2. Stamps the sub-package's version to match the meta package
+//   3. Copies product notices and the full Warp themes license
 //
 // Each per-platform package is its own npm publish target. The meta package
 // (`@xai-official/grok`) lists all six as `optionalDependencies` pinned to
@@ -27,9 +28,30 @@ const brotliCompress = promisify(zlib.brotliCompress);
 const xaiRoot = process.env.XAI_ROOT || path.resolve(__dirname, '..', '..', '..', '..', '..');
 const npmRoot = path.resolve(__dirname, '..', '..');
 
-const NOTICES_SOURCE = path.resolve(
+const TOOL_NOTICES_SOURCE = path.resolve(
     npmRoot, '..', '..', 'xai-grok-tools', 'THIRD_PARTY_NOTICES.md');
+const SHELL_NOTICES_SOURCE = path.resolve(
+    npmRoot, '..', '..', 'xai-grok-shell', 'THIRD_PARTY_NOTICES.md');
+const PAGER_RENDER_NOTICES_SOURCE = path.resolve(
+    npmRoot, '..', '..', 'xai-grok-pager-render', 'THIRD_PARTY_NOTICES.md');
+const NOTICES_SOURCES = [
+    {
+        source: TOOL_NOTICES_SOURCE,
+        requiredMarker: 'src/implementations/grok_build/web_search/',
+    },
+    {
+        source: SHELL_NOTICES_SOURCE,
+        requiredMarker: 'src/auth/codex/',
+    },
+    {
+        source: PAGER_RENDER_NOTICES_SOURCE,
+        requiredMarker: 'warpdotdev/themes',
+    },
+];
 const NOTICES_NAME = 'THIRD_PARTY_NOTICES.md';
+const WARP_THEMES_LICENSE_SOURCE = path.resolve(
+    npmRoot, '..', '..', 'xai-grok-pager-render', 'assets', 'warp-themes', 'LICENSE');
+const WARP_THEMES_LICENSE_NAME = 'WARP_THEMES_LICENSE';
 
 const META_PKG_JSON = path.resolve(__dirname, '..', 'package.json');
 const meta = JSON.parse(fs.readFileSync(META_PKG_JSON, 'utf8'));
@@ -55,14 +77,45 @@ async function packPlatform({ platform, arch, envVar, defaultSource, binName }) 
 
     // Stamp the sub-package's version to match the meta package.
     const subPkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+    for (const requiredFile of [NOTICES_NAME, WARP_THEMES_LICENSE_NAME]) {
+        if (!Array.isArray(subPkg.files) || !subPkg.files.includes(requiredFile)) {
+            console.error(
+                `[assemble] ${path.basename(pkgDir)} package.json must include ${requiredFile}`);
+            return false;
+        }
+    }
     subPkg.version = VERSION;
     fs.writeFileSync(pkgJsonPath, JSON.stringify(subPkg, null, 4) + '\n');
 
-    if (!fs.existsSync(NOTICES_SOURCE)) {
-        console.error(`[assemble] Missing third-party notices file: ${NOTICES_SOURCE}`);
+    for (const { source, requiredMarker } of NOTICES_SOURCES) {
+        if (!fs.existsSync(source)) {
+            console.error(`[assemble] Missing third-party notices file: ${source}`);
+            return false;
+        }
+        if (!fs.readFileSync(source, 'utf8').includes(requiredMarker)) {
+            console.error(
+                `[assemble] Third-party notices file is missing required content: ${source}`);
+            return false;
+        }
+    }
+    if (!fs.existsSync(WARP_THEMES_LICENSE_SOURCE)) {
+        console.error(`[assemble] Missing Warp themes license: ${WARP_THEMES_LICENSE_SOURCE}`);
         return false;
     }
-    fs.copyFileSync(NOTICES_SOURCE, path.join(pkgDir, NOTICES_NAME));
+    const notices = NOTICES_SOURCES
+        .map(({ source }) => fs.readFileSync(source, 'utf8').trimEnd())
+        .join('\n\n---\n\n') + '\n';
+    for (const { requiredMarker } of NOTICES_SOURCES) {
+        if (!notices.includes(requiredMarker)) {
+            console.error(
+                `[assemble] Combined third-party notices omitted required marker: ${requiredMarker}`);
+            return false;
+        }
+    }
+    fs.writeFileSync(path.join(pkgDir, NOTICES_NAME), notices);
+    fs.copyFileSync(
+        WARP_THEMES_LICENSE_SOURCE,
+        path.join(pkgDir, WARP_THEMES_LICENSE_NAME));
 
     // Brotli-compress into the sub-package's bin/.
     const outBr = path.join(pkgDir, 'bin', `${binName}.br`);

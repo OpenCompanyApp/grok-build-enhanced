@@ -530,7 +530,7 @@ grok -p "Your prompt here"
 | `--tools <TOOLS>`       | Allowlist of built-in tools (comma-separated). Only the listed tools will be available; all others are removed. Headless mode only. |
 | `--disallowed-tools <TOOLS>` | Denylist of built-in tools to remove (comma-separated). Listed tools are stripped from the agent's toolset. Supports `Agent` / `Agent(type)` entries to restrict subagent spawning (see below). Headless mode only. |
 | `--max-turns <N>`       | Maximum number of agentic turns before stopping       |
-| `--reasoning-effort` / `--effort <LEVEL>` | Reasoning effort (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; also per-model menu ids like `deep`). TUI and headless. |
+| `--reasoning-effort` / `--effort <LEVEL>` | Reasoning effort (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`; accepted levels are gated by the selected model, and per-model menu ids like `deep` also work). TUI and headless. |
 | `--permission-mode <MODE>` | Permission mode for tool approvals                 |
 | `--allow <RULE>`        | Permission allow rule with glob patterns (repeatable). See below. |
 | `--deny <RULE>`         | Permission deny rule with glob patterns (repeatable). See below.  |

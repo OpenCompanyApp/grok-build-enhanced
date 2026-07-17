@@ -140,12 +140,31 @@ Aliases: `/m`
 
 ### `/effort <level>`
 
-Set reasoning effort on the **current** model without re-selecting it. Levels: `low`, `medium`, `high`, `xhigh`. Only works when the active model supports reasoning effort.
+Set reasoning effort on the **current** model without re-selecting it. The fallback levels are `low`, `medium`, `high`, and `xhigh`; authenticated model catalogs can additionally expose `max`, `ultra`, or provider-specific menu labels. Only levels advertised by the active model are accepted.
 
 ```
 /effort high
 /effort low
 ```
+
+### `/fast [on|off|status]`
+
+Enable, disable, or inspect Fast mode for the active authenticated ChatGPT
+Codex session:
+
+```
+/fast             # toggle
+/fast on
+/fast off
+/fast status
+```
+
+Fast mode increases supported-model speed by 1.5x and consumes ChatGPT credits
+at a higher rate than Standard mode. Current Codex behavior charges GPT-5.6 and
+GPT-5.5 at 2.5x the Standard credit rate and GPT-5.4 at 2x. It applies only to
+supported models when signed in with ChatGPT; xAI sessions and API-key billing
+do not use the ChatGPT credit multipliers. The authenticated model service
+remains authoritative for model availability.
 
 ### `/always-approve` and `/auto`
 
@@ -499,10 +518,18 @@ Log out and return to the login screen.
 
 ### `/usage`
 
-View credit usage or manage billing.
+View usage for the active model provider or open that provider's management
+page. In a ChatGPT Codex subscription session this shows the provider-reported
+rate-limit windows and resets, purchased-credit state, and any available banked
+rate-limit reset count. It also shows a separately labeled, informational
+standard-API token-price comparison for locally observed session usage; that
+comparison is not subscription spend and omits fees the local token ledger
+cannot observe. When auxiliary or compaction calls were not observable, the
+comparison is explicitly shown as an observed lower bound.
 
 ```
 /usage
+/usage manage
 ```
 
 ### `/privacy`

@@ -1,10 +1,11 @@
 # Third-Party Notices
 
-This crate contains code ported from, or derived from, the open-source
-projects listed under [Ported source code](#ported-source-code), and its
-release builds embed prebuilt third-party tool binaries listed under
+This crate notice covers code ported from, or derived from, the open-source
+projects listed under [Ported source code](#ported-source-code), and prebuilt
+third-party tool binaries listed under
 [Bundled tool binaries](#bundled-tool-binaries). The original license terms
-are reproduced below, as required by those licenses.
+are reproduced or shipped alongside this notice, as required by those
+licenses.
 
 Ported files have been modified from their originals (translated between
 languages, adapted to this crate's `Tool` trait and runtime, and extended);
@@ -19,6 +20,25 @@ The tool implementations under `src/implementations/codex/` (`apply_patch`,
 `grep_files`, `list_dir`, `read_file`) are ported from the
 [openai/codex](https://github.com/openai/codex) project
 (`codex-rs/core/src/tools/handlers/`).
+
+The ChatGPT Codex backend branches under
+`src/implementations/grok_build/image_gen/` and
+`src/implementations/grok_build/image_edit/` adapt the current public client
+contract and image handling from `codex-rs/codex-api/src/endpoint/images.rs`,
+`codex-rs/ext/image-generation/src/tool.rs`, and
+`codex-rs/utils/image/src/lib.rs`. They have been substantially modified for
+Grok Build's tool runtime, provider-scoped dynamic authentication, local media
+storage, response limits, sandbox-aware reads, and one-shot recovery.
+
+The ChatGPT Codex subscription branch under
+`src/implementations/web_search/` and the structured command schema under
+`src/implementations/grok_build/web_search/` adapt the standalone-search
+contract from `codex-rs/codex-api/src/search.rs`,
+`codex-rs/codex-api/src/endpoint/search.rs`, and
+`codex-rs/ext/web-search/`. They have been substantially modified for Grok
+Build's flat function-tool runtime, existing web-search output/TUI types,
+provider-scoped dynamic authentication, bounded response handling, and
+one-shot credential recovery.
 
 Copyright 2025 OpenAI
 

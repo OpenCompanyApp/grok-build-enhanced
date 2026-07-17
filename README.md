@@ -1,3 +1,11 @@
+> [!IMPORTANT]
+> This is an unofficial OpenCompanyApp fork of Grok Build. It is not affiliated
+> with, endorsed by, or supported by OpenAI, xAI, or SpaceXAI. Native ChatGPT
+> Codex subscription support in this fork follows current public open-source
+> Codex client behavior and uses an experimental backend contract that may
+> change without notice. The x.ai installer below installs the official upstream
+> build, not this fork; build this repository from source to use fork features.
+
 <div align="center">
 
 <h1>
@@ -70,6 +78,37 @@ The binary artifact is named `xai-grok-pager`; official installs ship it as
 `grok`. On first launch it opens your browser to authenticate — see the
 [authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
 
+### ChatGPT Codex subscription (unofficial fork)
+
+This fork keeps Grok Build's TUI, sessions, agent loop, permissions, and tools
+while allowing an eligible ChatGPT account to supply entitled Codex models:
+
+```sh
+grok login --provider openai-codex
+grok models --provider openai-codex
+grok -m openai-codex/<entitled-model-slug>
+```
+
+Use `--device-auth` on the login command in a headless environment, and run
+`grok logout --provider openai-codex` to disconnect ChatGPT without changing
+the xAI login. In an active supported Codex session, use `/fast` to toggle or
+`/fast on`, `/fast off`, and `/fast status` explicitly; the preference is
+persisted for later sessions and never affects xAI or custom-provider requests. Fast is roughly 1.5x Standard
+speed and currently consumes subscription credits at a higher rate (2.5x for
+GPT-5.6/5.5 and 2x for GPT-5.4). Models, service tiers, and effort menus are
+discovered from the authenticated account rather than hardcoded. Current
+catalogs may advertise GPT-5.6 Sol and Terra through Ultra, and Luna through
+Max. Catalog image-input capability
+controls reading attachments; the separately authenticated `gpt-image-2`
+generation/editing tools are exposed whenever their feature gates are enabled.
+Codex sessions also expose provider-scoped standalone web search and navigation
+(`search_query`, `image_query`, `open`, `click`, `find`, PDF screenshots, and
+the current utility lookups) without `XAI_API_KEY`. Local `web_fetch` defaults
+on for Codex while retaining its SSRF and fixed-domain protections; use search
+`open`/`click` for result domains that are not locally allowlisted.
+See the authentication guide for the experimental-contract and code-mode
+compatibility limitations.
+
 ## Documentation
 
 Full online documentation is available at
@@ -125,4 +164,7 @@ Third-party and vendored code remains under its original licenses. See:
 - [`crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md`](crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md)
   — crate-local notice for the codex and opencode ports (license texts +
   Apache §4(b) change notice)
-- [`third_party/NOTICE`](third_party/NOTICE) — vendored Mermaid-stack index
+- [`crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md`](crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md)
+  — crate-local notice for the packaged Warp theme corpus
+- [`third_party/NOTICE`](third_party/NOTICE) — vendored source/data index,
+  including the crate-local Warp theme corpus

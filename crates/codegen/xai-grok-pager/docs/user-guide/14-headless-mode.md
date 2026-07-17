@@ -33,7 +33,7 @@ Grok processes the prompt, runs any necessary tools, and prints the result to st
 | `--tools <TOOLS>`       | Allowlist of built-in tools (comma-separated). MCP meta-tools remain available unless denied. Headless only. |
 | `--disallowed-tools <TOOLS>` | Denylist of built-in tools to remove (comma-separated). Supports `Agent` entries. Headless only. |
 | `--max-turns <N>`       | Maximum number of agentic turns before stopping. Headless only. |
-| `--reasoning-effort` / `--effort <LEVEL>` | Reasoning effort for reasoning models. Canonical levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (alias of `xhigh`). Also accepts per-model menu option ids (e.g. `deep` → mapped wire value), same as `/effort`. Works in TUI and headless. |
+| `--reasoning-effort` / `--effort <LEVEL>` | Reasoning effort for reasoning models. Canonical levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`; availability is gated by the selected model. Also accepts per-model menu option ids (e.g. `deep` → mapped wire value), same as `/effort`. Works in TUI and headless. |
 | `--permission-mode <MODE>` | Permission mode. `bypassPermissions` enables always-approve via this flag (see [22-permissions-and-safety.md](22-permissions-and-safety.md)); for deny-by-default use `defaultMode` in `.claude/settings.json`. |
 | `--allow <RULE>`        | Permission allow rule with glob patterns (repeatable). Works in TUI and headless. |
 | `--deny <RULE>`         | Permission deny rule with glob patterns (repeatable). Works in TUI and headless. |
