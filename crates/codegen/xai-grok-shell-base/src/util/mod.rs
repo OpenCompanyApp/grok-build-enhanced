@@ -60,6 +60,26 @@ pub fn is_cli_chat_proxy_url(url: &str) -> bool {
     if matches_trusted_base_url(url, crate::env::PROD_CLI_CHAT_PROXY_BASE_URL) {
         return true;
     }
+    #[cfg(feature = "test-support")]
+    {
+        // Downstream integration tests exercise the authenticated proxy path
+        // against an ephemeral loopback server. This branch is absent from
+        // shipped builds and still rejects non-loopback or HTTPS-spoofed hosts.
+        if let Ok(candidate) = reqwest::Url::parse(url) {
+            let loopback = candidate.host_str().is_some_and(|host| {
+                host.eq_ignore_ascii_case("localhost")
+                    || host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|address| address.is_loopback())
+            });
+            if candidate.scheme() == "http"
+                && loopback
+                && (candidate.path() == "/v1" || candidate.path().starts_with("/v1/"))
+            {
+                return true;
+            }
+        }
+    }
     false
 }
 /// True for first-party xAI endpoints (`*.x.ai`, cli-chat-proxy, and optional
@@ -228,6 +248,13 @@ mod tests {
         assert!(!is_cli_chat_proxy_url(
             "https://cli-chat-proxy.grok.com/v11/chat/completions"
         ));
+    }
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn test_is_cli_chat_proxy_url_accepts_loopback_v1_for_integration_tests() {
+        assert!(is_cli_chat_proxy_url("http://127.0.0.1:43123/v1"));
+        assert!(!is_cli_chat_proxy_url("http://example.com/v1"));
+        assert!(!is_cli_chat_proxy_url("http://127.0.0.1:43123/not-v1"));
     }
     #[test]
     fn test_is_first_party_xai_url() {
