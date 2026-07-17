@@ -2,6 +2,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+
+/// Canonical provider identity for ChatGPT Codex-owned tool authentication.
+///
+/// Keep this identity in the auth layer so individual tool backends cannot
+/// drift or accidentally accept credentials belonging to another provider.
+pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
+
 /// Key in `ToolError::details` naming the provider that owns auth recovery
 /// for the failed request. Hosts must not route such an error through a
 /// different provider's credential manager.
@@ -45,16 +53,80 @@ impl RequestCredentialSnapshot {
 impl std::fmt::Debug for RequestCredentialSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RequestCredentialSnapshot")
-            .field("has_opaque_id", &!self.opaque_id.is_empty())
-            .field("generation", &self.generation)
-            .finish()
+            .finish_non_exhaustive()
+    }
+}
+
+/// Internal reason provider-owned ChatGPT Codex authentication was rejected.
+///
+/// Variants deliberately carry no caller-controlled strings. Their `Debug`
+/// and `Display` implementations are also fixed-shape: credential generation,
+/// record presence, provider identity, and header state must not cross an
+/// error or diagnostics boundary.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenAiCodexAuthError {
+    Unavailable,
+    ProviderMismatch,
+    MissingCredentialGeneration,
+    DuplicateCredentialHeader,
+    InvalidAuthorization,
+    InvalidAccount,
+    InvalidFedRamp,
+    UnsupportedHeader,
+    InvalidHeader,
+    Incomplete,
+}
+
+impl std::fmt::Debug for OpenAiCodexAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OpenAiCodexAuthError")
+    }
+}
+
+impl std::fmt::Display for OpenAiCodexAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Codex provider authentication is unavailable")
+    }
+}
+
+impl std::error::Error for OpenAiCodexAuthError {}
+
+/// Validated provider-owned authentication ready to attach to one Codex HTTP
+/// request. Header values remain private and sensitive, while the exact
+/// credential snapshot is retained for generation-bound 401 recovery.
+#[derive(Clone)]
+pub(crate) struct ValidatedOpenAiCodexAuth {
+    headers: HeaderMap,
+    credential_snapshot: RequestCredentialSnapshot,
+}
+
+impl ValidatedOpenAiCodexAuth {
+    pub(crate) fn credential_snapshot(&self) -> &RequestCredentialSnapshot {
+        &self.credential_snapshot
+    }
+
+    pub(crate) fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        request.headers(self.headers.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
+}
+
+impl std::fmt::Debug for ValidatedOpenAiCodexAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValidatedOpenAiCodexAuth")
+            .finish_non_exhaustive()
     }
 }
 
 /// Per-request authentication material for an HTTP-backed tool.
 ///
-/// Values are intentionally private and `Debug` only reports header names so
-/// bearer tokens and account identifiers cannot leak through diagnostics.
+/// Values are intentionally private. `Debug` is fixed-shape so provider,
+/// header-name, credential-record, generation, and presence metadata cannot
+/// leak through diagnostics.
 #[derive(Clone, Default)]
 pub struct RequestAuth {
     provider: Option<String>,
@@ -128,12 +200,7 @@ impl RequestAuth {
 
 impl std::fmt::Debug for RequestAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
-        f.debug_struct("RequestAuth")
-            .field("provider", &self.provider)
-            .field("header_names", &names)
-            .field("credential_snapshot", &self.credential_snapshot)
-            .finish()
+        f.debug_struct("RequestAuth").finish_non_exhaustive()
     }
 }
 
@@ -141,6 +208,12 @@ impl std::fmt::Debug for RequestAuth {
 pub trait ApiKeyProvider: Send + Sync + 'static {
     /// Sync cached read (no refresh). Override point for static providers.
     fn current_api_key(&self) -> Option<String>;
+
+    /// Explicit identity for providers that own structured per-request auth.
+    /// Generic/static key adapters intentionally return `None`.
+    fn request_auth_provider_id(&self) -> Option<&str> {
+        None
+    }
 
     /// Per-request resolve. `AuthManager` overrides this to drive the
     /// refresh chain; default delegates to the sync method.
@@ -192,42 +265,226 @@ pub(crate) async fn resolve_request_auth(
     }
 }
 
+/// Require a provider that explicitly owns ChatGPT Codex structured auth.
+/// Constructors use this marker to reject generic/static key adapters before
+/// an HTTP client can be created.
+pub(crate) fn require_openai_codex_auth_provider(
+    provider: &SharedApiKeyProvider,
+) -> Result<(), OpenAiCodexAuthError> {
+    if provider.request_auth_provider_id() == Some(OPENAI_CODEX_PROVIDER_ID) {
+        Ok(())
+    } else {
+        Err(OpenAiCodexAuthError::ProviderMismatch)
+    }
+}
+
+/// Resolve and validate the provider-owned headers for one ChatGPT Codex tool
+/// request. There is deliberately no API-key fallback: the provider must emit
+/// an explicitly identified, generation-bound [`RequestAuth`] snapshot.
+pub(crate) async fn resolve_openai_codex_request_auth(
+    provider: &SharedApiKeyProvider,
+) -> Result<ValidatedOpenAiCodexAuth, OpenAiCodexAuthError> {
+    require_openai_codex_auth_provider(provider)?;
+    let auth = provider
+        .current_request_auth_async()
+        .await
+        .ok_or(OpenAiCodexAuthError::Unavailable)?;
+    validate_openai_codex_request_auth(&auth)
+}
+
+/// Validate a ChatGPT Codex request-auth snapshot and project only the exact
+/// credential headers accepted by Codex tool endpoints.
+pub(crate) fn validate_openai_codex_request_auth(
+    auth: &RequestAuth,
+) -> Result<ValidatedOpenAiCodexAuth, OpenAiCodexAuthError> {
+    if auth.provider() != Some(OPENAI_CODEX_PROVIDER_ID) {
+        return Err(OpenAiCodexAuthError::ProviderMismatch);
+    }
+    let credential_snapshot = auth
+        .credential_snapshot()
+        .filter(|snapshot| !snapshot.opaque_id().trim().is_empty() && snapshot.generation() > 0)
+        .cloned()
+        .ok_or(OpenAiCodexAuthError::MissingCredentialGeneration)?;
+
+    let mut headers = HeaderMap::new();
+    let mut has_authorization = false;
+    let mut has_account = false;
+    let mut has_fedramp = false;
+    for (name, value) in auth.headers() {
+        let normalized = name.to_ascii_lowercase();
+        match normalized.as_str() {
+            "authorization" if has_authorization => {
+                return Err(OpenAiCodexAuthError::DuplicateCredentialHeader);
+            }
+            "authorization"
+                if value
+                    .strip_prefix("Bearer ")
+                    .is_none_or(|token| token.trim().is_empty()) =>
+            {
+                return Err(OpenAiCodexAuthError::InvalidAuthorization);
+            }
+            "chatgpt-account-id" if has_account => {
+                return Err(OpenAiCodexAuthError::DuplicateCredentialHeader);
+            }
+            "chatgpt-account-id" if value.trim().is_empty() => {
+                return Err(OpenAiCodexAuthError::InvalidAccount);
+            }
+            "x-openai-fedramp" if has_fedramp => {
+                return Err(OpenAiCodexAuthError::DuplicateCredentialHeader);
+            }
+            "x-openai-fedramp" if value != "true" => {
+                return Err(OpenAiCodexAuthError::InvalidFedRamp);
+            }
+            "authorization" | "chatgpt-account-id" | "x-openai-fedramp" => {}
+            _ => return Err(OpenAiCodexAuthError::UnsupportedHeader),
+        }
+
+        let name = HeaderName::from_bytes(normalized.as_bytes())
+            .map_err(|_| OpenAiCodexAuthError::InvalidHeader)?;
+        let mut value =
+            HeaderValue::from_str(value).map_err(|_| OpenAiCodexAuthError::InvalidHeader)?;
+        value.set_sensitive(true);
+        headers.insert(name, value);
+        has_authorization |= normalized == "authorization";
+        has_account |= normalized == "chatgpt-account-id";
+        has_fedramp |= normalized == "x-openai-fedramp";
+    }
+    if !has_authorization || !has_account {
+        return Err(OpenAiCodexAuthError::Incomplete);
+    }
+
+    Ok(ValidatedOpenAiCodexAuth {
+        headers,
+        credential_snapshot,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn request_auth_debug_redacts_values() {
-        let auth = RequestAuth::from_headers([
-            (
-                "authorization".to_owned(),
-                "Bearer sentinel-secret".to_owned(),
-            ),
-            (
-                "chatgpt-account-id".to_owned(),
-                "sentinel-account".to_owned(),
-            ),
-        ]);
-        let rendered = format!("{auth:?}");
-        assert!(rendered.contains("authorization"));
-        assert!(rendered.contains("chatgpt-account-id"));
-        assert!(!rendered.contains("sentinel-secret"));
-        assert!(!rendered.contains("sentinel-account"));
+    fn request_auth_debug_is_fixed_shape() {
+        let auth = RequestAuth::for_provider_snapshot(
+            "sentinel-provider",
+            RequestCredentialSnapshot::new("sentinel-credential-id", 7),
+            [
+                (
+                    "authorization".to_owned(),
+                    "Bearer sentinel-secret".to_owned(),
+                ),
+                (
+                    "chatgpt-account-id".to_owned(),
+                    "sentinel-account".to_owned(),
+                ),
+            ],
+        );
+        assert_eq!(format!("{auth:?}"), "RequestAuth { .. }");
+        assert_eq!(
+            format!("{:?}", auth.credential_snapshot().unwrap()),
+            "RequestCredentialSnapshot { .. }"
+        );
+    }
+
+    fn valid_codex_auth() -> RequestAuth {
+        RequestAuth::for_provider_snapshot(
+            OPENAI_CODEX_PROVIDER_ID,
+            RequestCredentialSnapshot::new("sentinel-credential-id", 7),
+            [
+                (
+                    "authorization".to_owned(),
+                    "Bearer sentinel-secret".to_owned(),
+                ),
+                (
+                    "chatgpt-account-id".to_owned(),
+                    "sentinel-account".to_owned(),
+                ),
+                ("x-openai-fedramp".to_owned(), "true".to_owned()),
+            ],
+        )
     }
 
     #[test]
-    fn request_credential_snapshot_debug_redacts_opaque_identity() {
-        let auth = RequestAuth::for_provider_snapshot(
-            "openai_codex",
-            RequestCredentialSnapshot::new("sentinel-credential-id", 7),
-            [(
-                "authorization".to_owned(),
-                "Bearer sentinel-secret".to_owned(),
-            )],
-        );
-        let rendered = format!("{auth:?}");
-        assert!(!rendered.contains("sentinel-credential-id"));
-        assert!(!rendered.contains("sentinel-secret"));
-        assert!(rendered.contains("generation: 7"));
+    fn codex_auth_validation_marks_values_sensitive_and_debug_redacts_them() {
+        let validated = validate_openai_codex_request_auth(&valid_codex_auth())
+            .expect("provider-owned auth should validate");
+
+        for name in ["authorization", "chatgpt-account-id", "x-openai-fedramp"] {
+            assert!(validated.headers()[name].is_sensitive());
+        }
+        assert_eq!(format!("{validated:?}"), "ValidatedOpenAiCodexAuth { .. }");
+    }
+
+    #[test]
+    fn codex_auth_validation_errors_do_not_reflect_provider_material() {
+        let cases = [
+            RequestAuth::for_provider_snapshot(
+                "sentinel-other-provider",
+                RequestCredentialSnapshot::new("sentinel-credential-id", 7),
+                [
+                    (
+                        "authorization".to_owned(),
+                        "Bearer sentinel-secret".to_owned(),
+                    ),
+                    (
+                        "chatgpt-account-id".to_owned(),
+                        "sentinel-account".to_owned(),
+                    ),
+                ],
+            ),
+            RequestAuth::for_provider_snapshot(
+                OPENAI_CODEX_PROVIDER_ID,
+                RequestCredentialSnapshot::new("sentinel-credential-id", 7),
+                [
+                    (
+                        "authorization".to_owned(),
+                        "Bearer sentinel-secret".to_owned(),
+                    ),
+                    (
+                        "chatgpt-account-id".to_owned(),
+                        "sentinel-account".to_owned(),
+                    ),
+                    (
+                        "sentinel-unsupported-header".to_owned(),
+                        "sentinel-header-value".to_owned(),
+                    ),
+                ],
+            ),
+        ];
+
+        for auth in cases {
+            let error = validate_openai_codex_request_auth(&auth)
+                .expect_err("foreign or unsupported auth must fail")
+                .to_string();
+            for forbidden in [
+                "sentinel-other-provider",
+                "sentinel-secret",
+                "sentinel-account",
+                "sentinel-unsupported-header",
+                "sentinel-header-value",
+                "sentinel-credential-id",
+            ] {
+                assert!(!error.contains(forbidden));
+            }
+        }
+    }
+
+    struct StaticKeyProvider;
+
+    impl ApiKeyProvider for StaticKeyProvider {
+        fn current_api_key(&self) -> Option<String> {
+            Some("sentinel-static-key".to_owned())
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_auth_resolution_rejects_generic_static_key_fallback() {
+        let provider: SharedApiKeyProvider = Arc::new(StaticKeyProvider);
+        let error = resolve_openai_codex_request_auth(&provider)
+            .await
+            .expect_err("generic bearer auth must not become Codex auth")
+            .to_string();
+        assert_eq!(error, "Codex provider authentication is unavailable");
+        assert!(!error.contains("sentinel-static-key"));
     }
 }

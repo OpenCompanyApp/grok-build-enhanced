@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::super::{CodexAuthManager, OPENAI_CODEX_PROVIDER_ID};
+use super::super::CodexAuthManager;
 
 /// Synchronous sampler hook backed by a disk-verified common auth snapshot.
 /// [`CodexAuthManager::ensure_fresh`] is still called before constructing or
@@ -14,8 +14,7 @@ impl fmt::Debug for CodexSamplerRequestAuth {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("CodexSamplerRequestAuth")
-            .field("provider", &OPENAI_CODEX_PROVIDER_ID)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

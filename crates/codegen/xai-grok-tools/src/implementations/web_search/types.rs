@@ -9,7 +9,7 @@ pub const CODEX_WEB_SEARCH_CONTEXT_FIELD: &str = "_grok_codex_context";
 /// extension. Only user and assistant text is representable: images, tool
 /// results, reasoning payloads, and provider-owned response state have no
 /// representation in this type.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodexWebSearchMessage {
     pub role: CodexWebSearchMessageRole,
@@ -32,6 +32,13 @@ impl CodexWebSearchMessage {
     }
 }
 
+impl std::fmt::Debug for CodexWebSearchMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexWebSearchMessage")
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CodexWebSearchMessageRole {
@@ -43,7 +50,7 @@ pub enum CodexWebSearchMessageRole {
 /// `x-codex-turn-metadata` shape. This deliberately contains no installation
 /// identifier, credential/account data, arbitrary client metadata, or opaque
 /// `x-codex-turn-state` returned by the provider.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodexWebSearchTurnMetadata {
     pub session_id: String,
@@ -54,21 +61,35 @@ pub struct CodexWebSearchTurnMetadata {
     pub reasoning_effort: Option<String>,
 }
 
+impl std::fmt::Debug for CodexWebSearchTurnMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexWebSearchTurnMetadata")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Trusted per-call context attached by the shell after model arguments have
 /// been parsed and validated. Keeping this snapshot on the call avoids shared
 /// mutable state and preserves correctness for parallel web-search calls.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodexWebSearchContext {
     pub input: Vec<CodexWebSearchMessage>,
     pub turn_metadata: CodexWebSearchTurnMetadata,
 }
 
+impl std::fmt::Debug for CodexWebSearchContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexWebSearchContext")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Configuration for the web search tool.
 ///
 /// Use `Disabled` when no API key is available or web search should be turned off.
 /// Use `Enabled { … }` to provide credentials and endpoint configuration.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum WebSearchConfig {
     #[default]
@@ -93,6 +114,14 @@ pub enum WebSearchConfig {
     },
 }
 
+impl std::fmt::Debug for WebSearchConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Configuration can contain credentials, configured credential-header
+        // names, endpoint userinfo, model routing, and turn identity.
+        f.debug_struct("WebSearchConfig").finish_non_exhaustive()
+    }
+}
+
 impl WebSearchConfig {
     /// Returns `true` when the config is the `Enabled` variant.
     pub fn is_enabled(&self) -> bool {
@@ -113,8 +142,9 @@ impl WebSearchConfig {
 
     /// Return a copy safe for returning to clients.
     ///
-    /// The `api_key` is replaced with `"***REDACTED***"` and the optional
-    /// extra access key field is stripped.
+    /// Static keys, configured header values, and Codex turn/session identity
+    /// are replaced or removed while non-sensitive endpoint/model shape is
+    /// preserved.
     pub fn redacted(&self) -> Self {
         match self {
             Self::Disabled => Self::Disabled,
@@ -123,24 +153,46 @@ impl WebSearchConfig {
                 model,
                 extra_headers,
                 ..
-            } => Self::Enabled {
-                api_key: "***REDACTED***".to_string(),
-                base_url: base_url.clone(),
-                model: model.clone(),
-                extra_headers: extra_headers.clone(),
-                alpha_test_key: None,
-            },
+            } => {
+                let _ = extra_headers;
+                Self::Enabled {
+                    api_key: "***REDACTED***".to_string(),
+                    base_url: sanitize_redacted_base_url(base_url),
+                    model: model.clone(),
+                    // Header names can identify credential schemes and must not
+                    // be returned merely because their values were removed.
+                    extra_headers: IndexMap::new(),
+                    alpha_test_key: None,
+                }
+            }
             Self::CodexSubscription {
                 base_url,
                 model,
-                session_id,
+                session_id: _,
             } => Self::CodexSubscription {
-                base_url: base_url.clone(),
+                base_url: sanitize_redacted_base_url(base_url),
                 model: model.clone(),
-                session_id: session_id.clone(),
+                session_id: "***REDACTED***".to_owned(),
             },
         }
     }
+}
+
+fn sanitize_redacted_base_url(base_url: &str) -> String {
+    let Ok(mut url) = url::Url::parse(base_url) else {
+        return "***REDACTED***".to_owned();
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return "***REDACTED***".to_owned();
+    }
+    if url.set_username("").is_err() || url.set_password(None).is_err() {
+        return "***REDACTED***".to_owned();
+    }
+    // Query strings and fragments frequently carry proxy or deployment
+    // secrets. Neither is needed to identify the configured endpoint shape.
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 #[cfg(test)]
@@ -186,7 +238,7 @@ mod tests {
         headers.insert("X-Custom".to_string(), "value".to_string());
         let config = WebSearchConfig::Enabled {
             api_key: "secret-key-12345".to_string(),
-            base_url: "https://api.x.ai/v1".to_string(),
+            base_url: "https://sentinel-user:sentinel-pass@api.x.ai/v1?token=sentinel-query#sentinel-fragment".to_string(),
             model: "test-web-search-model".to_string(),
             extra_headers: headers,
             alpha_test_key: Some("alpha-secret".to_string()),
@@ -203,11 +255,26 @@ mod tests {
                 assert_eq!(api_key, "***REDACTED***");
                 assert_eq!(base_url, "https://api.x.ai/v1");
                 assert_eq!(model, "test-web-search-model");
-                assert_eq!(extra_headers.get("X-Custom").unwrap(), "value");
+                assert!(extra_headers.is_empty());
                 assert!(alpha_test_key.is_none());
             }
             _ => panic!("Expected Enabled variant"),
         }
+    }
+
+    #[test]
+    fn codex_config_redaction_drops_session_identity() {
+        let config = WebSearchConfig::CodexSubscription {
+            base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
+            model: "codex-search-model".to_owned(),
+            session_id: "sentinel-session".to_owned(),
+        };
+        let redacted = config.redacted();
+        assert!(matches!(
+            redacted,
+            WebSearchConfig::CodexSubscription { session_id, .. }
+                if session_id == "***REDACTED***"
+        ));
     }
 
     #[test]
@@ -234,5 +301,42 @@ mod tests {
         }"#;
         let config: WebSearchConfig = serde_json::from_str(json).unwrap();
         assert!(config.is_enabled());
+    }
+
+    #[test]
+    fn debug_redacts_credentials_headers_and_codex_turn_identity() {
+        let mut headers = IndexMap::new();
+        headers.insert(
+            "x-provider-credential".to_owned(),
+            "sentinel-header-value".to_owned(),
+        );
+        let responses = WebSearchConfig::Enabled {
+            api_key: "sentinel-api-key".to_owned(),
+            base_url: "https://sentinel-user:sentinel-pass@example.com".to_owned(),
+            model: "test-model".to_owned(),
+            extra_headers: headers,
+            alpha_test_key: Some("sentinel-alpha-key".to_owned()),
+        };
+        let context = CodexWebSearchContext {
+            input: vec![CodexWebSearchMessage::user("sentinel-visible-turn-text")],
+            turn_metadata: CodexWebSearchTurnMetadata {
+                session_id: "sentinel-session".to_owned(),
+                thread_id: "sentinel-thread".to_owned(),
+                turn_id: "sentinel-turn".to_owned(),
+                model: "sentinel-turn-model".to_owned(),
+                reasoning_effort: Some("sentinel-effort".to_owned()),
+            },
+        };
+
+        assert_eq!(format!("{responses:?}"), "WebSearchConfig { .. }");
+        assert_eq!(format!("{context:?}"), "CodexWebSearchContext { .. }");
+        assert_eq!(
+            format!("{:?}", context.input[0]),
+            "CodexWebSearchMessage { .. }"
+        );
+        assert_eq!(
+            format!("{:?}", context.turn_metadata),
+            "CodexWebSearchTurnMetadata { .. }"
+        );
     }
 }

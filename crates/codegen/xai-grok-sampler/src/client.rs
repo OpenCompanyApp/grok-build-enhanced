@@ -421,16 +421,10 @@ pub struct SamplingClient {
 
 impl std::fmt::Debug for SamplingClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SamplingClient")
-            .field("base_url", &self.base_url)
-            .field("defaults", &self.defaults)
-            .field(
-                "has_attribution_callback",
-                &self.attribution_callback.is_some(),
-            )
-            .field("has_bearer_resolver", &self.bearer_resolver.is_some())
-            .field("has_request_auth", &self.request_auth.is_some())
-            .finish()
+        // The client contains configured endpoint userinfo and credential
+        // resolver state. Keep diagnostics independent of their values and
+        // presence.
+        f.debug_struct("SamplingClient").finish_non_exhaustive()
     }
 }
 
@@ -559,14 +553,12 @@ impl SamplingClient {
                     "OpenAI Codex requires the Responses API backend",
                 ));
             }
-            if config.api_key.is_some() || config.bearer_resolver.is_some() {
+            if config.api_key.is_some()
+                || config.bearer_resolver.is_some()
+                || config.request_auth.is_none()
+            {
                 return Err(SamplingError::InvalidConfiguration(
-                    "OpenAI Codex credentials must use dynamic request authentication",
-                ));
-            }
-            if config.request_auth.is_none() {
-                return Err(SamplingError::InvalidConfiguration(
-                    "OpenAI Codex dynamic request authentication is required",
+                    codex_headers::CODEX_AUTH_CONFIGURATION_INVALID,
                 ));
             }
         }
@@ -710,17 +702,11 @@ impl SamplingClient {
         tracing::info!(
             target: crate::sampling_log::TARGET,
             event = "client_new",
-            base_url = %config.base_url,
             model = %config.model,
             provider = ?config.provider,
             api_backend = ?config.api_backend,
-            auth_scheme = ?config.auth_scheme,
-            // "unset" (not "none"): `ReasoningEffort::None` is a real wire value;
-            // logging the absent Option as "none" looked like we were sending it.
+            // "unset" (not "none"): `ReasoningEffort::None` is a real wire value.
             reasoning_effort = config.reasoning_effort.map_or("unset", |e| e.as_str()),
-            has_api_key = config.api_key.is_some(),
-            has_bearer_resolver = config.bearer_resolver.is_some(),
-            has_request_auth = config.request_auth.is_some(),
         );
 
         let defaults = ClientDefaults {
@@ -889,13 +875,9 @@ impl SamplingClient {
         tracing::info!(
             target: crate::sampling_log::TARGET,
             event = "client_post",
-            base_url = %self.base_url,
             model = %self.defaults.model,
             provider = ?self.defaults.provider,
             api_backend = ?self.defaults.api_backend,
-            auth_scheme = ?self.defaults.auth_scheme,
-            has_bearer_resolver = self.bearer_resolver.is_some(),
-            has_request_auth = self.request_auth.is_some(),
         );
 
         Ok(PreparedRequest {
@@ -1591,7 +1573,7 @@ impl SamplingClient {
                 if self.defaults.provider.is_openai_codex() {
                     let credential =
                         request_credential.ok_or(SamplingError::InvalidConfiguration(
-                            "OpenAI Codex request authentication omitted its credential generation",
+                            codex_headers::CODEX_AUTH_CONFIGURATION_INVALID,
                         ))?;
                     return Err(SamplingError::ProviderAuthRejected {
                         provider: ProviderId::OpenAiCodex,
@@ -1791,7 +1773,7 @@ impl SamplingClient {
                 if self.defaults.provider.is_openai_codex() {
                     let credential =
                         request_credential.ok_or(SamplingError::InvalidConfiguration(
-                            "OpenAI Codex request authentication omitted its credential generation",
+                            codex_headers::CODEX_AUTH_CONFIGURATION_INVALID,
                         ))?;
                     return Err(SamplingError::ProviderAuthRejected {
                         provider: ProviderId::OpenAiCodex,
@@ -3407,7 +3389,11 @@ mod tests {
         let (mut static_key, _) = codex_config();
         static_key.api_key = Some(UNSAFE_VALUE.to_string());
         let error = SamplingClient::new(static_key).unwrap_err();
-        assert!(error.to_string().contains("dynamic request authentication"));
+        assert!(
+            error
+                .to_string()
+                .contains(codex_headers::CODEX_AUTH_CONFIGURATION_INVALID)
+        );
 
         for name in [
             "authorization",
@@ -3462,7 +3448,7 @@ mod tests {
                 Err(error) => error,
             };
             let rendered = error.to_string();
-            if !rendered.contains("unsupported credential header") {
+            if !rendered.contains(codex_headers::CODEX_AUTH_CONFIGURATION_INVALID) {
                 panic!("credential-header rejection used an unexpected diagnostic");
             }
             assert!(!rendered.contains(header_name));
@@ -3484,9 +3470,10 @@ mod tests {
                 Err(error) => error,
             };
             let rendered = error.to_string();
-            if !rendered.contains("must be exactly true") {
+            if !rendered.contains(codex_headers::CODEX_AUTH_CONFIGURATION_INVALID) {
                 panic!("provider security-state rejection used an unexpected diagnostic");
             }
+            assert!(!rendered.contains("FedRAMP"));
             assert!(!rendered.contains(invalid_value));
         }
 
@@ -3528,7 +3515,7 @@ mod tests {
                 Err(error) => error,
             };
             let rendered = error.to_string();
-            if !rendered.contains("duplicate credential headers") {
+            if !rendered.contains(codex_headers::CODEX_AUTH_CONFIGURATION_INVALID) {
                 panic!("duplicate credential rejection used an unexpected diagnostic");
             }
             assert!(!rendered.contains(header_value));

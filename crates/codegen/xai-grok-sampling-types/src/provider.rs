@@ -89,12 +89,7 @@ pub struct CredentialBinding {
 
 impl std::fmt::Debug for CredentialBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CredentialBinding")
-            .field("provider", &self.provider)
-            .field("source", &self.source)
-            .field("has_record_id", &self.record_id.is_some())
-            .field("generation", &self.generation)
-            .finish()
+        f.debug_struct("CredentialBinding").finish_non_exhaustive()
     }
 }
 
@@ -160,9 +155,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(binding.generation, 0);
-        let rendered = format!("{binding:?}");
-        assert!(!rendered.contains("sensitive-record"));
-        assert!(rendered.contains("has_record_id: true"));
+        assert_eq!(format!("{binding:?}"), "CredentialBinding { .. }");
     }
 
     #[test]

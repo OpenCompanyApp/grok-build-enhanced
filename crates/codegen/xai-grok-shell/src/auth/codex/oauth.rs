@@ -61,10 +61,7 @@ pub struct CodexOAuthClient {
 
 impl fmt::Debug for CodexOAuthClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CodexOAuthClient")
-            .field("issuer", &self.endpoints.issuer)
-            .field("client_id_configured", &!self.client_id.is_empty())
-            .finish()
+        f.debug_struct("CodexOAuthClient").finish_non_exhaustive()
     }
 }
 
@@ -372,9 +369,7 @@ pub struct PendingCodexBrowserLogin {
 impl fmt::Debug for PendingCodexBrowserLogin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PendingCodexBrowserLogin")
-            .field("authorization_origin", &self.authorization_url.origin())
-            .field("has_allowed_workspaces", &self.allowed_workspaces.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -689,11 +684,7 @@ impl CodexDeviceAuthorization {
 impl fmt::Debug for CodexDeviceAuthorization {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CodexDeviceAuthorization")
-            .field("verification_origin", &self.verification_url.origin())
-            .field("user_code", &"<redacted>")
-            .field("device_auth_id", &"<redacted>")
-            .field("interval", &self.interval)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

@@ -107,24 +107,7 @@ pub struct CodexCredentials {
 
 impl fmt::Debug for CodexCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Identity and routing metadata are omitted entirely, including
-        // presence bits; retain only safe lifecycle/type diagnostics.
-        f.debug_struct("CodexCredentials")
-            .field("schema_version", &self.schema_version)
-            .field("provider", &self.provider)
-            .field("has_credential_id", &!self.credential_id.is_empty())
-            .field("expires_at", &self.expires_at)
-            .field("created_at", &self.created_at)
-            .field("updated_at", &self.updated_at)
-            .field("last_refresh_at", &self.last_refresh_at)
-            .field("revision", &self.revision)
-            .field("has_access_token", &true)
-            .field("has_refresh_token", &true)
-            .field("has_id_token", &true)
-            .field("has_account_id", &true)
-            .field("has_user_id", &self.chatgpt_user_id.is_some())
-            .field("has_email", &self.email.is_some())
-            .finish()
+        f.debug_struct("CodexCredentials").finish_non_exhaustive()
     }
 }
 
@@ -308,12 +291,7 @@ pub(crate) struct TokenResponse {
 
 impl fmt::Debug for TokenResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TokenResponse")
-            .field("has_id_token", &self.id_token.is_some())
-            .field("has_access_token", &self.access_token.is_some())
-            .field("has_refresh_token", &self.refresh_token.is_some())
-            .field("expires_in", &self.expires_in)
-            .finish()
+        f.debug_struct("TokenResponse").finish_non_exhaustive()
     }
 }
 
@@ -689,6 +667,9 @@ mod tests {
         let alternate_debug = format!("{alternate_routing:?}");
         let secret_debug = format!("{:?}", SecretString::new("sentinel-secret").unwrap());
 
+        assert_eq!(response_debug, "TokenResponse { .. }");
+        assert_eq!(credential_debug, "CodexCredentials { .. }");
+        assert_eq!(secret_debug, "<redacted>");
         for rendered in [&response_debug, &credential_debug, &secret_debug] {
             for forbidden in [
                 "sentinel-account",
@@ -708,27 +689,7 @@ mod tests {
                 );
             }
         }
-        assert!(
-            credential_debug == alternate_debug,
-            "credential debug output changed with private routing metadata"
-        );
-        assert!(credential_debug.starts_with("CodexCredentials"));
-        for diagnostic in [
-            "schema_version",
-            "provider",
-            "expires_at",
-            "revision",
-            "has_access_token",
-        ] {
-            assert!(credential_debug.contains(diagnostic));
-        }
-        assert!(
-            !credential_debug.to_ascii_lowercase().contains("fedramp"),
-            "credential debug output named private routing metadata"
-        );
-        assert!(
-            secret_debug == "<redacted>",
-            "secret debug output must be fully redacted"
-        );
+        assert_eq!(credential_debug, alternate_debug);
+        assert!(!credential_debug.to_ascii_lowercase().contains("fedramp"));
     }
 }

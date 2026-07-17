@@ -829,7 +829,9 @@ mod tests {
         );
         let rendered = format!("{err:?} {err}");
         assert!(!rendered.contains("sentinel-credential-id"));
-        assert!(rendered.contains("generation: 9"));
+        assert!(!rendered.contains("generation"));
+        assert!(!rendered.contains('9'));
+        assert!(rendered.contains("authentication was rejected"));
     }
 
     #[test]

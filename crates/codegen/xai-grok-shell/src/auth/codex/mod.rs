@@ -42,9 +42,10 @@ pub use usage::{
     fetch_codex_usage_for_session,
 };
 
+pub use xai_grok_tools::types::OPENAI_CODEX_PROVIDER_ID;
+
 /// Dedicated scope in Grok's provider-aware auth store.
 pub const OPENAI_CODEX_SCOPE: &str = "openai::codex";
-pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
 pub const OPENAI_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 pub const OPENAI_CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 pub const OPENAI_CODEX_ISSUER: &str = "https://auth.openai.com";

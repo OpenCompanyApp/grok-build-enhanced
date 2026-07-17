@@ -627,6 +627,10 @@ mod tests {
             None
         }
 
+        fn request_auth_provider_id(&self) -> Option<&str> {
+            Some(crate::types::api_key_provider::OPENAI_CODEX_PROVIDER_ID)
+        }
+
         fn current_request_auth_async(
             &self,
         ) -> std::pin::Pin<
@@ -634,7 +638,7 @@ mod tests {
         > {
             Box::pin(std::future::ready(Some(
                 crate::types::RequestAuth::for_provider_snapshot(
-                    "openai_codex",
+                    crate::types::OPENAI_CODEX_PROVIDER_ID,
                     crate::types::RequestCredentialSnapshot::new("edit-credential", 3),
                     [
                         ("authorization".to_owned(), "Bearer edit-access".to_owned()),
@@ -653,6 +657,10 @@ mod tests {
             None
         }
 
+        fn request_auth_provider_id(&self) -> Option<&str> {
+            Some(crate::types::api_key_provider::OPENAI_CODEX_PROVIDER_ID)
+        }
+
         fn current_request_auth_async(
             &self,
         ) -> std::pin::Pin<
@@ -660,7 +668,7 @@ mod tests {
         > {
             Box::pin(std::future::ready(Some(
                 crate::types::RequestAuth::for_provider_snapshot(
-                    "openai_codex",
+                    crate::types::OPENAI_CODEX_PROVIDER_ID,
                     crate::types::RequestCredentialSnapshot::new("edit-credential", 0),
                     [
                         ("authorization".to_owned(), "Bearer edit-access".to_owned()),
@@ -785,7 +793,7 @@ mod tests {
             .await
             .expect_err("generation-zero credentials must fail before edit dispatch");
 
-        assert!(error.to_string().contains("credential generation"));
+        assert!(error.to_string().contains("authentication is unavailable"));
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 

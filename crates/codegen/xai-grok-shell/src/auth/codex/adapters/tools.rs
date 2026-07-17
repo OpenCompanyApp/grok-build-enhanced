@@ -13,8 +13,7 @@ impl fmt::Debug for CodexApiKeyProvider {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("CodexApiKeyProvider")
-            .field("provider", &OPENAI_CODEX_PROVIDER_ID)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -31,6 +30,10 @@ impl CodexAuthManager {
 impl xai_grok_tools::types::ApiKeyProvider for CodexApiKeyProvider {
     fn current_api_key(&self) -> Option<String> {
         None
+    }
+
+    fn request_auth_provider_id(&self) -> Option<&str> {
+        Some(OPENAI_CODEX_PROVIDER_ID)
     }
 
     fn current_api_key_async(
@@ -151,6 +154,10 @@ mod tests {
         let (_directory, manager) = manager().await;
         let provider = CodexApiKeyProvider(manager.clone());
 
+        assert_eq!(
+            provider.request_auth_provider_id(),
+            Some(OPENAI_CODEX_PROVIDER_ID)
+        );
         assert!(provider.current_api_key().is_none());
         assert!(provider.current_api_key_async().await.is_none());
         let auth = provider.current_request_auth_async().await.unwrap();

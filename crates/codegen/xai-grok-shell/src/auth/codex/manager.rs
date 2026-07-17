@@ -4,10 +4,7 @@ use std::path::Path;
 use chrono::Utc;
 use parking_lot::RwLock;
 
-use super::{
-    CodexAuthError, CodexCredentialStore, CodexCredentials, CodexOAuthClient,
-    OPENAI_CODEX_PROVIDER_ID,
-};
+use super::{CodexAuthError, CodexCredentialStore, CodexCredentials, CodexOAuthClient};
 
 /// Live, provider-scoped owner of one Grok Build Codex credential record.
 ///
@@ -38,10 +35,7 @@ pub(super) struct CodexUsageIdentityLease {
 
 impl fmt::Debug for CodexAuthManager {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CodexAuthManager")
-            .field("provider", &OPENAI_CODEX_PROVIDER_ID)
-            .field("configured", &self.current.read().is_some())
-            .finish()
+        f.debug_struct("CodexAuthManager").finish_non_exhaustive()
     }
 }
 

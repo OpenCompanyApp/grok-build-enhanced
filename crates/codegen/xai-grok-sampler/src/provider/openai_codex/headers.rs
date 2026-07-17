@@ -12,6 +12,9 @@ pub(crate) const CODEX_SESSION_ID_HEADER: &str = "session-id";
 pub(crate) const CODEX_THREAD_ID_HEADER: &str = "thread-id";
 pub(crate) const CODEX_CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
 pub(crate) const CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
+pub(crate) const CODEX_AUTH_CONFIGURATION_INVALID: &str =
+    "OpenAI Codex authentication configuration is invalid";
+const CODEX_AUTH_UNAVAILABLE: &str = "OpenAI Codex authentication is unavailable";
 
 fn is_protected_credential_header(name: &HeaderName) -> bool {
     matches!(
@@ -140,7 +143,7 @@ pub(crate) fn seal_after_request_auth(
     insert_provider_identity(headers);
     validate_request_auth_headers(headers)?;
     let binding = credential_binding.ok_or(SamplingError::InvalidConfiguration(
-        "OpenAI Codex request authentication omitted its credential generation",
+        CODEX_AUTH_CONFIGURATION_INVALID,
     ))?;
     validate_credential_binding(binding)
 }
@@ -151,24 +154,22 @@ fn validate_request_auth_headers(headers: &mut HeaderMap) -> Result<()> {
         .any(|name| is_credential_header_or_alias(name) && !is_allowed_credential_header(name))
     {
         return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication emitted an unsupported credential header",
+            CODEX_AUTH_CONFIGURATION_INVALID,
         ));
     }
     if headers.keys().any(is_xai_specific_header) {
         return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication emitted an xAI-specific header",
+            CODEX_AUTH_CONFIGURATION_INVALID,
         ));
     }
 
     let authorization_count = headers.get_all(AUTHORIZATION).iter().count();
     if authorization_count == 0 {
-        return Err(SamplingError::Auth(
-            "OpenAI Codex authorization is unavailable".to_string(),
-        ));
+        return Err(SamplingError::Auth(CODEX_AUTH_UNAVAILABLE.to_owned()));
     }
     if authorization_count != 1 {
         return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication emitted duplicate credential headers",
+            CODEX_AUTH_CONFIGURATION_INVALID,
         ));
     }
     let has_bearer = headers
@@ -177,20 +178,16 @@ fn validate_request_auth_headers(headers: &mut HeaderMap) -> Result<()> {
         .and_then(|value| value.strip_prefix("Bearer "))
         .is_some_and(|token| !token.is_empty());
     if !has_bearer {
-        return Err(SamplingError::Auth(
-            "OpenAI Codex authorization is unavailable".to_string(),
-        ));
+        return Err(SamplingError::Auth(CODEX_AUTH_UNAVAILABLE.to_owned()));
     }
 
     let account_count = headers.get_all(CHATGPT_ACCOUNT_ID_HEADER).iter().count();
     if account_count == 0 {
-        return Err(SamplingError::Auth(
-            "OpenAI Codex account selection is unavailable".to_string(),
-        ));
+        return Err(SamplingError::Auth(CODEX_AUTH_UNAVAILABLE.to_owned()));
     }
     if account_count != 1 {
         return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication emitted duplicate credential headers",
+            CODEX_AUTH_CONFIGURATION_INVALID,
         ));
     }
     let has_account = headers
@@ -198,16 +195,14 @@ fn validate_request_auth_headers(headers: &mut HeaderMap) -> Result<()> {
         .and_then(|value| value.to_str().ok())
         .is_some_and(|account_id| !account_id.trim().is_empty());
     if !has_account {
-        return Err(SamplingError::Auth(
-            "OpenAI Codex account selection is unavailable".to_string(),
-        ));
+        return Err(SamplingError::Auth(CODEX_AUTH_UNAVAILABLE.to_owned()));
     }
 
     let fedramp_values = headers.get_all(OPENAI_FEDRAMP_HEADER);
     let fedramp_count = fedramp_values.iter().count();
     if fedramp_count > 1 {
         return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication emitted duplicate credential headers",
+            CODEX_AUTH_CONFIGURATION_INVALID,
         ));
     }
     if fedramp_values
@@ -216,7 +211,7 @@ fn validate_request_auth_headers(headers: &mut HeaderMap) -> Result<()> {
         .is_some_and(|value| value.as_bytes() != b"true")
     {
         return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex FedRAMP authentication state must be exactly true when present",
+            CODEX_AUTH_CONFIGURATION_INVALID,
         ));
     }
 
@@ -246,7 +241,7 @@ fn validate_credential_binding(binding: &CredentialBinding) -> Result<()> {
         || binding.generation == 0
     {
         return Err(SamplingError::InvalidConfiguration(
-            "OpenAI Codex request authentication omitted its credential generation",
+            CODEX_AUTH_CONFIGURATION_INVALID,
         ));
     }
     Ok(())

@@ -31,14 +31,7 @@ pub struct CredentialSnapshot {
 
 impl std::fmt::Debug for CredentialSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CredentialSnapshot")
-            .field("has_token", &self.token.is_some())
-            .field("has_user_id", &self.user_id.is_some())
-            .field("has_team_id", &self.team_id.is_some())
-            .field("has_deployment_id", &self.deployment_id.is_some())
-            .field("has_api_key_id", &self.api_key_id.is_some())
-            .field("has_organization_id", &self.organization_id.is_some())
-            .finish()
+        f.debug_struct("CredentialSnapshot").finish_non_exhaustive()
     }
 }
 
@@ -85,7 +78,7 @@ pub trait AuthCredentialProvider: HttpAuth + Send + Sync + 'static {
 /// `bearer` is the wire bearer the inner `HttpAuth` will send in the
 /// `Authorization` header. Stored alongside the inner so `snapshot().token`
 /// returns the same credential that goes out on the wire. `None` when no
-/// bearer is configured. Its `Debug` implementation never prints the value.
+/// bearer is configured. Its `Debug` implementation is fixed-shape.
 pub struct StaticAuthCredentialProvider {
     inner: Box<dyn HttpAuth>,
     bearer: Option<String>,
@@ -103,8 +96,7 @@ impl StaticAuthCredentialProvider {
 impl std::fmt::Debug for StaticAuthCredentialProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StaticAuthCredentialProvider")
-            .field("has_bearer", &self.bearer.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -143,17 +135,6 @@ mod tests {
             organization_id: Some("org-sensitive".to_string()),
         };
 
-        let rendered = format!("{snapshot:?}");
-        for sensitive in [
-            "secret-access-token",
-            "user-sensitive",
-            "team-sensitive",
-            "deployment-sensitive",
-            "api-key-sensitive",
-            "org-sensitive",
-        ] {
-            assert!(!rendered.contains(sensitive));
-        }
-        assert!(rendered.contains("has_token: true"));
+        assert_eq!(format!("{snapshot:?}"), "CredentialSnapshot { .. }");
     }
 }

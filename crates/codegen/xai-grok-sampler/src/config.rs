@@ -148,43 +148,11 @@ pub struct SamplerConfig {
 
 impl std::fmt::Debug for SamplerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SamplerConfig")
-            .field("provider", &self.provider)
-            .field("credential_source", &self.credential_source)
-            .field("credential_binding", &self.credential_binding)
-            .field("has_api_key", &self.api_key.is_some())
-            .field("base_url", &self.base_url)
-            .field("model", &self.model)
-            .field("max_completion_tokens", &self.max_completion_tokens)
-            .field("temperature", &self.temperature)
-            .field("top_p", &self.top_p)
-            .field("api_backend", &self.api_backend)
-            .field("auth_scheme", &self.auth_scheme)
-            .field("extra_header_count", &self.extra_headers.len())
-            .field("context_window", &self.context_window)
-            .field("force_http1", &self.force_http1)
-            .field("max_retries", &self.max_retries)
-            .field("stream_tool_calls", &self.stream_tool_calls)
-            .field("idle_timeout_secs", &self.idle_timeout_secs)
-            .field("reasoning_effort", &self.reasoning_effort)
-            .field("service_tier", &self.service_tier)
-            .field("origin_client", &self.origin_client)
-            .field("has_client_identifier", &self.client_identifier.is_some())
-            .field("has_deployment_id", &self.deployment_id.is_some())
-            .field("has_user_id", &self.user_id.is_some())
-            .field("client_version", &self.client_version)
-            .field(
-                "has_attribution_callback",
-                &self.attribution_callback.is_some(),
-            )
-            .field("has_bearer_resolver", &self.bearer_resolver.is_some())
-            .field("has_request_auth", &self.request_auth.is_some())
-            .field("supports_backend_search", &self.supports_backend_search)
-            .field("compactions_remaining", &self.compactions_remaining)
-            .field("compaction_at_tokens", &self.compaction_at_tokens)
-            .field("doom_loop_recovery", &self.doom_loop_recovery)
-            .field("has_header_injector", &self.header_injector.is_some())
-            .finish()
+        // Sampling configuration can carry credential source/binding state,
+        // custom endpoint userinfo, injected-header state, and provider-local
+        // identifiers. Keep diagnostics fixed-shape instead of maintaining a
+        // fragile field-by-field redaction allowlist.
+        f.debug_struct("SamplerConfig").finish_non_exhaustive()
     }
 }
 
@@ -420,18 +388,6 @@ mod tests {
             "Bearer secret-extra-header".to_string(),
         );
 
-        let rendered = format!("{config:?}");
-        for sensitive in [
-            "secret-api-key",
-            "sensitive-user",
-            "sensitive-deployment",
-            "sensitive-client-id",
-            "sensitive-record",
-            "secret-extra-header",
-        ] {
-            assert!(!rendered.contains(sensitive));
-        }
-        assert!(rendered.contains("has_api_key: true"));
-        assert!(rendered.contains("generation: 7"));
+        assert_eq!(format!("{config:?}"), "SamplerConfig { .. }");
     }
 }
