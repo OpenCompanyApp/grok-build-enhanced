@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "patch_stack": {
+    "baseline": {
+      "commit": "c1b5909ec707c069f1d21a93917af044e71da0d7",
+      "tree": "54a0606cc804815975eda042f60cb3320cfb5347"
+    },
+    "frozen_tip": {
+      "commit": "da3076874292c538bfc4efeede0cf517c2e975f0",
+      "tree": "bbeaf9575ffa5f7bcd75b8352a178455f04c98c7"
+    },
+    "fingerprints": {
+      "algorithm": "sha256",
+      "diff_sha256": "a847902433770c47890c321d4fc5683bffd6420c138a9b481ec803c98098a4e9",
+      "name_status_sha256": "c5711d5e25ee349e9fbfe2da9fd8a2364ca22492843f63741a8eb816177fbdff",
+      "numstat_sha256": "49ed966d9cca3f7635a3423388d7e5235a5ea14d92c72b3d99c73aa778261b32"
+    }
+  },
+  "sources": [
+    {
+      "id": "openai-codex",
+      "project": "OpenAI Codex CLI",
+      "remote": "https://github.com/openai/codex.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "18110b810f0a328147f6cd85e6f1ab6414927366",
+        "tree": "4c0b4168f2948373af4d70dd043e2d747b341017"
+      },
+      "latest_fetched": {
+        "commit": "315195492c80fdade38e917c18f9584efd599304",
+        "tree": "86db7865611fdbe85a86bc3cc8e15e6839e16d22"
+      }
+    },
+    {
+      "id": "opencode",
+      "project": "OpenCode",
+      "remote": "https://github.com/anomalyco/opencode.git",
+      "tracked_ref": "dev",
+      "reviewed": {
+        "commit": "1d2a7b4c860f6a29eb90bdda07757b2adf34ab61",
+        "tree": "eec9c9c6f0e4f7a558fdad4115b67e8f998de767"
+      },
+      "latest_fetched": {
+        "commit": "efb6cc2d4bf6332eb156709795d2b3a649198b65",
+        "tree": "eca8302a08ef6f6ce9f721103cf0379c6dba11ac"
+      }
+    },
+    {
+      "id": "grok-build-upstream",
+      "project": "Grok Build upstream",
+      "remote": "https://github.com/xai-org/grok-build.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "c1b5909ec707c069f1d21a93917af044e71da0d7",
+        "tree": "54a0606cc804815975eda042f60cb3320cfb5347"
+      },
+      "latest_fetched": {
+        "commit": "8adf9013a0929e5c7f1d4e849492d2387837a28d",
+        "tree": "bb4f45fc4aca5741d0f50172f3274ffe8ae11f7e"
+      }
+    },
+    {
+      "id": "opencode-codex-auth",
+      "project": "OpenCode Codex auth reference",
+      "remote": "https://github.com/numman-ali/opencode-openai-codex-auth.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
+        "tree": "1da59bae7069563b2817143567b57c78e5758300"
+      },
+      "latest_fetched": {
+        "commit": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
+        "tree": "1da59bae7069563b2817143567b57c78e5758300"
+      }
+    },
+    {
+      "id": "warp-themes",
+      "project": "Warp themes",
+      "remote": "https://github.com/warpdotdev/themes.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4",
+        "tree": "c678999ab9ef62cfba1d70822b117db727d06f8a"
+      },
+      "latest_fetched": {
+        "commit": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4",
+        "tree": "c678999ab9ef62cfba1d70822b117db727d06f8a"
+      }
+    }
+  ],
+  "checks": [
+    "patch-stack-objects",
+    "patch-stack-fingerprints",
+    "upstream-revisions",
+    "feature-paths",
+    "downstream-coverage"
+  ],
+  "coverage": {
+    "allow_uncovered": true
+  },
+  "features": [
+    {
+      "id": "codex-provider-auth",
+      "description": "Provider-scoped ChatGPT Codex OAuth, credential storage, refresh, usage, and logout integration.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode",
+        "opencode-codex-auth"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-auth/src/auth_provider.rs",
+        "crates/codegen/xai-grok-shell/src/auth/codex/**",
+        "crates/codegen/xai-grok-shell/src/auth/manager.rs",
+        "crates/codegen/xai-grok-shell/src/auth/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/model.rs",
+        "crates/codegen/xai-grok-shell/src/auth/storage.rs",
+        "crates/codegen/xai-grok-shell/tests/codex_auth_integration.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/auth/codex/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/manager.rs",
+        "crates/codegen/xai-grok-shell/tests/codex_auth_integration.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "codex-provider-runtime",
+      "description": "Provider-aware model discovery, sampling, usage accounting, and session routing for Codex.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex"
+      ],
+      "paths": [
+        "crates/codegen/xai-chat-state/**",
+        "crates/codegen/xai-grok-pager/src/acp/model_state.rs",
+        "crates/codegen/xai-grok-pager/src/models.rs",
+        "crates/codegen/xai-grok-sampler/**",
+        "crates/codegen/xai-grok-sampling-types/**",
+        "crates/codegen/xai-grok-shell/src/agent/auth_method.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models.rs",
+        "crates/codegen/xai-grok-shell/src/cli_models.rs",
+        "crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models.rs",
+        "crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "codex-standalone-tools",
+      "description": "Codex-authenticated read, search, fetch, image, and provider-key tool adapters.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-tools/src/bridge.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/codex/**",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/image_edit/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/image_gen/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/**",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_search/**",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/**",
+        "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-tools/src/implementations/codex/read_file/tool.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_search/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/client.rs",
+        "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "codex-fast-mode",
+      "description": "Provider-scoped persisted Fast service-tier controls and slash-command integration.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/docs/user-guide/04-slash-commands.md",
+        "crates/codegen/xai-grok-pager/src/settings/defs.rs",
+        "crates/codegen/xai-grok-pager/src/settings/registry.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/fast.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/slash_exec.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/settings_writes.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/slash/commands/fast.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/slash_exec.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/settings_writes.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES"
+      ]
+    },
+    {
+      "id": "warp-theme-catalog",
+      "description": "Packaged Warp theme catalog, translation, selection, watching, and attribution.",
+      "source_ids": [
+        "grok-build-upstream",
+        "warp-themes"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager-render/Cargo.toml",
+        "crates/codegen/xai-grok-pager-render/assets/terminal-ansi.tmTheme",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/**",
+        "crates/codegen/xai-grok-pager-render/build.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/cache.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/mod.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/resolved.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/selection.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/warp/**",
+        "crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md",
+        "crates/codegen/xai-grok-pager/src/slash/commands/theme.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager-render/build.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/mod.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/warp/mod.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/LICENSE",
+        "third_party/NOTICE"
+      ]
+    },
+    {
+      "id": "fork-governance-and-attribution",
+      "description": "Fork identity, upstream ledger, repository rules, and source-attribution updates.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode",
+        "opencode-codex-auth",
+        "warp-themes"
+      ],
+      "paths": [
+        ".gitignore",
+        "AGENTS.md",
+        "README.md",
+        "THIRD-PARTY-NOTICES",
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md",
+        "third_party/NOTICE",
+        "third_party/README.md"
+      ],
+      "integration_paths": [
+        "AGENTS.md",
+        "README.md",
+        "UPSTREAM_VERSIONS.md"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md",
+        "third_party/NOTICE"
+      ]
+    }
+  ]
+}

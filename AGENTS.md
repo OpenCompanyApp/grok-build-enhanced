@@ -15,6 +15,16 @@
   Provider work should be a scoped adapter, not a replacement application.
 - Preserve `LICENSE`, `THIRD-PARTY-NOTICES`, and crate-local notices. Attribute
   ported code and record prominent modifications where the source license asks.
+- Keep downstream snapshotting, rebasing, and publishing as three explicit,
+  separate operations:
+  1. Snapshot the current downstream tip with an immutable commit/tree identity;
+     snapshot creation must not rebase, move a branch, or push.
+  2. Rebase only in a disposable branch or isolated worktree, preserve the
+     frozen snapshot, and verify the candidate against it before publication.
+  3. Publish only after review as a separate, explicitly authorized step. Never
+     force-push from snapshot or rebase tooling; if authorization is given, use
+     `--force-with-lease` against the reviewed destination and never rewrite an
+     upstream, baseline, or frozen snapshot ref.
 - Format with `cargo fmt`. Run focused tests for touched crates, then at least
   `cargo check -p xai-grok-pager-bin`; live-test Codex changes without printing
   credentials. Report environmental or credential-gated gaps honestly.
