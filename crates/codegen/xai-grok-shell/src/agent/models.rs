@@ -163,7 +163,9 @@ pub(crate) fn task_model_error_for_catalog(
     is_session_auth: bool,
 ) -> Option<String> {
     let is_available = |entry: &ModelEntry| {
-        entry.info.user_selectable && model_addressable_for_auth(&entry.info, is_session_auth)
+        !entry.info.hidden
+            && entry.info.user_selectable
+            && model_addressable_for_auth(&entry.info, is_session_auth)
     };
     if config::find_model_by_id(available, requested).is_some_and(&is_available) {
         return None;
@@ -807,6 +809,11 @@ impl ModelsManager {
         self.inner.cfg.read().endpoints.clone()
     }
 
+    /// Whether authenticated Codex service-tier controls are enabled.
+    pub fn fast_mode_enabled(&self) -> bool {
+        self.inner.cfg.read().features.fast_mode.unwrap_or(true)
+    }
+
     /// Does the current credential grant access to OAuth-only models?
     pub(crate) fn is_session_auth(&self) -> bool {
         self.inner
@@ -983,7 +990,7 @@ impl ModelsManager {
         provider: ProviderId,
         model_id: &str,
     ) -> Option<config::ModelServiceTier> {
-        if provider != ProviderId::OpenAiCodex {
+        if provider != ProviderId::OpenAiCodex || !self.fast_mode_enabled() {
             return None;
         }
         let models = self.inner.models.read();
@@ -1011,6 +1018,9 @@ impl ModelsManager {
         let normalized = normalize_service_tier_alias(service_tier.trim());
         if normalized == xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER {
             return Some(normalized.to_owned());
+        }
+        if !self.fast_mode_enabled() {
+            return None;
         }
         info.service_tiers
             .iter()
@@ -1924,6 +1934,13 @@ impl ModelsManager {
     }
 
     fn spawn_openai_codex_catalog_retry(&self, expected_identity: CodexCatalogIdentity) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            // Constructors and config reloads are also used by synchronous
+            // embedders. A missing runtime must not panic the caller; the next
+            // authenticated runtime hook or ETag notification will retry.
+            tracing::debug!("OpenAI Codex model catalog retry deferred: no Tokio runtime");
+            return;
+        };
         if self
             .inner
             .codex_retry_in_flight
@@ -1942,7 +1959,7 @@ impl ModelsManager {
         }
 
         let mgr = self.clone();
-        tokio::task::spawn(async move {
+        runtime.spawn(async move {
             let backoff = crate::tools::retry::BackoffConfig::new(5, 5_000, 60_000);
             let result = crate::tools::retry::execute_with_backoff(
                 &backoff,
@@ -2673,6 +2690,16 @@ impl ModelsManager {
         };
         if let Some(snapshot) = snapshot {
             *self.inner.xai_catalog_credential_scope.write() = snapshot.credential_scope.clone();
+        } else {
+            // The direct catalog-publication seam used by synchronous tests
+            // must establish the same credential binding as the production
+            // snapshot path. Otherwise the next config reload mistakes the
+            // freshly installed catalog for a cross-account transition and
+            // clears it.
+            let current_auth = self.inner.auth_manager.current_or_expired();
+            let fetch_auth = ModelFetchAuth::resolve(&config.endpoints, current_auth.is_some());
+            *self.inner.xai_catalog_credential_scope.write() =
+                xai_catalog_credential_scope(&config.endpoints, current_auth.as_ref(), fetch_auth);
         }
         *self.inner.has_fetched_real_catalog.write() = true;
         if let Some(snapshot) = snapshot {
@@ -3943,11 +3970,10 @@ fn resolve_model_service_tier(
             .then(|| configured.to_owned());
     }
 
-    info.default_service_tier
-        .as_deref()
-        .map(normalize_service_tier_alias)
-        .filter(|tier| info.service_tiers.iter().any(|option| option.id == *tier))
-        .map(str::to_owned)
+    // Keep Fast mode opt-in. The catalog default is capability metadata and must
+    // not silently turn on the higher-usage priority tier for a user who did not
+    // select a service tier.
+    None
 }
 
 /// True when an active `allowed_models` allowlist leaves no selectable model.
@@ -4134,7 +4160,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_standard_sentinel_and_catalog_default_resolve_explicitly() {
+    fn codex_standard_sentinel_overrides_catalog_default_without_auto_enabling_fast() {
         let mut catalog = gpt_56_codex_catalog();
         catalog
             .get_mut("openai-codex/gpt-5.6-luna")
@@ -4146,12 +4172,8 @@ mod tests {
         let defaulted =
             resolve_combined_model_catalog(&config::Config::default(), None, catalog.clone());
         assert_eq!(
-            defaulted["openai-codex/gpt-5.6-luna"]
-                .info
-                .service_tier
-                .as_deref(),
-            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER),
-            "an advertised catalog default should be honored when Fast controls are enabled",
+            defaulted["openai-codex/gpt-5.6-luna"].info.service_tier, None,
+            "an advertised catalog default must not silently opt the user into Fast",
         );
 
         let cfg = config::Config {
@@ -4208,16 +4230,42 @@ mod tests {
                 .fast_service_tier_for_provider(ProviderId::Xai, "gpt-5.6-luna")
                 .is_none()
         );
+
+        let mut disabled_config = config::Config::default();
+        disabled_config.features.fast_mode = Some(false);
+        let disabled = manager_with_catalog_and_config(gpt_56_codex_catalog(), disabled_config);
+        assert!(!disabled.fast_mode_enabled());
+        assert!(
+            disabled
+                .fast_service_tier_for_provider(ProviderId::OpenAiCodex, "gpt-5.6-luna")
+                .is_none()
+        );
+        assert_eq!(
+            disabled.resolve_service_tier_for_provider(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-luna",
+                "fast",
+            ),
+            None,
+            "the feature kill switch must reject a restored Fast selection",
+        );
     }
 
     fn manager_with_catalog(catalog: IndexMap<String, ModelEntry>) -> ModelsManager {
+        manager_with_catalog_and_config(catalog, config::Config::default())
+    }
+
+    fn manager_with_catalog_and_config(
+        catalog: IndexMap<String, ModelEntry>,
+        cfg: config::Config,
+    ) -> ModelsManager {
         let tmp = std::env::temp_dir().join("grok-test-models-manager-gpt-56");
         ModelsManager::new(
             None,
             catalog,
             acp::ModelId::new("openai-codex/gpt-5.6-luna"),
             Arc::new(AuthManager::new(&tmp, GrokComConfig::default())),
-            config::Config::default(),
+            cfg,
         )
     }
 
@@ -4289,7 +4337,7 @@ mod tests {
         cfg.models.default = Some("openai-codex/gpt-5.6-luna".to_owned());
         cfg.models.default_reasoning_effort = Some(ReasoningEffort::Ultra);
 
-        let resolved = resolve_model_catalog(&cfg, Some(prefetched));
+        let resolved = resolve_combined_model_catalog(&cfg, None, prefetched);
         assert_eq!(
             resolved["openai-codex/gpt-5.6-luna"].info.reasoning_effort,
             Some(ReasoningEffort::Medium),

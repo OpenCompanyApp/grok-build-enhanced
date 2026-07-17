@@ -16,6 +16,13 @@ impl SessionActor {
                 ok_end_turn(0, None)
             }
             BuiltinAction::Fast { mode } => {
+                if !self.models_manager.fast_mode_enabled() {
+                    self.send_slash_command_output(
+                        "Fast mode is disabled by [features] fast_mode = false.",
+                    )
+                    .await;
+                    return ok_end_turn(0, None);
+                }
                 if mode == slash_commands::FastModeAction::Invalid {
                     self.send_slash_command_output("Usage: /fast on|off|status")
                         .await;

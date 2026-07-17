@@ -12,11 +12,20 @@ impl AsyncTerminalRunner for DummyTerminal {
         Err(TerminalError::Other("dummy terminal".into()))
     }
 }
-#[tokio::test(flavor = "current_thread")]
-async fn persist_ack_waits_for_disk_flush_before_success() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn persist_ack_waits_for_disk_flush_before_success() {
+    std::thread::Builder::new()
+        .name("persist-ack-test".to_owned())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(async {
+                let local = tokio::task::LocalSet::new();
+                local
+                    .run_until(async {
             let tmp = tempfile::TempDir::new().unwrap();
             let session_dir = tmp.path().join("session");
             let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
@@ -331,8 +340,13 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 "loaded chat history should contain the just-persisted prompt"
             );
             let _ = prompt_task.await.expect("prompt task should complete");
+                    })
+                    .await;
+            });
         })
-        .await;
+        .expect("spawn persistence test thread")
+        .join()
+        .expect("persistence test thread");
 }
 #[tokio::test(flavor = "current_thread")]
 async fn first_turn_memory_injection_persists_to_chat_history() {

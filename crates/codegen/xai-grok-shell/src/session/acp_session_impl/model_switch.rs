@@ -1129,7 +1129,13 @@ mod provider_media_switch_tests {
                 .function
                 .description
                 .as_deref()
-                .is_some_and(|description| description.contains("open, click, and find"))
+                .is_some_and(|description| {
+                    description.contains("search_query")
+                        && description.contains("open: open")
+                        && description.contains("click: follow")
+                        && description.contains("find: locate")
+                        && description.contains("fetches arbitrary public URLs")
+                })
         );
 
         install_web_search_tool_definition(&bridge, false)

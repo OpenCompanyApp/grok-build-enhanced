@@ -178,16 +178,15 @@ mod tests {
             };
             let items = cmd.suggest_args(&ctx, "").expect("should return items");
             assert_eq!(items[0].insert_text, "auto");
-            assert!(items[0].description.contains("follow system"));
-            // auto + all available concrete themes
-            assert_eq!(items.len(), ThemeKind::available().len() + 1);
+            assert!(items[0].description.contains("system dark/light"));
+            assert_eq!(items.len(), crate::theme::theme_choices(true).len());
         });
     }
 
     #[test]
     fn suggest_args_auto_active_when_auto_mode() {
         with_test_env(|| {
-            theme_cache::set_auto_mode(true);
+            theme_cache::apply_selection(ThemeSelection::Auto, system_appearance::detect());
             let cmd = ThemeCommand;
             let models = crate::acp::model_state::ModelState::default();
             let ctx = AppCtx {
@@ -255,8 +254,7 @@ mod tests {
     #[test]
     fn suggest_args_no_explicit_active_when_auto() {
         with_test_env(|| {
-            theme_cache::set_auto_mode(true);
-            theme_cache::set(ThemeKind::GrokNight);
+            theme_cache::apply_selection(ThemeSelection::Auto, system_appearance::detect());
             let cmd = ThemeCommand;
             let models = crate::acp::model_state::ModelState::default();
             let ctx = AppCtx {
@@ -505,7 +503,14 @@ mod tests {
             };
             let result = cmd.run(&mut ctx, "nonexistent");
             if let CommandResult::Error(msg) = result {
-                assert!(msg.contains("auto"), "error should list auto: {msg}");
+                assert!(
+                    msg.contains("Run /theme"),
+                    "error should point to /theme: {msg}"
+                );
+                assert!(
+                    msg.contains("official Warp themes"),
+                    "error should describe the searchable catalog: {msg}"
+                );
             } else {
                 panic!("expected Error, got: {result:?}");
             }

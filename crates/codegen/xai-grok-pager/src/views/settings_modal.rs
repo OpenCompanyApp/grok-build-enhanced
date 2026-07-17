@@ -5583,7 +5583,41 @@ mod tests {
                     assert!(
                         matches!(nonempty_action, Some(Action::SetForkSecondaryModel(_))),
                         "fork_secondary_model non-empty canonical must produce \
-                         SetForkSecondaryModel(_), got {nonempty_action:?}",
+                        SetForkSecondaryModel(_), got {nonempty_action:?}",
+                    );
+                }
+                "theme" => {
+                    assert!(
+                        matches!(empty_action, Some(Action::SetTheme(_))),
+                        "theme empty canonical must produce SetTheme(_), got {empty_action:?}",
+                    );
+                    assert!(
+                        matches!(nonempty_action, Some(Action::SetTheme(_))),
+                        "theme non-empty canonical must produce SetTheme(_), got {nonempty_action:?}",
+                    );
+                }
+                "auto_dark_theme" => {
+                    assert!(
+                        matches!(empty_action, Some(Action::SetAutoDarkTheme(_))),
+                        "auto_dark_theme empty canonical must produce SetAutoDarkTheme(_), \
+                         got {empty_action:?}",
+                    );
+                    assert!(
+                        matches!(nonempty_action, Some(Action::SetAutoDarkTheme(_))),
+                        "auto_dark_theme non-empty canonical must produce SetAutoDarkTheme(_), \
+                         got {nonempty_action:?}",
+                    );
+                }
+                "auto_light_theme" => {
+                    assert!(
+                        matches!(empty_action, Some(Action::SetAutoLightTheme(_))),
+                        "auto_light_theme empty canonical must produce SetAutoLightTheme(_), \
+                         got {empty_action:?}",
+                    );
+                    assert!(
+                        matches!(nonempty_action, Some(Action::SetAutoLightTheme(_))),
+                        "auto_light_theme non-empty canonical must produce SetAutoLightTheme(_), \
+                         got {nonempty_action:?}",
                     );
                 }
                 other => panic!(
@@ -11148,6 +11182,13 @@ mod tests {
             height: 30,
         };
         let mut s = enter_picker_for("theme");
+        let original = match &s.mode {
+            SettingsModalMode::PickingEnum { original_value, .. } => match original_value {
+                SettingValue::String(value) => value.clone(),
+                other => panic!("expected string-backed theme value, got {other:?}"),
+            },
+            other => panic!("expected PickingEnum, got {other:?}"),
+        };
         let mut buf = Buffer::empty(area);
         render_settings_modal(&mut buf, area, &mut s, false, None);
         let rect = s
@@ -11165,18 +11206,18 @@ mod tests {
         );
         // For preview-supporting enums (theme), the breadcrumb-
         // click revert dispatches `Action::PreviewTheme(original)`.
-        // The original canonical for the default theme is
-        // `"groknight"`. Tightened from the previous `Action(_) |
-        // Changed` to lock in the revert contract.
+        // Compare against the value captured on picker entry. The active theme
+        // is process-global and other parallel tests may intentionally select a
+        // different valid theme.
         match outcome {
             SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
                 assert_eq!(
-                    orig, "groknight",
+                    orig, original,
                     "breadcrumb-click revert must carry the original canonical",
                 );
             }
             other => panic!(
-                "expected Action(PreviewTheme(\"groknight\")) — the keyboard \
+                "expected Action(PreviewTheme(<original>)) — the keyboard \
                  Esc-equivalent revert — got {other:?}",
             ),
         }
@@ -11213,8 +11254,8 @@ mod tests {
                 ..
             } => {
                 let orig = match original_value {
-                    SettingValue::Enum(c) => c.to_string(),
-                    other => panic!("expected SettingValue::Enum, got {other:?}"),
+                    SettingValue::String(c) => c.clone(),
+                    other => panic!("expected SettingValue::String, got {other:?}"),
                 };
                 (orig, *choices_idx)
             }
@@ -11267,6 +11308,13 @@ mod tests {
     #[test]
     fn d_key_in_picking_enum_dispatches_open_reset_confirm() {
         let mut s = enter_picker_for("theme");
+        let original = match &s.mode {
+            SettingsModalMode::PickingEnum { original_value, .. } => match original_value {
+                SettingValue::String(value) => value.clone(),
+                other => panic!("expected string-backed theme value, got {other:?}"),
+            },
+            other => panic!("expected PickingEnum, got {other:?}"),
+        };
         let outcome = handle_settings_key(
             &mut s,
             &KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
@@ -11280,11 +11328,8 @@ mod tests {
                     key, "theme",
                     "OpenResetConfirm key must be the active picker setting",
                 );
-                // Default theme is `groknight`; entering the picker
-                // captures `original_value = current value = groknight`,
-                // so the revert dispatches with that canonical.
                 assert_eq!(
-                    orig, "groknight",
+                    orig, original,
                     "PreviewTheme revert must carry the original canonical",
                 );
             }
@@ -11774,20 +11819,6 @@ mod tests {
         let content_cell = buf
             .cell((area.x, preview_y + 1))
             .expect("content cell at column 0");
-        // Wiring assertion: rendered cells use the current-theme
-        // bg tokens (tautological under NO_COLOR; meaningful when
-        // truecolor is on).
-        let theme = Theme::current();
-        assert_eq!(
-            title_cell.bg, theme.bg_visual,
-            "title bg must be theme.bg_visual; got {:?}",
-            title_cell.bg,
-        );
-        assert_eq!(
-            content_cell.bg, theme.bg_highlight,
-            "content bg must be theme.bg_highlight; got {:?}",
-            content_cell.bg,
-        );
         // The title carries UNDERLINED in addition to BOLD + ITALIC.
         // This is the theme-neutral cue that demarcates the title
         // when the bg luma delta is small (TokyoNight).
@@ -11803,28 +11834,17 @@ mod tests {
              got {:?}",
             content_cell.modifier,
         );
-        // Contrast assertion: regardless of the active palette,
-        // the raw / un-quantized theme tokens differ. We use the
-        // raw theme directly so this assertion survives `NO_COLOR`
-        // / 256-color quantization.
-        let raw_theme = match crate::theme::Theme::current_kind() {
-            crate::theme::ThemeKind::GrokNight => crate::theme::Theme::groknight(),
-            crate::theme::ThemeKind::TokyoNight => crate::theme::Theme::tokyonight(),
-            crate::theme::ThemeKind::GrokDay => crate::theme::Theme::grokday(),
-            crate::theme::ThemeKind::RosePineMoon => crate::theme::Theme::rosepine_moon(),
-            // Resolved via `Theme::current()` rather than a constructor
-            // because `theme::oscura` is a private module.
-            crate::theme::ThemeKind::OscuraMidnight
-            | crate::theme::ThemeKind::TerminalNative
-            | crate::theme::ThemeKind::WarpSync
-            | crate::theme::ThemeKind::WarpCustom => crate::theme::Theme::current(),
-            crate::theme::ThemeKind::Auto => crate::theme::Theme::groknight(),
-        };
-        assert_ne!(
-            raw_theme.bg_visual, raw_theme.bg_highlight,
-            "raw theme tokens bg_visual + bg_highlight must be distinct so the preview \
-             reads as a contained block with two-tone bg",
-        );
+        // RGB themes also provide a two-tone background. Terminal-native and
+        // NO_COLOR deliberately leave both cells at Reset, where the underline
+        // above is the sole distinction.
+        if title_cell.bg != ratatui::style::Color::Reset
+            || content_cell.bg != ratatui::style::Color::Reset
+        {
+            assert_ne!(
+                title_cell.bg, content_cell.bg,
+                "themed preview title and content backgrounds must differ",
+            );
+        }
     }
 
     /// Test 5: content rows wrap at the pending value — no

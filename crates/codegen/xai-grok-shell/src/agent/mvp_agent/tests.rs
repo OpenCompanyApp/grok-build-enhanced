@@ -2470,6 +2470,7 @@ async fn cached_token_fallthrough_falls_to_grok_com_without_credentials() {
 /// | true     | Some      | Enabled, S3 threaded (ZDR with upload path) |
 #[tokio::test(flavor = "current_thread")]
 async fn prepare_video_gen_config_disabled_when_zdr_flag_set() {
+    use xai_grok_sampling_types::ProviderId;
     use xai_grok_tools::implementations::grok_build::video_gen::{
         S3AccessCredentials, VideoGenConfig, ZdrVideoOutputS3Config,
     };
@@ -2488,6 +2489,7 @@ async fn prepare_video_gen_config_disabled_when_zdr_flag_set() {
         }
     }
     let agent = build_minimal_agent_for_tests();
+    agent.sampling_config.borrow_mut().provider = ProviderId::Xai;
     agent.sampling_config.borrow_mut().api_key = Some("test-key".to_string());
     assert!(matches!(
         agent.prepare_video_gen_config(),
@@ -2527,8 +2529,10 @@ async fn prepare_video_gen_config_disabled_when_zdr_flag_set() {
 /// disabling a paid feature when tier info hasn't loaded.
 #[tokio::test(flavor = "current_thread")]
 async fn prepare_image_gen_config_fails_open_without_auth() {
+    use xai_grok_sampling_types::ProviderId;
     use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
     let agent = build_minimal_agent_for_tests();
+    agent.sampling_config.borrow_mut().provider = ProviderId::Xai;
     agent.sampling_config.borrow_mut().api_key = Some("test-key".to_string());
     let ImageGenConfig::Enabled {
         tier_restricted, ..
@@ -2549,6 +2553,7 @@ async fn prepare_image_gen_config_uses_explicit_session_sampling_config() {
     use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
 
     let agent = build_minimal_agent_for_tests();
+    agent.sampling_config.borrow_mut().provider = ProviderId::Xai;
     agent.sampling_config.borrow_mut().api_key = Some("global-key".to_owned());
 
     let mut session_sampling = agent.sampling_config.borrow().clone();

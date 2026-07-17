@@ -402,6 +402,20 @@
         let mut app = make_app_with_agent("sess-1");
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
         seed_models(agent, "grok-3", &["grok-3", "grok-4"]);
+        agent
+            .session
+            .models
+            .available
+            .get_mut(&acp::ModelId::new(std::sync::Arc::from("grok-4")))
+            .expect("seeded follower model")
+            .meta = serde_json::json!({
+                "supportsReasoningEffort": true,
+                "reasoningEfforts": [
+                    { "id": "high", "value": "high", "label": "High", "default": true }
+                ]
+            })
+            .as_object()
+            .cloned();
 
         let notif = model_changed_ext("sess-1", "grok-4", Some("high"));
         assert!(handle_ext_notification(&notif, &mut app));
@@ -441,4 +455,3 @@
             "unrelated-session broadcast must not touch this agent's model"
         );
     }
-

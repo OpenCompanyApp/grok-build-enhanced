@@ -2124,7 +2124,7 @@ fn set_theme_auto_enables_auto_mode_and_persists_auto() {
                 assert_eq!(*key, "theme");
                 assert_eq!(
                     *value,
-                    SettingValue::Enum("auto"),
+                    SettingValue::String("auto".to_owned()),
                     "auto commit persists `auto` (NOT the resolved concrete theme)",
                 );
             }

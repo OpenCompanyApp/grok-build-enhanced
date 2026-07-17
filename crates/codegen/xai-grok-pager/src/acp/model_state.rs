@@ -221,14 +221,21 @@ impl ModelState {
         id: &acp::ModelId,
         effort: ReasoningEffort,
     ) -> Option<ReasoningEffort> {
+        let has_explicit_options = self
+            .available
+            .get(id)
+            .and_then(|info| parse_reasoning_efforts_meta(info.meta.as_ref()))
+            .is_some();
         let options = self.reasoning_effort_options_for(id);
         if options.iter().any(|option| option.value == effort) {
             return Some(effort);
         }
-        // An explicit Codex menu contains a distinct Max row. The fallback
-        // four-level menu does not, where `max` retains its historic xhigh
-        // alias meaning.
+        // Explicit provider menus are authoritative: if they offer xhigh under
+        // a provider-specific id (for example `deep`) but do not offer `max`,
+        // typing `max` must be rejected. Only the built-in legacy fallback
+        // retains the historic `max` -> `xhigh` alias.
         if effort == ReasoningEffort::Max
+            && !has_explicit_options
             && options
                 .iter()
                 .any(|option| option.value == ReasoningEffort::Xhigh)

@@ -30,9 +30,24 @@ const npmRoot = path.resolve(__dirname, '..', '..');
 
 const TOOL_NOTICES_SOURCE = path.resolve(
     npmRoot, '..', '..', 'xai-grok-tools', 'THIRD_PARTY_NOTICES.md');
+const SHELL_NOTICES_SOURCE = path.resolve(
+    npmRoot, '..', '..', 'xai-grok-shell', 'THIRD_PARTY_NOTICES.md');
 const PAGER_RENDER_NOTICES_SOURCE = path.resolve(
     npmRoot, '..', '..', 'xai-grok-pager-render', 'THIRD_PARTY_NOTICES.md');
-const NOTICES_SOURCES = [TOOL_NOTICES_SOURCE, PAGER_RENDER_NOTICES_SOURCE];
+const NOTICES_SOURCES = [
+    {
+        source: TOOL_NOTICES_SOURCE,
+        requiredMarker: 'src/implementations/grok_build/web_search/',
+    },
+    {
+        source: SHELL_NOTICES_SOURCE,
+        requiredMarker: 'src/auth/codex/',
+    },
+    {
+        source: PAGER_RENDER_NOTICES_SOURCE,
+        requiredMarker: 'warpdotdev/themes',
+    },
+];
 const NOTICES_NAME = 'THIRD_PARTY_NOTICES.md';
 const WARP_THEMES_LICENSE_SOURCE = path.resolve(
     npmRoot, '..', '..', 'xai-grok-pager-render', 'assets', 'warp-themes', 'LICENSE');
@@ -72,9 +87,14 @@ async function packPlatform({ platform, arch, envVar, defaultSource, binName }) 
     subPkg.version = VERSION;
     fs.writeFileSync(pkgJsonPath, JSON.stringify(subPkg, null, 4) + '\n');
 
-    for (const noticesSource of NOTICES_SOURCES) {
-        if (!fs.existsSync(noticesSource)) {
-            console.error(`[assemble] Missing third-party notices file: ${noticesSource}`);
+    for (const { source, requiredMarker } of NOTICES_SOURCES) {
+        if (!fs.existsSync(source)) {
+            console.error(`[assemble] Missing third-party notices file: ${source}`);
+            return false;
+        }
+        if (!fs.readFileSync(source, 'utf8').includes(requiredMarker)) {
+            console.error(
+                `[assemble] Third-party notices file is missing required content: ${source}`);
             return false;
         }
     }
@@ -83,8 +103,15 @@ async function packPlatform({ platform, arch, envVar, defaultSource, binName }) 
         return false;
     }
     const notices = NOTICES_SOURCES
-        .map(noticesSource => fs.readFileSync(noticesSource, 'utf8').trimEnd())
+        .map(({ source }) => fs.readFileSync(source, 'utf8').trimEnd())
         .join('\n\n---\n\n') + '\n';
+    for (const { requiredMarker } of NOTICES_SOURCES) {
+        if (!notices.includes(requiredMarker)) {
+            console.error(
+                `[assemble] Combined third-party notices omitted required marker: ${requiredMarker}`);
+            return false;
+        }
+    }
     fs.writeFileSync(path.join(pkgDir, NOTICES_NAME), notices);
     fs.copyFileSync(
         WARP_THEMES_LICENSE_SOURCE,

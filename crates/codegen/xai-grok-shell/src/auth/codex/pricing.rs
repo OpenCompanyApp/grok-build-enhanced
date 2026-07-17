@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// from the ChatGPT usage response and must never be presented as subscription
 /// spend. Rates are the Standard tier from
 /// <https://developers.openai.com/api/docs/pricing>.
-pub const OPENAI_API_PRICING_VERIFIED_AT: &str = "2026-07-16";
+pub const OPENAI_API_PRICING_VERIFIED_AT: &str = "2026-07-17";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodexApiEquivalentCostLine {

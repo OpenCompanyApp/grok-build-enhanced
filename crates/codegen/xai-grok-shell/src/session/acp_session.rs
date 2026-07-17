@@ -1178,6 +1178,7 @@ impl SessionActor {
             hooks: self.hook_registry.borrow().is_some(),
             plugins: self.plugin_registry.borrow().is_some(),
             goal,
+            fast: self.models_manager.fast_mode_enabled(),
         }
     }
     /// Names of every tool registered with the session's tool bridge.

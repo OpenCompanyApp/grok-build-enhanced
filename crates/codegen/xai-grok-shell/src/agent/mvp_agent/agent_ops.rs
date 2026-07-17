@@ -577,6 +577,7 @@ impl MvpAgent {
     ) -> crate::session::slash_commands::CommandAvailability {
         crate::session::slash_commands::CommandAvailability {
             goal: self.cfg.borrow().resolve_goal().value,
+            fast: self.cfg.borrow().features.fast_mode.unwrap_or(true),
             ..crate::session::slash_commands::CommandAvailability::default()
         }
     }

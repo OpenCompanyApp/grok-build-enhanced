@@ -30,6 +30,7 @@ pub(crate) struct BuiltinCommand {
 ///   disabled). Used for `/memory` so the user can re-enable via toggle.
 /// - `Goal`: `resolve_goal()` feature flag is on AND `update_goal` is in the
 ///   session toolset (see `goal_slash_and_harness_available` in `acp_session.rs`).
+/// - `Fast`: authenticated Codex service-tier controls are enabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuiltinGate {
     AlwaysOn,
@@ -42,6 +43,7 @@ pub(crate) enum BuiltinGate {
     Hooks,
     Plugins,
     Goal,
+    Fast,
 }
 
 /// All built-in slash commands. Order here = display order in autocomplete.
@@ -65,7 +67,7 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         description: "Turn ChatGPT Codex Fast mode on or off, or show its status",
         argument_hint: Some("on|off|status"),
         aliases: &[],
-        gate: BuiltinGate::AlwaysOn,
+        gate: BuiltinGate::Fast,
         resolve: |args| {
             let mode = match args.trim().to_ascii_lowercase().as_str() {
                 "" | "toggle" => FastModeAction::Toggle,
@@ -404,6 +406,7 @@ pub(crate) struct CommandAvailability {
     pub hooks: bool,
     pub plugins: bool,
     pub goal: bool,
+    pub fast: bool,
 }
 
 impl CommandAvailability {
@@ -418,6 +421,7 @@ impl CommandAvailability {
             BuiltinGate::Hooks => self.hooks,
             BuiltinGate::Plugins => self.plugins,
             BuiltinGate::Goal => self.goal,
+            BuiltinGate::Fast => self.fast,
         }
     }
 
@@ -433,6 +437,7 @@ impl CommandAvailability {
             hooks: true,
             plugins: true,
             goal: true,
+            fast: true,
         }
     }
 }
@@ -1043,6 +1048,19 @@ pub(super) fn resolve(
         });
     }
 
+    // A pager connected before a live config reload can briefly retain its
+    // local `/fast` command after the shell's kill switch turns off. Still
+    // resolve that exact command so execution can return the disabled message
+    // instead of forwarding it to the model as ordinary user text.
+    if command_name == "fast"
+        && !availability.fast
+        && let Some(fast) = BUILTIN_COMMANDS
+            .iter()
+            .find(|command| command.name == "fast")
+    {
+        return Err(SlashCommandOutcome::Builtin((fast.resolve)(args)));
+    }
+
     // Check if the leading /command is a builtin.
     let commands = all_commands(skills, availability);
     let builtin_match = commands
@@ -1577,6 +1595,7 @@ mod tests {
             names,
             [
                 "compact",
+                "fast",
                 "always-approve",
                 "flush",
                 "dream",
@@ -1673,6 +1692,32 @@ mod tests {
             ..CommandAvailability::all_enabled()
         });
         assert!(!names.iter().any(|n| n == "goal"), "got: {names:?}");
+    }
+
+    #[test]
+    fn availability_filters_fast_command_from_advertising() {
+        let names = advertised_names(CommandAvailability {
+            fast: false,
+            ..CommandAvailability::all_enabled()
+        });
+        assert!(!names.iter().any(|n| n == "fast"), "got: {names:?}");
+
+        let outcome = resolve(
+            vec![text_block("/fast on")],
+            &[],
+            CommandAvailability {
+                fast: false,
+                ..CommandAvailability::all_enabled()
+            },
+            SkillSlashRewrite::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            outcome,
+            SlashCommandOutcome::Builtin(BuiltinAction::Fast {
+                mode: FastModeAction::On
+            })
+        ));
     }
 
     #[test]
@@ -1784,6 +1829,7 @@ mod tests {
             .map(|c| c.name)
             .collect();
         for forbidden in [
+            "fast",
             "flush",
             "dream",
             "memory",
@@ -1826,7 +1872,7 @@ mod tests {
             "goal should be advertised pre-session when the flag is on, got: {names:?}",
         );
         // Runtime/tool-dependent gates stay closed pre-session.
-        for forbidden in ["flush", "dream", "memory", "feedback", "plugins"] {
+        for forbidden in ["fast", "flush", "dream", "memory", "feedback", "plugins"] {
             assert!(
                 !names.iter().any(|n| n == forbidden),
                 "{forbidden} should stay excluded pre-session, got: {names:?}",
@@ -2141,6 +2187,7 @@ mod tests {
     fn default_availability_is_fail_closed_on_every_gate() {
         let names = advertised_names_with(CommandAvailability::default());
         for forbidden in [
+            "fast",
             "flush",
             "dream",
             "feedback",

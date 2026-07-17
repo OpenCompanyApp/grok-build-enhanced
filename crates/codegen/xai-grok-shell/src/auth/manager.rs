@@ -198,6 +198,10 @@ pub struct AuthManager {
     /// `DevboxRecovery` adopt a seeded valid token; `Some(_)` pins the result.
     #[cfg(test)]
     devbox_override: parking_lot::Mutex<Option<bool>>,
+    /// Per-manager deterministic persistence fault injection. Keeping this on
+    /// the instance avoids process-global races between parallel auth tests.
+    #[cfg(test)]
+    persist_error_override: parking_lot::Mutex<Option<std::io::ErrorKind>>,
 }
 
 /// Discriminated outcome of a disk read, for transition logging.
@@ -411,6 +415,8 @@ impl AuthManager {
             dark_wake_override: parking_lot::Mutex::new(None),
             #[cfg(test)]
             devbox_override: parking_lot::Mutex::new(None),
+            #[cfg(test)]
+            persist_error_override: parking_lot::Mutex::new(None),
         }
     }
 
@@ -809,6 +815,15 @@ impl AuthManager {
         // One entry per scope (personal and team share the scope key).
         tracing::debug!(scope = %self.scope, "auth: storing token");
         map.insert(self.scope.clone(), auth.clone());
+        #[cfg(test)]
+        let write_result = match self.persist_error_override.lock().take() {
+            Some(kind) => Err(std::io::Error::new(
+                kind,
+                "injected auth persistence failure",
+            )),
+            None => write_auth_json(&self.path, &map),
+        };
+        #[cfg(not(test))]
         let write_result = write_auth_json(&self.path, &map);
         let elapsed_ms = update_started.elapsed().as_millis() as u64;
         match &write_result {
@@ -1214,6 +1229,11 @@ impl AuthManager {
         use std::sync::atomic::Ordering;
         *self.refresher.write() = Some(refresher);
         self.refresher_configured.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_persist_for_test(&self, kind: std::io::ErrorKind) {
+        *self.persist_error_override.lock() = Some(kind);
     }
 
     #[cfg(test)]

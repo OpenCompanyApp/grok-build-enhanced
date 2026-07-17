@@ -2113,10 +2113,11 @@ mod tests {
         for level in [ColorLevel::Ansi256, ColorLevel::Basic, ColorLevel::None] {
             let line = format_themes_env_line(level);
             assert!(
-                line.starts_with(&format!("  themes       {n}/{total}: ")),
+                line.starts_with(&format!("  themes       {}/{}: ", n + 2, total + 2)),
                 "level {level:?}: {line}"
             );
             assert!(line.contains("groknight") && line.contains("grokday"));
+            assert!(line.contains("terminal") && line.contains("warp-sync"));
             assert!(!line.contains("tokyonight"));
         }
     }

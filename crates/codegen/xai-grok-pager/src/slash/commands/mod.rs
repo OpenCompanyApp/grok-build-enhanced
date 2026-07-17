@@ -195,6 +195,14 @@ mod tests {
         assert!(reg.get("new").is_some());
         assert!(reg.get("compact").is_some());
         assert!(reg.get("model").is_some());
+        assert!(
+            reg.get("fast").is_none(),
+            "/fast stays hidden until the shell advertises the feature"
+        );
+        reg.set_acp_commands(&[acp::AvailableCommand::new(
+            "fast".to_string(),
+            "Control Codex Fast mode".to_string(),
+        )]);
         assert!(reg.get("fast").is_some());
         assert!(reg.get("home").is_some());
         assert!(reg.get("view-plan").is_some());
