@@ -855,11 +855,11 @@ fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_bool(
     }
 }
 
-/// `ConfirmResetSetting { choice: Reset }` on a SHARED Enum
+/// `ConfirmResetSetting { choice: Reset }` on a SHARED DynamicEnum
 /// target (`theme`) dispatches `Action::SetTheme(default)` via
-/// recursive dispatch — verifies the action_for_reset Enum arm.
+/// recursive dispatch — verifies the owned-string reset arm.
 #[test]
-fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_enum() {
+fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_dynamic_enum() {
     use crate::settings::SettingValue;
     use crate::views::modal::ResetSettingsResult;
     let mut app = test_app_with_agent();
@@ -881,7 +881,7 @@ fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_enum(
     match &effects[0] {
         Effect::PersistSetting { key, value, .. } => {
             assert_eq!(*key, "theme");
-            assert_eq!(value, &SettingValue::Enum("groknight"));
+            assert_eq!(value, &SettingValue::String("groknight".to_owned()));
         }
         other => panic!("expected PersistSetting, got {other:?}"),
     }
@@ -917,6 +917,23 @@ fn show_usage_with_redirect_url_shows_link_and_skips_fetch() {
         last_system_text(&app, AgentId(0)).contains("https://billing.example.com/me"),
         "redirect message should use the remote settings-provided URL"
     );
+}
+
+#[test]
+fn show_usage_codex_session_ignores_xai_billing_redirect() {
+    let mut app = test_app_with_agent();
+    app.usage_billing_redirect_url = Some("https://billing.example.com/me".to_string());
+    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+    agent.session.models.current = Some(agent_client_protocol::ModelId::new(
+        "openai-codex/gpt-5.6-sol",
+    ));
+
+    let effects = dispatch(Action::ShowUsage, &mut app);
+
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::FetchBilling { silent: false, .. }]
+    ));
 }
 
 // ── Minimal update-notice tests ──────────────────────────────────────

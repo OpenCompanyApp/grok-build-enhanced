@@ -1960,7 +1960,13 @@ pub enum Effect {
     /// When `silent` is true the result updates `credit_balance` without
     /// pushing a system message into scrollback (used for automatic refreshes
     /// on session init and after each turn).
-    FetchBilling { agent_id: AgentId, silent: bool },
+    FetchBilling {
+        agent_id: AgentId,
+        /// Session whose selected model owns the usage request. Provider
+        /// routing must never be inferred from an endpoint or model name.
+        session_id: Option<acp::SessionId>,
+        silent: bool,
+    },
     /// Fetch billing data at the app level (no agent required).
     /// Used on startup to populate the welcome-screen credit warning.
     FetchAppBilling,
@@ -2608,6 +2614,11 @@ pub enum TaskResult {
     BillingFetched {
         agent_id: AgentId,
         balance: Option<crate::views::credit_bar::CreditBalance>,
+        /// Authoritative ChatGPT Codex subscription limits, separate from xAI
+        /// billing and from the hypothetical API-equivalent estimate below.
+        codex_usage: Option<xai_grok_shell::auth::codex::CodexUsageSnapshot>,
+        codex_api_equivalent_cost:
+            Option<xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
         /// When true, update `credit_balance` silently (no scrollback message).
         silent: bool,
         /// Subscription tier piggybacked from remote settings.

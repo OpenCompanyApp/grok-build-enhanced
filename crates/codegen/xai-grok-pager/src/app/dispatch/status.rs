@@ -254,7 +254,21 @@ pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
-    if let Some(url) = app.usage_billing_redirect_url.clone() {
+    let (session_id, is_openai_codex_session) = app
+        .agents
+        .get(&id)
+        .map(|agent| {
+            (
+                agent.session.session_id.clone(),
+                agent.session.models.current_model_is_openai_codex(),
+            )
+        })
+        .unwrap_or((None, false));
+    // This remote switch controls only the xAI personal-team billing path.
+    // Codex model keys are provider-qualified by the shell, so a Codex
+    // session must continue to its provider-scoped subscription limits even
+    // when the user also has xAI remote settings in memory.
+    if !is_openai_codex_session && let Some(url) = app.usage_billing_redirect_url.clone() {
         if let Some(agent) = app.agents.get_mut(&id) {
             agent.scrollback.push_block(RenderBlock::System(
                 crate::scrollback::blocks::SystemMessageBlock::new(format!(
@@ -268,6 +282,7 @@ pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
     // summary can render usage, prepaid credits, and auto top-up together.
     vec![Effect::FetchBilling {
         agent_id: id,
+        session_id,
         silent: false,
     }]
 }

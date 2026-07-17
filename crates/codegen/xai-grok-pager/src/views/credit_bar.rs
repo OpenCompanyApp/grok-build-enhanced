@@ -3,6 +3,7 @@
 //! Shows the user's coding credit usage as a compact status bar item.
 //! Fetches real data from the `x.ai/billing` agent extension.
 
+use chrono::TimeZone;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -148,6 +149,174 @@ pub fn format_usage_summary(balance: &CreditBalance, autotopup: Option<&AutoTopu
         lines.push(format!("Pay-as-you-go: ${used:.2} used of ${cap:.2} limit"));
     }
 
+    lines.join("\n")
+}
+
+fn codex_window_label(seconds: i64) -> String {
+    match seconds {
+        18_000 => "5-hour limit".to_owned(),
+        604_800 => "Weekly limit".to_owned(),
+        seconds if seconds > 0 && seconds % 86_400 == 0 => {
+            format!("{}-day limit", seconds / 86_400)
+        }
+        seconds if seconds > 0 && seconds % 3_600 == 0 => {
+            format!("{}-hour limit", seconds / 3_600)
+        }
+        seconds => format!("{}-second limit", seconds.max(0)),
+    }
+}
+
+fn codex_reset_display(window: &xai_grok_shell::auth::codex::CodexUsageWindow) -> String {
+    chrono::Utc
+        .timestamp_opt(window.reset_at, 0)
+        .single()
+        .map(|reset| {
+            reset
+                .with_timezone(&chrono::Local)
+                .format("%B %-d, %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| format!("in {}s", window.reset_after_seconds.max(0)))
+}
+
+fn push_codex_window(
+    lines: &mut Vec<String>,
+    window: &xai_grok_shell::auth::codex::CodexUsageWindow,
+) {
+    lines.push(format!(
+        "{}: {}% used",
+        codex_window_label(window.limit_window_seconds),
+        window.used_percent.floor() as i64
+    ));
+    lines.push(format!("Resets: {}", codex_reset_display(window)));
+}
+
+fn format_token_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+    formatted
+}
+
+fn format_hypothetical_api_cost(
+    estimate: Option<&xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
+) -> Vec<String> {
+    let mut lines = vec!["Hypothetical API-equivalent cost (not subscription spend):".to_owned()];
+    let Some(estimate) = estimate else {
+        lines.push("Unavailable: session token counters could not be read.".to_owned());
+        return lines;
+    };
+
+    lines.push(format!(
+        "Observed session tokens: {} uncached input + {} cached input + {} output",
+        format_token_count(estimate.uncached_input_tokens),
+        format_token_count(estimate.cached_input_tokens),
+        format_token_count(estimate.output_tokens),
+    ));
+    match estimate.estimated_usd {
+        Some(cost) if estimate.usage_incomplete => {
+            lines.push(format!("Observed API-cost lower bound: ${cost:.6}"));
+            lines.push(
+                "Incomplete ledger: unobserved auxiliary and compaction model calls are excluded."
+                    .to_owned(),
+            );
+        }
+        Some(cost) => lines.push(format!("Standard API comparison: ${cost:.6}")),
+        None if !estimate.unpriced_models.is_empty() => lines.push(format!(
+            "Unavailable: no published API rate is mapped for {}.",
+            estimate.unpriced_models.join(", ")
+        )),
+        None => lines.push("Unavailable: no published API pricing basis.".to_owned()),
+    }
+    for line in &estimate.lines {
+        lines.push(format!(
+            "Pricing basis {}: ${:.2} input / ${:.2} cached / ${:.2} output per 1M tokens",
+            line.pricing_basis_model,
+            line.input_usd_per_million,
+            line.cached_input_usd_per_million,
+            line.output_usd_per_million,
+        ));
+    }
+    lines.push(format!(
+        "Rates verified {}. Excludes tool fees, cache-write premiums, and long-context multipliers.",
+        estimate.pricing_verified_at
+    ));
+    lines
+}
+
+/// Format authoritative ChatGPT Codex subscription limits plus a separately
+/// labeled, non-authoritative standard-API price comparison.
+pub fn format_codex_usage_summary(
+    usage: &xai_grok_shell::auth::codex::CodexUsageSnapshot,
+    estimate: Option<&xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
+) -> String {
+    let mut lines = vec!["OpenAI Codex subscription usage".to_owned()];
+    if let Some(plan) = usage.plan_type.as_deref().filter(|plan| !plan.is_empty()) {
+        lines.push(format!("Plan: {plan}"));
+    }
+    if let Some(limit) = &usage.rate_limit {
+        if let Some(primary) = &limit.primary_window {
+            push_codex_window(&mut lines, primary);
+        }
+        if let Some(secondary) = &limit.secondary_window {
+            push_codex_window(&mut lines, secondary);
+        }
+        if limit.limit_reached {
+            let reached = usage
+                .rate_limit_reached_type
+                .as_ref()
+                .map(|value| value.kind.as_str())
+                .unwrap_or("rate limit reached");
+            lines.push(format!("Status: {reached}"));
+        }
+    } else {
+        lines.push("Subscription windows: unavailable".to_owned());
+    }
+
+    if let Some(credits) = &usage.credits {
+        if credits.unlimited {
+            lines.push("Purchased credits: unlimited".to_owned());
+        } else if let Some(balance) = credits.balance.as_deref() {
+            lines.push(format!("Purchased credits balance: {balance}"));
+        } else if credits.has_credits {
+            lines.push("Purchased credits: available (balance unavailable)".to_owned());
+        }
+    }
+    if let Some(reset_credits) = &usage.rate_limit_reset_credits {
+        lines.push(format!(
+            "Rate-limit reset credits available: {}",
+            reset_credits.available_count.max(0)
+        ));
+    }
+    if let Some(spend) = &usage.spend_control
+        && let Some(limit) = &spend.individual_limit
+    {
+        lines.push(format!(
+            "Workspace spend control: {}% used; {} remaining (provider units)",
+            limit.used_percent.floor() as i64,
+            limit.remaining
+        ));
+    }
+    for additional in &usage.additional_rate_limits {
+        if let Some(limit) = &additional.rate_limit
+            && let Some(window) = &limit.primary_window
+        {
+            lines.push(format!(
+                "Additional limit {}: {}% used ({})",
+                additional.limit_name,
+                window.used_percent.floor() as i64,
+                codex_window_label(window.limit_window_seconds),
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.extend(format_hypothetical_api_cost(estimate));
     lines.join("\n")
 }
 
@@ -304,6 +473,122 @@ mod tests {
             topup_amount_cents: amount,
             max_amount_cents: max,
         }
+    }
+
+    fn codex_usage() -> xai_grok_shell::auth::codex::CodexUsageSnapshot {
+        use xai_grok_shell::auth::codex::{
+            CodexCreditStatus, CodexRateLimit, CodexResetCredits, CodexUsageSnapshot,
+            CodexUsageWindow,
+        };
+        CodexUsageSnapshot {
+            plan_type: Some("pro".to_owned()),
+            rate_limit: Some(CodexRateLimit {
+                allowed: true,
+                limit_reached: false,
+                primary_window: Some(CodexUsageWindow {
+                    used_percent: 42.0,
+                    limit_window_seconds: 18_000,
+                    reset_after_seconds: 120,
+                    reset_at: 1_735_689_720,
+                }),
+                secondary_window: Some(CodexUsageWindow {
+                    used_percent: 5.0,
+                    limit_window_seconds: 604_800,
+                    reset_after_seconds: 43_200,
+                    reset_at: 1_735_736_400,
+                }),
+            }),
+            credits: Some(CodexCreditStatus {
+                has_credits: true,
+                unlimited: false,
+                balance: Some("12.50".to_owned()),
+            }),
+            spend_control: None,
+            additional_rate_limits: Vec::new(),
+            rate_limit_reached_type: None,
+            rate_limit_reset_credits: Some(CodexResetCredits { available_count: 3 }),
+        }
+    }
+
+    #[test]
+    fn codex_summary_separates_authoritative_limits_from_api_comparison() {
+        use xai_grok_shell::auth::codex::{
+            CodexApiEquivalentCostEstimate, CodexApiEquivalentCostLine,
+        };
+        let estimate = CodexApiEquivalentCostEstimate {
+            input_tokens: 1_000_000,
+            cached_input_tokens: 400_000,
+            uncached_input_tokens: 600_000,
+            output_tokens: 100_000,
+            estimated_usd: Some(6.2),
+            lines: vec![CodexApiEquivalentCostLine {
+                model_id: "gpt-5.6".to_owned(),
+                pricing_basis_model: "gpt-5.6-sol".to_owned(),
+                input_tokens: 1_000_000,
+                cached_input_tokens: 400_000,
+                uncached_input_tokens: 600_000,
+                output_tokens: 100_000,
+                input_usd_per_million: 5.0,
+                cached_input_usd_per_million: 0.5,
+                output_usd_per_million: 30.0,
+                estimated_usd: 6.2,
+            }],
+            unpriced_models: Vec::new(),
+            usage_incomplete: false,
+            pricing_verified_at: "2026-07-16".to_owned(),
+        };
+
+        let summary = format_codex_usage_summary(&codex_usage(), Some(&estimate));
+        assert!(summary.contains("OpenAI Codex subscription usage"));
+        assert!(summary.contains("5-hour limit: 42% used"));
+        assert!(summary.contains("Weekly limit: 5% used"));
+        assert!(summary.contains("Purchased credits balance: 12.50"));
+        assert!(summary.contains("Rate-limit reset credits available: 3"));
+        assert!(summary.contains("Hypothetical API-equivalent cost (not subscription spend):"));
+        assert!(summary.contains("600,000 uncached input + 400,000 cached input + 100,000 output"));
+        assert!(summary.contains("Standard API comparison: $6.200000"));
+        assert!(summary.contains("Pricing basis gpt-5.6-sol"));
+        assert!(!summary.contains("Subscription spend: $"));
+    }
+
+    #[test]
+    fn codex_summary_shows_incomplete_observed_cost_as_lower_bound() {
+        let estimate = xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate {
+            input_tokens: 1_000,
+            cached_input_tokens: 500,
+            uncached_input_tokens: 500,
+            output_tokens: 100,
+            estimated_usd: Some(0.00575),
+            lines: Vec::new(),
+            unpriced_models: Vec::new(),
+            usage_incomplete: true,
+            pricing_verified_at: "2026-07-16".to_owned(),
+        };
+        let summary = format_codex_usage_summary(&codex_usage(), Some(&estimate));
+        assert!(summary.contains("Observed API-cost lower bound: $0.005750"));
+        assert!(summary.contains("unobserved auxiliary and compaction model calls are excluded"));
+        assert!(!summary.contains("Standard API comparison: $"));
+    }
+
+    #[test]
+    fn codex_summary_refuses_to_price_unpublished_model_alias() {
+        let estimate = xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate {
+            input_tokens: 1_000,
+            cached_input_tokens: 500,
+            uncached_input_tokens: 500,
+            output_tokens: 100,
+            estimated_usd: None,
+            lines: Vec::new(),
+            unpriced_models: vec!["gpt-5.6-codex-future".to_owned()],
+            usage_incomplete: false,
+            pricing_verified_at: "2026-07-16".to_owned(),
+        };
+        let summary = format_codex_usage_summary(&codex_usage(), Some(&estimate));
+        assert!(
+            summary
+                .contains("Unavailable: no published API rate is mapped for gpt-5.6-codex-future.")
+        );
+        assert!(!summary.contains("Standard API comparison: $"));
     }
 
     #[test]

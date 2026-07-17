@@ -52,6 +52,8 @@ fn dispatch_billing(
         Action::TaskComplete(TaskResult::BillingFetched {
             agent_id: AgentId(0),
             balance,
+            codex_usage: None,
+            codex_api_equivalent_cost: None,
             silent,
             subscription_tier,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
@@ -491,7 +493,7 @@ fn show_usage_returns_fetch_billing_effect() {
     // together and renders a single summary.
     assert_eq!(effects.len(), 1, "got: {effects:?}");
     assert!(
-        matches!(&effects[0], Effect::FetchBilling { agent_id, silent } if *agent_id == AgentId(0) && !*silent),
+        matches!(&effects[0], Effect::FetchBilling { agent_id, silent, .. } if *agent_id == AgentId(0) && !*silent),
         "effect should be a non-silent FetchBilling, got: {effects:?}"
     );
 }
@@ -636,6 +638,8 @@ fn billing_fetched_stores_autotopup_on_app_and_agent() {
         Action::TaskComplete(TaskResult::BillingFetched {
             agent_id: AgentId(0),
             balance: Some(bal),
+            codex_usage: None,
+            codex_api_equivalent_cost: None,
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Resolved(autotopup),
@@ -665,6 +669,8 @@ fn billing_fetched_unchanged_autotopup_keeps_cached_rule() {
         Action::TaskComplete(TaskResult::BillingFetched {
             agent_id: AgentId(0),
             balance: Some(bal()),
+            codex_usage: None,
+            codex_api_equivalent_cost: None,
             silent: true,
             subscription_tier: None,
             autotopup: resolved,
@@ -676,6 +682,8 @@ fn billing_fetched_unchanged_autotopup_keeps_cached_rule() {
         Action::TaskComplete(TaskResult::BillingFetched {
             agent_id: AgentId(0),
             balance: Some(bal()),
+            codex_usage: None,
+            codex_api_equivalent_cost: None,
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
@@ -698,6 +706,8 @@ fn billing_fetched_cleared_autotopup_resets_cache() {
                 prepaid_balance_cents: Some(1500),
                 ..test_bal(100.0)
             }),
+            codex_usage: None,
+            codex_api_equivalent_cost: None,
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Resolved(
@@ -716,6 +726,8 @@ fn billing_fetched_cleared_autotopup_resets_cache() {
         Action::TaskComplete(TaskResult::BillingFetched {
             agent_id: AgentId(0),
             balance: Some(test_bal(50.0)),
+            codex_usage: None,
+            codex_api_equivalent_cost: None,
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Cleared,
@@ -754,6 +766,7 @@ fn app_billing_fetched_stores_autotopup() {
 #[test]
 fn billing_error_silent_does_not_push_scrollback() {
     let mut app = test_app_with_agent();
+    app.billing_poll_wanted = true;
     let before = agent_scrollback_len(&app);
     dispatch(
         Action::TaskComplete(TaskResult::BillingError {
@@ -767,6 +780,10 @@ fn billing_error_silent_does_not_push_scrollback() {
         agent_scrollback_len(&app),
         before,
         "silent billing error should not push a scrollback message"
+    );
+    assert!(
+        !app.billing_poll_wanted,
+        "an unusable silent result must stop the retry poll loop"
     );
 }
 

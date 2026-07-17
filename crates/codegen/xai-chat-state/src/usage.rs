@@ -1,7 +1,8 @@
-//! Per-prompt and per-session billing ledgers (not serialized).
+//! Per-prompt and per-session billing ledgers.
 //!
 //! `total_tokens()` is input + output: Responses wire `total` is live context
-//! length. Compaction and other side calls never call `record_main_loop_call`.
+//! length. Compaction and other side calls never call `record_main_loop_call`;
+//! callers that cannot observe their usage mark the session ledger incomplete.
 //!
 //! # Completeness ownership
 //!
@@ -26,9 +27,11 @@
 //! and scrubs costs when partial or incomplete.
 
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::TokenUsage;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UsageTotals {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -97,7 +100,8 @@ fn merge_cost_ticks(a: Option<i64>, b: Option<i64>) -> Option<i64> {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UsageLedger {
     pub totals: UsageTotals,
     pub by_model: IndexMap<String, UsageTotals>,
