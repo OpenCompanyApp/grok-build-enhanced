@@ -181,6 +181,7 @@ pub fn workspace_grok_build_toolset() -> ToolServerConfig {
     tools.push((&grok_build::AskUserQuestionTool).into());
     tools.push((&grok_build::WebSearchTool).into());
     tools.push((&grok_build::ImageGenTool).into());
+    tools.push((&grok_build::ImageEditTool).into());
     tools.push((&grok_build::ImageToVideoTool).into());
     tools.push((&grok_build::ReferenceToVideoTool).into());
     tools.push((&grok_build::WebFetchTool).into());
@@ -448,6 +449,7 @@ fn orchestrator_toolset() -> ToolServerConfig {
             (&grok_build::WebSearchTool).into(),
             (&grok_build::WebFetchTool).into(),
             (&grok_build::ImageGenTool).into(),
+            (&grok_build::ImageEditTool).into(),
             (&grok_build::ImageToVideoTool).into(),
             (&grok_build::ReferenceToVideoTool).into(),
             (&memory::MemorySearchImpl).into(),
@@ -997,9 +999,10 @@ pub enum Effort {
     #[strum(serialize = "xhigh")]
     XHigh,
     Max,
+    Ultra,
 }
 impl Effort {
-    pub const VALID_VALUES: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+    pub const VALID_VALUES: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 }
 const _: () = assert!(Effort::VALID_VALUES.len() == <Effort as strum::EnumCount>::COUNT);
 #[derive(
@@ -1763,6 +1766,27 @@ mod tests {
             assert!(
                 full_ids.contains(present.as_str()),
                 "workspace_grok_build_toolset must ship `{present}`"
+            );
+        }
+    }
+    #[test]
+    fn curated_media_toolsets_keep_image_generation_and_editing_together() {
+        let image_gen_id = ToolConfig::from(&grok_build::ImageGenTool).id;
+        let image_edit_id = ToolConfig::from(&grok_build::ImageEditTool).id;
+
+        for (name, toolset) in [
+            ("workspace_grok_build", workspace_grok_build_toolset()),
+            ("grok_build_orchestrator", orchestrator_toolset()),
+        ] {
+            let ids: std::collections::HashSet<&str> =
+                toolset.tools.iter().map(|tool| tool.id.as_str()).collect();
+            assert!(
+                ids.contains(image_gen_id.as_str()),
+                "{name} must advertise `{image_gen_id}`"
+            );
+            assert!(
+                ids.contains(image_edit_id.as_str()),
+                "{name} must advertise `{image_edit_id}` whenever image generation is available"
             );
         }
     }

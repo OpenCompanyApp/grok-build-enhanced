@@ -17,6 +17,8 @@ fn test_config() -> SamplingConfig {
 
 fn test_config_with_window(context_window: u64) -> SamplingConfig {
     SamplingConfig {
+        provider: Default::default(),
+        credential_binding: None,
         base_url: "https://api.example.com".to_string(),
         model: "test-model".to_string(),
         max_completion_tokens: None,
@@ -28,6 +30,7 @@ fn test_config_with_window(context_window: u64) -> SamplingConfig {
             .expect("test context_window must be non-zero"),
         reasoning_effort: None,
         stream_tool_calls: None,
+        service_tier: None,
     }
 }
 
@@ -294,6 +297,16 @@ async fn prompt_usage_ledger_via_handle_resets_and_clears() {
             .flatten()
             .is_none()
     );
+    assert_eq!(
+        h.handle
+            .try_get_session_usage()
+            .await
+            .expect("actor alive")
+            .totals
+            .model_calls,
+        3,
+        "snapshot restore must retain lifetime session usage"
+    );
 
     h.handle
         .record_model_call_usage(Some("m".into()), call, None, None);
@@ -305,6 +318,16 @@ async fn prompt_usage_ledger_via_handle_resets_and_clears() {
             .ok()
             .flatten()
             .is_none()
+    );
+    assert_eq!(
+        h.handle
+            .try_get_session_usage()
+            .await
+            .expect("actor alive")
+            .totals
+            .model_calls,
+        4,
+        "rewind must not silently discard already incurred usage"
     );
 }
 
@@ -907,6 +930,8 @@ async fn cache_prompt_text_appends_in_order() {
 async fn update_sampling_config_is_queryable() {
     let h = TestHarness::new();
     let new_config = SamplingConfig {
+        provider: Default::default(),
+        credential_binding: None,
         base_url: "https://new.example.com".to_string(),
         model: "grok-3".to_string(),
         max_completion_tokens: Some(4096),
@@ -917,12 +942,14 @@ async fn update_sampling_config_is_queryable() {
         context_window: NonZeroU64::new(200_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
+        service_tier: Some("priority".to_string()),
     };
     h.handle.update_sampling_config(new_config.clone());
 
     let config = h.handle.get_sampling_config().await.unwrap();
     assert_eq!(config.model, "grok-3");
     assert_eq!(config.context_window, NonZeroU64::new(200_000).unwrap());
+    assert_eq!(config.service_tier.as_deref(), Some("priority"));
 }
 
 #[tokio::test]
@@ -1292,6 +1319,8 @@ async fn build_request_with_tool_definitions() {
 #[tokio::test]
 async fn build_request_uses_sampling_config() {
     let config = SamplingConfig {
+        provider: Default::default(),
+        credential_binding: None,
         base_url: "https://api.example.com".to_string(),
         model: "grok-3".to_string(),
         max_completion_tokens: Some(8192),
@@ -1302,6 +1331,7 @@ async fn build_request_uses_sampling_config() {
         context_window: NonZeroU64::new(128_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
+        service_tier: None,
     };
     let h = TestHarness::with_config(vec![ConversationItem::user("hi")], config);
 
@@ -3396,6 +3426,8 @@ async fn sampling_config_survives_compaction_replacement() {
     use xai_grok_sampling_types::ApiBackend;
 
     let config = SamplingConfig {
+        provider: Default::default(),
+        credential_binding: None,
         base_url: "https://api.example.com".to_string(),
         model: "grok-build".to_string(),
         max_completion_tokens: None,
@@ -3406,6 +3438,7 @@ async fn sampling_config_survives_compaction_replacement() {
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
+        service_tier: Some("priority".to_string()),
     };
 
     let h = TestHarness::with_config(
@@ -3428,6 +3461,7 @@ async fn sampling_config_survives_compaction_replacement() {
     assert_eq!(pre.model, "grok-build");
     assert_eq!(pre.context_window.get(), 500_000);
     assert_eq!(pre.api_backend, ApiBackend::Responses);
+    assert_eq!(pre.service_tier.as_deref(), Some("priority"));
 
     let pre_meta = h.handle.get_last_model_metadata().await;
     assert_eq!(pre_meta.resolved_model_id.as_deref(), Some("grok-4.5"));
@@ -3456,6 +3490,11 @@ async fn sampling_config_survives_compaction_replacement() {
         ApiBackend::Responses,
         "BUG: api_backend switched to ChatCompletions after compaction"
     );
+    assert_eq!(
+        post.service_tier.as_deref(),
+        Some("priority"),
+        "service tier changed after compaction"
+    );
 
     // Post-compaction: model metadata is LOST (no AssistantItem in compacted history).
     // This is the visible symptom -- fingerprint/hash disappears from /session-info.
@@ -3479,6 +3518,8 @@ async fn sampling_config_survives_compaction_replacement() {
 #[tokio::test]
 async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
     let config = SamplingConfig {
+        provider: Default::default(),
+        credential_binding: None,
         base_url: "https://api.example.com".to_string(),
         model: "grok-build".to_string(),
         max_completion_tokens: None,
@@ -3489,6 +3530,7 @@ async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
+        service_tier: None,
     };
 
     let h = TestHarness::with_config(
@@ -3567,6 +3609,8 @@ async fn context_window_downgrade_triggers_auto_compact() {
 
     // Initial config: 500k context, Responses backend (matches grok-4.5)
     let config = SamplingConfig {
+        provider: Default::default(),
+        credential_binding: None,
         base_url: "https://api.x.ai/v1".to_string(),
         model: "grok-4.5".to_string(),
         max_completion_tokens: None,
@@ -3577,6 +3621,7 @@ async fn context_window_downgrade_triggers_auto_compact() {
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
+        service_tier: None,
     };
 
     let h = TestHarness::with_config(vec![], config);
