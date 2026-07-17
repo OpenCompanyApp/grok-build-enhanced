@@ -10,7 +10,6 @@ use serde_json::Value;
 use std::sync::LazyLock;
 use xai_computer_hub_sdk::harness::PERMISSION_REQUEST_KIND;
 use xai_computer_hub_sdk::{ToolServer, WeakToolServer};
-use xai_grok_tools::implementations::grok_build::web_fetch::domain_from_url;
 use xai_tool_protocol::SessionId;
 /// Wall-clock time the workspace awaits chat's decision on a `permission_request`
 /// hook. `outcome` is `ok` (chat replied) or `error` (transport failure /
@@ -143,10 +142,7 @@ fn describe_access(access: &AccessKind) -> String {
         AccessKind::Bash(_) => "Run a terminal command".to_owned(),
         AccessKind::Edit(path) => format!("Edit {path}"),
         AccessKind::MCPTool { name, .. } => format!("Run MCP tool {name}"),
-        AccessKind::WebFetch(url) => format!(
-            "Fetch {}",
-            domain_from_url(url).unwrap_or_else(|| "<invalid-url>".to_owned())
-        ),
+        AccessKind::WebFetch(url) => format!("Fetch {url}"),
         AccessKind::WebSearch(query) => format!("Search the web for {query}"),
         AccessKind::Read(_) => "Read a file".to_owned(),
         AccessKind::Grep { .. } => "Search file contents".to_owned(),
@@ -359,30 +355,6 @@ mod tests {
         assert_eq!(payload["scope"], "write");
         assert!(payload.get("bash_command").is_none());
         assert!(payload.get("edit_file_paths").is_none());
-    }
-    #[test]
-    fn payload_for_web_fetch_exposes_only_domain() {
-        let payload = build_permission_payload(
-            &AccessKind::WebFetch(
-                "https://user:password@example.com/private?token=super-secret#fragment".into(),
-            ),
-            "tc-web",
-        );
-        assert_eq!(payload["description"], "Fetch example.com");
-        let rendered = payload.to_string();
-        for secret in [
-            "user",
-            "password",
-            "private",
-            "token",
-            "super-secret",
-            "fragment",
-        ] {
-            assert!(
-                !rendered.contains(secret),
-                "permission payload leaked {secret}: {rendered}"
-            );
-        }
     }
     #[test]
     fn reply_outcomes_map_to_prompt_outcomes() {

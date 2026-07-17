@@ -503,13 +503,16 @@
         "crates/codegen/xai-grok-tools/src/implementations/web_search/**",
         "crates/codegen/xai-grok-tools/src/registry/types.rs",
         "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs",
-        "crates/codegen/xai-grok-tools/src/types/output.rs"
+        "crates/codegen/xai-grok-tools/src/types/output.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/types.rs"
       ],
       "integration_paths": [
         "crates/codegen/xai-grok-tools/src/implementations/codex/read_file/tool.rs",
         "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_search/mod.rs",
         "crates/codegen/xai-grok-tools/src/implementations/web_search/client.rs",
-        "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs"
+        "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager.rs"
       ],
       "legal_paths": [
         "LICENSE",
@@ -852,10 +855,12 @@
         "crates/codegen/xai-grok-pager-render/src/theme/color_support.rs",
         "crates/codegen/xai-grok-pager-render/src/theme/grokday.rs",
         "crates/codegen/xai-grok-pager-render/src/theme/groknight.rs",
-        "crates/codegen/xai-grok-pager-render/src/theme/system_appearance.rs"
+        "crates/codegen/xai-grok-pager-render/src/theme/system_appearance.rs",
+        "crates/codegen/xai-grok-pager/src/views/permission_view.rs"
       ],
       "integration_paths": [
-        "crates/codegen/xai-grok-markdown/src/colors.rs"
+        "crates/codegen/xai-grok-markdown/src/colors.rs",
+        "crates/codegen/xai-grok-pager/src/views/permission_view.rs"
       ],
       "legal_paths": [
         "LICENSE"
@@ -900,19 +905,13 @@
       ]
     },
     {
-      "id": "privacy-redaction",
-      "description": "Credential, provider, permission, and telemetry redaction boundaries.",
+      "id": "credential-wire-safety",
+      "description": "Minimal credential-header and 401-attribution boundaries that never serialize credential bytes.",
       "source_ids": [
-        "grok-build-upstream",
-        "openai-codex"
+        "grok-build-upstream"
       ],
       "paths": [
-        "crates/codegen/xai-file-utils/src/storage_client.rs",
-        "crates/codegen/xai-grok-pager/src/views/permission_view.rs",
-        "crates/codegen/xai-grok-shell/src/upload/trace.rs",
-        "crates/codegen/xai-grok-workspace/src/permission/hub_permission.rs",
-        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
-        "crates/codegen/xai-grok-workspace/src/permission/types.rs"
+        "crates/codegen/xai-file-utils/src/storage_client.rs"
       ],
       "integration_paths": [
         "crates/codegen/xai-file-utils/src/storage_client.rs"

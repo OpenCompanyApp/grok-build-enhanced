@@ -22,28 +22,6 @@ use xai_grok_tools::implementations::grok_build::web_fetch::{
     DomainMatcher, domain::normalize_domain,
 };
 
-fn safe_web_fetch_access_detail(raw_url: &str) -> String {
-    url::Url::parse(raw_url)
-        .ok()
-        .and_then(|url| url.host_str().map(normalize_domain))
-        .unwrap_or_else(|| "<invalid-url>".to_owned())
-}
-
-/// Keep the classifier's local detail separate from the product-telemetry
-/// representation. MCP inputs are arbitrary JSON, so no part of them belongs
-/// in `PermissionEvent.access_detail`; the event already carries the MCP tool
-/// name in `tool_name`.
-fn permission_event_access_detail(
-    access: &AccessKind,
-    classifier_detail: Option<&str>,
-) -> Option<String> {
-    if matches!(access, AccessKind::MCPTool { .. }) {
-        None
-    } else {
-        classifier_detail.map(ToOwned::to_owned)
-    }
-}
-
 /// Canonical `decision_reason` triggers for the uploaded artifact. Single source
 /// so the emit sites can't drift or misspell (the field doc lists these values).
 mod reasons {
@@ -1092,35 +1070,27 @@ fn spawn_permission_manager_with_pin(
                     let tool_id = tool_call_update.tool_call_id.to_string();
                     // Tool name is the single source of truth shared with the
                     // prompter's `events.jsonl` Permission* events (so the two
-                    // can never drift). `access_detail` below is local classifier
-                    // context. The uploaded event derives a separate, redacted
-                    // representation so arbitrary MCP JSON never enters traces.
+                    // can never drift). access_kind / access_detail feed BOTH the
+                    // uploaded PermissionEvent and the auto-mode classifier
+                    // (`clf.classify(..., access_detail, ...)` below); access_detail
+                    // is uploaded with permission events and is length-bounded.
                     let tool_name = crate::permission::prompter::tool_name_for_access(&access);
                     let (access_kind_str, access_detail) = match &access {
                         AccessKind::Read(_) => ("read".to_string(), None),
                         AccessKind::Grep { path, glob: _ } => ("grep".to_string(), path.clone()),
                         AccessKind::Edit(path) => ("edit".to_string(), Some(path.clone())),
                         AccessKind::Bash(cmd) => ("bash".to_string(), Some(cmd.clone())),
-                        // Carry the MCP args (truncated) only to the local
-                        // classifier so it can judge what the call does.
+                        // Carry the MCP args (truncated) so the classifier and
+                        // telemetry judge the call by what it does, not just its name.
                         AccessKind::MCPTool { name, input } => (
                             "mcp".to_string(),
                             Some(crate::permission::auto_mode::mcp_access_detail(name, input)),
                         ),
-                        // Permission telemetry and classifier context must not
-                        // receive signed query strings, userinfo, or private
-                        // URL paths. The full URL remains only in the actual
-                        // tool input used for the user's permission decision.
-                        AccessKind::WebFetch(url) => (
-                            "web_fetch".to_owned(),
-                            Some(safe_web_fetch_access_detail(url)),
-                        ),
+                        AccessKind::WebFetch(url) => ("web_fetch".to_owned(), Some(url.clone())),
                         AccessKind::WebSearch(query) => {
                             ("web_search".to_owned(), Some(query.clone()))
                         }
                     };
-                    let event_access_detail =
-                        permission_event_access_detail(&access, access_detail.as_deref());
 
                     // `decision_reason` is the trigger (always set); `prompt_outcome` is
                     // the user's choice, so it is None on auto/non-prompt decisions.
@@ -1144,7 +1114,7 @@ fn spawn_permission_manager_with_pin(
                                 tool_id: tool_id.clone(),
                                 tool_name: tool_name.clone(),
                                 access_kind: access_kind_str.clone(),
-                                access_detail: event_access_detail.clone(),
+                                access_detail: access_detail.clone(),
                                 yolo_mode,
                                 auto_approved,
                                 user_prompted,
@@ -1456,12 +1426,8 @@ fn spawn_permission_manager_with_pin(
                             match url::Url::parse(url) {
                                 Ok(parsed_url) => {
                                     if static_domain_matcher.check(&parsed_url).is_none() {
-                                        let domain = parsed_url
-                                            .host_str()
-                                            .map(normalize_domain)
-                                            .unwrap_or_else(|| "<no-host>".to_owned());
                                         tracing::debug!(
-                                            %domain,
+                                            url = %url,
                                             source = "static_allowlist",
                                             "web_fetch domain auto-approved"
                                         );
@@ -1471,6 +1437,7 @@ fn spawn_permission_manager_with_pin(
                                         let domain = normalize_domain(host);
                                         if state.allowed_web_fetch_domains.contains(&domain) {
                                             tracing::debug!(
+                                                url = %url,
                                                 %domain,
                                                 source = "session_allowlist",
                                                 "web_fetch domain auto-approved"
@@ -1478,6 +1445,7 @@ fn spawn_permission_manager_with_pin(
                                             Some((Decision::Allow, reasons::PERSISTED_GRANT))
                                         } else {
                                             tracing::debug!(
+                                                url = %url,
                                                 %domain,
                                                 source = "prompt",
                                                 "web_fetch domain not in allowlist, prompting user"
@@ -1489,9 +1457,10 @@ fn spawn_permission_manager_with_pin(
                                         None
                                     }
                                 }
-                                Err(_) => {
+                                Err(e) => {
                                     tracing::debug!(
-                                        parse_status = "invalid",
+                                        url = %url,
+                                        error = %e,
                                         "web_fetch URL unparseable, prompting user"
                                     );
                                     None
@@ -1760,36 +1729,6 @@ mod tests {
     // ── Managed-policy pin: yolo clamp + persisted bash clamp ──
 
     const PIN: &str = crate::permission::resolution::YOLO_PIN_REASON_REQUIREMENTS;
-
-    #[test]
-    fn web_fetch_permission_detail_contains_only_normalized_domain() {
-        let raw = "https://user:password@EXAMPLE.com/private?token=super-secret#fragment";
-        let detail = safe_web_fetch_access_detail(raw);
-        assert_eq!(detail, "example.com");
-        for secret in ["user", "password", "private", "token", "super-secret"] {
-            assert!(!detail.contains(secret));
-        }
-        assert_eq!(safe_web_fetch_access_detail("not a URL"), "<invalid-url>");
-    }
-
-    #[test]
-    fn mcp_permission_detail_stays_local_to_classifier() {
-        let access = AccessKind::MCPTool {
-            name: "remote_tool".to_owned(),
-            input: serde_json::json!({
-                "endpoint": "https://example.invalid/private?auth=must-not-upload"
-            }),
-        };
-        let AccessKind::MCPTool { name, input } = &access else {
-            unreachable!();
-        };
-        let classifier_detail = crate::permission::auto_mode::mcp_access_detail(name, input);
-        assert!(classifier_detail.contains("must-not-upload"));
-        assert!(
-            permission_event_access_detail(&access, Some(&classifier_detail)).is_none(),
-            "uploaded MCP permission events must omit arbitrary arguments"
-        );
-    }
 
     #[test]
     fn clamp_yolo_respects_pin() {

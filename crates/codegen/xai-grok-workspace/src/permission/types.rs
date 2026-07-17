@@ -70,25 +70,6 @@ pub struct PermissionEvent {
     pub queue_depth: Option<u32>,
 }
 
-impl PermissionEvent {
-    /// Return the upload-safe representation of this telemetry event.
-    ///
-    /// MCP inputs are arbitrary JSON and web-search queries are user-authored
-    /// text. Both routinely contain credentials, private URLs, user content,
-    /// and other values that must stay local to the permission
-    /// classifier/prompt. The tool name and decision metadata are sufficient
-    /// for aggregate permission telemetry, so their `access_detail` is always
-    /// omitted at the serialization boundary as defense in depth.
-    pub fn redacted_for_upload(&self) -> Self {
-        let mut event = self.clone();
-        if event.access_kind.eq_ignore_ascii_case("mcp")
-            || event.access_kind.eq_ignore_ascii_case("web_search")
-        {
-            event.access_detail = None;
-        }
-        event
-    }
-}
 /// Identifies the type of client connecting to the agent.
 /// Used to determine which permission UI features to enable
 /// and which feedback/experiment client type to report.
@@ -512,66 +493,6 @@ mod tests {
         assert!(!json.contains("queue_depth"));
     }
 
-    #[test]
-    fn permission_event_upload_omits_mcp_arguments() {
-        let event = PermissionEvent {
-            tool_id: "tc1".into(),
-            tool_name: "mcp:remote_tool".into(),
-            access_kind: "mcp".into(),
-            access_detail: Some(
-                r#"remote_tool {"endpoint":"https://example.invalid/private?auth=must-not-upload"}"#
-                    .into(),
-            ),
-            yolo_mode: false,
-            auto_approved: false,
-            user_prompted: true,
-            decision: "allow".into(),
-            prompt_outcome: None,
-            reject_reason: None,
-            timestamp: Utc::now(),
-            subagent_session_id: None,
-            subagent_type: None,
-            subagent_description: None,
-            permission_mode: None,
-            decision_reason: None,
-            wait_ms: None,
-            queue_depth: None,
-        };
-
-        let uploaded = serde_json::to_string(&event.redacted_for_upload()).unwrap();
-        assert!(!uploaded.contains("access_detail"));
-        assert!(!uploaded.contains("must-not-upload"));
-        assert!(!uploaded.contains("example.invalid"));
-    }
-
-    #[test]
-    fn permission_event_upload_omits_web_search_query() {
-        let event = PermissionEvent {
-            tool_id: "tc-search".into(),
-            tool_name: "web_search".into(),
-            access_kind: "web_search".into(),
-            access_detail: Some("private acquisition target api_key=must-not-upload".into()),
-            yolo_mode: false,
-            auto_approved: false,
-            user_prompted: true,
-            decision: "allow".into(),
-            prompt_outcome: None,
-            reject_reason: None,
-            timestamp: Utc::now(),
-            subagent_session_id: None,
-            subagent_type: None,
-            subagent_description: None,
-            permission_mode: None,
-            decision_reason: None,
-            wait_ms: None,
-            queue_depth: None,
-        };
-
-        let uploaded = serde_json::to_string(&event.redacted_for_upload()).unwrap();
-        assert!(!uploaded.contains("access_detail"));
-        assert!(!uploaded.contains("must-not-upload"));
-        assert!(!uploaded.contains("acquisition target"));
-    }
     #[test]
     fn hashline_edit_maps_to_edit_access() {
         use xai_grok_tools::implementations::grok_build_hashline::edit::types::HashlineEditInput;
