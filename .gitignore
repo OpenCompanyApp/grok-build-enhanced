@@ -1,3 +1,4 @@
 /target
+/inspiration/
 **/*.rs.bk
 .DS_Store
