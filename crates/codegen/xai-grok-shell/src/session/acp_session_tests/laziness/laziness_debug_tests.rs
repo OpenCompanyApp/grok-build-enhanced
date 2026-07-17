@@ -8,9 +8,23 @@
 use super::{
     ClassifierOutput, DebugClassifierOutput, DebugDecision, DebugTodoSnapshot,
     LazinessDebugLogLine, LazinessFireMeta, LazinessFireOutcome, LazinessSuppressReason,
-    append_laziness_debug_log_line, build_laziness_debug_line, classify_debug_decision,
-    flatten_transcript_for_classifier,
+    append_laziness_debug_log_line, build_laziness_classifier_request, build_laziness_debug_line,
+    classify_debug_decision, flatten_transcript_for_classifier,
 };
+
+#[test]
+fn laziness_request_uses_raw_wire_model_and_provider_neutral_sampling_fields() {
+    let request =
+        build_laziness_classifier_request(Vec::new(), "gpt-5.6-luna", "session-public-id");
+    assert_eq!(request.model.as_deref(), Some("gpt-5.6-luna"));
+    assert_ne!(request.model.as_deref(), Some("openai-codex/gpt-5.6-luna"));
+    assert_eq!(request.temperature, None);
+    assert_eq!(request.x_grok_conv_id.as_deref(), Some("session-public-id"));
+    assert_eq!(
+        request.x_grok_session_id.as_deref(),
+        Some("session-public-id")
+    );
+}
 use crate::session::events::{LAZINESS_ABORT_USER_INPUT, LazinessCategory};
 use xai_grok_sampling_types::{
     AssistantItem, ContentPart, ConversationItem, SystemItem, ToolCall, ToolResultItem, UserItem,

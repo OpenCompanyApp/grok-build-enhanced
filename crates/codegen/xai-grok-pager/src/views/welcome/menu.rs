@@ -23,14 +23,10 @@ pub fn render_menu(
     let label_style = Style::default()
         .fg(theme.text_primary)
         .add_modifier(Modifier::BOLD);
-    let label_selected_style = Style::default()
-        .fg(theme.text_primary)
-        .bg(theme.bg_highlight)
-        .add_modifier(Modifier::BOLD);
+    let selected_overlay = theme.selected_row_style();
+    let label_selected_style = label_style.patch(selected_overlay);
     let key_style = Style::default().fg(theme.gray_bright);
-    let key_selected_style = Style::default()
-        .fg(theme.gray_bright)
-        .bg(theme.bg_highlight);
+    let key_selected_style = key_style.patch(selected_overlay);
 
     // Width: label + gap + key. Keep a 4-col gap between label and key for
     // readability.
@@ -71,12 +67,12 @@ pub fn render_menu(
         };
         rects.push(row_rect);
 
-        // Fill row background when selected/hovered
+        // Fill the selected row with an opaque band or a terminal-native
+        // reverse-video overlay, depending on the active render mode.
         if is_selected {
-            let hover_bg = Style::default().bg(theme.bg_highlight);
             for x in menu_centered.x..menu_centered.x + menu_centered.width {
                 if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_style(hover_bg);
+                    cell.set_style(selected_overlay);
                 }
             }
         }
@@ -114,15 +110,13 @@ pub fn render_menu(
             } else {
                 theme.gray_bright
             };
+            let dismiss_style = Style::default()
+                .fg(dismiss_color)
+                .add_modifier(Modifier::BOLD);
             let dismiss_style = if is_selected {
-                Style::default()
-                    .fg(dismiss_color)
-                    .bg(theme.bg_highlight)
-                    .add_modifier(Modifier::BOLD)
+                dismiss_style.patch(selected_overlay)
             } else {
-                Style::default()
-                    .fg(dismiss_color)
-                    .add_modifier(Modifier::BOLD)
+                dismiss_style
             };
             for (offset, ch) in "[x]".chars().enumerate() {
                 let col = dismiss_start + offset as u16;

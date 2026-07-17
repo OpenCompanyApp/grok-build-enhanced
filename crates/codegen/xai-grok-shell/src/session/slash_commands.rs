@@ -61,6 +61,23 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         },
     },
     BuiltinCommand {
+        name: "fast",
+        description: "Turn ChatGPT Codex Fast mode on or off, or show its status",
+        argument_hint: Some("on|off|status"),
+        aliases: &[],
+        gate: BuiltinGate::AlwaysOn,
+        resolve: |args| {
+            let mode = match args.trim().to_ascii_lowercase().as_str() {
+                "" | "toggle" => FastModeAction::Toggle,
+                "status" => FastModeAction::Status,
+                "on" | "enable" | "enabled" | "true" | "1" => FastModeAction::On,
+                "off" | "disable" | "disabled" | "false" | "0" => FastModeAction::Off,
+                _ => FastModeAction::Invalid,
+            };
+            BuiltinAction::Fast { mode }
+        },
+    },
+    BuiltinCommand {
         name: "always-approve",
         description: "Toggle always-approve mode (skip all permission prompts)",
         argument_hint: Some("on|off"),
@@ -609,6 +626,9 @@ pub(super) enum BuiltinAction {
     Compact {
         user_context: Option<String>,
     },
+    Fast {
+        mode: FastModeAction,
+    },
     SetYolo {
         enabled: bool,
     },
@@ -662,10 +682,20 @@ pub(super) enum BuiltinAction {
     GoalClear,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FastModeAction {
+    Toggle,
+    On,
+    Off,
+    Status,
+    Invalid,
+}
+
 impl BuiltinAction {
     pub(crate) fn command_name(&self) -> &'static str {
         match self {
             BuiltinAction::Compact { .. } => "compact",
+            BuiltinAction::Fast { .. } => "fast",
             BuiltinAction::SetYolo { .. } => "yolo",
             BuiltinAction::FlushMemory => "flush",
             BuiltinAction::Dream => "dream",
@@ -698,6 +728,9 @@ impl BuiltinAction {
     pub(crate) fn args_provided(&self) -> bool {
         match self {
             BuiltinAction::Compact { user_context } => user_context.is_some(),
+            BuiltinAction::Fast { mode } => {
+                !matches!(mode, FastModeAction::Toggle | FastModeAction::Status)
+            }
             BuiltinAction::SetYolo { .. } => true,
             BuiltinAction::FlushMemory => false,
             BuiltinAction::Dream => false,
@@ -1226,6 +1259,40 @@ mod tests {
         assert!(matches!(
             resolve_builtin("compact", "keep auth"),
             Some(BuiltinAction::Compact { user_context: Some(ctx) }) if ctx == "keep auth"
+        ));
+    }
+
+    #[test]
+    fn fast_parses_canonical_modes_and_rejects_unknown_arguments() {
+        for (argument, expected) in [
+            ("", FastModeAction::Toggle),
+            ("toggle", FastModeAction::Toggle),
+            ("status", FastModeAction::Status),
+            ("ON", FastModeAction::On),
+            ("off", FastModeAction::Off),
+            ("unexpected", FastModeAction::Invalid),
+        ] {
+            let Some(BuiltinAction::Fast { mode }) = resolve_builtin("fast", argument) else {
+                panic!("expected /fast {argument:?} to resolve as a Fast builtin");
+            };
+            assert_eq!(mode, expected, "argument {argument:?}");
+        }
+    }
+
+    #[test]
+    fn fast_resolves_through_the_full_slash_command_path() {
+        let outcome = resolve(
+            vec![text_block(" /fast on ")],
+            &[],
+            all_gated(),
+            SkillSlashRewrite::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            outcome,
+            SlashCommandOutcome::Builtin(BuiltinAction::Fast {
+                mode: FastModeAction::On
+            })
         ));
     }
 

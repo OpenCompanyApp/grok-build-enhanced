@@ -733,13 +733,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("default_selected_permission", SettingValue::Enum(s)) => {
             Some(Action::SetDefaultSelectedPermission((*s).to_owned()))
         }
-        ("theme", SettingValue::Enum(s)) => Some(Action::SetTheme((*s).to_owned())),
-        ("auto_dark_theme", SettingValue::Enum(s)) => {
-            Some(Action::SetAutoDarkTheme((*s).to_owned()))
-        }
-        ("auto_light_theme", SettingValue::Enum(s)) => {
-            Some(Action::SetAutoLightTheme((*s).to_owned()))
-        }
+        ("theme", SettingValue::String(s)) => Some(Action::SetTheme(s.clone())),
+        ("auto_dark_theme", SettingValue::String(s)) => Some(Action::SetAutoDarkTheme(s.clone())),
+        ("auto_light_theme", SettingValue::String(s)) => Some(Action::SetAutoLightTheme(s.clone())),
         // Three explicit arms, one per
         // canonical, all dispatched through the typed
         // `Action::SetPermissionMode(kind)` (NOT the legacy
@@ -890,7 +886,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             set_contextual_hint_inner(app, |h, v| h.word_select = v, *b)
         }
         ("respect_manual_folds", SettingValue::Bool(b)) => set_respect_manual_folds_inner(app, *b),
-        ("theme", SettingValue::Enum(s)) => set_theme_inner(app, s),
+        ("theme", SettingValue::String(s)) => set_theme_inner(app, s),
         ("default_selected_permission", SettingValue::Enum(s)) => {
             set_default_selected_permission_inner(
                 app,
@@ -912,7 +908,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             apply_cancel_subagents_preference_global(app, false);
         }
         // Rollback for corrupted auto-* = "auto" — clear to None.
-        ("auto_dark_theme", SettingValue::Enum("auto")) => {
+        ("auto_dark_theme", SettingValue::String(s)) if s == "auto" => {
             app.current_ui.auto_dark_theme = None;
             crate::theme::cache::invalidate_auto_theme_config();
             tracing::warn!(
@@ -921,7 +917,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
                 "rolled back to `auto` (invalid) — cleared in-memory override to None",
             );
         }
-        ("auto_light_theme", SettingValue::Enum("auto")) => {
+        ("auto_light_theme", SettingValue::String(s)) if s == "auto" => {
             app.current_ui.auto_light_theme = None;
             crate::theme::cache::invalidate_auto_theme_config();
             tracing::warn!(
@@ -930,8 +926,8 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
                 "rolled back to `auto` (invalid) — cleared in-memory override to None",
             );
         }
-        ("auto_dark_theme", SettingValue::Enum(s)) => set_auto_dark_theme_inner(app, s),
-        ("auto_light_theme", SettingValue::Enum(s)) => set_auto_light_theme_inner(app, s),
+        ("auto_dark_theme", SettingValue::String(s)) => set_auto_dark_theme_inner(app, s),
+        ("auto_light_theme", SettingValue::String(s)) => set_auto_light_theme_inner(app, s),
         // permission_mode rollback: recover kind from canonical,
         // run inner, then restore the canonical the inner collapsed.
         ("permission_mode", SettingValue::Enum(s)) => {

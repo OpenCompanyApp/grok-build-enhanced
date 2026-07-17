@@ -101,6 +101,10 @@ pub enum DynamicEnumSource {
     /// Models from the active session's catalog. Prepends a
     /// `"(no override)"` sentinel so the user can clear the setting.
     ActiveModelCatalog,
+    /// Complete runtime theme catalog, including meta and discovered Warp themes.
+    ThemeCatalog,
+    /// Concrete runtime themes usable as Auto dark/light mappings.
+    ConcreteThemeCatalog,
 }
 
 /// Build the owned choice list for a `DynamicEnum` at picker-open time.
@@ -127,6 +131,23 @@ pub fn dynamic_enum_choices(
             }
             out
         }
+        DynamicEnumSource::ThemeCatalog => crate::theme::theme_choices(true)
+            .into_iter()
+            .map(|choice| OwnedEnumChoice {
+                canonical: choice.canonical,
+                display: choice.display,
+                description: choice.description,
+            })
+            .collect(),
+        DynamicEnumSource::ConcreteThemeCatalog => crate::theme::theme_choices(false)
+            .into_iter()
+            .filter(|choice| choice.canonical != "warp-sync" && choice.canonical != "auto")
+            .map(|choice| OwnedEnumChoice {
+                canonical: choice.canonical,
+                display: choice.display,
+                description: choice.description,
+            })
+            .collect(),
     }
 }
 
@@ -553,27 +574,34 @@ pub fn current_value_for(
                 .as_deref()
                 .unwrap_or(&pager.voice_stt_language),
         )))),
-        // Theme: unknown disk values fall through to canonical default.
-        // auto_dark/light additionally filter out "auto" (circular ref).
-        "theme" => Some(SettingValue::Enum(
+        // Themes use owned dynamic-enum values because Warp catalog/file IDs
+        // are discovered at runtime rather than drawn from a static slice.
+        "theme" => Some(SettingValue::String(
             ui.theme
                 .as_deref()
-                .and_then(crate::theme::canonical_name)
-                .unwrap_or("groknight"),
+                .and_then(crate::theme::ThemeSelection::from_name)
+                .map(|selection| selection.canonical().into_owned())
+                .unwrap_or_else(|| {
+                    crate::theme::cache::current_selection()
+                        .canonical()
+                        .into_owned()
+                }),
         )),
-        "auto_dark_theme" => Some(SettingValue::Enum(
+        "auto_dark_theme" => Some(SettingValue::String(
             ui.auto_dark_theme
                 .as_deref()
-                .and_then(crate::theme::canonical_name)
-                .filter(|s| *s != "auto")
-                .unwrap_or("groknight"),
+                .and_then(crate::theme::ThemeSelection::from_name)
+                .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+                .map(|selection| selection.canonical().into_owned())
+                .unwrap_or_else(|| "groknight".to_owned()),
         )),
-        "auto_light_theme" => Some(SettingValue::Enum(
+        "auto_light_theme" => Some(SettingValue::String(
             ui.auto_light_theme
                 .as_deref()
-                .and_then(crate::theme::canonical_name)
-                .filter(|s| *s != "auto")
-                .unwrap_or("grokday"),
+                .and_then(crate::theme::ThemeSelection::from_name)
+                .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+                .map(|selection| selection.canonical().into_owned())
+                .unwrap_or_else(|| "grokday".to_owned()),
         )),
         // render_mermaid: SHELL-owned (persisted to `[ui].render_mermaid`).
         // Read from the process-wide cache mirror, which reflects the live value
@@ -754,7 +782,7 @@ mod tests {
                         "simple_mode default drifts from UiConfig::default()"
                     );
                 }
-                ("theme", SettingKind::Enum { default, .. }) => {
+                ("theme", SettingKind::DynamicEnum { default, .. }) => {
                     assert_eq!(
                         ui.theme, None,
                         "test assumes UiConfig::default().theme is None",
@@ -762,14 +790,16 @@ mod tests {
                     let expected = ui
                         .theme
                         .as_deref()
-                        .and_then(crate::theme::canonical_name)
-                        .unwrap_or("groknight");
+                        .and_then(crate::theme::ThemeSelection::from_name)
+                        .map(|selection| selection.canonical().into_owned())
+                        .unwrap_or_else(|| "groknight".to_owned());
                     assert_eq!(
-                        *default, expected,
+                        *default,
+                        expected.as_str(),
                         "theme default drifts from UiConfig::default()",
                     );
                 }
-                ("auto_dark_theme", SettingKind::Enum { default, .. }) => {
+                ("auto_dark_theme", SettingKind::DynamicEnum { default, .. }) => {
                     assert_eq!(
                         ui.auto_dark_theme, None,
                         "test assumes UiConfig::default().auto_dark_theme is None",
@@ -777,15 +807,17 @@ mod tests {
                     let expected = ui
                         .auto_dark_theme
                         .as_deref()
-                        .and_then(crate::theme::canonical_name)
-                        .filter(|s| *s != "auto")
-                        .unwrap_or("groknight");
+                        .and_then(crate::theme::ThemeSelection::from_name)
+                        .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+                        .map(|selection| selection.canonical().into_owned())
+                        .unwrap_or_else(|| "groknight".to_owned());
                     assert_eq!(
-                        *default, expected,
+                        *default,
+                        expected.as_str(),
                         "auto_dark_theme default drifts from UiConfig::default()",
                     );
                 }
-                ("auto_light_theme", SettingKind::Enum { default, .. }) => {
+                ("auto_light_theme", SettingKind::DynamicEnum { default, .. }) => {
                     assert_eq!(
                         ui.auto_light_theme, None,
                         "test assumes UiConfig::default().auto_light_theme is None",
@@ -793,11 +825,13 @@ mod tests {
                     let expected = ui
                         .auto_light_theme
                         .as_deref()
-                        .and_then(crate::theme::canonical_name)
-                        .filter(|s| *s != "auto")
-                        .unwrap_or("grokday");
+                        .and_then(crate::theme::ThemeSelection::from_name)
+                        .filter(crate::theme::ThemeSelection::is_concrete_for_auto)
+                        .map(|selection| selection.canonical().into_owned())
+                        .unwrap_or_else(|| "grokday".to_owned());
                     assert_eq!(
-                        *default, expected,
+                        *default,
+                        expected.as_str(),
                         "auto_light_theme default drifts from UiConfig::default()",
                     );
                 }
@@ -1287,7 +1321,7 @@ mod tests {
         let value = current_value_for("auto_dark_theme", &ui, &pager).expect("must resolve");
         assert_eq!(
             value,
-            SettingValue::Enum("groknight"),
+            SettingValue::String("groknight".to_owned()),
             "corrupted `auto_dark_theme = \"auto\"` must fall back to canonical default",
         );
     }
@@ -1302,7 +1336,7 @@ mod tests {
         let value = current_value_for("auto_light_theme", &ui, &pager).expect("must resolve");
         assert_eq!(
             value,
-            SettingValue::Enum("grokday"),
+            SettingValue::String("grokday".to_owned()),
             "corrupted `auto_light_theme = \"auto\"` must fall back to canonical default",
         );
     }
@@ -1316,7 +1350,7 @@ mod tests {
         };
         let pager = PagerLocalSnapshot::default();
         let value = current_value_for("auto_dark_theme", &ui, &pager).expect("must resolve");
-        assert_eq!(value, SettingValue::Enum("groknight"));
+        assert_eq!(value, SettingValue::String("groknight".to_owned()));
     }
 
     /// Keywords must be lowercase and non-empty.

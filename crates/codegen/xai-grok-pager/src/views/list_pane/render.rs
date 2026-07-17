@@ -367,18 +367,29 @@ impl<T: ListItem> ListPane<'_, T> {
                 // When `uniform_visual_bg` is set, the cursor line blends
                 // into the visual range (distinguished by prefix only).
                 let in_visual = state.visual_mode;
-                let bg = if is_cursor && !(in_visual && self.style.uniform_visual_bg) {
-                    self.style.selection_bg
-                } else {
-                    self.style.visual_select_bg
-                };
+                let cursor_emphasis = is_cursor && !(in_visual && self.style.uniform_visual_bg);
                 let sel_area = Rect {
                     x: area.x,
                     y: cursor_y,
                     width: area.width,
                     height: rows_to_render,
                 };
-                buf.set_style(sel_area, Style::default().bg(bg));
+                let selection_style = if crate::theme::cache::active_terminal_native() {
+                    let modifier = if cursor_emphasis {
+                        ratatui::style::Modifier::REVERSED | ratatui::style::Modifier::BOLD
+                    } else {
+                        ratatui::style::Modifier::REVERSED
+                    };
+                    Style::default().add_modifier(modifier)
+                } else {
+                    let bg = if cursor_emphasis {
+                        self.style.selection_bg
+                    } else {
+                        self.style.visual_select_bg
+                    };
+                    Style::default().bg(bg)
+                };
+                buf.set_style(sel_area, selection_style);
             }
 
             // --- Post-pass 2: Match highlight overlay ---

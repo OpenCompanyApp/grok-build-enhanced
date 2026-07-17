@@ -395,6 +395,7 @@ async fn manual_recap_generation_failure_persists_request_artifact() {
             let (persistence_tx, mut persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let session_id = actor.session_info.id.to_string();
 
             actor.chat_state_handle.replace_conversation(vec![
                 ConversationItem::system("you are a coding agent"),
@@ -424,6 +425,10 @@ async fn manual_recap_generation_failure_persists_request_artifact() {
                         artifact.x_grok_req_id.starts_with("xai-recap-"),
                         "req id: {}",
                         artifact.x_grok_req_id
+                    );
+                    assert_eq!(
+                        artifact.x_grok_conv_id, session_id,
+                        "recap must reuse the session identity for prompt caching"
                     );
                     saw_recap_request = true;
                 }

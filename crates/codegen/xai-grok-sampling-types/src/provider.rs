@@ -15,6 +15,15 @@ pub const OPENAI_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 /// Full Responses endpoint derived from [`OPENAI_CODEX_BASE_URL`].
 pub const OPENAI_CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 
+/// Catalog service-tier id used by the current public Codex client for Fast
+/// mode. The user-facing config alias is `fast`; the Responses wire value is
+/// `priority`.
+pub const OPENAI_CODEX_FAST_SERVICE_TIER: &str = "priority";
+
+/// Internal selection sentinel for explicit Standard mode. This value is
+/// persisted with session/config state but is never sent to Responses.
+pub const OPENAI_CODEX_STANDARD_SERVICE_TIER: &str = "default";
+
 /// Internal compatibility marker used by the public Codex client for models
 /// whose authenticated catalog entry enables the Responses Lite contract.
 pub const OPENAI_CODEX_RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";

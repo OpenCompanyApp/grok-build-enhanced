@@ -332,8 +332,14 @@ impl ChatStateActor {
         let model_key = match model_id.as_deref() {
             Some(id) if !id.is_empty() => id,
             _ => self.state.sampling_config.model.as_str(),
-        }
-        .to_owned();
+        };
+        // Provider identity is part of billing identity. A custom or xAI model
+        // may deliberately reuse an OpenAI slug; keeping only the slug would
+        // let a later provider switch price those earlier calls as Codex.
+        let model_key = format!(
+            "{}::{model_key}",
+            self.state.sampling_config.provider.as_str()
+        );
         self.state
             .prompt_usage
             .get_or_insert_default()
@@ -485,6 +491,7 @@ impl ChatStateActor {
         self.state.credentials = snap.credentials;
         // Drop abandoned prompt billing; session ledger is lifetime.
         self.state.prompt_usage = None;
+        self.state.session_usage = snap.session_usage;
     }
 
     /// If turn capture is active, append the current turn's tail items into

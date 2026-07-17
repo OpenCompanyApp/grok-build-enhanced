@@ -6,17 +6,21 @@ Grok Build draws all TUI colors from a central theme. You can switch themes whil
 
 ## Available Themes
 
-Grok includes five built-in themes, plus an `auto` option that follows your system appearance:
+Grok includes five built-in themes, two terminal-native choices, system `auto`, and the complete pinned catalog of 340 official Warp themes:
 
 | Theme | Config Names | Description | Truecolor Required |
 |-------|-------------|-------------|--------------------|
-| **GrokNight** | `groknight`, `grok-night`, `dark` | Neutral dark base with a magenta accent. Default theme. Survives quantization cleanly on 256-color and 16-color terminals. | No |
-| **GrokDay** | `grokday`, `grok-day`, `light`, `day` | Light theme for bright terminal backgrounds. | No |
-| **TokyoNight** | `tokyonight`, `tokyo-night`, `tokyo` | Dark, blue-tinted backgrounds from the Tokyo Night palette. Loses its character when quantized. | Yes |
-| **RosePineMoon** | `rosepine`, `rose-pine`, `rosepine-moon`, `rose-pine-moon` | Muted dark palette with mauve accents, from the Rosé Pine family. | Yes |
+| **Terminal Native** | `terminal`, `terminal-native`, `native` | Delegates the canvas, foreground, ANSI palette, and cursor to the terminal. | No |
+| **Warp Sync** | `warp-sync`, `warp` | Follows Warp's current theme while preserving Warp gradients and images. | No |
+| **GrokNight** | `groknight`, `grok-night`, `dark` | Neutral dark base with a magenta accent. | No |
+| **GrokDay** | `grokday`, `grok-day`, `light`, `day` | Light theme for bright backgrounds. | No |
+| **TokyoNight** | `tokyonight`, `tokyo-night`, `tokyo` | Dark, blue-tinted backgrounds. | Yes |
+| **RosePineMoon** | `rosepine`, `rose-pine`, `rosepine-moon`, `rose-pine-moon` | Muted dark palette with mauve accents. | Yes |
 | **OscuraMidnight** | `oscura`, `oscura-midnight` | Deep dark base with purple accents. | Yes |
+| **Official Warp theme** | `warp:<category>/<id>` | Standalone RGB translation of a vendored official theme. | Yes |
+| **Installed Warp theme** | `warp-file:<channel>/<path>` | Standalone RGB translation of a discovered custom YAML theme. | Yes |
 
-Theme names are case-insensitive. The `auto` option (alias `system`) is documented under [Auto Theme (System Appearance)](#auto-theme-system-appearance).
+Theme names and aliases are case-insensitive. Dynamic Warp IDs are shown by the searchable `/theme` and `/settings` pickers, so you do not need to memorize them.
 
 ### Minimal Mode Has No Theming
 
@@ -46,6 +50,25 @@ Set the theme in `~/.grok/config.toml`:
 [ui]
 theme = "tokyonight"
 ```
+
+## Warp Sync and Warp Theme Translation
+
+When Grok starts in a **local Warp shell** and `[ui].theme` is unset, it defaults to `warp-sync`. Any explicit Grok theme setting takes precedence.
+
+`warp-sync` is intentionally transparent: full-screen surfaces remain terminal-default, semantic colors use named ANSI slots, and Warp continues to draw its solid, gradient, or image-backed canvas. Grok reads Warp configuration but never writes to it. It watches Warp settings and the selected custom YAML file; changes trigger a full repaint. If Warp uses system themes, Grok also follows the active dark/light member.
+
+Warp locations currently recognized:
+
+| Platform/channel | Settings | Custom themes |
+|---|---|---|
+| macOS Stable | `~/.warp/settings.toml` | `~/.warp/themes/` |
+| macOS Preview | `~/.warp-preview/settings.toml` | `~/.warp-preview/themes/` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/warp-terminal/settings.toml` | `${XDG_DATA_HOME:-~/.local/share}/warp-terminal/themes/` |
+| Windows | Warp's Local AppData settings directory | Warp's Roaming AppData themes directory |
+
+Pinned selections behave differently. An official ID such as `warp:standard/dracula`, or an installed ID shown by the picker, becomes a standalone opaque RGB theme that works outside Warp. Gradients are flattened to their midpoint and background image files are deliberately not loaded. Pinned Warp themes require truecolor; on a lower-color terminal the selection remains saved but rendering falls back to Terminal Native.
+
+If Warp settings are missing, malformed, remote, or temporarily replaced during an atomic save, `warp-sync` falls back safely. Live reload retains the last known good palette during transient read/parse failures and recovers automatically. `/terminal-setup` shows the detected Warp channel, selected theme, safe abbreviated config path, installed count, and fallback reason.
 
 ---
 
@@ -118,12 +141,7 @@ Colors generated at runtime (syntax highlighting, background blending) are also 
 
 ## Cursor Color
 
-Grok sets your terminal cursor to the current theme's `accent_user` color using the OSC 12 escape sequence, to indicate an active Grok session. The cursor color is:
-
-- Applied on startup and on theme switch.
-- Reset to the terminal's default on exit via OSC 112.
-
-This works in terminals that support OSC 12 (most modern terminals).
+Opaque built-in and pinned themes set the cursor to the theme accent with OSC 12. Terminal Native and Warp Sync leave cursor ownership with the terminal/Warp and immediately emit OSC 112 when selected. Grok also resets the cursor with OSC 112 on exit.
 
 ---
 
@@ -143,13 +161,7 @@ Use compact mode on small screens to maximize content area.
 
 ## Syntax Highlighting
 
-Grok bundles three `.tmTheme` files for code-block syntax highlighting and selects one based on the active theme:
-
-- `grok-night.tmTheme` -- GrokNight, RosePineMoon, and OscuraMidnight
-- `grok-day.tmTheme` -- GrokDay
-- `tokyo-night.tmTheme` -- TokyoNight
-
-Grok selects the matching file automatically when you switch themes. The `.tmTheme` files are built into the binary, so you cannot replace them with your own.
+Grok bundles syntax themes for its built-ins plus `terminal-ansi.tmTheme`, whose colors are semantic ANSI markers. Terminal Native and Warp Sync map those markers to named ANSI slots so the host terminal owns the actual colors. Pinned Warp themes map the same markers through the selected YAML theme's normal/bright 16-color palette. Theme revisions invalidate already-highlighted streaming Markdown and edit caches, so live Warp reloads cannot leave mixed palettes on screen.
 
 ---
 

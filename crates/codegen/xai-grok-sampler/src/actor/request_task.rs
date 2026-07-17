@@ -19,7 +19,7 @@ use xai_grok_sampling_types::{
     error::Result as SamplingResult,
 };
 
-use crate::client::{ApiBackend, SamplingClient};
+use crate::client::{ApiBackend, CodexTurnStateStore, SamplingClient};
 use crate::config::{RetryPolicy, SamplerConfig};
 use crate::events::{SamplingErrorInfo, SamplingErrorKind, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
@@ -78,6 +78,7 @@ pub(crate) async fn run_request_task(
     request_id: RequestId,
     request: ConversationRequest,
     config: SamplerConfig,
+    codex_turn_state: CodexTurnStateStore,
     retry_policy: RetryPolicy,
     event_tx: mpsc::UnboundedSender<SamplingEvent>,
     cancel_token: CancellationToken,
@@ -93,14 +94,15 @@ pub(crate) async fn run_request_task(
 
     // Build the initial client. Configuration errors here are fatal
     // (no point retrying with the same broken config).
-    let mut client = match SamplingClient::new(config.clone()) {
-        Ok(c) => c,
-        Err(err) => {
-            emit_failed(&event_tx, &request_id, &err);
-            send_completion(&mut completion_tx, Err(err));
-            return request_id;
-        }
-    };
+    let mut client =
+        match SamplingClient::new_with_codex_turn_state(config.clone(), codex_turn_state) {
+            Ok(c) => c,
+            Err(err) => {
+                emit_failed(&event_tx, &request_id, &err);
+                send_completion(&mut completion_tx, Err(err));
+                return request_id;
+            }
+        };
 
     let sampling_span = crate::sampling_log::request_span(
         &request_id,
@@ -420,7 +422,7 @@ async fn apply_retry_decision(
             // HTTP/2 connection pools.
             let mut http1_config = config.clone();
             http1_config.force_http1 = true;
-            match SamplingClient::new(http1_config) {
+            match client.rebuild_with_config(http1_config) {
                 Ok(fresh) => {
                     *client = fresh;
                     tracing::info!("rebuilt sampling client with HTTP/1.1 fallback for retry");

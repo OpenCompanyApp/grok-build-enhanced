@@ -3853,6 +3853,7 @@ pub(crate) fn execute(
                         "x.ai/billing",
                         serde_json::value::to_raw_value(&serde_json::json!({
                             "sessionId": session_id,
+                            "silent": silent,
                         }))
                             .expect("serialize billing params")
                             .into(),

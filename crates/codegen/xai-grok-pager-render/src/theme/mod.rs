@@ -17,12 +17,19 @@ mod groknight;
 pub mod md_style;
 pub mod osc11;
 mod oscura;
+mod resolved;
 mod rosepine;
+pub mod selection;
 pub mod system_appearance;
 mod terminal_default;
 pub mod tokyonight;
+pub mod warp;
 
 pub use color_support::quantize;
+pub use resolved::{
+    CursorPolicy, ResolvedTheme, ThemeFingerprint, ThemePolarity, ThemeRenderMode, ThemeStatus,
+};
+pub use selection::{ThemeChoice, ThemeSelection, theme_choices};
 pub use tokyonight::{Theme, pulse_brightness, wave_brightness};
 
 /// Available theme variants.
@@ -33,6 +40,12 @@ pub enum ThemeKind {
     TokyoNight = 2,
     RosePineMoon = 3,
     OscuraMidnight = 5,
+    /// Terminal-owned foreground/background and ANSI palette.
+    TerminalNative = 6,
+    /// Dynamic terminal-native palette following Warp's active theme.
+    WarpSync = 7,
+    /// Dynamic RGB translation of an official or installed Warp theme.
+    WarpCustom = 8,
     /// Meta-variant: follow system dark/light appearance.
     ///
     /// Never stored in `cache::CURRENT` — resolved to a concrete
@@ -63,7 +76,7 @@ impl ThemeKind {
         const ALL: &[ThemeKind] = ThemeKind::ALL;
         const NO_TRUECOLOR: &[ThemeKind] = &[ThemeKind::GrokNight, ThemeKind::GrokDay];
 
-        if color_support::detect().has_truecolor() {
+        if color_support::detect_capability().has_truecolor() {
             ALL
         } else {
             NO_TRUECOLOR
@@ -78,6 +91,9 @@ impl ThemeKind {
             Self::GrokDay => "grokday",
             Self::RosePineMoon => "rosepine-moon",
             Self::OscuraMidnight => "oscura-midnight",
+            Self::TerminalNative => "terminal",
+            Self::WarpSync => "warp-sync",
+            Self::WarpCustom => "warp-custom",
             Self::Auto => "auto",
         }
     }
@@ -94,6 +110,8 @@ impl ThemeKind {
             Self::GrokDay => false,
             Self::RosePineMoon => true,
             Self::OscuraMidnight => true,
+            Self::TerminalNative | Self::WarpSync => false,
+            Self::WarpCustom => true,
             // Auto is resolved to a concrete theme before rendering.
             Self::Auto => false,
         }
@@ -112,6 +130,8 @@ impl ThemeKind {
                 Some(Self::RosePineMoon)
             }
             "oscura" | "oscura-midnight" => Some(Self::OscuraMidnight),
+            "terminal" | "terminal-native" | "native" => Some(Self::TerminalNative),
+            "warp" | "warp-sync" => Some(Self::WarpSync),
             _ => None,
         }
     }
@@ -138,6 +158,11 @@ pub fn canonical_name(value: &str) -> Option<&'static str> {
     ThemeKind::from_name(value).map(|k| k.display_name())
 }
 
+/// Resolve any static or dynamic theme value to its persisted canonical string.
+pub fn canonical_selection_name(value: &str) -> Option<String> {
+    ThemeSelection::from_name(value).map(|selection| selection.canonical().into_owned())
+}
+
 /// Human-friendly display name for a canonical theme value (e.g.
 /// `"groknight"` → `"Grok Night"`). Falls back to `value` verbatim.
 pub fn display_name_for_canonical(value: &str) -> &str {
@@ -147,6 +172,9 @@ pub fn display_name_for_canonical(value: &str) -> &str {
         "grokday" => "Grok Day",
         "tokyonight" => "Tokyo Night",
         "rosepine-moon" => "Rose Pine Moon",
+        "oscura-midnight" => "Oscura Midnight",
+        "terminal" => "Terminal Native",
+        "warp-sync" => "Warp Sync",
         other => other,
     }
 }
@@ -269,12 +297,19 @@ impl Theme {
         if cache::terminal_native_locked() {
             return Self::terminal_default().quantized(level);
         }
+        let resolved = cache::current_resolved();
+        if resolved.render_mode == ThemeRenderMode::TerminalNative {
+            return resolved.theme.quantized(level);
+        }
         let base = match cache::current_kind() {
             ThemeKind::GrokNight => Self::groknight(),
             ThemeKind::TokyoNight => Self::tokyonight(),
             ThemeKind::GrokDay => Self::grokday(),
             ThemeKind::RosePineMoon => Self::rosepine_moon(),
             ThemeKind::OscuraMidnight => Self::oscura_midnight(),
+            ThemeKind::TerminalNative | ThemeKind::WarpSync | ThemeKind::WarpCustom => {
+                cache::current_resolved().theme
+            }
             // Auto is resolved to a concrete theme before being stored;
             // if reached, fall back to GrokNight.
             ThemeKind::Auto => Self::groknight(),
@@ -333,6 +368,10 @@ impl Theme {
         if cache::terminal_native_locked() {
             return cache::current_kind();
         }
+        if kind == ThemeKind::WarpSync {
+            cache::apply_selection(ThemeSelection::WarpSync, system_appearance::detect());
+            return cache::current_kind();
+        }
         let effective = Self::clamp_to_terminal(kind);
         cache::set(effective);
         apply_cursor_color();
@@ -341,7 +380,7 @@ impl Theme {
 
     /// Clamp a theme kind to what the terminal supports.
     fn clamp_to_terminal(kind: ThemeKind) -> ThemeKind {
-        if kind.requires_truecolor() && !color_support::detect().has_truecolor() {
+        if kind.requires_truecolor() && !color_support::detect_capability().has_truecolor() {
             ThemeKind::GrokNight
         } else {
             kind
@@ -396,6 +435,39 @@ impl Theme {
             bg_visual: push_away(bg, self.bg_visual, 16),
             md_code_bg: push_away(bg, self.md_code_bg, 16),
             ..self
+        }
+    }
+
+    /// Style overlay for a keyboard-selected row or focused surface.
+    ///
+    /// Terminal-native themes cannot rely on painted background bands, so they
+    /// use reverse video plus bold while opaque themes retain `bg_visual`.
+    pub fn selected_row_style(&self) -> ratatui::style::Style {
+        use ratatui::style::{Modifier, Style};
+        if cache::active_terminal_native() {
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else {
+            Style::default().bg(self.bg_visual)
+        }
+    }
+
+    /// Style overlay for a hovered row without painting the terminal canvas.
+    pub fn hovered_row_style(&self) -> ratatui::style::Style {
+        use ratatui::style::{Modifier, Style};
+        if cache::active_terminal_native() {
+            Style::default().add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default().bg(self.bg_hover)
+        }
+    }
+
+    /// Style overlay for a lighter focused/highlighted surface.
+    pub fn highlighted_row_style(&self) -> ratatui::style::Style {
+        use ratatui::style::{Modifier, Style};
+        if cache::active_terminal_native() {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().bg(self.bg_highlight)
         }
     }
 
@@ -625,8 +697,16 @@ impl Theme {
 /// Escape sequence: `\x1b]12;rgb:RR/GG/BB\x07`.
 pub fn apply_cursor_color() {
     use std::io::Write;
-    let theme = Theme::current();
-    let Some((r, g, b)) = crate::render::color::resolve_to_rgb(theme.accent_user) else {
+    let resolved = cache::current_resolved();
+    let color = match resolved.cursor_policy {
+        CursorPolicy::TerminalDefault => {
+            reset_cursor_color();
+            return;
+        }
+        CursorPolicy::ThemeColor(color) => color,
+    };
+    let color = color_support::quantize_color(color, color_support::detect());
+    let Some((r, g, b)) = crate::render::color::resolve_to_rgb(color) else {
         return;
     };
     xai_grok_shared::stderr::with_locked_stderr(|stderr| {
@@ -985,6 +1065,9 @@ mod tests {
                 ThemeKind::TokyoNight => Theme::tokyonight(),
                 ThemeKind::RosePineMoon => Theme::rosepine_moon(),
                 ThemeKind::OscuraMidnight => Theme::oscura_midnight(),
+                ThemeKind::TerminalNative | ThemeKind::WarpSync | ThemeKind::WarpCustom => {
+                    unreachable!("ALL contains only concrete built-in themes")
+                }
                 ThemeKind::Auto => unreachable!("ALL excludes Auto"),
             };
             let track = lum(theme.scrollbar_bg, "scrollbar_bg", kind);

@@ -874,18 +874,19 @@ pub fn render_cancel_turn_panel(
             break;
         }
         let is_cursor = i == state.active_idx;
-        let row_bg = if is_cursor && focused {
-            theme.bg_visual
+        let row_overlay = if is_cursor && focused {
+            theme.selected_row_style()
         } else {
-            theme.bg_light
+            Style::default()
         };
+        let apply_row = |style: Style| style.bg(theme.bg_light).patch(row_overlay);
         let row_rect = Rect {
             x: content_x.saturating_sub(1),
             y,
             width: content_w as u16 + 2,
             height: 1,
         };
-        buf.set_style(row_rect, Style::default().bg(row_bg));
+        buf.set_style(row_rect, apply_row(Style::default()));
         button_rects.push(row_rect);
         let marker = if is_cursor {
             crate::glyphs::filled_dot()
@@ -893,20 +894,19 @@ pub fn render_cancel_turn_panel(
             "\u{25CB}"
         };
         let num = (i + 1).to_string();
-        let num_style = Style::default().fg(theme.accent_user).bg(row_bg);
+        let num_style = apply_row(Style::default().fg(theme.accent_user));
         let marker_style = if is_cursor {
-            Style::default().fg(theme.accent_user).bg(row_bg)
+            apply_row(Style::default().fg(theme.accent_user))
         } else {
-            Style::default().fg(theme.gray).bg(row_bg)
+            apply_row(Style::default().fg(theme.gray))
         };
-        let label_style = Style::default()
-            .fg(theme.text_primary)
-            .bg(row_bg)
-            .add_modifier(if is_cursor {
+        let label_style = apply_row(Style::default().fg(theme.text_primary).add_modifier(
+            if is_cursor {
                 Modifier::BOLD
             } else {
                 Modifier::empty()
-            });
+            },
+        ));
         let line = Line::from(vec![
             Span::styled(format!("{num} "), num_style),
             Span::styled(format!("({marker}) "), marker_style),

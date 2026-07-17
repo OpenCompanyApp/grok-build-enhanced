@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::client::CodexTurnStateStore;
 use crate::config::{RetryPolicy, SamplerConfig};
 use crate::types::RequestId;
 
@@ -26,6 +27,9 @@ pub(crate) struct ActorState {
     pub(crate) active_requests: HashMap<RequestId, ActiveRequest>,
     pub(crate) config: SamplerConfig,
     pub(crate) retry_policy: RetryPolicy,
+    /// Shared across the short-lived clients created for each model/tool round
+    /// so ChatGPT sticky routing remains scoped to the enclosing user turn.
+    pub(crate) codex_turn_state: CodexTurnStateStore,
 }
 
 impl ActorState {
@@ -34,6 +38,7 @@ impl ActorState {
             active_requests: HashMap::new(),
             config,
             retry_policy,
+            codex_turn_state: CodexTurnStateStore::default(),
         }
     }
 
@@ -87,6 +92,7 @@ mod tests {
             api_key: None,
             base_url: "https://example.test".into(),
             model: "test-model".into(),
+            service_tier: None,
             max_completion_tokens: None,
             temperature: None,
             top_p: None,

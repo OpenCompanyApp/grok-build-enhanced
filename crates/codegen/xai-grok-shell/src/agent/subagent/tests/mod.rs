@@ -3108,6 +3108,9 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            service_tier: None,
             multi_agent_version: None,
             supports_image_input: false,
             supports_backend_search: false,
@@ -3322,6 +3325,7 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
         context_window: NonZeroU64::new(256_000).expect("non-zero context window"),
         reasoning_effort: None,
         stream_tool_calls: None,
+        service_tier: None,
     }
 }
 fn spawn_test_parent_chat_state(model_slug: &str) -> xai_chat_state::ChatStateHandle {

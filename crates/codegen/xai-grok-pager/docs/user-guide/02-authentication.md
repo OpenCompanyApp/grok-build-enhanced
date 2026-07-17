@@ -107,13 +107,49 @@ are never treated as permanent model API keys. This integration does not read
 or copy credentials from `~/.codex/auth.json`.
 
 Codex sessions can read attached/local images through the existing multimodal
-file path and expose `image_gen` plus `image_edit` when those tools are enabled
-and the authenticated model catalog advertises image input support.
-Requested aspect ratios are mapped to exact, model-valid `gpt-image-2` canvases
-for the current Codex image endpoint. ChatGPT Codex does not currently expose a
+file path when the selected catalog model advertises image-input support.
+`image_gen` and `image_edit` are separate `gpt-image-2` capabilities: they are
+exposed whenever their feature gates are enabled and dynamic Codex
+authentication is available, even if a future coding model is text-only.
+Requested aspect ratios are mapped to exact, model-valid canvases for the
+current Codex image endpoint. ChatGPT Codex does not currently expose a
 subscription video-generation endpoint, so the xAI video tools are unavailable
 while a Codex model is selected and return when the session switches back to
 xAI.
+
+Codex subscription sessions also expose Grok Build's `web_search` function
+without requiring `XAI_API_KEY`. The function follows the current public Codex
+standalone-search contract and sends provider-authenticated requests to
+`{codex-base}/alpha/search`. It supports ordinary and image queries, opening a
+search reference or URL, following numbered links, in-page find, PDF
+screenshots, finance, weather, sports, time, response sizing, and repeated
+search/navigation calls. Result URLs are retained as citations for the TUI and
+the model can pass returned references to later `open`, `click`, `find`, or
+`screenshot` operations. Each request reloads the scoped ChatGPT credential;
+an authentication rejection gets at most one provider-owned refresh/retry and
+is never routed through xAI authentication.
+
+To match the public Codex client without copying provider-private response
+state, standalone search receives only a bounded text projection of the last
+two visible user turns and the assistant text between them. System context,
+synthetic reminders, images, reasoning records, tool traffic, credentials,
+account identifiers, and `x-codex-turn-state` are not forwarded. Grok adds a
+bounded `x-codex-turn-metadata` correlation header containing only its stable
+session/turn identifiers, selected model, and reasoning effort.
+
+The local `web_fetch` tool is enabled by default for Codex only when no local,
+managed, remote, or environment setting made an explicit choice. Its existing
+SSRF protection and fixed domain allowlist remain in force, so an arbitrary
+search-result domain may be rejected by `web_fetch`; use the subscription
+search tool's `open`/`click` commands for those results. `--disable-web-search`
+disables both web tools. `GROK_WEB_FETCH=0` disables only local URL fetching;
+`GROK_WEB_FETCH=1` still opts it in explicitly. xAI sessions retain their
+existing web-search and opt-in web-fetch behavior.
+
+Search citations intentionally retain their complete source URLs so the model
+can navigate and cite them. User-configured tool lifecycle hooks receive tool
+arguments and results, including those URLs; treat such hooks as an explicit
+external-data boundary and review their destinations accordingly.
 
 > [!WARNING]
 > Direct ChatGPT Codex backend integration is experimental. It follows the

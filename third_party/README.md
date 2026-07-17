@@ -1,7 +1,9 @@
-# Third-party vendored crates
+# Third-party vendored source and data
 
-This directory holds **upstream source** vendored into the repository. It is
-**not** first-party application code.
+This repository holds **upstream source and data** vendored for deterministic
+builds. It is **not** first-party application code. Most projects live in this
+directory; package-time data may live below its consuming crate when Cargo
+requires every build input to remain inside that crate's package root.
 
 ## Why vendor
 
@@ -49,7 +51,19 @@ They resolve via `Cargo.lock` / crates.io. Full attribution and license texts
 for the Grok CLI dependency closure are maintained in
 [`THIRD-PARTY-NOTICES`](../THIRD-PARTY-NOTICES).
 
-This directory is only for **in-tree vendored** sources.
+Only **in-tree vendored** projects are indexed here; ordinary Cargo
+dependencies continue to resolve from `Cargo.lock`.
+
+## Packaged theme data
+
+The complete pinned set of 340 YAML/YML definitions from
+[`warpdotdev/themes`](https://github.com/warpdotdev/themes) lives at
+[`xai-grok-pager-render/assets/warp-themes`](../crates/codegen/xai-grok-pager-render/assets/warp-themes/).
+Keeping it inside `xai-grok-pager-render` makes `cargo package` self-contained.
+Its upstream Apache-2.0 license, revision marker, preserved per-theme comments,
+MIT-derived Cherry/Soft Tactile attribution, and source-dependency credits are
+kept alongside the corpus. See [`NOTICE`](./NOTICE) and the root
+[`THIRD-PARTY-NOTICES`](../THIRD-PARTY-NOTICES) for redistribution details.
 
 ## Upgrading
 
@@ -57,3 +71,7 @@ This directory is only for **in-tree vendored** sources.
 2. Re-apply listed local patches (fmt, hermetic env, unsafe fixes, dropped bins/tests).
 3. Confirm the license file still matches the declared `license =` field.
 4. Refresh [`NOTICE`](./NOTICE) if versions or upstream URLs change.
+
+For the Warp theme corpus, follow its adjacent `README.md`: review individual
+theme provenance, update the category-count gate in the render crate's
+`build.rs`, and verify both render tests and crate packaging.

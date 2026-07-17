@@ -1261,6 +1261,11 @@ pub struct PermissionKnownKeys {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub features: Features,
+    /// Top-level Codex service-tier preference. `fast` is the user-facing
+    /// alias for the catalog/wire tier `priority`; `default` explicitly opts
+    /// out of a catalog Fast default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     /// `[goal]` section: canonical `/goal` configuration. See [`GoalConfig`].
     #[serde(default)]
     pub goal: GoalConfig,
@@ -1699,6 +1704,7 @@ impl Default for Config {
         let endpoints = EndpointsConfig::default();
         let mut cfg = Self {
             features: Features::default(),
+            service_tier: None,
             goal: GoalConfig::default(),
             doom_loop_recovery: crate::util::config::DoomLoopRecoverySettings::default(),
             auto_mode: AutoModeConfig::default(),
@@ -3697,6 +3703,14 @@ impl ConfigModelOverride {
         entry
     }
 }
+/// Provider-advertised service-tier option for a model.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelServiceTier {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
 /// Shared model metadata — the common fields across all model sources.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelInfo {
@@ -3755,13 +3769,25 @@ pub struct ModelInfo {
     /// Per-model reasoning-effort menu (source of truth); legacy fields derived from it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<ReasoningEffortOption>,
+    /// Service tiers advertised for this model by its owning provider.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_tiers: Vec<ModelServiceTier>,
+    /// Catalog default tier, applied only when Fast mode is enabled and the
+    /// user has not made an explicit selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_service_tier: Option<String>,
+    /// Effective session-start selection (`priority`, `default`, or another
+    /// provider-advertised id). `default` is omitted at the wire boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     /// Provider-advertised multi-agent runtime generation. This is metadata,
     /// not a provider replacement: the shell keeps Grok Build's native task
     /// tool/coordinator and uses this only for effort-specific policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_version: Option<String>,
     /// Whether the provider catalog says the model accepts image inputs.
-    /// Used to gate Codex image read/generation tools like the official client.
+    /// Used only for image input/read behavior. Codex image generation and
+    /// editing use a separate provider model and are gated independently.
     #[serde(default)]
     pub supports_image_input: bool,
     pub supports_backend_search: bool,
@@ -3809,6 +3835,9 @@ impl ModelInfo {
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            service_tier: None,
             multi_agent_version: None,
             supports_image_input: false,
             supports_backend_search: false,
@@ -3847,6 +3876,9 @@ impl ModelInfo {
             reasoning_effort: entry.reasoning_effort,
             supports_reasoning_effort: entry.supports_reasoning_effort,
             reasoning_efforts: entry.reasoning_efforts.clone(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            service_tier: None,
             multi_agent_version: None,
             supports_image_input: false,
             supports_backend_search: entry.supports_backend_search,
@@ -4116,6 +4148,10 @@ pub struct Features {
     /// when set, the agent may ask permission for tool executions
     #[serde(default)]
     pub support_permission: bool,
+    /// Enable authenticated Codex service-tier controls. Stable and enabled
+    /// by default; `Some(false)` disables Fast mode without changing auth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode: Option<bool>,
     /// `None` = defer to remote settings / default (off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<TelemetryMode>,
@@ -4554,6 +4590,9 @@ pub fn resolve_aux_model_sampling_config(
                 reasoning_effort: None,
                 supports_reasoning_effort: false,
                 reasoning_efforts: Vec::new(),
+                service_tiers: Vec::new(),
+                default_service_tier: None,
+                service_tier: None,
                 multi_agent_version: None,
                 supports_image_input: false,
                 supports_backend_search: false,
@@ -4695,6 +4734,7 @@ pub fn sampling_config_for_model(
         context_window: info.context_window.get(),
         client_version,
         reasoning_effort: info.reasoning_effort,
+        service_tier: info.service_tier.clone(),
         force_http1: false,
         max_retries: info.max_retries,
         stream_tool_calls: info.stream_tool_calls.unwrap_or(false),
@@ -4801,6 +4841,9 @@ fn resolve_hidden_default_web_search_sampling_config(
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            service_tier: None,
             multi_agent_version: None,
             supports_image_input: false,
             supports_backend_search: false,
@@ -5459,6 +5502,9 @@ reasoning_effort = "low"
                 reasoning_effort: None,
                 supports_reasoning_effort: false,
                 reasoning_efforts: Vec::new(),
+                service_tiers: Vec::new(),
+                default_service_tier: None,
+                service_tier: None,
                 multi_agent_version: None,
                 supports_image_input: false,
                 supports_backend_search: false,
@@ -10657,6 +10703,9 @@ default = "grok-4.5"
                 reasoning_effort: None,
                 supports_reasoning_effort: false,
                 reasoning_efforts: Vec::new(),
+                service_tiers: Vec::new(),
+                default_service_tier: None,
+                service_tier: None,
                 multi_agent_version: None,
                 supports_image_input: false,
                 supports_backend_search: false,

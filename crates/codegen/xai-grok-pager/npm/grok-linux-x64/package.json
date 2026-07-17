@@ -5,7 +5,8 @@
     "license": "Apache-2.0",
     "files": [
         "bin/",
-        "THIRD_PARTY_NOTICES.md"
+        "THIRD_PARTY_NOTICES.md",
+        "WARP_THEMES_LICENSE"
     ],
     "os": [
         "linux"

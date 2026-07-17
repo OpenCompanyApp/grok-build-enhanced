@@ -9,8 +9,8 @@ use std::process::Command;
 use crate::notifications::NotificationCondition;
 use crate::notifications::protocol::NotificationProtocol;
 use crate::terminal::{ByobuBackend, MultiplexerKind, TerminalContext, TerminalName};
-use crate::theme::ThemeKind;
 use crate::theme::color_support::ColorLevel;
+use crate::theme::{ThemeKind, ThemeStatus};
 
 /// Broad classification of a startup warning.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -576,11 +576,59 @@ pub fn format_themes_env_line(level: ColorLevel) -> String {
         .map(|k| k.display_name())
         .collect();
     format!(
-        "  themes       {}/{}: {}\n",
-        names.len(),
-        ThemeKind::ALL.len(),
+        "  themes       {}/{}: {} + terminal, warp-sync\n",
+        names.len() + 2,
+        ThemeKind::ALL.len() + 2,
         names.join(", ")
     )
+}
+
+/// `/terminal-setup` Warp rows. Empty outside Warp-related sessions/themes.
+pub fn format_warp_env_lines() -> String {
+    let resolved = crate::theme::cache::current_resolved();
+    let is_warp = crate::theme::warp::settings::is_local_warp();
+    let ThemeStatus::Warp {
+        channel,
+        selected_name,
+        settings_path,
+        fallback_reason,
+        ..
+    } = &resolved.status
+    else {
+        return if is_warp {
+            "  warp         detected (inactive)\n".to_owned()
+        } else {
+            String::new()
+        };
+    };
+
+    let mut out = String::new();
+    let channel = channel
+        .map(|value| value.display_name())
+        .unwrap_or("unknown channel");
+    let locality = if is_warp { "local" } else { "not local" };
+    out.push_str(&format!("  warp         {channel} ({locality})\n"));
+    out.push_str(&format!(
+        "  warp theme   {}\n",
+        selected_name
+            .as_deref()
+            .unwrap_or(resolved.display_name.as_str())
+    ));
+    if let Some(path) = settings_path {
+        out.push_str(&format!(
+            "  warp config  {}\n",
+            crate::theme::warp::settings::display_path(path)
+        ));
+    }
+    out.push_str(&format!(
+        "  warp themes  {} official, {} installed\n",
+        crate::theme::warp::catalog::all().len(),
+        crate::theme::warp::discovery::discover_all().len()
+    ));
+    if let Some(reason) = fallback_reason {
+        out.push_str(&format!("  warp status  fallback: {reason}\n"));
+    }
+    out
 }
 
 /// `/terminal-setup` warning when truecolor themes are locked out.

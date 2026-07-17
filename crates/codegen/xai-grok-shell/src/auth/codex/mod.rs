@@ -2,7 +2,7 @@
 //!
 //! The endpoint and OAuth behavior here follow the public OpenAI Codex client
 //! contract verified on 2026-07-16 at openai/codex commit
-//! `f64233d142c84ead90a25e7d81b12b6bcef1b358`. They are not a stable,
+//! `f737605606c14e3aa59a4c17be80d338f164dff5`. They are not a stable,
 //! general-purpose OpenAI API contract.
 
 mod credentials;
@@ -32,7 +32,8 @@ pub use storage::CodexCredentialStore;
 pub use usage::{
     CodexAdditionalRateLimit, CodexCreditStatus, CodexRateLimit, CodexRateLimitReachedType,
     CodexResetCredits, CodexSpendControl, CodexSpendControlLimit, CodexUsageError,
-    CodexUsageSnapshot, CodexUsageWindow, fetch_codex_usage,
+    CodexUsageSnapshot, CodexUsageWindow, fetch_codex_usage, fetch_codex_usage_for_current,
+    fetch_codex_usage_for_session,
 };
 
 /// Dedicated scope in Grok's provider-aware auth store.

@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
+use reqwest::StatusCode;
 use reqwest::header::{
     ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
 };
@@ -122,8 +123,9 @@ fn apply_extended_codex_reasoning_effort(
     Ok(())
 }
 
-/// Rewrite a normal Responses request into the current Codex Responses Lite
-/// contract. This runs only at the final provider JSON boundary so Grok Build's
+/// Apply the Codex Responses transport contract at the final provider JSON
+/// boundary. The stable prompt cache key belongs to every Codex Responses
+/// request; the remaining rewrite is gated by Responses Lite so Grok Build's
 /// conversation, tool registry, persistence, and execution loop remain intact.
 fn apply_codex_responses_lite_contract(
     provider: ProviderId,
@@ -131,10 +133,10 @@ fn apply_codex_responses_lite_contract(
     prompt_cache_key: Option<&str>,
     body: &mut serde_json::Value,
 ) -> Result<()> {
-    if !enabled {
-        return Ok(());
-    }
     if !provider.is_openai_codex() {
+        if !enabled {
+            return Ok(());
+        }
         return Err(SamplingError::InvalidConfiguration(
             "Responses Lite requires the OpenAI Codex provider",
         ));
@@ -155,6 +157,9 @@ fn apply_codex_responses_lite_contract(
             "prompt_cache_key".to_string(),
             serde_json::Value::String(prompt_cache_key.to_string()),
         );
+    }
+    if !enabled {
+        return Ok(());
     }
 
     let mut tools = match root.remove("tools") {
@@ -342,7 +347,7 @@ fn normalize_extended_codex_response_effort(value: &mut serde_json::Value) {
 fn valid_openai_codex_base_url(base_url: &str) -> bool {
     let production =
         base_url.trim_end_matches('/') == xai_grok_sampling_types::OPENAI_CODEX_BASE_URL;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let loopback = reqwest::Url::parse(base_url).ok().is_some_and(|url| {
         url.scheme() == "http"
             && url.query().is_none()
@@ -351,7 +356,7 @@ fn valid_openai_codex_base_url(base_url: &str) -> bool {
                 .host_str()
                 .is_some_and(|host| matches!(host, "127.0.0.1" | "localhost" | "::1"))
     });
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     let loopback = false;
     production || loopback
 }
@@ -495,6 +500,9 @@ fn validate_codex_request_auth_headers(headers: &mut HeaderMap) -> Result<()> {
     if let Some(value) = headers.get_mut(CHATGPT_ACCOUNT_ID_HEADER) {
         value.set_sensitive(true);
     }
+    if let Some(value) = headers.get_mut(OPENAI_FEDRAMP_HEADER) {
+        value.set_sensitive(true);
+    }
 
     Ok(())
 }
@@ -571,20 +579,35 @@ impl GrokRequestHeaders<'_> {
         &self,
         builder: reqwest::RequestBuilder,
         responses_lite: bool,
-    ) -> reqwest::RequestBuilder {
+    ) -> Result<reqwest::RequestBuilder> {
+        let sensitive_value = |raw: &str| {
+            HeaderValue::from_str(raw)
+                .map(|mut value| {
+                    value.set_sensitive(true);
+                    value
+                })
+                .map_err(|_| {
+                    SamplingError::InvalidConfiguration(
+                        "OpenAI Codex request identity contains an invalid header value",
+                    )
+                })
+        };
         let mut builder = builder;
         if !self.session_id.is_empty() {
-            builder = builder.header(CODEX_SESSION_ID_HEADER, self.session_id);
+            builder = builder.header(CODEX_SESSION_ID_HEADER, sensitive_value(self.session_id)?);
         }
         if !self.conv_id.is_empty() {
             builder = builder
-                .header(CODEX_THREAD_ID_HEADER, self.conv_id)
-                .header(CODEX_CLIENT_REQUEST_ID_HEADER, self.conv_id);
+                .header(CODEX_THREAD_ID_HEADER, sensitive_value(self.conv_id)?)
+                .header(
+                    CODEX_CLIENT_REQUEST_ID_HEADER,
+                    sensitive_value(self.conv_id)?,
+                );
         }
         if responses_lite {
             builder = builder.header(OPENAI_CODEX_RESPONSES_LITE_HEADER, "true");
         }
-        builder
+        Ok(builder)
     }
 }
 
@@ -1299,6 +1322,61 @@ fn deserialize_response_for_provider(bytes: &[u8], provider: ProviderId) -> Resu
     })
 }
 
+/// Return whether a Codex error envelope carries one of the small, fixed
+/// subscription-exhaustion codes published by the open-source Codex client.
+///
+/// Provider-controlled messages are deliberately ignored: an error may echo
+/// request text, bearer material, or account metadata. Matching only an
+/// allowlist of structural codes lets callers distinguish a durable usage
+/// block from a short rolling 429 without reflecting any response content.
+fn is_codex_usage_limit_error(value: &serde_json::Value) -> bool {
+    [
+        value.pointer("/error/type"),
+        value.pointer("/error/code"),
+        value.get("code"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(serde_json::Value::as_str)
+    .any(|kind| {
+        matches!(
+            kind,
+            "usage_limit_reached"
+                | "insufficient_quota"
+                | "credits_depleted"
+                | "workspace_owner_credits_depleted"
+                | "workspace_member_credits_depleted"
+                | "workspace_owner_usage_limit_reached"
+                | "workspace_member_usage_limit_reached"
+                | "spend_control_limit_reached"
+                | "spending_limit_reached"
+        )
+    })
+}
+
+fn codex_usage_limit_should_retry(
+    provider: ProviderId,
+    status: StatusCode,
+    body: &[u8],
+    server_hint: Option<bool>,
+) -> Option<bool> {
+    if provider.is_openai_codex()
+        && status == StatusCode::TOO_MANY_REQUESTS
+        && serde_json::from_slice::<serde_json::Value>(body)
+            .ok()
+            .as_ref()
+            .is_some_and(is_codex_usage_limit_error)
+    {
+        // Subscription exhaustion is durable until the provider's reset. The
+        // current openai/codex client treats this structural error as terminal;
+        // retrying it only burns another request and can leave the TUI appearing
+        // to loop. Do not inspect or retain the provider-controlled message.
+        Some(false)
+    } else {
+        server_hint
+    }
+}
+
 /// Recognize the two server-error envelope shapes without logging or
 /// retaining any provider-controlled string. The ChatGPT backend can reflect
 /// request material, so even an error field is treated as sensitive.
@@ -1307,6 +1385,12 @@ fn try_parse_codex_stream_error(data: &str) -> Option<SamplingError> {
     let error = value.get("error")?;
     if !(error.is_object() || error.is_string()) {
         return None;
+    }
+    if is_codex_usage_limit_error(&value) {
+        return Some(SamplingError::StreamError {
+            error_type: "usage_limit_reached".to_owned(),
+            message: "ChatGPT Codex stream rejected (usage limit reached)".to_owned(),
+        });
     }
     Some(SamplingError::StreamError {
         error_type: "provider_error".to_owned(),
@@ -1479,6 +1563,18 @@ struct CodexTurnState {
     value: HeaderValue,
 }
 
+/// Actor-scoped owner for the opaque ChatGPT sticky-routing value.
+///
+/// A [`SamplingClient`] is rebuilt for every sampler submission (and may also
+/// be rebuilt during transport recovery), while one user turn spans several
+/// submissions when tools are called. Keeping the state in this shared owner
+/// preserves the provider's per-turn contract without persisting or exposing
+/// the value.
+#[derive(Clone, Default)]
+pub(crate) struct CodexTurnStateStore {
+    inner: std::sync::Arc<std::sync::Mutex<Option<CodexTurnState>>>,
+}
+
 #[derive(Clone)]
 pub struct SamplingClient {
     http: reqwest::Client,
@@ -1501,7 +1597,7 @@ pub struct SamplingClient {
     /// An empty request ID (for example an auxiliary title call) neither reads
     /// nor clears this state, so concurrent auxiliary work cannot disturb the
     /// active agent turn.
-    codex_turn_state: std::sync::Arc<std::sync::Mutex<Option<CodexTurnState>>>,
+    codex_turn_state: CodexTurnStateStore,
 }
 
 impl std::fmt::Debug for SamplingClient {
@@ -1528,6 +1624,7 @@ struct ClientDefaults {
     top_p: Option<f32>,
     api_backend: ApiBackend,
     auth_scheme: AuthScheme,
+    service_tier: Option<String>,
     stream_tool_calls: bool,
     responses_lite: bool,
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
@@ -1614,6 +1711,13 @@ impl SamplingClient {
     /// pre-computes the default request headers. This does not perform
     /// any network I/O.
     pub fn new(config: SamplerConfig) -> Result<Self> {
+        Self::new_with_codex_turn_state(config, CodexTurnStateStore::default())
+    }
+
+    pub(crate) fn new_with_codex_turn_state(
+        config: SamplerConfig,
+        codex_turn_state: CodexTurnStateStore,
+    ) -> Result<Self> {
         if let Some(binding) = config.credential_binding.as_ref()
             && (binding.provider != config.provider
                 || (config.credential_source
@@ -1814,6 +1918,7 @@ impl SamplingClient {
             top_p: config.top_p,
             api_backend: config.api_backend,
             auth_scheme: config.auth_scheme,
+            service_tier: config.service_tier,
             stream_tool_calls: config.stream_tool_calls,
             responses_lite,
             doom_loop_recovery: config.doom_loop_recovery,
@@ -1828,8 +1933,14 @@ impl SamplingClient {
             bearer_resolver: config.bearer_resolver,
             header_injector: config.header_injector,
             request_auth: config.request_auth,
-            codex_turn_state: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            codex_turn_state,
         })
+    }
+
+    /// Rebuild this HTTP client without dropping the actor-owned Codex turn
+    /// state. Used only for transport fallback within the same submission.
+    pub(crate) fn rebuild_with_config(&self, config: SamplerConfig) -> Result<Self> {
+        Self::new_with_codex_turn_state(config, self.codex_turn_state.clone())
     }
 
     /// The configured API backend for this client.
@@ -1964,12 +2075,12 @@ impl SamplingClient {
         &self,
         builder: reqwest::RequestBuilder,
         grok_headers: &GrokRequestHeaders<'_>,
-    ) -> reqwest::RequestBuilder {
+    ) -> Result<reqwest::RequestBuilder> {
         if self.defaults.provider.is_openai_codex() {
-            let builder = grok_headers.apply_codex(builder, self.defaults.responses_lite);
-            self.apply_codex_turn_state(builder, grok_headers.req_id)
+            let builder = grok_headers.apply_codex(builder, self.defaults.responses_lite)?;
+            Ok(self.apply_codex_turn_state(builder, grok_headers.req_id))
         } else {
-            grok_headers.apply(builder)
+            Ok(grok_headers.apply(builder))
         }
     }
 
@@ -1983,6 +2094,7 @@ impl SamplingClient {
         }
         let mut state = self
             .codex_turn_state
+            .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match state.as_ref() {
@@ -2010,6 +2122,7 @@ impl SamplingClient {
         value.set_sensitive(true);
         let mut state = self
             .codex_turn_state
+            .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match state.as_ref() {
@@ -2051,7 +2164,7 @@ impl SamplingClient {
     /// credential snapshot. This is deliberately unavailable to xAI/custom
     /// clients: their authentication lifecycle remains owned by the shell's
     /// existing `AuthManager`.
-    pub(crate) async fn recover_provider_auth_after_unauthorized(
+    pub async fn recover_provider_auth_after_unauthorized(
         &self,
         rejected: CredentialBinding,
     ) -> bool {
@@ -2212,7 +2325,13 @@ impl SamplingClient {
     /// into logs and user-visible errors.
     fn provider_error_message(&self, body: &[u8]) -> String {
         if self.defaults.provider.is_openai_codex() {
-            if body
+            if serde_json::from_slice::<serde_json::Value>(body)
+                .ok()
+                .as_ref()
+                .is_some_and(is_codex_usage_limit_error)
+            {
+                "ChatGPT Codex request rejected (usage limit reached)".to_owned()
+            } else if body
                 .windows(b"encrypted_content".len())
                 .any(|window| window == b"encrypted_content")
             {
@@ -2335,7 +2454,7 @@ impl SamplingClient {
         let prepared = self.post(self.endpoint("chat/completions"))?;
         let request_credential = prepared.credential_binding;
         let http_request = self
-            .apply_provider_request_headers(prepared.builder, &grok_headers)
+            .apply_provider_request_headers(prepared.builder, &grok_headers)?
             .json(&payload);
 
         let response = http_request.send().await.map_err(|e| {
@@ -2395,7 +2514,7 @@ impl SamplingClient {
         let prepared = self.post(self.endpoint("chat/completions"))?;
         let request_credential = prepared.credential_binding;
         let http_request = self
-            .apply_provider_request_headers(prepared.builder, &grok_headers)
+            .apply_provider_request_headers(prepared.builder, &grok_headers)?
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
             .json(&streaming_request);
 
@@ -2567,6 +2686,29 @@ impl SamplingClient {
             request.inner.max_output_tokens = self.defaults.max_completion_tokens;
         }
 
+        // Fast mode is a provider-scoped Codex service tier. `default` is the
+        // persisted explicit-Standard sentinel used by the shell and must not
+        // appear in a Responses payload. Never project this setting onto xAI
+        // or custom-provider traffic.
+        if request.inner.service_tier.is_none() && self.defaults.provider == ProviderId::OpenAiCodex
+        {
+            request.inner.service_tier = match self.defaults.service_tier.as_deref() {
+                Some("priority") => Some(rs::ServiceTier::Priority),
+                Some("flex") => Some(rs::ServiceTier::Flex),
+                Some("scale") => Some(rs::ServiceTier::Scale),
+                Some("auto") => Some(rs::ServiceTier::Auto),
+                Some(xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER) | None => None,
+                Some(tier) => {
+                    tracing::warn!(
+                        provider = "openai_codex",
+                        service_tier = tier,
+                        "catalog service tier is not supported by this client; omitting it"
+                    );
+                    None
+                }
+            };
+        }
+
         // Set store to false if not specified (default is true, but that breaks ZDR compliance)
         if request.inner.store.is_none() {
             request.inner.store = Some(false);
@@ -2600,8 +2742,12 @@ impl SamplingClient {
         // forwarded by the sampler. Drop it before we send.
         request.trace.take();
 
-        tracing::debug!("create_response: {:?}", &request);
-        tracing::debug!("endpoint: {:?}", self.endpoint("responses"));
+        tracing::debug!(
+            provider = ?self.defaults.provider,
+            model = %model_id,
+            endpoint = %self.endpoint("responses"),
+            "responses request prepared"
+        );
 
         let grok_headers = GrokRequestHeaders {
             conv_id: x_grok_conv_id,
@@ -2639,7 +2785,7 @@ impl SamplingClient {
         let prepared = self.post(self.endpoint("responses"))?;
         let request_credential = prepared.credential_binding;
         let http_request = self
-            .apply_provider_request_headers(prepared.builder, &grok_headers)
+            .apply_provider_request_headers(prepared.builder, &grok_headers)?
             .json(&request_body);
 
         let response = http_request.send().await.map_err(|e| {
@@ -2659,6 +2805,12 @@ impl SamplingClient {
             self.capture_codex_turn_state(response.headers(), x_grok_req_id);
         }
         let bytes = response.bytes().await?;
+        let should_retry = codex_usage_limit_should_retry(
+            self.defaults.provider,
+            status,
+            bytes.as_ref(),
+            should_retry,
+        );
 
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -2815,7 +2967,7 @@ impl SamplingClient {
         let prepared = self.post(self.endpoint("responses"))?;
         let request_credential = prepared.credential_binding;
         let mut http_request = self
-            .apply_provider_request_headers(prepared.builder, &grok_headers)
+            .apply_provider_request_headers(prepared.builder, &grok_headers)?
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
         if doom_loop.is_some() {
             // Presence opts in; the server ignores the value.
@@ -2876,6 +3028,12 @@ impl SamplingClient {
             let resp_headers =
                 Self::format_response_headers(response.headers(), self.defaults.provider);
             let bytes = response.bytes().await?;
+            let should_retry = codex_usage_limit_should_retry(
+                self.defaults.provider,
+                status,
+                bytes.as_ref(),
+                should_retry,
+            );
             let server_message = self.provider_error_message(bytes.as_ref());
 
             let message = self.build_api_error_message(
@@ -3060,8 +3218,12 @@ impl SamplingClient {
         // Drop process-local trace data.
         request.trace.take();
 
-        tracing::debug!("create_message: {:?}", &request.inner);
-        tracing::debug!("endpoint: {:?}", self.endpoint("messages"));
+        tracing::debug!(
+            provider = ?self.defaults.provider,
+            model = %model_id,
+            endpoint = %self.endpoint("messages"),
+            "messages request prepared"
+        );
 
         let grok_headers = GrokRequestHeaders {
             conv_id: x_grok_conv_id,
@@ -3076,7 +3238,7 @@ impl SamplingClient {
         let prepared = self.post(self.endpoint("messages"))?;
         let request_credential = prepared.credential_binding;
         let http_request = self
-            .apply_provider_request_headers(prepared.builder, &grok_headers)
+            .apply_provider_request_headers(prepared.builder, &grok_headers)?
             .json(&request.inner);
 
         let response = http_request.send().await.map_err(|e| {
@@ -3198,7 +3360,7 @@ impl SamplingClient {
         let prepared = self.post(self.endpoint("messages"))?;
         let request_credential = prepared.credential_binding;
         let http_request = self
-            .apply_provider_request_headers(prepared.builder, &grok_headers)
+            .apply_provider_request_headers(prepared.builder, &grok_headers)?
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
             .json(&request.inner);
 
@@ -3633,6 +3795,7 @@ mod tests {
             top_p: None,
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: AuthScheme::Bearer,
+            service_tier: None,
             extra_headers: IndexMap::new(),
             context_window: 8192,
             force_http1: false,
@@ -4201,6 +4364,54 @@ mod tests {
     }
 
     #[test]
+    fn codex_usage_limit_errors_keep_only_the_safe_structured_classification() {
+        let reflected = "Bearer codex-access-token account-selected-by-auth-store";
+        let data = format!(
+            r#"{{"type":"error","status":429,"error":{{"type":"usage_limit_reached","message":"{reflected}","resets_at":1704067242}}}}"#
+        );
+        let error = try_parse_codex_stream_error(&data).expect("usage-limit envelope");
+        let rendered = format!("{error:?} {error}");
+        assert!(rendered.contains("usage_limit_reached"));
+        assert!(rendered.contains("usage limit reached"));
+        assert!(
+            !error.is_retryable(),
+            "a structural Codex SSE usage limit must stop after one request"
+        );
+        assert!(!rendered.contains(reflected));
+        assert!(!rendered.contains("1704067242"));
+
+        assert_eq!(
+            codex_usage_limit_should_retry(
+                ProviderId::OpenAiCodex,
+                StatusCode::TOO_MANY_REQUESTS,
+                data.as_bytes(),
+                None,
+            ),
+            Some(false),
+            "a structural Codex HTTP usage limit must stop after one request"
+        );
+        assert_eq!(
+            codex_usage_limit_should_retry(
+                ProviderId::Xai,
+                StatusCode::TOO_MANY_REQUESTS,
+                data.as_bytes(),
+                None,
+            ),
+            None,
+            "the Codex structural rule must not change xAI retry behavior"
+        );
+
+        let (config, _) = codex_config();
+        let client = SamplingClient::new(config).unwrap();
+        let message = client.provider_error_message(data.as_bytes());
+        assert_eq!(
+            message,
+            "ChatGPT Codex request rejected (usage limit reached)"
+        );
+        assert!(!message.contains(reflected));
+    }
+
+    #[test]
     fn codex_extended_reasoning_efforts_match_current_codex_wire_contract() {
         for (effort, expected) in [
             (ReasoningEffort::Max, "max"),
@@ -4338,7 +4549,7 @@ mod tests {
     }
 
     #[test]
-    fn responses_lite_is_provider_scoped_and_non_lite_body_is_unchanged() {
+    fn responses_lite_is_provider_scoped_and_non_lite_keeps_normal_shape_with_cache_key() {
         let original = serde_json::json!({
             "model": "grok-4",
             "tools": [{"type": "function", "name": "read_file"}],
@@ -4348,6 +4559,21 @@ mod tests {
         apply_codex_responses_lite_contract(ProviderId::OpenAiCodex, false, None, &mut non_lite)
             .unwrap();
         assert_eq!(non_lite, original);
+
+        let mut cached_non_lite = original.clone();
+        apply_codex_responses_lite_contract(
+            ProviderId::OpenAiCodex,
+            false,
+            Some("stable-thread-key"),
+            &mut cached_non_lite,
+        )
+        .unwrap();
+        assert_eq!(cached_non_lite["prompt_cache_key"], "stable-thread-key");
+        cached_non_lite
+            .as_object_mut()
+            .unwrap()
+            .remove("prompt_cache_key");
+        assert_eq!(cached_non_lite, original);
 
         let mut xai = original.clone();
         let error =
@@ -4396,6 +4622,7 @@ mod tests {
         let prepared = client.post("https://example.test/responses").unwrap();
         let request = client
             .apply_provider_request_headers(prepared.builder, &grok_headers)
+            .unwrap()
             .body("")
             .build()
             .unwrap();
@@ -4419,6 +4646,16 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("thread-1")
         );
+        for name in [
+            CODEX_SESSION_ID_HEADER,
+            CODEX_THREAD_ID_HEADER,
+            CODEX_CLIENT_REQUEST_ID_HEADER,
+        ] {
+            assert!(
+                request.headers()[name].is_sensitive(),
+                "{name} must be sensitive at the HTTP layer"
+            );
+        }
     }
 
     #[test]
@@ -4666,9 +4903,86 @@ mod tests {
     }
 
     #[test]
-    fn codex_turn_state_replays_only_within_same_nonempty_request_id() {
-        let (config, _) = codex_config();
+    fn codex_fast_service_tier_maps_to_exact_priority_wire_value() {
+        let (mut config, _) = codex_config();
+        config.service_tier =
+            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER.to_owned());
         let client = SamplingClient::new(config).expect("Codex client should build");
+        let mut request = CreateResponseWrapper::default();
+
+        client
+            .apply_response_defaults(&mut request)
+            .expect("Codex response defaults should apply");
+
+        assert!(matches!(
+            request.inner.service_tier,
+            Some(rs::ServiceTier::Priority)
+        ));
+        let body = serde_json::to_value(&request.inner).expect("request should serialize");
+        assert_eq!(
+            body.get("service_tier").and_then(serde_json::Value::as_str),
+            Some("priority")
+        );
+    }
+
+    #[test]
+    fn codex_explicit_standard_service_tier_is_omitted_from_wire() {
+        let (mut config, _) = codex_config();
+        config.service_tier =
+            Some(xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER.to_owned());
+        let client = SamplingClient::new(config).expect("Codex client should build");
+        let mut request = CreateResponseWrapper::default();
+
+        client
+            .apply_response_defaults(&mut request)
+            .expect("Codex response defaults should apply");
+
+        assert!(request.inner.service_tier.is_none());
+        let body = serde_json::to_value(&request.inner).expect("request should serialize");
+        assert!(body.get("service_tier").is_none());
+    }
+
+    #[test]
+    fn xai_does_not_inherit_codex_fast_service_tier() {
+        let mut config = minimal_config();
+        config.api_backend = ApiBackend::Responses;
+        config.service_tier =
+            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER.to_owned());
+        let client = SamplingClient::new(config).expect("xAI client should build");
+        let mut request = CreateResponseWrapper::default();
+
+        client
+            .apply_response_defaults(&mut request)
+            .expect("xAI response defaults should apply");
+
+        assert!(request.inner.service_tier.is_none());
+        let body = serde_json::to_value(&request.inner).expect("request should serialize");
+        assert!(body.get("service_tier").is_none());
+    }
+
+    #[test]
+    fn codex_unknown_service_tier_is_omitted_from_wire() {
+        let (mut config, _) = codex_config();
+        config.service_tier = Some("unknown-provider-tier".to_owned());
+        let client = SamplingClient::new(config).expect("Codex client should build");
+        let mut request = CreateResponseWrapper::default();
+
+        client
+            .apply_response_defaults(&mut request)
+            .expect("unsupported tier should be omitted without failing the request");
+
+        assert!(request.inner.service_tier.is_none());
+        let body = serde_json::to_value(&request.inner).expect("request should serialize");
+        assert!(body.get("service_tier").is_none());
+    }
+
+    #[test]
+    fn codex_turn_state_survives_client_rebuilds_only_within_same_request_id() {
+        let (config, _) = codex_config();
+        let turn_state = CodexTurnStateStore::default();
+        let first_round =
+            SamplingClient::new_with_codex_turn_state(config.clone(), turn_state.clone())
+                .expect("first Codex client should build");
         fn headers_for(request_id: &str) -> GrokRequestHeaders<'_> {
             GrokRequestHeaders {
                 conv_id: "thread-1",
@@ -4681,18 +4995,19 @@ mod tests {
                 user_id: None,
             }
         }
-        let build = |request_id: &str| {
+        fn build(client: &SamplingClient, request_id: &str) -> reqwest::Request {
             client
                 .apply_provider_request_headers(
                     client.http.post("https://example.test/responses"),
                     &headers_for(request_id),
                 )
+                .expect("Codex request identity should be valid")
                 .build()
                 .expect("request should build")
-        };
+        }
 
         assert!(
-            build("request-1")
+            build(&first_round, "request-1")
                 .headers()
                 .get(CODEX_TURN_STATE_HEADER)
                 .is_none()
@@ -4703,9 +5018,21 @@ mod tests {
             HeaderName::from_static(CODEX_TURN_STATE_HEADER),
             HeaderValue::from_static("opaque-sticky-state"),
         );
-        client.capture_codex_turn_state(&response_headers, "request-1");
+        first_round.capture_codex_turn_state(&response_headers, "request-1");
 
-        let same_turn = build("request-1");
+        // Tool results cause a fresh sampler submission and therefore a fresh
+        // SamplingClient. It must inherit the actor-owned state from round one.
+        let second_round =
+            SamplingClient::new_with_codex_turn_state(config.clone(), turn_state.clone())
+                .expect("second Codex client should build");
+        let mut later_response_headers = HeaderMap::new();
+        later_response_headers.insert(
+            HeaderName::from_static(CODEX_TURN_STATE_HEADER),
+            HeaderValue::from_static("must-not-replace-first-state"),
+        );
+        second_round.capture_codex_turn_state(&later_response_headers, "request-1");
+
+        let same_turn = build(&second_round, "request-1");
         let replayed = same_turn
             .headers()
             .get(CODEX_TURN_STATE_HEADER)
@@ -4715,9 +5042,14 @@ mod tests {
 
         // Auxiliary calls have no Grok request ID and must not consume or
         // clear the active user turn's routing state.
-        assert!(build("").headers().get(CODEX_TURN_STATE_HEADER).is_none());
         assert!(
-            build("request-1")
+            build(&second_round, "")
+                .headers()
+                .get(CODEX_TURN_STATE_HEADER)
+                .is_none()
+        );
+        assert!(
+            build(&second_round, "request-1")
                 .headers()
                 .get(CODEX_TURN_STATE_HEADER)
                 .is_some()
@@ -4726,13 +5058,15 @@ mod tests {
         // A new user turn clears the old value before sending and cannot
         // regain it by presenting the previous request ID later.
         assert!(
-            build("request-2")
+            build(&second_round, "request-2")
                 .headers()
                 .get(CODEX_TURN_STATE_HEADER)
                 .is_none()
         );
+        let third_round = SamplingClient::new_with_codex_turn_state(config, turn_state)
+            .expect("third Codex client should build");
         assert!(
-            build("request-1")
+            build(&third_round, "request-1")
                 .headers()
                 .get(CODEX_TURN_STATE_HEADER)
                 .is_none()
@@ -4909,6 +5243,7 @@ mod tests {
         assert!(request.headers().contains_key("version"));
         assert!(request.headers()[AUTHORIZATION].is_sensitive());
         assert!(request.headers()[CHATGPT_ACCOUNT_ID_HEADER].is_sensitive());
+        assert!(request.headers()[OPENAI_FEDRAMP_HEADER].is_sensitive());
     }
 
     #[tokio::test]
@@ -5242,6 +5577,15 @@ mod tests {
             client.provider_error_message(encrypted),
             "ChatGPT Codex request rejected (encrypted_content)"
         );
+
+        let usage_limit = br#"{"error":{"type":"usage_limit_reached","message":"Bearer reflected-secret","resets_at":1704067242}}"#;
+        let usage_message = client.provider_error_message(usage_limit);
+        assert_eq!(
+            usage_message,
+            "ChatGPT Codex request rejected (usage limit reached)"
+        );
+        assert!(!usage_message.contains("reflected-secret"));
+        assert!(!usage_message.contains("1704067242"));
     }
 
     #[test]

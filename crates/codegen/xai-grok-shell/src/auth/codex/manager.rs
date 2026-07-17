@@ -412,10 +412,9 @@ impl xai_grok_sampler::RequestAuth for CodexSamplerRequestAuth {
         headers.insert(AUTHORIZATION, authorization);
         headers.insert(HeaderName::from_static("chatgpt-account-id"), account_id);
         if credentials.is_fedramp {
-            headers.insert(
-                HeaderName::from_static("x-openai-fedramp"),
-                HeaderValue::from_static("true"),
-            );
+            let mut fedramp = HeaderValue::from_static("true");
+            fedramp.set_sensitive(true);
+            headers.insert(HeaderName::from_static("x-openai-fedramp"), fedramp);
         } else {
             headers.remove(HeaderName::from_static("x-openai-fedramp"));
         }
@@ -851,6 +850,9 @@ mod tests {
         );
         assert_eq!(sampler_headers["chatgpt-account-id"], "acct-one");
         assert_eq!(sampler_headers["x-openai-fedramp"], "true");
+        assert!(sampler_headers[reqwest::header::AUTHORIZATION].is_sensitive());
+        assert!(sampler_headers["chatgpt-account-id"].is_sensitive());
+        assert!(sampler_headers["x-openai-fedramp"].is_sensitive());
         assert!(sampler_headers.get("x-xai-token-auth").is_none());
 
         let catalog = manager.catalog_auth().await.unwrap();

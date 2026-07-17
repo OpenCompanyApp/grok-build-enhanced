@@ -132,6 +132,35 @@ pub(crate) fn build_laziness_debug_line(
     }
 }
 
+/// Build the provider request for the side-channel laziness classifier.
+///
+/// `wire_model` must come from the active sampling configuration, not the ACP
+/// catalog key: Codex catalog entries are provider-qualified for UI identity
+/// (`openai-codex/<slug>`), while the backend accepts only the raw model slug.
+pub(crate) fn build_laziness_classifier_request(
+    items: Vec<ConversationItem>,
+    wire_model: &str,
+    session_id: &str,
+) -> ConversationRequest {
+    ConversationRequest {
+        items,
+        tools: vec![],
+        hosted_tools: vec![],
+        tool_choice: None,
+        model: Some(wire_model.to_owned()),
+        // Provider-neutral side calls must not force a sampling temperature.
+        // Codex reasoning models may reject or constrain this parameter.
+        temperature: None,
+        max_output_tokens: Some(LAZINESS_MAX_OUTPUT_TOKENS),
+        reasoning_effort: None,
+        x_grok_conv_id: Some(session_id.to_owned()),
+        x_grok_req_id: Some(format!("{LAZINESS_REQ_ID_PREFIX}{}", uuid::Uuid::new_v4())),
+        x_grok_session_id: Some(session_id.to_owned()),
+        x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
+        ..ConversationRequest::default()
+    }
+}
+
 /// Pure helper — given a parsed classifier output and the production
 /// min-confidence threshold, classify what production WOULD have done.
 /// Extracted so the JSON-line shape can be unit-tested without a
@@ -540,29 +569,14 @@ impl SessionActor {
         // Telemetry attribution headers — match `run_memory_flush`
         // so backend trace correlation can distinguish "classifier
         // fired in session X" from background traffic.
-        let session_id_str = self.session_info.id.to_string();
-        let request = ConversationRequest {
-            items,
-            tools: vec![],
-            hosted_tools: vec![],
-            tool_choice: None,
-            model: Some(model_id.clone()),
-            temperature: Some(0.0),
-            max_output_tokens: Some(LAZINESS_MAX_OUTPUT_TOKENS),
-            // Don't pass `reasoning_effort` — `grok-4.5` (and
-            // other tool-flavoured Grok variants) reject the field at
-            // the proxy with `400 Bad Request: Model does not support
-            // parameter reasoningEffort`. Omitting it lets each model
-            // apply its own default. The classifier task is one short
-            // JSON object — even on reasoning-capable models the
-            // default suffices; no need to force it off.
-            reasoning_effort: None,
-            x_grok_conv_id: Some(session_id_str.clone()),
-            x_grok_req_id: Some(format!("{LAZINESS_REQ_ID_PREFIX}{}", uuid::Uuid::new_v4())),
-            x_grok_session_id: Some(session_id_str),
-            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
-            ..ConversationRequest::default()
-        };
+        let active_sampling_config = self.chat_state_handle.get_sampling_config().await;
+        let fallback_sampling_config = self.models_manager.sampling_config();
+        let wire_model = active_sampling_config
+            .as_ref()
+            .map(|config| config.model.as_str())
+            .unwrap_or(fallback_sampling_config.model.as_str());
+        let request =
+            build_laziness_classifier_request(items, wire_model, &self.session_info.id.to_string());
 
         // Invisibility-critical: build a fresh `SamplingClient` via
         // `prepare_chat_completion` and call `conversation_collect`

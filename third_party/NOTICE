@@ -1,9 +1,10 @@
-Third-party notices — vendored crates under third_party/
-========================================================
+Third-party notices — vendored source and data
+===============================================
 
-This tree includes the following upstream projects, vendored in-source.
-Full license texts are next to each crate. Local modifications (if any) are
-documented in each crate's Cargo.toml header.
+This tree includes the following upstream projects, vendored in-source. Full
+license texts are next to each project. Most live under third_party/; the Warp
+theme corpus lives below its consuming crate so Cargo package archives remain
+self-contained.
 
 --------------------------------------------------------------------------------
 mermaid-to-svg
@@ -49,7 +50,22 @@ Version:    0.0.3
 crates.io:  https://crates.io/crates/ordered_hashmap/0.0.3
 
 --------------------------------------------------------------------------------
-End of notices for vendored third_party/ crates.
+warpdotdev/themes
+--------------------------------------------------------------------------------
+Path:       crates/codegen/xai-grok-pager-render/assets/warp-themes/
+License:    Apache License 2.0, with MIT-derived individual themes noted below
+License file:
+  crates/codegen/xai-grok-pager-render/assets/warp-themes/LICENSE
+Upstream:   https://github.com/warpdotdev/themes
+Revision:   b385044250f1ed3c9379ab34a8fe82f02fdffaa4
+
+The vendored YAML comments preserve MIT provenance for the Cherry theme
+(Copyright (c) 2020 Nauval Rizky) and the three Soft Tactile themes (authors
+Jelena and Bob at CyberLink Security). Full attribution and MIT terms are in
+THIRD-PARTY-NOTICES and the binary product notice.
+
+--------------------------------------------------------------------------------
+End of notices for vendored source and data.
 
 Full product notices (all crates.io / git dependencies shipped with the Grok
 CLI, including MPL packages, Apache NOTICE files, libgit2 COPYING, and

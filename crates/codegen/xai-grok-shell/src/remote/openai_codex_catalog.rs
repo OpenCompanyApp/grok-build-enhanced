@@ -37,6 +37,12 @@ const OPENAI_FEDRAMP: HeaderName = HeaderName::from_static("x-openai-fedramp");
 const ORIGINATOR: HeaderName = HeaderName::from_static("originator");
 const CODEX_VERSION: HeaderName = HeaderName::from_static("version");
 
+fn sensitive_fedramp_header() -> HeaderValue {
+    let mut value = HeaderValue::from_static("true");
+    value.set_sensitive(true);
+    value
+}
+
 /// A failure while obtaining request authentication.
 ///
 /// This error intentionally cannot carry provider error strings: token and
@@ -383,7 +389,7 @@ impl CodexCatalogClient {
             .header(ORIGINATOR, self.config.originator.clone())
             .header(CODEX_VERSION, client_version);
         if auth.fedramp {
-            request = request.header(OPENAI_FEDRAMP, HeaderValue::from_static("true"));
+            request = request.header(OPENAI_FEDRAMP, sensitive_fedramp_header());
         }
         if let Some(etag) = cached.as_ref().and_then(|cached| cached.etag.as_deref())
             && let Ok(value) = HeaderValue::from_str(etag)
@@ -1061,6 +1067,7 @@ mod tests {
 
     #[tokio::test]
     async fn sends_exact_scoped_headers_and_parses_rich_catalog() {
+        assert!(sensitive_fedramp_header().is_sensitive());
         let (base_url, state) =
             spawn_server(vec![reply(StatusCode::OK, rich_body("gpt-codex"))]).await;
         let cache = tempfile::tempdir().unwrap();

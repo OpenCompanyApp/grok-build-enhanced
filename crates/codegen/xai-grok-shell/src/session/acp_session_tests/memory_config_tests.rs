@@ -111,6 +111,7 @@ async fn create_test_actor_with_memory(
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
             stream_tool_calls: None,
+            service_tier: None,
         },
         Box::new(xai_chat_state::NullChatPersistence),
         chat_event_tx,
@@ -162,6 +163,7 @@ async fn create_test_actor_with_memory(
             context_window_override: None,
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+            auto_compact_retry_not_before_unix_secs: std::sync::atomic::AtomicU64::new(0),
             previous_model: std::cell::Cell::new(None),
             compaction_mode: xai_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
@@ -176,7 +178,7 @@ async fn create_test_actor_with_memory(
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
             storage: std::cell::RefCell::new(memory_storage),
             save_on_end: true,
-            backend_params: None,
+            backend_params: std::cell::RefCell::new(None),
             initial_injection_config: memory_initial_injection_config,
             context_injected: std::sync::atomic::AtomicBool::new(false),
             flush_count: std::sync::atomic::AtomicU64::new(0),
@@ -514,7 +516,7 @@ async fn create_injection_ready_actor(
     drop(idx);
     actor.memory.storage = std::cell::RefCell::new(Some(storage));
     std::mem::forget(tmp);
-    actor.memory.backend_params = Some(crate::session::memory::MemoryBackendParams {
+    *actor.memory.backend_params.borrow_mut() = Some(crate::session::memory::MemoryBackendParams {
         session_id: "test-memory".to_owned(),
         embed_config: None,
         embed_base_url: "http://localhost".to_owned(),

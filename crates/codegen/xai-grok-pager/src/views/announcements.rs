@@ -90,10 +90,11 @@ pub(crate) fn render_cta_button(
     if disp_w == 0 {
         return None;
     }
+    let cta_style = Style::default().fg(theme.warning).bg(theme.bg_base);
     let cta_style = if hovered {
-        Style::default().fg(theme.warning).bg(theme.bg_hover)
+        cta_style.patch(theme.hovered_row_style())
     } else {
-        Style::default().fg(theme.warning).bg(theme.bg_base)
+        cta_style
     };
     buf.set_span(x, y, &Span::styled(disp, cta_style), disp_w as u16);
     // Reservation-first: the button is already painted; the dim caption follows

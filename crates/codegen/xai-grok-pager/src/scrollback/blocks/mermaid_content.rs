@@ -19,7 +19,9 @@ use xai_grok_markdown::MarkdownRenderView;
 
 use crate::appearance::RenderMermaid;
 use crate::scrollback::types::{BlockLine, BlockOutput};
+#[cfg(test)]
 use crate::theme::ThemeKind;
+use crate::theme::{ResolvedTheme, ThemeFingerprint, ThemePolarity};
 
 /// Fence info string identifying a Mermaid diagram.
 pub const MERMAID_INFO: &str = "mermaid";
@@ -141,16 +143,39 @@ pub fn mermaid_block_ranges(view: &MarkdownRenderView) -> Vec<Range<usize>> {
         .collect()
 }
 
-/// Whether a theme renders diagrams on a dark surface.
-///
-/// `GrokDay` is the only light theme; every other concrete theme (and the
-/// `GrokNight` default that `Auto` resolves to before it reaches the cache) is
-/// dark. The render worker maps this to `xai_grok_mermaid::MermaidTheme`; it
-/// lives here (rather than referencing the engine crate) so the
-/// always-compiled detection module stays independent of the optional
-/// `mermaid` feature.
+/// Stable visual identity supplied to [`MermaidCacheKey::derive`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MermaidThemeIdentity {
+    pub fingerprint: ThemeFingerprint,
+    pub polarity: ThemePolarity,
+}
+
+impl From<&ResolvedTheme> for MermaidThemeIdentity {
+    fn from(theme: &ResolvedTheme) -> Self {
+        Self {
+            fingerprint: theme.fingerprint,
+            polarity: theme.polarity,
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<ThemeKind> for MermaidThemeIdentity {
+    fn from(theme: ThemeKind) -> Self {
+        Self {
+            fingerprint: ThemeFingerprint([theme as u8; 16]),
+            polarity: if matches!(theme, ThemeKind::GrokDay) {
+                ThemePolarity::Light
+            } else {
+                ThemePolarity::Dark
+            },
+        }
+    }
+}
+
+#[cfg(test)]
 pub fn theme_is_dark(theme: ThemeKind) -> bool {
-    !matches!(theme, ThemeKind::GrokDay)
+    MermaidThemeIdentity::from(theme).polarity.is_dark()
 }
 
 /// Cache key for a rendered diagram: content hash + theme + quality tier +
@@ -163,8 +188,10 @@ pub fn theme_is_dark(theme: ThemeKind) -> bool {
 pub struct MermaidCacheKey {
     /// `blake3` hash of the diagram source.
     pub source_hash: [u8; 32],
-    /// Active theme (its surface color is baked into the rendered diagram).
-    pub theme: ThemeKind,
+    /// Stable fingerprint of the resolved theme and Warp source content.
+    pub theme_fingerprint: ThemeFingerprint,
+    /// Explicit polarity used by Mermaid's light/dark renderer.
+    pub polarity: ThemePolarity,
     /// Target render width quantized to [`MERMAID_WIDTH_BUCKET`] columns for
     /// [`MermaidRenderQuality::Terminal`]; [`OPEN_QUALITY_WIDTH_BUCKET`] for
     /// [`MermaidRenderQuality::Open`].
@@ -179,17 +206,19 @@ impl MermaidCacheKey {
     /// and quality tier.
     pub fn derive(
         source: &str,
-        theme: ThemeKind,
+        theme: impl Into<MermaidThemeIdentity>,
         target_width_cols: u16,
         quality: MermaidRenderQuality,
     ) -> Self {
+        let theme = theme.into();
         let width_bucket = match quality {
             MermaidRenderQuality::Terminal => width_bucket(target_width_cols),
             MermaidRenderQuality::Open => OPEN_QUALITY_WIDTH_BUCKET,
         };
         Self {
             source_hash: hash_source(source),
-            theme,
+            theme_fingerprint: theme.fingerprint,
+            polarity: theme.polarity,
             width_bucket,
             quality,
         }
@@ -210,10 +239,15 @@ impl MermaidCacheKey {
             MermaidRenderQuality::Terminal => "t",
             MermaidRenderQuality::Open => "o",
         };
+        name.push('-');
+        for byte in self.theme_fingerprint.0 {
+            let _ = write!(name, "{byte:02x}");
+        }
+        let polarity_tag = if self.polarity.is_dark() { "d" } else { "l" };
         let _ = write!(
             name,
-            "-{}-{}-{}-r{RENDER_REVISION}.png",
-            self.theme as u8, self.width_bucket, quality_tag
+            "-{polarity_tag}-{}-{}-r{RENDER_REVISION}.png",
+            self.width_bucket, quality_tag
         );
         name
     }

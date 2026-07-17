@@ -213,17 +213,20 @@ fn format_hypothetical_api_cost(
     };
 
     lines.push(format!(
-        "Actual session tokens: {} uncached input + {} cached input + {} output",
+        "Observed session tokens: {} uncached input + {} cached input + {} output",
         format_token_count(estimate.uncached_input_tokens),
         format_token_count(estimate.cached_input_tokens),
         format_token_count(estimate.output_tokens),
     ));
     match estimate.estimated_usd {
+        Some(cost) if estimate.usage_incomplete => {
+            lines.push(format!("Observed API-cost lower bound: ${cost:.6}"));
+            lines.push(
+                "Incomplete ledger: unobserved auxiliary and compaction model calls are excluded."
+                    .to_owned(),
+            );
+        }
         Some(cost) => lines.push(format!("Standard API comparison: ${cost:.6}")),
-        None if estimate.usage_incomplete => lines.push(
-            "Unavailable: the session token ledger may be incomplete; no cost total is shown."
-                .to_owned(),
-        ),
         None if !estimate.unpriced_models.is_empty() => lines.push(format!(
             "Unavailable: no published API rate is mapped for {}.",
             estimate.unpriced_models.join(", ")
@@ -546,6 +549,25 @@ mod tests {
         assert!(summary.contains("Standard API comparison: $6.200000"));
         assert!(summary.contains("Pricing basis gpt-5.6-sol"));
         assert!(!summary.contains("Subscription spend: $"));
+    }
+
+    #[test]
+    fn codex_summary_shows_incomplete_observed_cost_as_lower_bound() {
+        let estimate = xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate {
+            input_tokens: 1_000,
+            cached_input_tokens: 500,
+            uncached_input_tokens: 500,
+            output_tokens: 100,
+            estimated_usd: Some(0.00575),
+            lines: Vec::new(),
+            unpriced_models: Vec::new(),
+            usage_incomplete: true,
+            pricing_verified_at: "2026-07-16".to_owned(),
+        };
+        let summary = format_codex_usage_summary(&codex_usage(), Some(&estimate));
+        assert!(summary.contains("Observed API-cost lower bound: $0.005750"));
+        assert!(summary.contains("unobserved auxiliary and compaction model calls are excluded"));
+        assert!(!summary.contains("Standard API comparison: $"));
     }
 
     #[test]

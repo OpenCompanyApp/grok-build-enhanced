@@ -846,6 +846,45 @@ fn every_setting_has_action_for_reset_arm() {
         );
     }
 }
+/// Theme settings are runtime-backed dynamic enums, so reset payloads are
+/// owned strings rather than the static strings used by `SettingKind::Enum`.
+/// Pin the exact mapping so a future enum-kind migration cannot silently make
+/// the settings modal's `d` reset key a no-op again.
+#[test]
+fn theme_dynamic_enum_defaults_have_string_reset_actions() {
+    use crate::settings::SettingValue;
+
+    let cases = [
+        (
+            "theme",
+            SettingValue::String("groknight".to_owned()),
+            "groknight",
+        ),
+        (
+            "auto_dark_theme",
+            SettingValue::String("groknight".to_owned()),
+            "groknight",
+        ),
+        (
+            "auto_light_theme",
+            SettingValue::String("grokday".to_owned()),
+            "grokday",
+        ),
+    ];
+
+    for (key, default, expected) in cases {
+        let action = action_for_reset(key, &default)
+            .unwrap_or_else(|| panic!("dynamic theme setting `{key}` has no reset action"));
+        match (key, action) {
+            ("theme", Action::SetTheme(value))
+            | ("auto_dark_theme", Action::SetAutoDarkTheme(value))
+            | ("auto_light_theme", Action::SetAutoLightTheme(value)) => {
+                assert_eq!(value, expected, "wrong reset payload for `{key}`");
+            }
+            (_, action) => panic!("wrong reset action for `{key}`: {action:?}"),
+        }
+    }
+}
 /// Every setting whose setter emits `Effect::PersistSetting` MUST have an
 /// `apply_setting_rollback` arm: a failed disk write rolls back through it,
 /// and a missing arm silently diverges in-memory state from `config.toml`.
@@ -2667,10 +2706,9 @@ fn dispatch_cycle_mode_refreshes_open_modal_snapshot() {
 /// `app.current_ui.theme`, fires a toast, and toggles AUTO_MODE
 /// off (kind is concrete).
 ///
-/// Note: we persist `grokday` (a non-truecolor theme) here
-/// because `Effect::PersistSetting`'s payload is `&'static str`
-/// from the registry's canonical table — the persisted CANONICAL
-/// is what we're asserting, NOT the live theme cache (which
+/// Note: we persist `grokday` (a non-truecolor theme) here. The owned
+/// dynamic-enum canonical is what we're asserting, NOT the live theme cache
+/// (which
 /// `clamp_to_terminal` might fold to GrokNight in non-truecolor
 /// test environments). Persist + canonical contract is the test
 /// invariant; the cache contract is exercised separately by the
@@ -2691,8 +2729,11 @@ fn set_theme_emits_persist_setting_with_correct_payload() {
                 rollback_value,
             } => {
                 assert_eq!(*key, "theme");
-                assert_eq!(*value, SettingValue::Enum("grokday"));
-                assert_eq!(*rollback_value, SettingValue::Enum("groknight"));
+                assert_eq!(value, &SettingValue::String("grokday".to_owned()));
+                assert_eq!(
+                    rollback_value,
+                    &SettingValue::String("groknight".to_owned())
+                );
             }
             other => panic!("expected PersistSetting, got {other:?}"),
         }
@@ -2723,8 +2764,11 @@ fn set_auto_dark_theme_emits_persist_setting_with_correct_payload() {
                 rollback_value,
             } => {
                 assert_eq!(*key, "auto_dark_theme");
-                assert_eq!(*value, SettingValue::Enum("grokday"));
-                assert_eq!(*rollback_value, SettingValue::Enum("groknight"));
+                assert_eq!(value, &SettingValue::String("grokday".to_owned()));
+                assert_eq!(
+                    rollback_value,
+                    &SettingValue::String("groknight".to_owned())
+                );
             }
             other => panic!("expected PersistSetting, got {other:?}"),
         }
@@ -2745,8 +2789,8 @@ fn set_auto_light_theme_emits_persist_setting_with_correct_payload() {
                 rollback_value,
             } => {
                 assert_eq!(*key, "auto_light_theme");
-                assert_eq!(*value, SettingValue::Enum("groknight"));
-                assert_eq!(*rollback_value, SettingValue::Enum("grokday"));
+                assert_eq!(value, &SettingValue::String("groknight".to_owned()));
+                assert_eq!(rollback_value, &SettingValue::String("grokday".to_owned()));
             }
             other => panic!("expected PersistSetting, got {other:?}"),
         }
@@ -3037,7 +3081,7 @@ fn rollback_theme_reverts_current_ui_and_cache() {
         let _ = dispatch(
             Action::TaskComplete(TaskResult::SettingPersistFailed {
                 key: "theme",
-                rollback_value: SettingValue::Enum("groknight"),
+                rollback_value: SettingValue::String("groknight".to_owned()),
                 error: "disk full".into(),
             }),
             &mut app,
@@ -3064,7 +3108,7 @@ fn rollback_auto_dark_theme_reverts_current_ui() {
         let _ = dispatch(
             Action::TaskComplete(TaskResult::SettingPersistFailed {
                 key: "auto_dark_theme",
-                rollback_value: SettingValue::Enum("groknight"),
+                rollback_value: SettingValue::String("groknight".to_owned()),
                 error: "disk full".into(),
             }),
             &mut app,
@@ -3085,7 +3129,7 @@ fn rollback_auto_light_theme_reverts_current_ui() {
         let _ = dispatch(
             Action::TaskComplete(TaskResult::SettingPersistFailed {
                 key: "auto_light_theme",
-                rollback_value: SettingValue::Enum("grokday"),
+                rollback_value: SettingValue::String("grokday".to_owned()),
                 error: "disk full".into(),
             }),
             &mut app,
@@ -3110,7 +3154,7 @@ fn rollback_auto_dark_theme_with_auto_value_clears_to_none() {
         let _ = dispatch(
             Action::TaskComplete(TaskResult::SettingPersistFailed {
                 key: "auto_dark_theme",
-                rollback_value: SettingValue::Enum("auto"),
+                rollback_value: SettingValue::String("auto".to_owned()),
                 error: "disk full".into(),
             }),
             &mut app,
@@ -3135,7 +3179,7 @@ fn rollback_auto_light_theme_with_auto_value_clears_to_none() {
         let _ = dispatch(
             Action::TaskComplete(TaskResult::SettingPersistFailed {
                 key: "auto_light_theme",
-                rollback_value: SettingValue::Enum("auto"),
+                rollback_value: SettingValue::String("auto".to_owned()),
                 error: "disk full".into(),
             }),
             &mut app,

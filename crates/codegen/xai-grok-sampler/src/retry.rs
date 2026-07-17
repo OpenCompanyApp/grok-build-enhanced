@@ -535,6 +535,33 @@ mod tests {
     }
 
     #[test]
+    fn codex_usage_limit_stream_error_is_fatal_on_the_first_failure() {
+        let err = SamplingError::StreamError {
+            error_type: "usage_limit_reached".into(),
+            message: "ChatGPT Codex stream rejected (usage limit reached)".into(),
+        };
+        assert!(matches!(
+            classify_error(&err, 0, 15, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::Fatal(SamplingError::StreamError { .. })
+        ));
+    }
+
+    #[test]
+    fn codex_usage_limit_http_hint_is_fatal_on_the_first_failure() {
+        let err = SamplingError::Api {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "ChatGPT Codex request rejected (usage limit reached)".into(),
+            model_metadata: None,
+            retry_after_secs: Some(60),
+            should_retry: Some(false),
+        };
+        assert!(matches!(
+            classify_error(&err, 0, 15, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::Fatal(SamplingError::Api { .. })
+        ));
+    }
+
+    #[test]
     fn classify_unauthorized_emits_to_session() {
         let err = api_err(StatusCode::UNAUTHORIZED, "no");
         match classify_error(&err, 0, 5, RATE_LIMIT_RETRY_THRESHOLD) {

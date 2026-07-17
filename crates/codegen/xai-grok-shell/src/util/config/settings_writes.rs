@@ -1,6 +1,147 @@
 use super::persist::update_config;
 use anyhow::Result;
 
+fn apply_codex_service_tier_to_document(
+    doc: &mut toml_edit::DocumentMut,
+    service_tier: &str,
+) -> Result<()> {
+    match doc.get("features") {
+        None | Some(toml_edit::Item::None) => {}
+        Some(toml_edit::Item::Table(_))
+        | Some(toml_edit::Item::Value(toml_edit::Value::InlineTable(_))) => {}
+        Some(_) => anyhow::bail!(
+            "refusing to replace non-table `features` while saving Codex service tier"
+        ),
+    }
+
+    doc["service_tier"] = toml_edit::value(service_tier);
+    if doc.get("features").is_none() {
+        doc["features"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    match doc
+        .get_mut("features")
+        .expect("features was either retained or initialized above")
+    {
+        toml_edit::Item::Table(features) => {
+            features["fast_mode"] = toml_edit::value(true);
+        }
+        toml_edit::Item::Value(toml_edit::Value::InlineTable(features)) => {
+            features.insert("fast_mode", toml_edit::Value::from(true));
+        }
+        _ => unreachable!("features shape was validated before mutation"),
+    }
+    Ok(())
+}
+
+/// Persist the user-level Codex service-tier preference without round-tripping
+/// or dropping unrelated config. The caller passes the public config spelling
+/// (`fast` or `default`), never the wire alias `priority`.
+pub async fn set_codex_service_tier(service_tier: &str) -> Result<()> {
+    if !matches!(service_tier, "fast" | "default") {
+        anyhow::bail!("unsupported Codex service tier selection: {service_tier}");
+    }
+
+    let _guard = super::persist::lock_config_writes().await;
+    let path = super::mcp::user_config_path();
+    let existing = super::persist::read_to_string_or_empty(&path)?;
+    let mut doc = if existing.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        existing
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "refusing to overwrite unparseable {}: {error}",
+                    path.display()
+                )
+            })?
+    };
+    apply_codex_service_tier_to_document(&mut doc, service_tier)?;
+    super::persist::atomic_write_string(&path, &doc.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod codex_service_tier_tests {
+    use super::*;
+
+    #[test]
+    fn codex_service_tier_edit_preserves_unrelated_toml() {
+        let mut doc = r#"
+# This comment and unrelated settings must survive /fast writes.
+custom_value = "keep-me"
+
+[features]
+web_search = true
+
+[ui]
+theme = "tokyonight"
+"#
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+
+        apply_codex_service_tier_to_document(&mut doc, "fast").unwrap();
+
+        assert_eq!(doc["service_tier"].as_str(), Some("fast"));
+        assert_eq!(doc["features"]["fast_mode"].as_bool(), Some(true));
+        assert_eq!(doc["features"]["web_search"].as_bool(), Some(true));
+        assert_eq!(doc["ui"]["theme"].as_str(), Some("tokyonight"));
+        assert_eq!(doc["custom_value"].as_str(), Some("keep-me"));
+        assert!(
+            doc.to_string()
+                .contains("# This comment and unrelated settings")
+        );
+    }
+
+    #[test]
+    fn codex_standard_selection_is_persisted_as_an_explicit_sentinel() {
+        let mut doc = toml_edit::DocumentMut::new();
+        apply_codex_service_tier_to_document(&mut doc, "default").unwrap();
+
+        assert_eq!(doc["service_tier"].as_str(), Some("default"));
+        assert_eq!(doc["features"]["fast_mode"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn codex_service_tier_edit_preserves_inline_features_table() {
+        let mut doc = r#"features = { telemetry = false, existing = "keep" }"#
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+
+        apply_codex_service_tier_to_document(&mut doc, "fast").unwrap();
+
+        let features = doc["features"]
+            .as_inline_table()
+            .expect("the writer must preserve the inline-table representation");
+        assert_eq!(
+            features.get("telemetry").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            features.get("existing").and_then(|v| v.as_str()),
+            Some("keep")
+        );
+        assert_eq!(
+            features.get("fast_mode").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn codex_service_tier_edit_refuses_non_table_features_without_mutation() {
+        let mut doc = "features = false\nunrelated = \"keep\"\n"
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        let before = doc.to_string();
+
+        let error = apply_codex_service_tier_to_document(&mut doc, "fast").unwrap_err();
+
+        assert!(error.to_string().contains("non-table `features`"));
+        assert_eq!(doc.to_string(), before);
+        assert!(doc.get("service_tier").is_none());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Settings helpers — typed disk-write wrappers for each setting.
 // All route through `update_config` → `merge_section` → `save_config`.

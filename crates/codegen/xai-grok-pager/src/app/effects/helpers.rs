@@ -639,6 +639,15 @@ pub(super) async fn send_logout(tx: &AcpAgentTx) {
         tracing::warn!(error = % e, "logout failed");
     }
 }
+/// Extract the optional xAI auth metadata from an extension response.
+/// `{"meta": null}` is the shell's provider-scoped "not applicable" result,
+/// not an `AuthMeta` payload and therefore normalizes to `None`.
+fn extract_auth_meta(response: &str) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(response)
+        .ok()
+        .and_then(|value| value.get("meta").cloned())
+        .filter(|meta| !meta.is_null())
+}
 pub(super) async fn send_check_subscription(
     tx: &AcpAgentTx,
     verify: Option<u64>,
@@ -651,9 +660,7 @@ pub(super) async fn send_check_subscription(
     );
     match acp_send(req, tx).await {
         Ok(resp) => {
-            let meta = serde_json::from_str::<serde_json::Value>(resp.0.get())
-                .ok()
-                .and_then(|v| v.get("meta").cloned());
+            let meta = extract_auth_meta(resp.0.get());
             TaskResult::CheckSubscriptionComplete {
                 verify,
                 meta,
@@ -689,9 +696,7 @@ pub(super) async fn send_credit_limit_recheck(
     );
     match acp_send(req, tx).await {
         Ok(resp) => {
-            let meta = serde_json::from_str::<serde_json::Value>(resp.0.get())
-                .ok()
-                .and_then(|v| v.get("meta").cloned());
+            let meta = extract_auth_meta(resp.0.get());
             TaskResult::CreditLimitRecheckComplete {
                 agent_id,
                 meta,
@@ -832,26 +837,26 @@ pub(crate) async fn persist_setting(
                 .map_err(|e| e.to_string())
         }
         "theme" => {
-            let SettingValue::Enum(s) = value else {
-                return Err(kind_mismatch("theme", "Enum", &value));
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("theme", "String", &value));
             };
-            xai_grok_shell::util::config::set_theme(s.to_string())
+            xai_grok_shell::util::config::set_theme(s)
                 .await
                 .map_err(|e| e.to_string())
         }
         "auto_dark_theme" => {
-            let SettingValue::Enum(s) = value else {
-                return Err(kind_mismatch("auto_dark_theme", "Enum", &value));
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("auto_dark_theme", "String", &value));
             };
-            xai_grok_shell::util::config::set_auto_dark_theme(s.to_string())
+            xai_grok_shell::util::config::set_auto_dark_theme(s)
                 .await
                 .map_err(|e| e.to_string())
         }
         "auto_light_theme" => {
-            let SettingValue::Enum(s) = value else {
-                return Err(kind_mismatch("auto_light_theme", "Enum", &value));
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("auto_light_theme", "String", &value));
             };
-            xai_grok_shell::util::config::set_auto_light_theme(s.to_string())
+            xai_grok_shell::util::config::set_auto_light_theme(s)
                 .await
                 .map_err(|e| e.to_string())
         }
@@ -1389,5 +1394,25 @@ pub(super) fn unregister_active_session_best_effort_in(
             )
         }
         Err(e) => tracing::warn!(? e, "Failed to unregister active session"),
+    }
+}
+
+#[cfg(test)]
+mod subscription_meta_tests {
+    use super::extract_auth_meta;
+
+    #[test]
+    fn null_or_missing_auth_meta_is_absent() {
+        assert_eq!(extract_auth_meta(r#"{"meta":null}"#), None);
+        assert_eq!(extract_auth_meta(r#"{}"#), None);
+        assert_eq!(extract_auth_meta("not json"), None);
+    }
+
+    #[test]
+    fn object_auth_meta_is_preserved() {
+        assert_eq!(
+            extract_auth_meta(r#"{"meta":{"subscription_tier":"Free"}}"#),
+            Some(serde_json::json!({"subscription_tier": "Free"}))
+        );
     }
 }

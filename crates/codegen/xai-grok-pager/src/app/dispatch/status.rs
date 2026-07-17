@@ -260,11 +260,7 @@ pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
         .map(|agent| {
             (
                 agent.session.session_id.clone(),
-                agent
-                    .session
-                    .models
-                    .current_model_id_str()
-                    .is_some_and(|model| model.starts_with("openai-codex/")),
+                agent.session.models.current_model_is_openai_codex(),
             )
         })
         .unwrap_or((None, false));

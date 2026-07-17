@@ -238,7 +238,10 @@ impl SessionActor {
         // ~25–40 words, and `clean_recap_text` caps it at a generous
         // RECAP_MAX_CHARS safety net, so an explicit token cap isn't needed.
         let started_at = chrono::Utc::now().to_rfc3339();
-        let x_grok_conv_id = format!("recap-{}", uuid::Uuid::new_v4());
+        // The recap reuses the session's existing prompt prefix. Keep the
+        // conversation identity stable so Codex can address the same prompt
+        // cache entry; the request ID below remains unique for diagnostics.
+        let x_grok_conv_id = self.session_info.id.to_string();
         let x_grok_req_id = format!("xai-recap-{}", uuid::Uuid::new_v4());
         // Clone the exact request items for the on-disk artifact (recap never
         // mutates conversation state, so this file is the only durable record).
@@ -492,7 +495,10 @@ impl SessionActor {
         cwd: &str,
         model_override: Option<&str>,
     ) -> Option<String> {
-        let sampling_client = self.prepare_chat_completion(false).await.ok()?;
+        let (sampling_client, model) = self
+            .prepare_aux_sampling_client(model_override, "shell command suggestion")
+            .await
+            .ok()?;
 
         let system = "You are a shell command autocomplete engine. \
             Given a partial command, output ONLY the completed command. \
@@ -505,17 +511,17 @@ impl SessionActor {
             ConversationItem::user(user_msg),
         ];
 
-        let model = match model_override {
-            Some(m) => m.to_owned(),
-            None => "grok-build".to_owned(),
-        };
-
+        let session_id = self.session_info.id.to_string();
         let request = ConversationRequest {
             items,
             tools: vec![],
             model: Some(model),
             temperature: Some(0.1),
             max_output_tokens: Some(50),
+            x_grok_conv_id: Some(session_id.clone()),
+            x_grok_req_id: Some(format!("xai-ai-suggest-{}", uuid::Uuid::new_v4())),
+            x_grok_session_id: Some(session_id),
+            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
             ..Default::default()
         };
 
@@ -577,10 +583,10 @@ impl SessionActor {
     /// (config.toml) > remote `prompt_suggestion_model` (remote settings) >
     /// [`prompt_suggest::DEFAULT_SUGGEST_MODEL`] (`grok-build-0.1`). Every
     /// tier except env is catalog-guarded against this shell's own model
-    /// catalog — when the effective model is not sampleable here (e.g.
-    /// `grok-build-0.1` for OAuth users) the request is **skipped
-    /// entirely** instead of fired doomed. The session model is never used:
-    /// a per-turn background call must stay on the small model.
+    /// catalog. A resolved helper model uses its own provider endpoint and
+    /// credentials. If the helper model is unavailable, both client and model
+    /// safely fall back to the active session route instead of sending an xAI
+    /// slug to a Codex endpoint (or vice versa).
     /// Temperature, max_output_tokens, and
     /// reasoning_effort are left unset — mirrors [`Self::handle_recap`]: the
     /// proxy may inject provider defaults, a small token cap silently empties
@@ -596,16 +602,16 @@ impl SessionActor {
         use crate::session::helpers::prompt_suggest;
 
         let pin = self.models_manager.prompt_suggest_model_pin();
-        let Some(model) = prompt_suggest::effective_suggest_model(&pin, model_override, |m| {
+        let requested_model = prompt_suggest::effective_suggest_model(&pin, model_override, |m| {
             self.models_manager.model_in_catalog(m)
-        }) else {
+        });
+        if requested_model.is_none() {
             tracing::debug!(
                 pin = ?pin,
                 client_hint = ?model_override,
-                "prompt suggest: effective model not in catalog; skipping request"
+                "prompt suggest: effective helper model not in catalog; using session model"
             );
-            return None;
-        };
+        }
 
         let conversation = self.chat_state_handle.get_conversation().await;
         let Some(transcript) = prompt_suggest::build_transcript(&conversation) else {
@@ -616,8 +622,11 @@ impl SessionActor {
             return None;
         };
 
-        let sampling_client = match self.prepare_chat_completion(false).await {
-            Ok(c) => c,
+        let (sampling_client, model) = match self
+            .prepare_aux_sampling_client(requested_model.as_deref(), "prompt suggestion")
+            .await
+        {
+            Ok(route) => route,
             Err(e) => {
                 tracing::debug!(error = %e, "prompt suggest: sampling client unavailable");
                 return None;
@@ -644,14 +653,17 @@ impl SessionActor {
             )),
         ];
 
+        let session_id = self.session_info.id.to_string();
         let request = ConversationRequest {
             items,
             tools: vec![],
             model: Some(model),
             temperature: None,
-            x_grok_conv_id: Some(format!("promptsuggest-{}", uuid::Uuid::new_v4())),
+            // Keep the conversation/session identity stable so Responses
+            // providers can reuse the prompt cache across suggestion calls.
+            x_grok_conv_id: Some(session_id.clone()),
             x_grok_req_id: Some(format!("xai-promptsuggest-{}", uuid::Uuid::new_v4())),
-            x_grok_session_id: Some(self.session_info.id.to_string()),
+            x_grok_session_id: Some(session_id),
             x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
             ..Default::default()
         };

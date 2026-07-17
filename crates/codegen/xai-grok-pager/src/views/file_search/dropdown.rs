@@ -147,11 +147,21 @@ fn render_fuzzy_item(
         Modifier::empty()
     };
 
-    // Fill the row with background.
+    // Fill the row with background or a terminal-native modifier overlay.
+    let mut row_style = Style::default().bg(row_bg);
+    if embed.is_none() {
+        row_style = if is_selected {
+            row_style.patch(theme.selected_row_style())
+        } else if is_hovered {
+            row_style.patch(theme.hovered_row_style())
+        } else {
+            row_style
+        };
+    }
     for col in x..x + width {
         if let Some(cell) = buf.cell_mut((col, y)) {
             cell.set_char(' ');
-            cell.set_style(Style::default().bg(row_bg));
+            cell.set_style(row_style);
         }
     }
 

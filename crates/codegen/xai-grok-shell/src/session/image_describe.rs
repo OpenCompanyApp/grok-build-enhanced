@@ -294,6 +294,7 @@ impl ImageDescribeCache {
         &self,
         client: xai_grok_sampler::SamplingClient,
         model: &str,
+        session_id: &str,
         raw_bytes: &[u8],
         mime_type: &str,
         outline: Option<&str>,
@@ -313,8 +314,14 @@ impl ImageDescribeCache {
             base64::engine::general_purpose::STANDARD.encode(raw_bytes)
         );
         let prompt_text = build_describe_prompt(outline, current_query);
-        let description =
-            describe_user_images(client, model, prompt_text, std::slice::from_ref(&url)).await?;
+        let description = describe_user_images(
+            client,
+            model,
+            session_id,
+            prompt_text,
+            std::slice::from_ref(&url),
+        )
+        .await?;
         self.inner.lock().insert(cache_key, description.clone());
         Ok(description)
     }
@@ -430,19 +437,12 @@ pub enum DescribeError {
     #[error("image describe model returned no content")]
     EmptyResponse,
 }
-/// Call the vision model and return its description text.
-///
-/// `image_urls` should be the cached URLs from
-/// [`persist_user_images`] (`uri` if present on the original
-/// [`ImageContent`], otherwise the `data:<mime>;base64,...` URI). The
-/// caller is responsible for outline + prompt assembly so this stays a
-/// pure transport helper.
-pub async fn describe_user_images(
-    client: OaiCompatClient,
+fn build_describe_request(
     model: &str,
+    session_id: &str,
     prompt_text: String,
     image_urls: &[String],
-) -> Result<String, DescribeError> {
+) -> ConversationRequest {
     let mut user_item = ConversationItem::User(UserItem {
         content: vec![ContentPart::Text {
             text: std::sync::Arc::<str>::from(prompt_text),
@@ -457,10 +457,36 @@ pub async fn describe_user_images(
             });
         }
     }
-    let request = ConversationRequest::from_items(vec![user_item])
+    let mut request = ConversationRequest::from_items(vec![user_item])
         .with_model(model)
         .with_temperature(0.2)
         .with_max_output_tokens(4_096);
+    // ChatGPT's Codex Responses endpoint requires the same stable session and
+    // thread identity on auxiliary requests as on the main agent turn. Image
+    // transcription is intentionally a separate request boundary, so leave
+    // the request ID empty while still binding it to the owning session.
+    if !session_id.is_empty() {
+        request.x_grok_conv_id = Some(session_id.to_owned());
+        request.x_grok_session_id = Some(session_id.to_owned());
+    }
+    request
+}
+
+/// Call the vision model and return its description text.
+///
+/// `image_urls` should be the cached URLs from
+/// [`persist_user_images`] (`uri` if present on the original
+/// [`ImageContent`], otherwise the `data:<mime>;base64,...` URI). The
+/// caller is responsible for outline + prompt assembly so this stays a
+/// pure transport helper.
+pub async fn describe_user_images(
+    client: OaiCompatClient,
+    model: &str,
+    session_id: &str,
+    prompt_text: String,
+    image_urls: &[String],
+) -> Result<String, DescribeError> {
+    let request = build_describe_request(model, session_id, prompt_text, image_urls);
     const DESCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
     let response = tokio::time::timeout(DESCRIBE_TIMEOUT, client.conversation_collect(request))
         .await
@@ -541,6 +567,22 @@ mod tests {
         assert!(msg.ends_with("hello") || msg.contains("\n\nhello"));
         let assets = std::fs::read_dir(dir.path().join("assets")).unwrap();
         assert_eq!(assets.count(), 1);
+    }
+
+    #[test]
+    fn describe_request_identity_is_provider_compatible() {
+        let session_id = "session-123";
+        let request = build_describe_request(
+            "vision-model",
+            session_id,
+            "describe this image".to_owned(),
+            &["data:image/png;base64,AA==".to_owned()],
+        );
+
+        assert_eq!(request.x_grok_conv_id.as_deref(), Some(session_id));
+        assert_eq!(request.x_grok_session_id.as_deref(), Some(session_id));
+        assert!(request.x_grok_req_id.is_none());
+        assert_eq!(request.model.as_deref(), Some("vision-model"));
     }
     fn user(text: &str) -> ConversationItem {
         ConversationItem::User(UserItem {

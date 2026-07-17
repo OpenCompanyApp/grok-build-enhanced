@@ -6,7 +6,7 @@ pub const TEST_VERSION_ENV: &str = "GROK_TEST_VERSION";
 
 /// Minimum client compatibility version required by the Sol, Terra, and Luna
 /// entries in the public OpenAI Codex model catalog audited at upstream commit
-/// `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`. Review that source again before
+/// `f737605606c14e3aa59a4c17be80d338f164dff5`. Review that source again before
 /// changing this backend-protocol value; it is not the Grok Build app version.
 pub const OPENAI_CODEX_COMPATIBILITY_VERSION: &str = "0.144.0";
 

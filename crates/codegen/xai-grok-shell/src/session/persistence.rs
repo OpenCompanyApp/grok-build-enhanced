@@ -346,6 +346,9 @@ pub enum PersistenceMsg {
     Signals(SessionSignals),
     /// Persist announcement tracking state (MCP + skill announcement dedup).
     AnnouncementState(crate::session::announcement_state::AnnouncementState),
+    /// Persist provider-qualified lifetime token usage for resume-safe
+    /// informational API-equivalent estimates.
+    SessionUsage(xai_chat_state::UsageLedger),
     /// Persist goal mode orchestration state.
     GoalModeState(crate::session::goal_tracker::GoalOrchestration),
     /// Persist a local feedback entry (user feedback)
@@ -1368,6 +1371,10 @@ pub struct PersistenceHandle {
     /// Explicit flag set only by [`Self::noop`]. Do not treat a closed sender
     /// alone as noop — a real persistence actor may exit and drop its receiver.
     noop: bool,
+    /// A title-generation call may consume Codex tokens outside the chat-state
+    /// ledger. The session marks its estimate incomplete before that call can
+    /// run; existing titled sessions keep this false.
+    unobserved_codex_summary: bool,
 }
 
 impl PersistenceHandle {
@@ -1377,12 +1384,20 @@ impl PersistenceHandle {
     /// (their results are captured by the parent via the oneshot channel).
     pub fn noop() -> Self {
         let (tx, _rx) = mpsc::unbounded_channel();
-        Self { tx, noop: true }
+        Self {
+            tx,
+            noop: true,
+            unobserved_codex_summary: false,
+        }
     }
 
     /// `true` only for handles created via [`Self::noop`].
     pub fn is_noop(&self) -> bool {
         self.noop
+    }
+
+    pub fn has_unobserved_codex_summary(&self) -> bool {
+        self.unobserved_codex_summary
     }
 }
 
@@ -1771,6 +1786,13 @@ impl SessionPersistence {
                         tracing::warn!(?e, "failed to write announcement state");
                     }
                 }
+                PersistenceMsg::SessionUsage(ledger) => {
+                    if let Err(e) =
+                        crate::session::acp_session::persist_session_usage(&self.info, &ledger)
+                    {
+                        tracing::warn!(?e, "failed to write session usage ledger");
+                    }
+                }
                 PersistenceMsg::Feedback(entry) => {
                     if let Err(e) = self.storage.append_feedback(&self.info, &entry).await {
                         tracing::warn!(?e, "failed to write feedback entry");
@@ -2090,6 +2112,7 @@ pub(crate) async fn new(
     let handle = PersistenceHandle {
         tx: tx.clone(),
         noop: false,
+        unobserved_codex_summary: sampling_client.provider().is_openai_codex(),
     };
 
     tokio::task::spawn(async move {
@@ -2162,6 +2185,7 @@ pub async fn new_with_explicit_dir(
     let handle = PersistenceHandle {
         tx: tx.clone(),
         noop: false,
+        unobserved_codex_summary: sampling_client.provider().is_openai_codex(),
     };
 
     tokio::task::spawn(async move {
@@ -2279,6 +2303,7 @@ pub(crate) async fn load(
     let handle = PersistenceHandle {
         tx: tx.clone(),
         noop: false,
+        unobserved_codex_summary: !has_title && sampling_client.provider().is_openai_codex(),
     };
     let summary_session_id = loaded_info.id.to_string();
     tokio::task::spawn(async move {
@@ -2366,6 +2391,7 @@ pub(crate) async fn load_light(
     let handle = PersistenceHandle {
         tx: tx.clone(),
         noop: false,
+        unobserved_codex_summary: !has_title && sampling_client.provider().is_openai_codex(),
     };
     let summary_session_id = loaded_info.id.to_string();
     tokio::task::spawn(async move {

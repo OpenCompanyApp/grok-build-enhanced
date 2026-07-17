@@ -19,7 +19,7 @@ mod ssrf;
 pub use client::WebFetchClient;
 pub use config::WebFetchParams;
 pub use domain::{DomainMatcher, domain_from_url};
-pub use error::WebFetchError;
+pub use error::{WebFetchError, safe_url_origin};
 
 // ───────────────────────────────────────────────────────────────────────────
 // Config enum (feature flag gating)
@@ -33,16 +33,29 @@ pub use error::WebFetchError;
 pub enum WebFetchConfig {
     #[default]
     Disabled,
+    /// Enabled explicitly by local, managed, environment, or remote config.
+    /// This survives provider switches in either direction.
     Enabled {
         /// Runtime parameters (allowed_domains, proxy_endpoint, timeouts, etc.)
         params: WebFetchParams,
     },
+    /// Dormant on xAI/custom sessions, enabled automatically on Codex
+    /// subscription sessions when no explicit web-fetch setting exists.
+    CodexDefault { params: WebFetchParams },
 }
 
 impl WebFetchConfig {
-    /// Returns `true` when the config is the `Enabled` variant.
+    /// Returns `true` when some provider may enable this configuration.
     pub fn is_enabled(&self) -> bool {
-        matches!(self, Self::Enabled { .. })
+        !matches!(self, Self::Disabled)
+    }
+
+    pub fn params_for_codex_subscription(&self, is_codex: bool) -> Option<&WebFetchParams> {
+        match self {
+            Self::Enabled { params } => Some(params),
+            Self::CodexDefault { params } if is_codex => Some(params),
+            Self::CodexDefault { .. } | Self::Disabled => None,
+        }
     }
 }
 
@@ -60,6 +73,13 @@ pub struct WebFetchInput {
     /// The URL to fetch content from.
     #[schemars(description = "The URL to fetch content from.")]
     pub url: String,
+}
+
+fn safe_web_fetch_log_host(raw_url: &str) -> String {
+    url::Url::parse(raw_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "<invalid-url>".to_owned())
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -158,7 +178,11 @@ impl xai_tool_runtime::Tool for WebFetchTool {
         }
     }
 
-    #[tracing::instrument(name = "tool.web_fetch", skip_all, fields(url = %input.url))]
+    #[tracing::instrument(
+        name = "tool.web_fetch",
+        skip_all,
+        fields(url_host = %safe_web_fetch_log_host(&input.url))
+    )]
     async fn run(
         &self,
         ctx: xai_tool_runtime::ToolCallContext,
@@ -197,6 +221,33 @@ impl xai_tool_runtime::Tool for WebFetchTool {
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx_with_call_id;
+
+    #[test]
+    fn codex_default_preserves_provenance_across_provider_switches() {
+        let config = WebFetchConfig::CodexDefault {
+            params: WebFetchParams::default(),
+        };
+        assert!(config.is_enabled());
+        assert!(config.params_for_codex_subscription(true).is_some());
+        assert!(config.params_for_codex_subscription(false).is_none());
+
+        let explicit = WebFetchConfig::Enabled {
+            params: WebFetchParams::default(),
+        };
+        assert!(explicit.params_for_codex_subscription(true).is_some());
+        assert!(explicit.params_for_codex_subscription(false).is_some());
+    }
+
+    #[test]
+    fn web_fetch_log_target_omits_query_userinfo_and_path() {
+        let raw = "https://user:password@example.com/private?token=super-secret#fragment";
+        let logged = safe_web_fetch_log_host(raw);
+        assert_eq!(logged, "example.com");
+        for secret in ["user", "password", "private", "token", "super-secret"] {
+            assert!(!logged.contains(secret));
+        }
+        assert_eq!(safe_web_fetch_log_host("not a URL"), "<invalid-url>");
+    }
 
     #[test]
     fn tool_name_and_description() {

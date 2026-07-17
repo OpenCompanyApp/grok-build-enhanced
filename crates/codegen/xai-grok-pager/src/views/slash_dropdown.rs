@@ -85,13 +85,15 @@ fn build_flat_lines(
 
         let is_selected = idx == selected;
         let is_hovered = hovered == Some(idx) && !is_selected;
-        let row_bg = match crate::views::modal_window::embedded_row_style(theme, is_selected) {
+        let embedded = crate::views::modal_window::embedded_row_style(theme, is_selected);
+        let row_bg = match embedded {
             Some(e) => e.bg,
             None if is_selected => theme.bg_visual,
             None if is_hovered => hover_bg,
             None => theme.bg_light,
         };
 
+        let first_line = flat.len();
         build_item_lines(
             &mut flat,
             item,
@@ -101,6 +103,18 @@ fn build_flat_lines(
             row_bg,
             theme,
         );
+        if embedded.is_none() {
+            let overlay = if is_selected {
+                theme.selected_row_style()
+            } else if is_hovered {
+                theme.hovered_row_style()
+            } else {
+                Style::default()
+            };
+            for line in &mut flat[first_line..] {
+                line.style = line.style.patch(overlay);
+            }
+        }
     }
 
     (flat, starts)

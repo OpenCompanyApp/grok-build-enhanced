@@ -79,6 +79,14 @@ impl ModelState {
         Some(self.current.as_ref()?.0.as_ref())
     }
 
+    /// Whether the active model belongs to the ChatGPT Codex subscription
+    /// provider. Codex catalog keys are deliberately provider-qualified so a
+    /// same-named xAI/custom model cannot inherit subscription-only UI paths.
+    pub fn current_model_is_openai_codex(&self) -> bool {
+        self.current_model_id_str()
+            .is_some_and(|model| model.starts_with("openai-codex/"))
+    }
+
     /// Total context window tokens for the current model (if available).
     fn current_context_window_tokens(&self) -> Option<u64> {
         let meta = self.available.get(self.current.as_ref()?)?.meta.as_ref()?;

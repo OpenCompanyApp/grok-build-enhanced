@@ -855,11 +855,11 @@ fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_bool(
     }
 }
 
-/// `ConfirmResetSetting { choice: Reset }` on a SHARED Enum
+/// `ConfirmResetSetting { choice: Reset }` on a SHARED DynamicEnum
 /// target (`theme`) dispatches `Action::SetTheme(default)` via
-/// recursive dispatch — verifies the action_for_reset Enum arm.
+/// recursive dispatch — verifies the owned-string reset arm.
 #[test]
-fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_enum() {
+fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_dynamic_enum() {
     use crate::settings::SettingValue;
     use crate::views::modal::ResetSettingsResult;
     let mut app = test_app_with_agent();
@@ -881,7 +881,7 @@ fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_enum(
     match &effects[0] {
         Effect::PersistSetting { key, value, .. } => {
             assert_eq!(*key, "theme");
-            assert_eq!(value, &SettingValue::Enum("groknight"));
+            assert_eq!(value, &SettingValue::String("groknight".to_owned()));
         }
         other => panic!("expected PersistSetting, got {other:?}"),
     }

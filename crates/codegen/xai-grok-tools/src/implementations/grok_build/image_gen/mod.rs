@@ -31,7 +31,7 @@ use crate::types::tool::{ToolKind, ToolNamespace};
 /// `model_override` is supplied via `ImageGenConfig::Enabled`.
 const XAI_IMAGINE_MODEL: &str = "grok-imagine-image-quality";
 /// Current ChatGPT Codex image model, verified against openai/codex at
-/// commit 9ff47868eb2afeec579183e01bb9d3d3e9df2bcd (2026-07-16).
+/// commit f737605606c14e3aa59a4c17be80d338f164dff5 (2026-07-16).
 /// This backend is experimental and the model is deliberately isolated from
 /// the coding-model catalog so an upstream change has one update point.
 pub(crate) const OPENAI_CODEX_IMAGE_MODEL: &str = "gpt-image-2";
@@ -44,6 +44,7 @@ const IMAGE_GEN_TIMEOUT_SECS: u64 = 300;
 const IMAGE_GEN_READ_TIMEOUT_SECS: u64 = 240;
 const DEFAULT_IMAGE_DIR: &str = "images";
 const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
+const OPENAI_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const MAX_IMAGE_RESPONSE_BODY_BYTES: usize = 48 * 1024 * 1024;
 const MAX_GENERATED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_GENERATED_IMAGE_PIXELS: u64 = 40_000_000;
@@ -132,6 +133,12 @@ impl ImageGenClient {
                     ));
                 }
             };
+
+        if backend == ImageGenBackend::OpenAiCodex && api_key_provider.is_none() {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "Cannot create a Codex image client without dynamic provider authentication",
+            ));
+        }
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -267,9 +274,9 @@ impl ImageGenClient {
             _ => {}
         }
         if self.backend == ImageGenBackend::OpenAiCodex
-            && auth
-                .credential_snapshot()
-                .is_none_or(|snapshot| snapshot.opaque_id().trim().is_empty())
+            && auth.credential_snapshot().is_none_or(|snapshot| {
+                snapshot.opaque_id().trim().is_empty() || snapshot.generation() == 0
+            })
         {
             return Err(xai_tool_runtime::ToolError::new(
                 xai_tool_runtime::ToolErrorKind::Custom,
@@ -336,7 +343,10 @@ impl ImageGenClient {
                     "Invalid authentication header value",
                 )
             })?;
-            if matches!(normalized.as_str(), "authorization" | "chatgpt-account-id") {
+            if matches!(
+                normalized.as_str(),
+                "authorization" | "chatgpt-account-id" | "x-openai-fedramp"
+            ) {
                 header_value.set_sensitive(true);
             }
             request = request.header(header_name, header_value);
@@ -524,26 +534,40 @@ pub(crate) fn codex_image_size(aspect_ratio: &str) -> &'static str {
 }
 
 fn validate_codex_base_url(base_url: &str) -> Result<String, xai_tool_runtime::ToolError> {
-    let parsed = reqwest::Url::parse(base_url).map_err(|_| {
-        xai_tool_runtime::ToolError::invalid_arguments("Invalid Codex image base URL")
-    })?;
-    let production = parsed.scheme() == "https"
-        && parsed.host_str() == Some("chatgpt.com")
-        && parsed.path().trim_end_matches('/') == "/backend-api/codex"
-        && parsed.query().is_none()
-        && parsed.fragment().is_none();
+    let production = base_url == OPENAI_CODEX_BASE_URL
+        || base_url.strip_suffix('/') == Some(OPENAI_CODEX_BASE_URL);
+
+    if production {
+        // Retain no caller-controlled URL spelling once production validation
+        // succeeds. This also rejects userinfo, explicit ports, alternate host
+        // casing, and path/query/fragment variants before credentials exist.
+        return Ok(OPENAI_CODEX_BASE_URL.to_owned());
+    }
+
+    // Unit tests need a narrow loopback seam for generation/edit mock servers.
+    // Shipping builds cannot direct bearer/account headers to any caller-
+    // selected destination.
     #[cfg(test)]
-    let test_origin = parsed
-        .host_str()
-        .is_some_and(|host| matches!(host, "127.0.0.1" | "localhost" | "::1"));
+    let test_origin = reqwest::Url::parse(base_url).ok().is_some_and(|url| {
+        url.scheme() == "http"
+            && matches!(url.path(), "" | "/")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url
+                .host_str()
+                .is_some_and(|host| matches!(host, "127.0.0.1" | "localhost" | "::1"))
+    });
     #[cfg(not(test))]
     let test_origin = false;
-    if !production && !test_origin {
-        return Err(xai_tool_runtime::ToolError::invalid_arguments(
-            "Codex image credentials may only be sent to the ChatGPT Codex endpoint.",
-        ));
+    if test_origin {
+        return Ok(base_url.trim_end_matches('/').to_owned());
     }
-    Ok(base_url.trim_end_matches('/').to_owned())
+
+    Err(xai_tool_runtime::ToolError::invalid_arguments(
+        "Codex image credentials may only be sent to the ChatGPT Codex endpoint.",
+    ))
 }
 
 /// `Enabled` means credentials are present; each tool has its own gate.
@@ -913,6 +937,29 @@ mod tests {
         }
     }
 
+    struct ZeroGenerationCodexTestAuth;
+
+    impl crate::types::ApiKeyProvider for ZeroGenerationCodexTestAuth {
+        fn current_api_key(&self) -> Option<String> {
+            None
+        }
+
+        fn current_request_auth_async(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Option<RequestAuth>> + Send + '_>> {
+            Box::pin(std::future::ready(Some(
+                RequestAuth::for_provider_snapshot(
+                    OPENAI_CODEX_PROVIDER_ID,
+                    RequestCredentialSnapshot::new("test-credential", 0),
+                    [
+                        ("authorization".to_owned(), "Bearer test-access".to_owned()),
+                        ("chatgpt-account-id".to_owned(), "test-account".to_owned()),
+                    ],
+                ),
+            )))
+        }
+    }
+
     #[tokio::test]
     async fn response_stream_is_bounded_before_appending_next_chunk() {
         let stream = futures_util::stream::iter([
@@ -1084,6 +1131,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn codex_client_requires_dynamic_provider_authentication() {
+        let config = ImageGenConfig::OpenAiCodex {
+            base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let error = ImageGenClient::new(&config, None)
+            .err()
+            .expect("Codex image clients must not exist without provider auth");
+        assert!(
+            error
+                .to_string()
+                .contains("dynamic provider authentication")
+        );
+    }
+
+    #[test]
+    fn codex_dynamic_image_credentials_are_sensitive_headers() {
+        let config = ImageGenConfig::OpenAiCodex {
+            base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: SharedApiKeyProvider = Arc::new(CodexTestAuth);
+        let client = ImageGenClient::new(&config, Some(provider)).unwrap();
+        let auth = RequestAuth::for_provider_snapshot(
+            OPENAI_CODEX_PROVIDER_ID,
+            RequestCredentialSnapshot::new("test-credential", 1),
+            [
+                ("authorization".to_owned(), "Bearer test-access".to_owned()),
+                ("chatgpt-account-id".to_owned(), "test-account".to_owned()),
+                ("x-openai-fedramp".to_owned(), "true".to_owned()),
+            ],
+        );
+        let request = client
+            .apply_request_auth(
+                reqwest::Client::new()
+                    .get("https://chatgpt.com/backend-api/codex/images/generations"),
+                &auth,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert!(request.headers()["authorization"].is_sensitive());
+        assert!(request.headers()["chatgpt-account-id"].is_sensitive());
+        assert!(request.headers()["x-openai-fedramp"].is_sensitive());
+    }
+
     #[tokio::test]
     async fn codex_generation_uses_exact_provider_contract_without_xai_headers() {
         use wiremock::matchers::{body_json, header, method, path};
@@ -1142,6 +1239,25 @@ mod tests {
                 .all(|name| !name.as_str().starts_with("x-grok-"))
         );
         assert!(!headers.contains_key("x-xai-token-auth"));
+    }
+
+    #[tokio::test]
+    async fn codex_generation_rejects_zero_credential_generation_before_request() {
+        let server = wiremock::MockServer::start().await;
+        let config = ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: SharedApiKeyProvider = Arc::new(ZeroGenerationCodexTestAuth);
+        let error = ImageGenClient::new(&config, Some(provider))
+            .unwrap()
+            .generate("a lighthouse", "auto")
+            .await
+            .expect_err("generation-zero credentials must fail before dispatch");
+
+        assert!(error.to_string().contains("credential generation"));
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     struct StaggeredCodexTestAuth {
@@ -1285,17 +1401,45 @@ mod tests {
     }
 
     #[test]
-    fn codex_base_url_is_sealed_outside_loopback_tests() {
-        let config = ImageGenConfig::OpenAiCodex {
-            base_url: "https://example.com/backend-api/codex".to_owned(),
-            image_gen_enabled: true,
-            image_edit_enabled: true,
-        };
+    fn codex_production_base_url_is_canonicalized_and_sealed() {
         let provider: SharedApiKeyProvider = Arc::new(CodexTestAuth);
-        let error = ImageGenClient::new(&config, Some(provider))
-            .err()
-            .expect("untrusted Codex origin must be rejected");
-        assert!(error.to_string().contains("ChatGPT Codex endpoint"));
+        let trailing_slash = format!("{OPENAI_CODEX_BASE_URL}/");
+        for accepted in [OPENAI_CODEX_BASE_URL, trailing_slash.as_str()] {
+            let config = ImageGenConfig::OpenAiCodex {
+                base_url: accepted.to_owned(),
+                image_gen_enabled: true,
+                image_edit_enabled: true,
+            };
+            let client = ImageGenClient::new(&config, Some(Arc::clone(&provider))).unwrap();
+            assert_eq!(client.base_url, OPENAI_CODEX_BASE_URL);
+        }
+
+        for rejected in [
+            "http://chatgpt.com/backend-api/codex",
+            "https://chatgpt.com:443/backend-api/codex",
+            "https://chatgpt.com:444/backend-api/codex",
+            "https://user@chatgpt.com/backend-api/codex",
+            "https://user:pass@chatgpt.com/backend-api/codex",
+            "https://CHATGPT.com/backend-api/codex",
+            "https://chatgpt.com/backend-api/codex//",
+            "https://chatgpt.com/backend-api/codex/images",
+            "https://chatgpt.com/backend-api/codex?redirect=foreign",
+            "https://chatgpt.com/backend-api/codex#fragment",
+            "https://example.com/backend-api/codex",
+        ] {
+            let config = ImageGenConfig::OpenAiCodex {
+                base_url: rejected.to_owned(),
+                image_gen_enabled: true,
+                image_edit_enabled: true,
+            };
+            let error = ImageGenClient::new(&config, Some(Arc::clone(&provider)))
+                .err()
+                .unwrap_or_else(|| panic!("noncanonical Codex image URL was accepted: {rejected}"));
+            assert!(
+                error.to_string().contains("ChatGPT Codex endpoint"),
+                "unexpected error for {rejected}: {error}"
+            );
+        }
     }
 
     #[tokio::test]

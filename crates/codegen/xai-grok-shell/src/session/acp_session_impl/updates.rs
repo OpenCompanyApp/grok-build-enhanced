@@ -21,6 +21,18 @@ pub(super) enum SubagentUsageApply {
     SessionOnly,
 }
 impl SessionActor {
+    /// Queue the latest non-secret lifetime usage ledger to the session
+    /// persistence actor. Querying first also acts as an acknowledgement barrier
+    /// for preceding fire-and-forget usage mutations on the chat-state actor.
+    pub(super) async fn persist_current_session_usage(&self) {
+        if let Ok(ledger) = self.chat_state_handle.try_get_session_usage().await {
+            let _ = self
+                .notifications
+                .persistence_tx
+                .send(PersistenceMsg::SessionUsage(ledger));
+        }
+    }
+
     /// Apply subagent usage. `Ok` after chat-state acked; `Err` if apply failed.
     pub(super) async fn record_subagent_usage(
         &self,
@@ -44,6 +56,7 @@ impl SessionActor {
         {
             return Err(());
         }
+        self.persist_current_session_usage().await;
         Ok(if attributable {
             SubagentUsageApply::AttributedToPrompt
         } else {
@@ -66,6 +79,7 @@ impl SessionActor {
             .chat_state_handle
             .mark_usage_incomplete(stain_prompt, true)
             .await;
+        self.persist_current_session_usage().await;
         sticky || ledger_ok
     }
     /// Shared freeze/cancel finalize: ledger marks only on `fail_closed`;
@@ -80,6 +94,7 @@ impl SessionActor {
                 .chat_state_handle
                 .mark_usage_incomplete(true, true)
                 .await;
+            self.persist_current_session_usage().await;
         }
         let usage = self
             .snapshot_prompt_usage_marked(outcome.report_incomplete())

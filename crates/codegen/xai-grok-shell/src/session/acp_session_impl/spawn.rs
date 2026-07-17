@@ -30,6 +30,46 @@ fn drop_cli_catchall_allows(
     }
     (kept, dropped)
 }
+
+#[derive(Debug, Clone)]
+struct MemoryEmbeddingRoute {
+    config: Option<crate::config::MemoryEmbeddingConfig>,
+    base_url: String,
+    api_key: Option<String>,
+    allow_session_auth: bool,
+}
+
+/// Resolve the provider boundary for optional vector-memory embeddings.
+///
+/// A ChatGPT Codex subscription is an inference entitlement, not a general
+/// OpenAI API credential, and the Codex backend does not expose a supported
+/// embeddings endpoint. Keep memory available through local FTS while making
+/// it impossible to attach either Codex request auth or the xAI AuthManager to
+/// a guessed `/embeddings` URL on the Codex backend.
+fn resolve_memory_embedding_route(
+    provider: xai_grok_sampling_types::ProviderId,
+    config: Option<&crate::config::MemoryEmbeddingConfig>,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> MemoryEmbeddingRoute {
+    if provider.is_openai_codex() {
+        return MemoryEmbeddingRoute {
+            config: None,
+            base_url: String::new(),
+            api_key: None,
+            allow_session_auth: false,
+        };
+    }
+    MemoryEmbeddingRoute {
+        config: config.cloned(),
+        base_url: base_url.to_owned(),
+        api_key: api_key.map(str::to_owned),
+        // The shell AuthManager owns xAI credentials only. Custom providers
+        // may use their explicit static key, but must never inherit xAI auth.
+        allow_session_auth: provider == xai_grok_sampling_types::ProviderId::Xai,
+    }
+}
+
 #[cfg(test)]
 mod cli_catchall_drop_tests {
     use super::drop_cli_catchall_allows;
@@ -71,6 +111,66 @@ mod cli_catchall_drop_tests {
         let (kept, dropped) = drop_cli_catchall_allows(rules, None);
         assert_eq!(kept.len(), 3);
         assert!(dropped.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod memory_embedding_route_tests {
+    use super::resolve_memory_embedding_route;
+    use xai_grok_sampling_types::ProviderId;
+
+    fn configured_embedding() -> crate::config::MemoryEmbeddingConfig {
+        crate::config::MemoryEmbeddingConfig {
+            model: Some("embedding-model".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn codex_subscription_is_fts_only_and_carries_no_embedding_auth() {
+        let config = configured_embedding();
+        let route = resolve_memory_embedding_route(
+            ProviderId::OpenAiCodex,
+            Some(&config),
+            "https://chatgpt.com/backend-api/codex",
+            Some("must-not-cross-provider-boundary"),
+        );
+
+        assert!(route.config.is_none());
+        assert!(route.base_url.is_empty());
+        assert!(route.api_key.is_none());
+        assert!(!route.allow_session_auth);
+    }
+
+    #[test]
+    fn xai_embedding_route_preserves_config_and_credentials() {
+        let config = configured_embedding();
+        let route = resolve_memory_embedding_route(
+            ProviderId::Xai,
+            Some(&config),
+            "https://api.x.ai/v1",
+            Some("xai-key"),
+        );
+
+        assert_eq!(route.config, Some(config));
+        assert_eq!(route.base_url, "https://api.x.ai/v1");
+        assert_eq!(route.api_key.as_deref(), Some("xai-key"));
+        assert!(route.allow_session_auth);
+    }
+
+    #[test]
+    fn custom_embedding_route_never_inherits_xai_session_auth() {
+        let config = configured_embedding();
+        let route = resolve_memory_embedding_route(
+            ProviderId::Custom,
+            Some(&config),
+            "https://custom.example/v1",
+            Some("custom-key"),
+        );
+
+        assert_eq!(route.config, Some(config));
+        assert_eq!(route.api_key.as_deref(), Some("custom-key"));
+        assert!(!route.allow_session_auth);
     }
 }
 /// Spawns a session actor and returns the session handle plus a receiver for permission events.
@@ -223,10 +323,9 @@ pub(crate) async fn spawn_session_actor(
         let deny_read_globs = handle.deny_read_globs();
         (handle, dummy_rx, deny_read_globs)
     } else {
-        let web_fetch_allowed_domains = match &web_fetch_config {
-            WebFetchConfig::Enabled { params } => params.allowed_domains(),
-            WebFetchConfig::Disabled => vec![],
-        };
+        let web_fetch_allowed_domains = web_fetch_config
+            .params_for_codex_subscription(sampling_config.provider.is_openai_codex())
+            .map_or_else(Vec::new, |params| params.allowed_domains());
         let mut permission_config =
             xai_grok_workspace::permission::resolution::resolve_permission_config_with_fallback(
                 tool_context.cwd.as_path(),
@@ -357,15 +456,32 @@ pub(crate) async fn spawn_session_actor(
             (0, Vec::new(), Vec::new())
         };
     let primary_model_id = sampling_config.model.clone();
+    let configured_web_search_provider = web_search_sampling_config
+        .as_ref()
+        .map(|config| config.provider);
     let web_search_config = if disable_web_search {
         xai_grok_tools::implementations::WebSearchConfig::Disabled
-    } else if let Some(cfg) = web_search_sampling_config {
-        if let Some(api_key) = cfg.api_key {
+    } else if sampling_config.provider.is_openai_codex() {
+        if api_key_provider.is_some() {
+            xai_grok_tools::implementations::WebSearchConfig::CodexSubscription {
+                base_url: sampling_config.base_url.clone(),
+                model: sampling_config.model.clone(),
+                session_id: session_info.id.0.to_string(),
+            }
+        } else {
+            tracing::warn!(
+                provider = "openai_codex",
+                "web_search disabled: provider-scoped request authentication is unavailable"
+            );
+            xai_grok_tools::implementations::WebSearchConfig::Disabled
+        }
+    } else if let Some(cfg) = web_search_sampling_config.as_ref() {
+        if let Some(api_key) = cfg.api_key.clone() {
             xai_grok_tools::implementations::WebSearchConfig::Enabled {
                 api_key,
-                base_url: cfg.base_url,
-                model: cfg.model,
-                extra_headers: cfg.extra_headers,
+                base_url: cfg.base_url.clone(),
+                model: cfg.model.clone(),
+                extra_headers: cfg.extra_headers.clone(),
                 alpha_test_key: credentials.alpha_test_key.clone(),
             }
         } else {
@@ -376,8 +492,22 @@ pub(crate) async fn spawn_session_actor(
         tracing::warn!("web_search disabled: configured model could not be resolved");
         xai_grok_tools::implementations::WebSearchConfig::Disabled
     };
-    let embed_base_url = sampling_config.base_url.clone();
-    let embed_api_key = sampling_config.api_key.clone();
+    let memory_embedding_route = resolve_memory_embedding_route(
+        sampling_config.provider,
+        memory_config.as_ref().map(|mc| &mc.embedding),
+        &sampling_config.base_url,
+        sampling_config.api_key.as_deref(),
+    );
+    if sampling_config.provider.is_openai_codex()
+        && memory_config
+            .as_ref()
+            .is_some_and(|mc| mc.embedding.model.as_deref().is_some_and(|m| !m.is_empty()))
+    {
+        tracing::info!(
+            provider = "openai_codex",
+            "memory vector embeddings unavailable for Codex subscription; using local FTS search"
+        );
+    }
     let session_pruning_config: crate::config::PruningConfig = memory_config.as_ref().map_or_else(
         || crate::config::PruningConfig {
             enabled: false,
@@ -413,6 +543,7 @@ pub(crate) async fn spawn_session_actor(
         extra_headers: sampling_config.extra_headers.clone(),
         context_window: context_window_override.unwrap_or(baseline_context_window),
         reasoning_effort: sampling_config.reasoning_effort,
+        service_tier: sampling_config.service_tier.clone(),
         stream_tool_calls: Some(sampling_config.stream_tool_calls),
     };
     let actor_pruning_config = xai_chat_state::PruningConfig {
@@ -424,6 +555,23 @@ pub(crate) async fn spawn_session_actor(
         hard_clear_age_turns: session_pruning_config.hard_clear_age_turns,
     };
     let (chat_state_event_tx, chat_state_event_rx) = mpsc::unbounded_channel();
+    let resumed_session = !initial_prompt_texts.is_empty();
+    let mut initial_session_usage = super::load_session_usage(&session_info).or_else(|| {
+        resumed_session.then(|| {
+            // Legacy/corrupt resumes have historical model calls but no durable
+            // ledger. Preserve future observed tokens while failing closed on a
+            // precise total instead of silently resetting the cost to zero.
+            let mut ledger = xai_chat_state::UsageLedger::default();
+            ledger.incomplete = true;
+            ledger
+        })
+    });
+    if persistence.has_unobserved_codex_summary() {
+        // Title generation is owned by the persistence actor and does not
+        // report TokenUsage back into chat state. Mark this one known blind
+        // spot before the first content chunk can trigger the call.
+        initial_session_usage.get_or_insert_default().incomplete = true;
+    }
     let chat_state_handle = xai_chat_state::ChatStateActor::spawn_with_pruning(
         conversation.clone(),
         chat_state_sampling_config,
@@ -437,6 +585,7 @@ pub(crate) async fn spawn_session_actor(
     if !initial_prompt_texts.is_empty()
         || initial_total_tokens > 0
         || initial_last_compaction.is_some()
+        || initial_session_usage.is_some()
     {
         if let Some(mut snap) = chat_state_handle.snapshot().await {
             snap.prompt_index = initial_prompt_texts.len();
@@ -445,6 +594,9 @@ pub(crate) async fn spawn_session_actor(
                 snap.total_tokens = initial_total_tokens;
             }
             snap.last_compaction_prompt_index = initial_last_compaction;
+            if let Some(usage) = initial_session_usage {
+                snap.session_usage = usage;
+            }
             chat_state_handle.restore_snapshot(snap);
         }
     }
@@ -695,25 +847,34 @@ pub(crate) async fn spawn_session_actor(
         };
         let params = crate::session::memory::MemoryBackendParams {
             session_id: session_info.id.to_string(),
-            embed_config: memory_config.as_ref().map(|mc| mc.embedding.clone()),
-            embed_base_url: embed_base_url.clone(),
-            embed_api_key: embed_api_key.clone(),
+            embed_config: memory_embedding_route.config.clone(),
+            embed_base_url: memory_embedding_route.base_url.clone(),
+            embed_api_key: memory_embedding_route.api_key.clone(),
             search_config: memory_config
                 .as_ref()
                 .map_or_else(Default::default, |mc| mc.search.clone()),
             watcher,
             stale_claim_secs: watcher_config.stale_claim_secs,
             search_source: "tool",
-            api_key_provider: api_key_provider.clone(),
-            auth_credentials: auth_manager.as_ref().map(|am| {
-                std::sync::Arc::new(
-                    crate::auth::credential_provider::ShellAuthCredentialProvider::new(
-                        am.clone(),
-                        None,
-                        None,
-                    ),
-                ) as std::sync::Arc<dyn xai_grok_auth::AuthCredentialProvider>
-            }),
+            api_key_provider: memory_embedding_route
+                .allow_session_auth
+                .then(|| api_key_provider.clone())
+                .flatten(),
+            auth_credentials: memory_embedding_route
+                .allow_session_auth
+                .then(|| {
+                    auth_manager.as_ref().map(|am| {
+                        std::sync::Arc::new(
+                            crate::auth::credential_provider::ShellAuthCredentialProvider::new(
+                                am.clone(),
+                                None,
+                                None,
+                            ),
+                        )
+                            as std::sync::Arc<dyn xai_grok_auth::AuthCredentialProvider>
+                    })
+                })
+                .flatten(),
         };
         let backend = crate::session::memory::MemoryBackendImpl::from_session_params(
             storage.clone(),
@@ -815,7 +976,18 @@ pub(crate) async fn spawn_session_actor(
             .as_ref()
             .map(|s| s.workspace_memory_file().to_string_lossy().into_owned()),
         memory_backend: memory_backend_for_spec,
+        memory_embedding_config: memory_config.as_ref().map(|mc| mc.embedding.clone()),
         web_search_config: web_search_config.clone(),
+        web_search_disabled: disable_web_search,
+        web_search_provider: match web_search_config {
+            xai_grok_tools::implementations::WebSearchConfig::Disabled => None,
+            xai_grok_tools::implementations::WebSearchConfig::CodexSubscription { .. } => {
+                Some(xai_grok_sampling_types::ProviderId::OpenAiCodex)
+            }
+            xai_grok_tools::implementations::WebSearchConfig::Enabled { .. } => {
+                configured_web_search_provider
+            }
+        },
         backend_search: backend_tools_enabled,
         web_fetch_config: web_fetch_config.clone(),
         image_gen_config: image_gen_config.clone(),
@@ -1147,6 +1319,7 @@ pub(crate) async fn spawn_session_actor(
             context_window_override,
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+            auto_compact_retry_not_before_unix_secs: std::sync::atomic::AtomicU64::new(0),
             previous_model: std::cell::Cell::new(None),
             compaction_mode,
             verbatim_input: compaction_verbatim_input,
@@ -1167,7 +1340,7 @@ pub(crate) async fn spawn_session_actor(
             save_on_end: memory_config
                 .as_ref()
                 .is_none_or(|mc| mc.session.save_on_end),
-            backend_params: memory_backend_params_for_session,
+            backend_params: std::cell::RefCell::new(memory_backend_params_for_session),
             initial_injection_config: memory_initial_injection_config,
             context_injected: std::sync::atomic::AtomicBool::new(false),
             flush_count: std::sync::atomic::AtomicU64::new(0),
@@ -1401,13 +1574,10 @@ pub(crate) async fn spawn_session_actor(
         let index_config = memory_config
             .as_ref()
             .map_or_else(Default::default, |mc| mc.index.clone());
-        let embed_config = memory_config
-            .as_ref()
-            .map(|mc| mc.embedding.clone())
-            .unwrap_or_default();
+        let embed_config = memory_embedding_route.config.clone().unwrap_or_default();
         let embed_dims = embed_config.dimensions;
-        let sampling_base_url = embed_base_url.clone();
-        let sampling_api_key = embed_api_key.clone();
+        let sampling_base_url = memory_embedding_route.base_url.clone();
+        let sampling_api_key = memory_embedding_route.api_key.clone();
         let session_id_for_reindex = session_info.id.to_string();
         let chunks_added_counter = session.memory.chunks_added.clone();
         tokio::task::spawn_local(async move {

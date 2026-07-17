@@ -295,6 +295,7 @@ impl SessionActor {
                 extra_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
                 reasoning_effort: None,
+                service_tier: None,
                 stream_tool_calls: None,
             });
         let creds = self.chat_state_handle.get_credentials().await;
@@ -430,6 +431,21 @@ impl SessionActor {
             self.chat_state_handle.update_sampling_config(cfg.clone());
         }
         let is_codex = cfg.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex;
+        let service_tier = if is_codex
+            && self
+                .models_manager
+                .model_in_catalog_for_provider(cfg.provider, &cfg.model)
+        {
+            cfg.service_tier.as_deref().and_then(|tier| {
+                self.models_manager.resolve_service_tier_for_provider(
+                    cfg.provider,
+                    &cfg.model,
+                    tier,
+                )
+            })
+        } else {
+            None
+        };
         SamplingConfig {
             provider: cfg.provider,
             credential_source: if is_codex {
@@ -452,6 +468,7 @@ impl SessionActor {
             context_window: cfg.context_window.get(),
             client_version: creds.client_version,
             reasoning_effort,
+            service_tier,
             force_http1: false,
             max_retries: Some(self.max_retries),
             stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
@@ -520,7 +537,7 @@ impl SessionActor {
             .map(|c| c.model)
             .unwrap_or_default();
         let aux_classifier_sampler = match auto_cfg.classifier_model.as_deref() {
-            Some(slug) => self.resolve_auto_classifier_sampler(slug).await,
+            Some(slug) => self.resolve_routed_aux_sampling_client(slug).await,
             None => None,
         };
         let models = self.models_manager.models();
@@ -643,12 +660,12 @@ impl SessionActor {
             creds.client_version.clone(),
         )
     }
-    /// Resolve a dedicated sampler for the Auto-mode classifier model `slug`,
-    /// stamping session-local auth/attribution like image-describe (which relies
-    /// on the resolver, not a config override, for `base_url`/`api_backend` so
-    /// credentials stay consistent). `None` ⇒ caller falls back to the session
-    /// client + model.
-    async fn resolve_auto_classifier_sampler(
+    /// Resolve a dedicated sampler for an auxiliary model `slug`, stamping
+    /// session-local auth/attribution while preserving the model's catalog
+    /// provider, endpoint, and credential owner. `None` means the caller must
+    /// fall back to the active session model rather than sending `slug` to the
+    /// active provider's endpoint.
+    pub(super) async fn resolve_routed_aux_sampling_client(
         &self,
         slug: &str,
     ) -> Option<(xai_grok_sampler::SamplingClient, String)> {
@@ -660,16 +677,49 @@ impl SessionActor {
             self.client_identifier.clone(),
             Some(self.max_retries),
         );
+        self.mark_codex_auxiliary_usage_incomplete(cfg.provider)
+            .await;
         let model = cfg.model.clone();
         let client = xai_grok_sampler::SamplingClient::new(cfg)
             .map_err(|e| {
                 tracing::warn!(
                     error = % e,
-                    "auto classifier aux sampler build failed; using session model"
+                    aux_model = %slug,
+                    "auxiliary sampler build failed; using session model"
                 )
             })
             .ok()?;
         Some((client, model))
+    }
+
+    /// Prepare an auxiliary sampler with provider-safe fallback. An explicit
+    /// model is used only when catalog routing can construct that model's own
+    /// provider client; otherwise both client and model fall back together to
+    /// the active session route.
+    pub(super) async fn prepare_aux_sampling_client(
+        &self,
+        requested_model: Option<&str>,
+        purpose: &'static str,
+    ) -> Result<(xai_grok_sampler::SamplingClient, String), acp::Error> {
+        if let Some(slug) = requested_model {
+            if let Some(routed) = self.resolve_routed_aux_sampling_client(slug).await {
+                return Ok(routed);
+            }
+            tracing::warn!(
+                purpose,
+                requested_model = %slug,
+                "auxiliary model unavailable with provider-owned credentials; using session model"
+            );
+        }
+
+        let client = self.prepare_chat_completion(false).await?;
+        let model = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|c| c.model)
+            .unwrap_or_default();
+        Ok((client, model))
     }
     #[tracing::instrument(
         name = "session.prepare_chat_completion",
@@ -682,10 +732,29 @@ impl SessionActor {
     ) -> Result<xai_grok_sampler::SamplingClient, acp::Error> {
         self.refresh_token_if_expired().await;
         let mut full_config = self.reconstruct_full_config().await;
+        self.mark_codex_auxiliary_usage_incomplete(full_config.provider)
+            .await;
         full_config.force_http1 = force_http1;
         let sampling_client =
             xai_grok_sampler::SamplingClient::new(full_config).map_err(|e| self.to_acp_error(e))?;
         Ok(sampling_client)
+    }
+
+    /// Auxiliary and compaction samplers do not currently fold their response
+    /// usage into the main ledger. Mark Codex totals incomplete as soon as such
+    /// a client is prepared so the hypothetical API total fails closed instead
+    /// of presenting a known lower bound as complete.
+    pub(super) async fn mark_codex_auxiliary_usage_incomplete(
+        &self,
+        provider: xai_grok_sampling_types::ProviderId,
+    ) {
+        if provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
+            let _ = self
+                .chat_state_handle
+                .mark_usage_incomplete(false, true)
+                .await;
+            self.persist_current_session_usage().await;
+        }
     }
     /// Push a fresh `SamplerConfig` into the per-session sampler actor
     /// before each turn. Mirrors `prepare_chat_completion`'s
@@ -704,20 +773,39 @@ impl SessionActor {
         sampler_config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
         self.sampler_handle.update_config(sampler_config);
     }
-    fn log_terminal_failure(&self, error_type: &str, status_code: Option<u16>, message: &str) {
-        let auth = self
-            .auth_manager
-            .as_ref()
-            .and_then(|am| am.current_or_expired());
+    fn log_terminal_failure(
+        &self,
+        request_provider: xai_grok_sampling_types::ProviderId,
+        error_type: &str,
+        status_code: Option<u16>,
+        message: &str,
+    ) {
+        // The shell AuthManager contains xAI state only. Never label a Codex
+        // or custom-provider failure with whatever xAI login happens to exist
+        // alongside it.
+        let auth = (request_provider == xai_grok_sampling_types::ProviderId::Xai)
+            .then(|| {
+                self.auth_manager
+                    .as_ref()
+                    .and_then(|am| am.current_or_expired())
+            })
+            .flatten();
+        let auth_mode = if request_provider == xai_grok_sampling_types::ProviderId::Xai {
+            auth.as_ref().map(|auth| format!("{:?}", auth.auth_mode))
+        } else {
+            Some(request_provider.as_str().to_owned())
+        };
+        let credential_present = (request_provider == xai_grok_sampling_types::ProviderId::Xai)
+            .then(|| auth.as_ref().is_some_and(|auth| !auth.key.is_empty()));
         let reauthable = is_reauthable_failure(Some(error_type), message);
         xai_grok_telemetry::unified_log::warn(
             "turn.terminal_failure",
             Some(self.session_info.id.0.as_ref()),
             Some(serde_json::json!(
                 { "error_type" : error_type, "status_code" : status_code,
-                "reauthable" : reauthable, "auth_mode" : auth.as_ref().map(| a |
-                format!("{:?}", a.auth_mode)), "credential_present" : auth.as_ref()
-                .is_some_and(| a | ! a.key.is_empty()), "expires_at" : auth
+                "reauthable" : reauthable, "provider" : request_provider.as_str(),
+                "auth_mode" : auth_mode, "credential_present" : credential_present,
+                "expires_at" : auth
                 .as_ref().and_then(| a | a.expires_at.map(| e | e.to_rfc3339())),
                 "message" : crate ::util::truncate(message, 300), }
             )),
@@ -763,6 +851,12 @@ impl SessionActor {
             }
         }
         let detailed_message = error.message.clone();
+        let request_provider = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|config| config.provider)
+            .unwrap_or_default();
         if matches!(error.kind, SamplingErrorKind::Api)
             && error.status_code == Some(400)
             && error.message.contains("encrypted_content")
@@ -772,7 +866,12 @@ impl SessionActor {
             let friendly = "This session's conversation history is incompatible \
                             with the current model. Please start a new session."
                 .to_string();
-            self.log_terminal_failure("encrypted_content_mismatch", error.status_code, &friendly);
+            self.log_terminal_failure(
+                request_provider,
+                "encrypted_content_mismatch",
+                error.status_code,
+                &friendly,
+            );
             self.send_xai_notification(XaiSessionUpdate::RetryState(
                 crate::extensions::notification::RetryState::Failed {
                     error_type: "encrypted_content_mismatch".to_string(),
@@ -783,7 +882,12 @@ impl SessionActor {
             return Err(acp::Error::invalid_params().data(friendly));
         }
         if matches!(error.kind, SamplingErrorKind::RateLimited) {
-            self.log_terminal_failure("rate_limited", error.status_code, &detailed_message);
+            self.log_terminal_failure(
+                request_provider,
+                "rate_limited",
+                error.status_code,
+                &detailed_message,
+            );
             self.send_xai_notification(XaiSessionUpdate::RetryState(
                 crate::extensions::notification::RetryState::Exhausted {
                     attempts: 0,
@@ -799,12 +903,6 @@ impl SessionActor {
             .data(detailed_message);
             return Err(acp_err);
         }
-        let request_provider = self
-            .chat_state_handle
-            .get_sampling_config()
-            .await
-            .map(|config| config.provider)
-            .unwrap_or_default();
         if matches!(error.kind, SamplingErrorKind::Auth)
             && request_provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
         {
@@ -936,15 +1034,21 @@ impl SessionActor {
             }
             self.signals_handle().record_error_typed("empty_response");
         }
-        let auth_mode = self
+        let xai_auth_mode = self
             .auth_manager
             .as_ref()
             .and_then(|am| am.current())
             .map(|a| a.auth_mode)
             .unwrap_or(crate::auth::AuthMode::ApiKey);
-        let auth_mode_str = format!("{auth_mode:?}");
+        let auth_mode_str = if request_provider == xai_grok_sampling_types::ProviderId::Xai {
+            format!("{xai_auth_mode:?}")
+        } else {
+            request_provider.as_str().to_owned()
+        };
         let client_version = xai_grok_version::VERSION;
-        if auth_mode == crate::auth::AuthMode::WebLogin {
+        if request_provider == xai_grok_sampling_types::ProviderId::Xai
+            && xai_auth_mode == crate::auth::AuthMode::WebLogin
+        {
             let msg = format!(
                 "{detailed_message}\n\n\
                  You are using a deprecated authentication method (WebLogin).\n\
@@ -952,7 +1056,7 @@ impl SessionActor {
                  To fix: run `grok logout` then `grok login` to re-authenticate with OAuth2.\n\n\
                  Version: {client_version}"
             );
-            self.log_terminal_failure("legacy_auth", error.status_code, &msg);
+            self.log_terminal_failure(request_provider, "legacy_auth", error.status_code, &msg);
             self.send_xai_notification(XaiSessionUpdate::RetryState(
                 crate::extensions::notification::RetryState::Failed {
                     error_type: "legacy_auth".to_string(),
@@ -995,6 +1099,12 @@ impl SessionActor {
                 ));
                 msg.push_str("\n  Switch models with /model or start a new session.");
             }
+            if is_auth_401 && request_provider.is_openai_codex() {
+                msg.push_str(
+                    "\n\n  Re-authenticate: run `grok logout --provider openai-codex` then \
+                     `grok login --provider openai-codex`.",
+                );
+            }
             msg
         } else {
             detailed_message
@@ -1004,7 +1114,12 @@ impl SessionActor {
         } else {
             error.kind.as_str()
         };
-        self.log_terminal_failure(error_type, error.status_code, &detailed_message);
+        self.log_terminal_failure(
+            request_provider,
+            error_type,
+            error.status_code,
+            &detailed_message,
+        );
         self.send_xai_notification(XaiSessionUpdate::RetryState(
             crate::extensions::notification::RetryState::Failed {
                 error_type: error_type.to_string(),
@@ -1213,7 +1328,7 @@ impl SessionActor {
     /// Resetting `estimated_tokens_since_model = 0` here also keeps the
     /// preflight-overflow guard accurate against the next turn's
     /// tool-result deltas.
-    pub(crate) fn record_response_token_usage(
+    pub(crate) async fn record_response_token_usage(
         &self,
         response: &ConversationResponse,
         api_duration_ms: Option<u64>,
@@ -1230,6 +1345,7 @@ impl SessionActor {
             );
             self.signals_handle()
                 .record_token_usage(u.completion_tokens, u.reasoning_tokens);
+            self.persist_current_session_usage().await;
         }
     }
     pub(super) async fn record_assistant_response(&self, assistant_item: ConversationItem) {

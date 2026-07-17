@@ -2106,6 +2106,9 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            service_tier: None,
             multi_agent_version: None,
             supports_image_input: false,
             supports_backend_search: false,
@@ -2559,10 +2562,16 @@ async fn prepare_image_gen_config_uses_explicit_session_sampling_config() {
 
     session_sampling.provider = ProviderId::OpenAiCodex;
     session_sampling.model = "catalog-model-without-image-input".to_owned();
-    assert!(matches!(
-        agent.prepare_image_gen_config_for_sampling_config(&session_sampling),
-        ImageGenConfig::Unavailable { .. }
-    ));
+    let ImageGenConfig::OpenAiCodex {
+        image_gen_enabled,
+        image_edit_enabled,
+        ..
+    } = agent.prepare_image_gen_config_for_sampling_config(&session_sampling)
+    else {
+        panic!("Codex image tools must not depend on the coding model's image-input modality");
+    };
+    assert!(image_gen_enabled);
+    assert!(image_edit_enabled);
 }
 #[tokio::test]
 async fn data_collection_enabled_for_normal_user() {

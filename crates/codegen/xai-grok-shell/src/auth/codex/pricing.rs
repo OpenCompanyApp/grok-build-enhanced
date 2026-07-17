@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 
 /// Source date for the small, explicit rate table below. Pricing is not read
 /// from the ChatGPT usage response and must never be presented as subscription
-/// spend.
+/// spend. Rates are the Standard tier from
+/// <https://developers.openai.com/api/docs/pricing>.
 pub const OPENAI_API_PRICING_VERIFIED_AT: &str = "2026-07-16";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,8 +33,10 @@ pub struct CodexApiEquivalentCostEstimate {
     pub cached_input_tokens: u64,
     pub uncached_input_tokens: u64,
     pub output_tokens: u64,
-    /// Present only when every observed model has a published rate and the
-    /// session ledger is complete. Absence never means zero.
+    /// Present when every locally observed model has a published rate. When
+    /// `usage_incomplete` is true this is an observed lower bound because
+    /// auxiliary/compaction calls were not available to the ledger. Absence
+    /// never means zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -60,12 +63,16 @@ struct PublishedRate {
 /// as an alias of `gpt-5.6-sol`.
 fn published_rate(model_id: &str) -> Option<PublishedRate> {
     let normalized = model_id.trim().to_ascii_lowercase();
+    // Ledger identities are provider-qualified at record time. Requiring the
+    // Codex namespace here prevents a custom/xAI model that reuses a published
+    // OpenAI slug from being assigned OpenAI API prices after model switching.
+    let normalized = normalized.strip_prefix("openai_codex::")?;
     // ACP catalog keys carry the explicit provider namespace while the
     // sampling ledger normally receives the provider's routing slug. They are
     // the same model identity, not a pricing alias.
     let model_id = normalized
         .strip_prefix("openai-codex/")
-        .unwrap_or(&normalized);
+        .unwrap_or(normalized);
     match model_id {
         "gpt-5.6" | "gpt-5.6-sol" => Some(PublishedRate {
             basis_model: "gpt-5.6-sol",
@@ -94,13 +101,17 @@ fn estimate_line(
     totals: &xai_chat_state::UsageTotals,
     rate: PublishedRate,
 ) -> CodexApiEquivalentCostLine {
+    let display_model_id = model_id.strip_prefix("openai_codex::").unwrap_or(model_id);
+    let display_model_id = display_model_id
+        .strip_prefix("openai-codex/")
+        .unwrap_or(display_model_id);
     let cached_input_tokens = totals.cached_read_tokens.min(totals.input_tokens);
     let uncached_input_tokens = totals.input_tokens.saturating_sub(cached_input_tokens);
     let estimated_usd = uncached_input_tokens as f64 / 1_000_000.0 * rate.input
         + cached_input_tokens as f64 / 1_000_000.0 * rate.cached_input
         + totals.output_tokens as f64 / 1_000_000.0 * rate.output;
     CodexApiEquivalentCostLine {
-        model_id: model_id.to_owned(),
+        model_id: display_model_id.to_owned(),
         pricing_basis_model: rate.basis_model.to_owned(),
         input_tokens: totals.input_tokens,
         cached_input_tokens,
@@ -139,7 +150,7 @@ pub fn estimate_api_equivalent_cost(
         }
     }
 
-    let estimated_usd = (!ledger.incomplete && unpriced_models.is_empty() && !lines.is_empty())
+    let estimated_usd = (unpriced_models.is_empty() && !lines.is_empty())
         .then(|| lines.iter().map(|line| line.estimated_usd).sum());
     CodexApiEquivalentCostEstimate {
         input_tokens: ledger.totals.input_tokens,
@@ -176,9 +187,9 @@ mod tests {
         ledger.totals = totals(1_000_000, 400_000, 100_000);
         ledger
             .by_model
-            .insert("gpt-5.6".to_owned(), ledger.totals.clone());
+            .insert("openai_codex::gpt-5.6".to_owned(), ledger.totals.clone());
 
-        let estimate = estimate_api_equivalent_cost(&ledger, "gpt-5.6");
+        let estimate = estimate_api_equivalent_cost(&ledger, "openai_codex::gpt-5.6");
         assert_eq!(estimate.uncached_input_tokens, 600_000);
         assert_eq!(estimate.cached_input_tokens, 400_000);
         assert_eq!(estimate.lines[0].pricing_basis_model, "gpt-5.6-sol");
@@ -189,15 +200,17 @@ mod tests {
     #[test]
     fn luna_and_terra_use_only_their_published_rates() {
         let mut ledger = xai_chat_state::UsageLedger::default();
-        ledger
-            .by_model
-            .insert("gpt-5.6-luna".to_owned(), totals(1_000_000, 0, 1_000_000));
-        ledger
-            .by_model
-            .insert("gpt-5.6-terra".to_owned(), totals(1_000_000, 0, 1_000_000));
+        ledger.by_model.insert(
+            "openai_codex::gpt-5.6-luna".to_owned(),
+            totals(1_000_000, 0, 1_000_000),
+        );
+        ledger.by_model.insert(
+            "openai_codex::gpt-5.6-terra".to_owned(),
+            totals(1_000_000, 0, 1_000_000),
+        );
         ledger.totals = totals(2_000_000, 0, 2_000_000);
 
-        let estimate = estimate_api_equivalent_cost(&ledger, "gpt-5.6-terra");
+        let estimate = estimate_api_equivalent_cost(&ledger, "openai_codex::gpt-5.6-terra");
         assert!((estimate.estimated_usd.unwrap() - 24.5).abs() < 1e-12);
     }
 
@@ -206,11 +219,12 @@ mod tests {
         let mut ledger = xai_chat_state::UsageLedger::default();
         ledger.totals = totals(1_000_000, 0, 0);
         ledger.by_model.insert(
-            "openai-codex/gpt-5.6-terra".to_owned(),
+            "openai_codex::openai-codex/gpt-5.6-terra".to_owned(),
             ledger.totals.clone(),
         );
 
-        let estimate = estimate_api_equivalent_cost(&ledger, "openai-codex/gpt-5.6-terra");
+        let estimate =
+            estimate_api_equivalent_cost(&ledger, "openai_codex::openai-codex/gpt-5.6-terra");
         assert_eq!(estimate.estimated_usd, Some(2.5));
         assert_eq!(estimate.lines[0].pricing_basis_model, "gpt-5.6-terra");
     }
@@ -219,27 +233,46 @@ mod tests {
     fn unpublished_alias_and_incomplete_usage_never_produce_a_total() {
         let mut ledger = xai_chat_state::UsageLedger::default();
         ledger.totals = totals(1_000, 500, 100);
-        ledger
-            .by_model
-            .insert("gpt-5.6-codex-future".to_owned(), ledger.totals.clone());
+        ledger.by_model.insert(
+            "openai_codex::gpt-5.6-codex-future".to_owned(),
+            ledger.totals.clone(),
+        );
 
-        let estimate = estimate_api_equivalent_cost(&ledger, "gpt-5.6-codex-future");
+        let estimate = estimate_api_equivalent_cost(&ledger, "openai_codex::gpt-5.6-codex-future");
         assert_eq!(estimate.estimated_usd, None);
-        assert_eq!(estimate.unpriced_models, ["gpt-5.6-codex-future"]);
+        assert_eq!(
+            estimate.unpriced_models,
+            ["openai_codex::gpt-5.6-codex-future"]
+        );
 
         ledger.by_model.clear();
-        ledger
-            .by_model
-            .insert("gpt-5.6-sol".to_owned(), ledger.totals.clone());
-        ledger.incomplete = true;
-        assert_eq!(
-            estimate_api_equivalent_cost(&ledger, "gpt-5.6-sol").estimated_usd,
-            None
+        ledger.by_model.insert(
+            "openai_codex::gpt-5.6-sol".to_owned(),
+            ledger.totals.clone(),
         );
+        ledger.incomplete = true;
+        let incomplete = estimate_api_equivalent_cost(&ledger, "openai_codex::gpt-5.6-sol");
+        assert!(incomplete.estimated_usd.is_some());
+        assert!(incomplete.usage_incomplete);
 
         let empty = xai_chat_state::UsageLedger::default();
         let empty_estimate = estimate_api_equivalent_cost(&empty, "unpublished-future-model");
         assert_eq!(empty_estimate.estimated_usd, None);
         assert!(empty_estimate.lines.is_empty());
+    }
+
+    #[test]
+    fn non_codex_provider_slug_collision_is_never_priced() {
+        for identity in ["xai::gpt-5.6-luna", "custom::gpt-5.6-luna"] {
+            let mut ledger = xai_chat_state::UsageLedger::default();
+            ledger.totals = totals(1_000_000, 0, 1_000_000);
+            ledger
+                .by_model
+                .insert(identity.to_owned(), ledger.totals.clone());
+
+            let estimate = estimate_api_equivalent_cost(&ledger, "openai_codex::gpt-5.6-luna");
+            assert_eq!(estimate.estimated_usd, None);
+            assert_eq!(estimate.unpriced_models, [identity]);
+        }
     }
 }

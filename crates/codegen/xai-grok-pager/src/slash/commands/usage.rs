@@ -1,13 +1,13 @@
-//! `/usage` -- show credit usage or open billing management page.
+//! `/usage` -- show provider usage or open the matching management page.
 
 use crate::app::actions::Action;
 use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
 
-/// Show coding credit usage or manage billing.
+/// Show coding usage or open the active provider's usage settings.
 ///
 /// `/usage`        -- show current credit usage
 /// `/usage show`   -- same as above
-/// `/usage manage` -- open billing management page in browser
+/// `/usage manage` -- open provider usage settings in browser
 pub struct UsageCommand;
 
 impl SlashCommand for UsageCommand {
@@ -23,7 +23,7 @@ impl SlashCommand for UsageCommand {
     }
 
     fn description(&self) -> &str {
-        "View credit usage or manage billing"
+        "View usage or open provider usage settings"
     }
 
     fn usage(&self) -> &str {
@@ -38,7 +38,12 @@ impl SlashCommand for UsageCommand {
         Some("show | manage")
     }
 
-    fn suggest_args(&self, _ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
+    fn suggest_args(&self, ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
+        let manage_description = if ctx.models.current_model_is_openai_codex() {
+            "Open ChatGPT Codex usage settings"
+        } else {
+            "Open billing management page"
+        };
         Some(vec![
             ArgItem {
                 display: "show".to_string(),
@@ -50,15 +55,18 @@ impl SlashCommand for UsageCommand {
                 display: "manage".to_string(),
                 match_text: "manage".to_string(),
                 insert_text: "manage".to_string(),
-                description: "Open billing management page".to_string(),
+                description: manage_description.to_string(),
             },
         ])
     }
 
-    fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
+    fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         let arg = args.trim();
         match arg {
             "" | "show" => CommandResult::Action(Action::ShowUsage),
+            "manage" if ctx.models.current_model_is_openai_codex() => CommandResult::Action(
+                Action::OpenUrl("https://chatgpt.com/codex/settings/usage".to_string()),
+            ),
             "manage" => {
                 CommandResult::Action(Action::OpenUrl("https://grok.com/?_s=usage".to_string()))
             }

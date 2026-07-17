@@ -975,6 +975,49 @@ impl ModelsManager {
             .or_else(|| advertised_default_reasoning_effort(info))
     }
 
+    /// Return the provider-advertised Fast tier for a model. Fast is an exact
+    /// provider contract: its catalog and request id is `priority`. Do not
+    /// infer request behavior from the display name.
+    pub fn fast_service_tier_for_provider(
+        &self,
+        provider: ProviderId,
+        model_id: &str,
+    ) -> Option<config::ModelServiceTier> {
+        if provider != ProviderId::OpenAiCodex {
+            return None;
+        }
+        let models = self.inner.models.read();
+        let info = model_entry_by_id_or_slug_for_provider(&models, model_id, provider)?.info();
+        info.service_tiers
+            .iter()
+            .find(|tier| tier.id == xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER)
+            .cloned()
+    }
+
+    /// Validate a persisted service-tier selection against the live,
+    /// provider-qualified model catalog. Explicit Standard is always valid for
+    /// a known Codex model; every other value must be advertised by that model.
+    pub fn resolve_service_tier_for_provider(
+        &self,
+        provider: ProviderId,
+        model_id: &str,
+        service_tier: &str,
+    ) -> Option<String> {
+        if provider != ProviderId::OpenAiCodex {
+            return None;
+        }
+        let models = self.inner.models.read();
+        let info = model_entry_by_id_or_slug_for_provider(&models, model_id, provider)?.info();
+        let normalized = normalize_service_tier_alias(service_tier.trim());
+        if normalized == xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER {
+            return Some(normalized.to_owned());
+        }
+        info.service_tiers
+            .iter()
+            .any(|tier| tier.id == normalized)
+            .then(|| normalized.to_owned())
+    }
+
     /// Turn-local Codex v2 delegation policy. Ultra retains Grok Build's
     /// native agent loop and activates its existing task/subagent tool
     /// proactively; every other level explicitly returns to request-only
@@ -3081,6 +3124,27 @@ fn map_openai_codex_catalog(
                 .default_reasoning_level
                 .as_deref()
                 .and_then(|value| value.parse::<ReasoningEffort>().ok());
+            // Grok's session gate is percentage-based while the Codex catalog
+            // publishes an absolute auto-compact token limit. Derive the
+            // earliest safe whole-percent threshold so each entitled model
+            // follows its live catalog budget instead of silently falling back
+            // to the fork-wide default. The effective-window percentage is a
+            // hard cap, not a replacement when the catalog omits a limit.
+            let effective_context_percent = u8::try_from(model.effective_context_window_percent)
+                .ok()
+                .filter(|value| (1..=100).contains(value));
+            let auto_compact_threshold_percent = model
+                .auto_compact_token_limit
+                .and_then(|value| u64::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .map(|limit| {
+                    let percent = limit
+                        .saturating_mul(100)
+                        .checked_div(context_window.get())
+                        .unwrap_or(1)
+                        .clamp(1, 100) as u8;
+                    effective_context_percent.map_or(percent, |cap| percent.min(cap))
+                });
             let reasoning_efforts: Vec<ReasoningEffortOption> = model
                 .supported_reasoning_levels
                 .iter()
@@ -3140,7 +3204,7 @@ fn map_openai_codex_catalog(
                         auth_scheme: xai_grok_sampler::AuthScheme::Bearer,
                         extra_headers,
                         context_window,
-                        auto_compact_threshold_percent: None,
+                        auto_compact_threshold_percent,
                         system_prompt_label: None,
                         use_concise: false,
                         // Preserve Grok Build's agent loop and system prompt;
@@ -3154,6 +3218,17 @@ fn map_openai_codex_catalog(
                         reasoning_effort: default_effort,
                         supports_reasoning_effort: !reasoning_efforts.is_empty(),
                         reasoning_efforts,
+                        service_tiers: model
+                            .service_tiers
+                            .into_iter()
+                            .map(|tier| config::ModelServiceTier {
+                                id: tier.id,
+                                name: tier.name,
+                                description: tier.description,
+                            })
+                            .collect(),
+                        default_service_tier: model.default_service_tier,
+                        service_tier: None,
                         multi_agent_version,
                         supports_image_input,
                         // Grok's hosted backend-search extension is xAI-only.
@@ -3697,6 +3772,15 @@ fn resolve_combined_model_catalog(
     catalog.retain(|_, entry| entry.info.provider != ProviderId::OpenAiCodex);
     catalog.extend(codex_models);
 
+    let fast_mode_enabled = cfg.features.fast_mode.unwrap_or(true);
+    for entry in catalog
+        .values_mut()
+        .filter(|entry| entry.info.provider == ProviderId::OpenAiCodex)
+    {
+        entry.info.service_tier =
+            resolve_model_service_tier(&entry.info, cfg.service_tier.as_deref(), fast_mode_enabled);
+    }
+
     if let Ok(Some(disabled)) = ModelGlobSet::compile(cfg.models.disabled_models.as_ref()) {
         let before = catalog.len();
         catalog.retain(|key, entry| !disabled.matches(key, &entry.model));
@@ -3830,6 +3914,42 @@ fn advertised_default_reasoning_effort(info: &config::ModelInfo) -> Option<Reaso
         .and_then(|effort| resolve_model_reasoning_effort(info, effort))
 }
 
+fn normalize_service_tier_alias(value: &str) -> &str {
+    if value.eq_ignore_ascii_case("fast") {
+        xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER
+    } else {
+        value
+    }
+}
+
+fn resolve_model_service_tier(
+    info: &config::ModelInfo,
+    configured: Option<&str>,
+    fast_mode_enabled: bool,
+) -> Option<String> {
+    if info.provider != ProviderId::OpenAiCodex || !fast_mode_enabled {
+        return None;
+    }
+
+    if let Some(configured) = configured {
+        let configured = normalize_service_tier_alias(configured.trim());
+        if configured == xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER {
+            return Some(configured.to_owned());
+        }
+        return info
+            .service_tiers
+            .iter()
+            .any(|tier| tier.id == configured)
+            .then(|| configured.to_owned());
+    }
+
+    info.default_service_tier
+        .as_deref()
+        .map(normalize_service_tier_alias)
+        .filter(|tier| info.service_tiers.iter().any(|option| option.id == *tier))
+        .map(str::to_owned)
+}
+
 /// True when an active `allowed_models` allowlist leaves no selectable model.
 /// (An excluded *default* does not count — that is recoverable by reselection.)
 pub(crate) fn allowlist_matches_nothing(
@@ -3933,7 +4053,9 @@ mod tests {
     }
 
     fn gpt_56_codex_catalog() -> IndexMap<String, ModelEntry> {
-        use crate::remote::{CodexCatalogModel, CodexModelCatalog, CodexReasoningEffortPreset};
+        use crate::remote::{
+            CodexCatalogModel, CodexModelCatalog, CodexModelServiceTier, CodexReasoningEffortPreset,
+        };
 
         let model = |slug: &str, default: &str, efforts: &[&str]| CodexCatalogModel {
             id: format!("openai-codex/{slug}"),
@@ -3954,6 +4076,11 @@ mod tests {
             input_modalities: vec!["text".to_owned(), "image".to_owned()],
             use_responses_lite: true,
             multi_agent_version: Some(serde_json::json!("v2")),
+            service_tiers: vec![CodexModelServiceTier {
+                id: xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER.to_owned(),
+                name: "Fast".to_owned(),
+                description: "1.5x speed, increased usage".to_owned(),
+            }],
             ..Default::default()
         };
         let through_ultra = ["low", "medium", "high", "xhigh", "max", "ultra"];
@@ -3965,6 +4092,122 @@ mod tests {
                 model("gpt-5.6-luna", "medium", &through_max),
             ],
         })
+    }
+
+    #[test]
+    fn codex_fast_alias_is_applied_only_when_catalog_and_feature_allow_it() {
+        let mut catalog = gpt_56_codex_catalog();
+        let unsupported_id = "openai-codex/gpt-5.6-no-fast";
+        let mut unsupported = catalog["openai-codex/gpt-5.6-luna"].clone();
+        unsupported.info.id = Some(unsupported_id.to_owned());
+        unsupported.info.model = "gpt-5.6-no-fast".to_owned();
+        unsupported.info.service_tiers.clear();
+        unsupported.info.default_service_tier = None;
+        catalog.insert(unsupported_id.to_owned(), unsupported);
+
+        let mut cfg = config_from_toml(
+            r#"
+            service_tier = "fast"
+
+            [features]
+            fast_mode = true
+            "#,
+        );
+        let resolved = resolve_combined_model_catalog(&cfg, None, catalog.clone());
+        assert_eq!(
+            resolved["openai-codex/gpt-5.6-luna"]
+                .info
+                .service_tier
+                .as_deref(),
+            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER),
+        );
+        assert_eq!(resolved[unsupported_id].info.service_tier, None);
+
+        cfg.features.fast_mode = Some(false);
+        let disabled = resolve_combined_model_catalog(&cfg, None, catalog);
+        assert!(
+            disabled
+                .values()
+                .filter(|entry| entry.info.provider == ProviderId::OpenAiCodex)
+                .all(|entry| entry.info.service_tier.is_none())
+        );
+    }
+
+    #[test]
+    fn codex_standard_sentinel_and_catalog_default_resolve_explicitly() {
+        let mut catalog = gpt_56_codex_catalog();
+        catalog
+            .get_mut("openai-codex/gpt-5.6-luna")
+            .unwrap()
+            .info
+            .default_service_tier =
+            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER.to_owned());
+
+        let defaulted =
+            resolve_combined_model_catalog(&config::Config::default(), None, catalog.clone());
+        assert_eq!(
+            defaulted["openai-codex/gpt-5.6-luna"]
+                .info
+                .service_tier
+                .as_deref(),
+            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER),
+            "an advertised catalog default should be honored when Fast controls are enabled",
+        );
+
+        let cfg = config::Config {
+            service_tier: Some("default".to_owned()),
+            ..Default::default()
+        };
+        let standard = resolve_combined_model_catalog(&cfg, None, catalog);
+        assert_eq!(
+            standard["openai-codex/gpt-5.6-luna"]
+                .info
+                .service_tier
+                .as_deref(),
+            Some(xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER),
+            "explicit Standard must override a catalog Fast default",
+        );
+    }
+
+    #[test]
+    fn codex_service_tier_manager_resolution_is_provider_qualified() {
+        let manager = manager_with_catalog(gpt_56_codex_catalog());
+        let fast = manager
+            .fast_service_tier_for_provider(ProviderId::OpenAiCodex, "gpt-5.6-luna")
+            .expect("Luna advertises Fast in this catalog fixture");
+        assert_eq!(
+            fast.id,
+            xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER
+        );
+        assert_eq!(
+            manager.resolve_service_tier_for_provider(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-luna",
+                "fast",
+            ),
+            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER.to_owned()),
+        );
+        assert_eq!(
+            manager.resolve_service_tier_for_provider(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-luna",
+                "default",
+            ),
+            Some(xai_grok_sampling_types::OPENAI_CODEX_STANDARD_SERVICE_TIER.to_owned()),
+        );
+        assert_eq!(
+            manager.resolve_service_tier_for_provider(
+                ProviderId::OpenAiCodex,
+                "gpt-5.6-luna",
+                "unadvertised",
+            ),
+            None,
+        );
+        assert!(
+            manager
+                .fast_service_tier_for_provider(ProviderId::Xai, "gpt-5.6-luna")
+                .is_none()
+        );
     }
 
     fn manager_with_catalog(catalog: IndexMap<String, ModelEntry>) -> ModelsManager {
@@ -4153,12 +4396,14 @@ mod tests {
                 supported_in_api: false,
                 context_window: Some(123_000),
                 max_context_window: Some(456_000),
+                auto_compact_token_limit: Some(100_000),
                 use_responses_lite: true,
                 ..Default::default()
             }],
         });
         let info = &mapped["openai-codex/provider-only"].info;
         assert_eq!(info.context_window.get(), 123_000);
+        assert_eq!(info.auto_compact_threshold_percent, Some(81));
         assert!(!info.supported_in_api);
         assert!(model_visible_for_auth(info, false));
         assert_eq!(

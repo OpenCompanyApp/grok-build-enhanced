@@ -1501,9 +1501,8 @@ impl SessionActor {
             );
             return None;
         }
-        let (Some(storage), Some(params)) =
-            (self.memory.storage(), self.memory.backend_params.as_ref())
-        else {
+        let params = self.memory.backend_params.borrow().clone();
+        let (Some(storage), Some(params)) = (self.memory.storage(), params) else {
             return None;
         };
         let conversation = self.chat_state_handle.get_conversation().await;
@@ -1516,7 +1515,7 @@ impl SessionActor {
         }
         use xai_grok_tools::types::memory_backend::MemoryBackend as _;
         let (injection_params, configured_min_score) =
-            build_initial_injection_backend_params(params, &self.memory.initial_injection_config);
+            build_initial_injection_backend_params(&params, &self.memory.initial_injection_config);
         let backend = crate::session::memory::MemoryBackendImpl::from_session_params(
             storage,
             &injection_params,
@@ -1814,6 +1813,13 @@ impl SessionActor {
                 );
             }
             self.maybe_inject_mcp_reminder().await;
+            // A resumed session can already be beyond the hard window. Keep
+            // this check before every model-backed operation in the loop,
+            // even when a previous provider failure has suppressed automatic
+            // compaction.
+            if self.resolve_preflight_overflow().await? {
+                continue;
+            }
             if self.two_pass_active()
                 && !self.compaction.prefire.has_cache()
                 && self.should_prefire_two_pass().await
@@ -2051,7 +2057,8 @@ impl SessionActor {
                     },
                 );
             }
-            self.record_response_token_usage(&response, Some(model_duration_ms));
+            self.record_response_token_usage(&response, Some(model_duration_ms))
+                .await;
             if let Some(pt) = prompt_timing.take() {
                 let mcp_count = self.mcp_state.lock().await.configs.len() as u32;
                 let mcp_tools = self
@@ -2330,10 +2337,7 @@ impl SessionActor {
                 return Ok(TurnOutcome::MaxTurnsReached { limit });
             }
             tool_turn_count = next_turn;
-            if let Some(trigger_info) = self.check_preflight_overflow().await {
-                if let Err(e) = self.run_compact_only(trigger_info).await {
-                    tracing::error!(error = % e, "Preflight overflow compaction failed");
-                }
+            if self.resolve_preflight_overflow().await? {
                 continue;
             }
         }

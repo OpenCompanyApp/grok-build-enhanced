@@ -2010,6 +2010,17 @@ fn render_row(
     } else {
         theme.bg_base
     };
+    let native_overlay = if crate::theme::cache::active_terminal_native() {
+        if selected {
+            theme.selected_row_style()
+        } else if hovered {
+            theme.hovered_row_style()
+        } else {
+            Style::default()
+        }
+    } else {
+        Style::default()
+    };
 
     // Paint both content rows with the same background so selection
     // reads as a single block.
@@ -2093,6 +2104,13 @@ fn render_row(
                 .fg(theme.accent_user)
                 .bg(bg)
                 .add_modifier(Modifier::BOLD),
+        );
+        buf.set_style(
+            Rect {
+                height: content_h,
+                ..rect
+            },
+            native_overlay,
         );
         return;
     }
@@ -2291,6 +2309,14 @@ fn render_row(
             }
         }
     }
+
+    buf.set_style(
+        Rect {
+            height: content_h,
+            ..rect
+        },
+        native_overlay,
+    );
 }
 
 fn render_narrow_rows(
@@ -2419,6 +2445,17 @@ fn render_narrow_rows(
         } else {
             theme.bg_base
         };
+        let native_overlay = if crate::theme::cache::active_terminal_native() {
+            if selected {
+                theme.selected_row_style()
+            } else if hovered {
+                theme.hovered_row_style()
+            } else {
+                Style::default()
+            }
+        } else {
+            Style::default()
+        };
 
         if renaming && let Some(rn) = state.rename.as_ref() {
             // Mirror the wide layout: keep the marker + state icon
@@ -2474,6 +2511,7 @@ fn render_narrow_rows(
                 Style::default().fg(theme.text_primary).bg(bg),
             );
         }
+        buf.set_style(line_rect, native_overlay);
         if !row.is_more_placeholder {
             state.row_rects.push((row.id.clone(), line_rect));
         }

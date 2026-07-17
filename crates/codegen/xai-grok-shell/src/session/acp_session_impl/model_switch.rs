@@ -160,15 +160,205 @@ async fn refresh_video_gen_resource(
     }
 }
 
+async fn refresh_provider_memory_resource(
+    session: &SessionActor,
+    bridge: &crate::tools::bridge::ToolBridge,
+    sampling_config: &xai_grok_sampler::SamplerConfig,
+) {
+    let Some(mut params) = session.memory.backend_params.borrow().clone() else {
+        return;
+    };
+
+    params.embed_config = session.rebuild_spec.memory_embedding_config.clone();
+    params.embed_base_url = sampling_config.base_url.clone();
+    params.embed_api_key = sampling_config.api_key.clone();
+    match sampling_config.provider {
+        xai_grok_sampling_types::ProviderId::OpenAiCodex => {
+            // ChatGPT Codex auth is not a general OpenAI API credential and
+            // its backend does not expose a supported embeddings endpoint.
+            params.embed_config = None;
+            params.embed_base_url.clear();
+            params.embed_api_key = None;
+            params.api_key_provider = None;
+            params.auth_credentials = None;
+        }
+        xai_grok_sampling_types::ProviderId::Xai => {
+            params.api_key_provider = session.auth_manager.as_ref().map(|manager| {
+                std::sync::Arc::new(crate::auth::manager::SharedAuthKeyProvider(manager.clone()))
+                    as xai_grok_tools::types::SharedApiKeyProvider
+            });
+            params.auth_credentials = session.auth_manager.as_ref().map(|manager| {
+                std::sync::Arc::new(
+                    crate::auth::credential_provider::ShellAuthCredentialProvider::new(
+                        manager.clone(),
+                        None,
+                        None,
+                    ),
+                ) as std::sync::Arc<dyn xai_grok_auth::AuthCredentialProvider>
+            });
+        }
+        xai_grok_sampling_types::ProviderId::Custom => {
+            // A custom endpoint may use its explicit key, but the xAI
+            // AuthManager must never cross that provider boundary.
+            params.api_key_provider = None;
+            params.auth_credentials = None;
+        }
+    }
+
+    *session.memory.backend_params.borrow_mut() = Some(params.clone());
+    let Some(storage) = session.memory.storage() else {
+        return;
+    };
+    let backend = crate::session::memory::MemoryBackendImpl::from_session_params(storage, &params);
+    *session.memory.search_counter.borrow_mut() = Some(backend.search_counter.clone());
+    let backend: std::sync::Arc<dyn xai_grok_tools::types::memory_backend::MemoryBackend> =
+        std::sync::Arc::new(backend);
+    bridge.update_resource(backend).await;
+}
+
+fn web_search_config_for_provider(
+    configured: &xai_grok_tools::implementations::web_search::WebSearchConfig,
+    explicitly_disabled: bool,
+    configured_provider: Option<xai_grok_sampling_types::ProviderId>,
+    sampling_config: &xai_grok_sampler::SamplerConfig,
+    session_id: &str,
+    alpha_test_key: Option<&str>,
+) -> xai_grok_tools::implementations::web_search::WebSearchConfig {
+    use xai_grok_tools::implementations::web_search::WebSearchConfig;
+
+    if explicitly_disabled {
+        return WebSearchConfig::Disabled;
+    }
+    if sampling_config.provider.is_openai_codex() {
+        return WebSearchConfig::CodexSubscription {
+            base_url: sampling_config.base_url.clone(),
+            model: sampling_config.model.clone(),
+            session_id: session_id.to_owned(),
+        };
+    }
+
+    // Preserve a dedicated provider-owned web-search model when returning to
+    // the provider that originally supplied it. Crossing to a different
+    // provider must instead use the new provider's explicit sampling route;
+    // never infer ownership from a URL or carry endpoint headers across.
+    if configured_provider == Some(sampling_config.provider)
+        && let WebSearchConfig::Enabled {
+            api_key,
+            base_url,
+            model,
+            extra_headers,
+            alpha_test_key: configured_alpha_test_key,
+        } = configured
+    {
+        return WebSearchConfig::Enabled {
+            api_key: sampling_config
+                .api_key
+                .clone()
+                .unwrap_or_else(|| api_key.clone()),
+            base_url: base_url.clone(),
+            model: model.clone(),
+            extra_headers: extra_headers.clone(),
+            alpha_test_key: configured_alpha_test_key
+                .clone()
+                .or_else(|| alpha_test_key.map(str::to_owned)),
+        };
+    }
+
+    let Some(api_key) = sampling_config.api_key.clone() else {
+        return WebSearchConfig::Disabled;
+    };
+    WebSearchConfig::Enabled {
+        api_key,
+        base_url: sampling_config.base_url.clone(),
+        model: sampling_config.model.clone(),
+        extra_headers: sampling_config.extra_headers.clone(),
+        alpha_test_key: alpha_test_key.map(str::to_owned),
+    }
+}
+
+async fn web_search_tool_name(bridge: &crate::tools::bridge::ToolBridge) -> String {
+    use xai_grok_tools::types::tool::ToolKind;
+    bridge
+        .tool_for_kind(ToolKind::WebSearch)
+        .await
+        .unwrap_or_else(|| "web_search".to_owned())
+}
+
+async fn remove_web_search_tool_definition(bridge: &crate::tools::bridge::ToolBridge) {
+    let name = web_search_tool_name(bridge).await;
+    bridge.unregister_tool_by_name(&name);
+}
+
+async fn install_web_search_tool_definition(
+    bridge: &crate::tools::bridge::ToolBridge,
+    codex_subscription: bool,
+) -> Result<(), xai_tool_runtime::ToolError> {
+    use xai_grok_tools::implementations::grok_build::web_search::{
+        CodexWebSearchTool, WebSearchTool, provider_input_schema,
+    };
+
+    let name = web_search_tool_name(bridge).await;
+    bridge.unregister_tool_by_name(&name);
+    if codex_subscription {
+        bridge
+            .register_mcp_tools(name, CodexWebSearchTool, None)
+            .await
+    } else {
+        bridge
+            .register_mcp_tools(name, WebSearchTool, Some(provider_input_schema(false)))
+            .await
+    }
+}
+
+async fn web_fetch_tool_name(bridge: &crate::tools::bridge::ToolBridge) -> String {
+    use xai_grok_tools::types::tool::ToolKind;
+    bridge
+        .tool_for_kind(ToolKind::WebFetch)
+        .await
+        .unwrap_or_else(|| "web_fetch".to_owned())
+}
+
+async fn remove_web_fetch_tool_definition(bridge: &crate::tools::bridge::ToolBridge) {
+    let name = web_fetch_tool_name(bridge).await;
+    bridge.unregister_tool_by_name(&name);
+}
+
+async fn ensure_web_fetch_tool_definition(
+    bridge: &crate::tools::bridge::ToolBridge,
+) -> Result<(), xai_tool_runtime::ToolError> {
+    use xai_grok_tools::implementations::grok_build::web_fetch::WebFetchTool;
+
+    let name = web_fetch_tool_name(bridge).await;
+    if bridge.tool_kind(&name).is_none() {
+        bridge.register_mcp_tools(name, WebFetchTool, None).await?;
+    }
+    Ok(())
+}
+
 impl SessionActor {
     pub(super) async fn handle_set_session_model(
         &self,
-        sampling_config: xai_grok_sampler::SamplerConfig,
+        mut sampling_config: xai_grok_sampler::SamplerConfig,
         use_concise: bool,
         apply_prompt_override: bool,
         skip_prompt_rewrite: bool,
         auto_compact_threshold_percent: u8,
     ) -> Result<acp::ModelId, acp::Error> {
+        let previous_sampling_config = self.chat_state_handle.get_sampling_config().await;
+        if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
+            && previous_sampling_config.as_ref().is_some_and(|previous| {
+                previous.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
+            })
+            && let Some(previous_tier) = previous_sampling_config
+                .as_ref()
+                .and_then(|previous| previous.service_tier.clone())
+        {
+            // Preserve the user's session selection across Codex model
+            // switches. Validation is intentionally deferred to the per-turn
+            // wire boundary so switching through a model without Fast support
+            // does not erase the preference before switching back.
+            sampling_config.service_tier = Some(previous_tier);
+        }
         let model_id =
             if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
                 acp::ModelId::new(format!("openai-codex/{}", sampling_config.model))
@@ -209,11 +399,7 @@ impl SessionActor {
                 }
             )),
         );
-        let previous_provider = self
-            .chat_state_handle
-            .get_sampling_config()
-            .await
-            .map(|config| config.provider);
+        let previous_provider = previous_sampling_config.map(|config| config.provider);
         if previous_provider.is_some_and(|provider| provider != sampling_config.provider) {
             let conversation = self.chat_state_handle.get_conversation().await;
             let (portable_conversation, removed) =
@@ -251,9 +437,11 @@ impl SessionActor {
                 extra_headers: sampling_config.extra_headers.clone(),
                 context_window: new_context_window,
                 reasoning_effort: sampling_config.reasoning_effort,
+                service_tier: sampling_config.service_tier.clone(),
                 stream_tool_calls: Some(sampling_config.stream_tool_calls),
             });
         let existing = self.chat_state_handle.get_credentials().await;
+        let alpha_test_key = existing.alpha_test_key.clone();
         let session_key = self
             .auth_manager
             .as_ref()
@@ -271,6 +459,10 @@ impl SessionActor {
             });
         self.refresh_provider_media_resources(&sampling_config)
             .await;
+        self.refresh_provider_web_resources(&sampling_config, alpha_test_key.as_deref())
+            .await;
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        refresh_provider_memory_resource(self, &bridge, &sampling_config).await;
         self.model_auth_facts.replace(None);
         self.signals_handle()
             .record_model_usage(&sampling_config.model);
@@ -313,6 +505,134 @@ impl SessionActor {
         Ok(model_id)
     }
 
+    async fn refresh_provider_web_resources(
+        &self,
+        sampling_config: &xai_grok_sampler::SamplerConfig,
+        alpha_test_key: Option<&str>,
+    ) {
+        use xai_grok_tools::implementations::grok_build::web_fetch::{
+            WebFetchClient, WebFetchParams,
+        };
+        use xai_grok_tools::implementations::web_search::{
+            WebSearchConfig, client::WebSearchClient,
+        };
+
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        let mut web_search_config = web_search_config_for_provider(
+            &self.rebuild_spec.web_search_config,
+            self.rebuild_spec.web_search_disabled,
+            self.rebuild_spec.web_search_provider,
+            sampling_config,
+            self.session_info.id.0.as_ref(),
+            alpha_test_key,
+        );
+        let api_key_provider = match sampling_config.provider {
+            xai_grok_sampling_types::ProviderId::OpenAiCodex => {
+                crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home())
+                    .ok()
+                    .map(std::sync::Arc::new)
+                    .map(crate::auth::codex::shared_api_key_provider)
+            }
+            xai_grok_sampling_types::ProviderId::Xai => self.auth_manager.as_ref().map(|manager| {
+                std::sync::Arc::new(crate::auth::manager::SharedAuthKeyProvider(manager.clone()))
+                    as xai_grok_tools::types::SharedApiKeyProvider
+            }),
+            xai_grok_sampling_types::ProviderId::Custom => None,
+        };
+        if sampling_config.provider.is_openai_codex() && api_key_provider.is_none() {
+            tracing::warn!(
+                provider = "openai_codex",
+                "web_search disabled after provider switch: scoped request authentication is unavailable"
+            );
+            web_search_config = WebSearchConfig::Disabled;
+        }
+
+        let codex_subscription_search = web_search_config.is_codex_subscription();
+        let hosted_web_search_enabled = web_search_config.allows_hosted_responses_tool();
+        let backend_search_enabled =
+            self.rebuild_spec.backend_search && !sampling_config.provider.is_openai_codex();
+        self.agent.borrow_mut().refresh_backend_search_config(
+            backend_search_enabled,
+            hosted_web_search_enabled,
+            codex_subscription_search,
+        );
+
+        if web_search_config.is_enabled() {
+            let attribution_callback =
+                if sampling_config.provider == xai_grok_sampling_types::ProviderId::Xai {
+                    self.rebuild_spec.attribution_callback.clone()
+                } else {
+                    None
+                };
+            match WebSearchClient::new(&web_search_config, api_key_provider) {
+                Ok(client) => {
+                    bridge
+                        .update_resource(client.with_attribution_callback(attribution_callback))
+                        .await;
+                    if let Err(error) =
+                        install_web_search_tool_definition(&bridge, codex_subscription_search).await
+                    {
+                        tracing::warn!(
+                            %error,
+                            "failed to install web search tool after provider switch"
+                        );
+                        remove_web_search_tool_definition(&bridge).await;
+                        bridge.remove_resource::<WebSearchClient>().await;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "failed to rebuild web search client after provider switch"
+                    );
+                    remove_web_search_tool_definition(&bridge).await;
+                    bridge.remove_resource::<WebSearchClient>().await;
+                }
+            }
+        } else {
+            remove_web_search_tool_definition(&bridge).await;
+            bridge.remove_resource::<WebSearchClient>().await;
+        }
+
+        let fetch_params: Option<WebFetchParams> = self
+            .rebuild_spec
+            .web_fetch_config
+            .params_for_codex_subscription(sampling_config.provider.is_openai_codex())
+            .cloned();
+        self.permissions.set_web_fetch_allowed_domains(
+            fetch_params
+                .as_ref()
+                .map(WebFetchParams::allowed_domains)
+                .unwrap_or_default(),
+        );
+        if let Some(params) = fetch_params {
+            match WebFetchClient::new(&params) {
+                Ok(client) => {
+                    bridge.update_resource(client).await;
+                    if let Err(error) = ensure_web_fetch_tool_definition(&bridge).await {
+                        tracing::warn!(
+                            %error,
+                            "failed to install web fetch tool after provider switch"
+                        );
+                        remove_web_fetch_tool_definition(&bridge).await;
+                        bridge.remove_resource::<WebFetchClient>().await;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "failed to rebuild web fetch client after provider switch"
+                    );
+                    remove_web_fetch_tool_definition(&bridge).await;
+                    bridge.remove_resource::<WebFetchClient>().await;
+                }
+            }
+        } else {
+            remove_web_fetch_tool_definition(&bridge).await;
+            bridge.remove_resource::<WebFetchClient>().await;
+        }
+    }
+
     async fn refresh_provider_media_resources(
         &self,
         sampling_config: &xai_grok_sampler::SamplerConfig,
@@ -325,12 +645,7 @@ impl SessionActor {
         let endpoints = self.models_manager.endpoints();
         if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
             let (image_gen_enabled, image_edit_enabled) = self.models_manager.image_tool_gates();
-            if (!image_gen_enabled && !image_edit_enabled)
-                || !self.models_manager.model_supports_image_input_for_provider(
-                    sampling_config.provider,
-                    &sampling_config.model,
-                )
-            {
+            if !image_gen_enabled && !image_edit_enabled {
                 bridge.remove_resource::<ImageGenClient>().await;
                 refresh_video_gen_resource(
                     &bridge,
@@ -344,6 +659,8 @@ impl SessionActor {
                 .await;
                 return;
             }
+            // Image generation/editing uses the standalone Codex image model;
+            // selected-model image-input support remains an input/read concern.
             let manager =
                 crate::auth::codex::CodexAuthManager::new(&crate::util::grok_home::grok_home())
                     .ok()
@@ -646,6 +963,206 @@ mod provider_media_switch_tests {
     use super::*;
     use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
     use xai_grok_tools::implementations::grok_build::video_gen::{VideoGenClient, VideoGenConfig};
+    use xai_grok_tools::implementations::web_search::WebSearchConfig;
+
+    fn enabled_xai_web_search_config() -> WebSearchConfig {
+        WebSearchConfig::Enabled {
+            api_key: "old-xai-search-key".to_owned(),
+            base_url: "https://search.x.ai/v1".to_owned(),
+            model: "xai-dedicated-search".to_owned(),
+            extra_headers: indexmap::indexmap! {
+                "x-xai-route".to_owned() => "search".to_owned(),
+            },
+            alpha_test_key: Some("old-alpha".to_owned()),
+        }
+    }
+
+    #[test]
+    fn codex_web_search_route_uses_current_raw_model_and_session_identity() {
+        let sampling = xai_grok_sampler::SamplerConfig::openai_codex("gpt-5.6-luna");
+        let config = web_search_config_for_provider(
+            &enabled_xai_web_search_config(),
+            false,
+            Some(xai_grok_sampling_types::ProviderId::Xai),
+            &sampling,
+            "session-public-id",
+            Some("must-not-cross"),
+        );
+        assert!(matches!(
+            config,
+            WebSearchConfig::CodexSubscription {
+                ref base_url,
+                ref model,
+                ref session_id,
+            } if base_url == xai_grok_sampling_types::OPENAI_CODEX_BASE_URL
+                && model == "gpt-5.6-luna"
+                && session_id == "session-public-id"
+        ));
+    }
+
+    #[test]
+    fn unavailable_xai_search_does_not_block_later_codex_subscription_search() {
+        let sampling = xai_grok_sampler::SamplerConfig::openai_codex("gpt-5.6-luna");
+        let config = web_search_config_for_provider(
+            &WebSearchConfig::Disabled,
+            false,
+            None,
+            &sampling,
+            "session-public-id",
+            None,
+        );
+        assert!(matches!(
+            config,
+            WebSearchConfig::CodexSubscription { ref model, .. }
+                if model == "gpt-5.6-luna"
+        ));
+    }
+
+    #[test]
+    fn explicit_web_search_kill_switch_survives_provider_switch() {
+        let sampling = xai_grok_sampler::SamplerConfig::openai_codex("gpt-5.6-luna");
+        assert!(matches!(
+            web_search_config_for_provider(
+                &enabled_xai_web_search_config(),
+                true,
+                Some(xai_grok_sampling_types::ProviderId::Xai),
+                &sampling,
+                "session-public-id",
+                None,
+            ),
+            WebSearchConfig::Disabled
+        ));
+    }
+
+    #[test]
+    fn cross_provider_web_search_drops_old_endpoint_headers_and_credentials() {
+        let mut sampling = xai_grok_sampler::SamplerConfig::default();
+        sampling.provider = xai_grok_sampling_types::ProviderId::Custom;
+        sampling.api_key = Some("custom-key".to_owned());
+        sampling.base_url = "https://custom.example/v1".to_owned();
+        sampling.model = "custom-search-model".to_owned();
+        sampling.extra_headers = indexmap::indexmap! {
+            "x-custom-route".to_owned() => "green".to_owned(),
+        };
+
+        let config = web_search_config_for_provider(
+            &enabled_xai_web_search_config(),
+            false,
+            Some(xai_grok_sampling_types::ProviderId::Xai),
+            &sampling,
+            "session-id",
+            Some("custom-alpha"),
+        );
+        let WebSearchConfig::Enabled {
+            api_key,
+            base_url,
+            model,
+            extra_headers,
+            alpha_test_key,
+        } = config
+        else {
+            panic!("custom route with an explicit key must remain enabled");
+        };
+        assert_eq!(api_key, "custom-key");
+        assert_eq!(base_url, "https://custom.example/v1");
+        assert_eq!(model, "custom-search-model");
+        assert_eq!(
+            extra_headers.get("x-custom-route").map(String::as_str),
+            Some("green")
+        );
+        assert!(!extra_headers.contains_key("x-xai-route"));
+        assert_eq!(alpha_test_key.as_deref(), Some("custom-alpha"));
+    }
+
+    #[test]
+    fn returning_to_original_web_search_provider_preserves_dedicated_route() {
+        let mut sampling = xai_grok_sampler::SamplerConfig::default();
+        sampling.provider = xai_grok_sampling_types::ProviderId::Xai;
+        sampling.api_key = Some("rotated-xai-key".to_owned());
+        sampling.base_url = "https://main.x.ai/v1".to_owned();
+        sampling.model = "main-chat-model".to_owned();
+
+        let config = web_search_config_for_provider(
+            &enabled_xai_web_search_config(),
+            false,
+            Some(xai_grok_sampling_types::ProviderId::Xai),
+            &sampling,
+            "session-id",
+            None,
+        );
+        assert!(matches!(
+            config,
+            WebSearchConfig::Enabled {
+                ref api_key,
+                ref base_url,
+                ref model,
+                ref extra_headers,
+                ..
+            } if api_key == "rotated-xai-key"
+                && base_url == "https://search.x.ai/v1"
+                && model == "xai-dedicated-search"
+                && extra_headers.contains_key("x-xai-route")
+        ));
+    }
+
+    #[tokio::test]
+    async fn dynamic_web_search_tool_contract_switches_both_schema_and_description() {
+        let agent = super::super::support::test_agent_with_tools(vec![]).await;
+        let bridge = agent.tool_bridge().clone();
+
+        install_web_search_tool_definition(&bridge, true)
+            .await
+            .unwrap();
+        let codex = bridge
+            .tool_definitions()
+            .await
+            .into_iter()
+            .find(|definition| definition.function.name == "web_search")
+            .expect("Codex web search definition");
+        assert!(
+            codex.function.parameters["properties"]
+                .get("search_query")
+                .is_some()
+        );
+        assert!(
+            codex
+                .function
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("open, click, and find"))
+        );
+
+        install_web_search_tool_definition(&bridge, false)
+            .await
+            .unwrap();
+        let xai = bridge
+            .tool_definitions()
+            .await
+            .into_iter()
+            .find(|definition| definition.function.name == "web_search")
+            .expect("xAI web search definition");
+        assert!(xai.function.parameters["properties"].get("query").is_some());
+        assert!(
+            xai.function.parameters["properties"]
+                .get("search_query")
+                .is_none()
+        );
+        assert!(
+            xai.function
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("coding and software development"))
+        );
+
+        remove_web_search_tool_definition(&bridge).await;
+        assert!(
+            bridge
+                .tool_definitions()
+                .await
+                .into_iter()
+                .all(|definition| definition.function.name != "web_search")
+        );
+    }
 
     #[test]
     fn xai_image_key_rotation_preserves_complete_provider_configuration() {

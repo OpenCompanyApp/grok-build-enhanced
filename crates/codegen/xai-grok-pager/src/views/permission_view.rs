@@ -367,10 +367,6 @@ fn bash_display_line_count(state: &PermissionViewState, content_w: usize) -> usi
 
 // ── Rendering ──────────────────────────────────────────────────────────
 
-fn hovered_bg(theme: &Theme) -> ratatui::style::Color {
-    theme.bg_hover
-}
-
 /// Result from rendering the permission view, telling the caller where
 /// to render the inline prompt widget (if in FollowupInput mode).
 pub struct PermissionRenderResult {
@@ -568,7 +564,6 @@ pub fn render_permission_view(
 
     // ── Option rows ──
     let visible_bottom = area.y + area.height;
-    let hover_bg = hovered_bg(theme);
 
     // Precompute the selected words string for dynamic labels.
     let selected_words: Option<String> = state
@@ -586,7 +581,8 @@ pub fn render_permission_view(
         // In FollowupInput mode, skip the RejectOnce static row —
         // the caller will render the inline prompt widget at this position.
         if is_followup && option.kind == acp::PermissionOptionKind::RejectOnce {
-            let row_bg = theme.bg_visual; // always focused bg for the input row
+            let row_overlay = theme.selected_row_style();
+            let apply_row = |style: Style| style.bg(theme.bg_light).patch(row_overlay);
 
             // Fill the FULL row width including padding between accent ┃ and content.
             let full_row = Rect {
@@ -595,23 +591,24 @@ pub fn render_permission_view(
                 width: area.width.saturating_sub(1),
                 height: 1,
             };
-            buf.set_style(full_row, Style::default().bg(row_bg));
+            buf.set_style(full_row, apply_row(Style::default()));
 
-            // Re-draw accent ┃ with the row bg so it blends.
+            // Re-draw accent ┃ with the row style so it blends.
             if let Some(cell) = buf.cell_mut((area.x, y)) {
                 cell.set_symbol(crate::glyphs::accent_bar());
-                cell.set_style(Style::default().fg(theme.accent_user).bg(row_bg));
+                cell.set_style(apply_row(Style::default().fg(theme.accent_user)));
             }
 
             // Render the "<n> (●) ❯ " prefix manually (same as Q/A panel).
             // Use the 1-based option index so the shortcut number shown
             // here matches what the user types to invoke RejectOnce.
-            let num_style = Style::default().fg(theme.accent_user).bg(row_bg);
-            let marker_style = Style::default()
-                .fg(theme.text_primary)
-                .bg(row_bg)
-                .add_modifier(Modifier::BOLD);
-            let prompt_ind = Style::default().fg(theme.accent_user).bg(row_bg);
+            let num_style = apply_row(Style::default().fg(theme.accent_user));
+            let marker_style = apply_row(
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            );
+            let prompt_ind = apply_row(Style::default().fg(theme.accent_user));
             buf.set_span(content_x, y, &Span::styled(shortcut_label(i), num_style), 2);
             buf.set_span(
                 content_x + 2,
@@ -645,27 +642,30 @@ pub fn render_permission_view(
 
         let is_cursor = i == state.active_idx;
         let is_hovered = hovered_item == Some(i);
-        // When the panel is unfocused, drop the cursor-row bg so it
+        // When the panel is unfocused, drop the cursor-row cue so it
         // reads as "no active selection" — same rule as question_view.
-        let row_bg = if is_cursor && focused {
-            theme.bg_visual
+        let row_overlay = if is_cursor && focused {
+            theme.selected_row_style()
         } else if is_hovered {
-            hover_bg
+            theme.hovered_row_style()
         } else {
-            theme.bg_light
+            Style::default()
         };
 
-        let line = build_permission_option_line(
+        let mut line = build_permission_option_line(
             option,
             i,
             is_cursor,
-            row_bg,
+            theme.bg_light,
             selected_words.as_deref(),
             state.mcp_scope.as_ref(),
             followup_text,
             content_width,
             theme,
         );
+        for span in &mut line.spans {
+            span.style = span.style.patch(row_overlay);
+        }
 
         let row_rect = Rect {
             x: content_x,
@@ -673,7 +673,10 @@ pub fn render_permission_view(
             width: content_width,
             height: 1,
         };
-        buf.set_style(row_rect, Style::default().bg(row_bg));
+        buf.set_style(
+            row_rect,
+            Style::default().bg(theme.bg_light).patch(row_overlay),
+        );
         buf.set_line(content_x, y, &line, content_width);
         y += 1;
     }

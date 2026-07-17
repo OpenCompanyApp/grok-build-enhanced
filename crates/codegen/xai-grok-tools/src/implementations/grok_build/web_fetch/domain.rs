@@ -126,7 +126,6 @@ impl DomainMatcher {
                 }
                 tracing::debug!(
                     domain = %host,
-                    path = %url_path,
                     allowed_prefixes = ?prefixes,
                     "web_fetch path not in allowlist for domain"
                 );

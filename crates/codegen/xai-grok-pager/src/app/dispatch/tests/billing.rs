@@ -766,6 +766,7 @@ fn app_billing_fetched_stores_autotopup() {
 #[test]
 fn billing_error_silent_does_not_push_scrollback() {
     let mut app = test_app_with_agent();
+    app.billing_poll_wanted = true;
     let before = agent_scrollback_len(&app);
     dispatch(
         Action::TaskComplete(TaskResult::BillingError {
@@ -779,6 +780,10 @@ fn billing_error_silent_does_not_push_scrollback() {
         agent_scrollback_len(&app),
         before,
         "silent billing error should not push a scrollback message"
+    );
+    assert!(
+        !app.billing_poll_wanted,
+        "an unusable silent result must stop the retry poll loop"
     );
 }
 

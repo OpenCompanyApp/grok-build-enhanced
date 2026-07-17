@@ -9,7 +9,8 @@ use super::SessionActor;
 use super::is_project_instructions;
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use crate::session::compaction_config::{
-    AsyncCompactionCache, SUPPRESS_NONE, SUPPRESS_STICKY, SUPPRESS_TURN, SUPPRESS_UNTIL_SUCCESS,
+    AsyncCompactionCache, SUPPRESS_BACKOFF, SUPPRESS_NONE, SUPPRESS_STICKY, SUPPRESS_TURN,
+    SUPPRESS_UNTIL_SUCCESS,
 };
 use crate::session::helpers::CompactionStateContext;
 use crate::session::helpers::compaction_context::CompactionInputs;
@@ -219,6 +220,13 @@ impl SessionActor {
     /// Per-turn prefire decision: usage has reached `threshold - lead` (so there
     /// is still runway before the hard auto-compact line at `threshold`).
     pub(crate) async fn should_prefire_two_pass(&self) -> bool {
+        // Prefire is speculative automatic compaction spend. It must honor the
+        // same provider-failure gate as the synchronous auto-compact path or a
+        // usage-blocked Codex session can still issue one doomed request on
+        // every tool continuation while the visible compactor is suppressed.
+        if self.auto_compaction_is_suppressed() {
+            return false;
+        }
         let sampling_cfg = self.chat_state_handle.get_sampling_config().await;
         let Some(cw) = sampling_cfg.as_ref().map(|c| c.context_window.get()) else {
             return false;
@@ -435,12 +443,13 @@ pub(crate) struct AutoCompactTriggerInfo {
     pub context_window: u64,
     pub percentage: u8,
 }
-/// Why auto-compaction was suppressed after a deterministic failure.
+/// Why auto-compaction was suppressed after a classified failure.
 /// [`SuppressReason::as_str`] is a stable telemetry value (BQ/OTLP/dashboards key
 /// off it) — don't rename the strings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SuppressReason {
     CreditBlock,
+    RateLimit,
     Size,
     Auth,
     Schema,
@@ -450,6 +459,7 @@ impl SuppressReason {
     fn as_str(self) -> &'static str {
         match self {
             SuppressReason::CreditBlock => "credit_block",
+            SuppressReason::RateLimit => "rate_limit",
             SuppressReason::Size => "size",
             SuppressReason::Auth => "auth",
             SuppressReason::Schema => "schema",
@@ -462,14 +472,32 @@ impl SuppressReason {
     /// - `credit_block | auth` → [`SUPPRESS_UNTIL_SUCCESS`]: re-sending fails the
     ///   same way every turn until the user acts, so don't clear per-turn — wait
     ///   for an actual successful model call (a `200` proves recovery).
-    /// - `other` → [`SUPPRESS_TURN`]: optimistic per-turn retry.
+    /// - `rate_limit | other` → [`SUPPRESS_BACKOFF`]: retry automatically after
+    ///   a bounded cooldown; manual `/compact` remains available immediately.
     fn suppress_state(self) -> u8 {
         match self {
             SuppressReason::Size | SuppressReason::Schema => SUPPRESS_STICKY,
             SuppressReason::CreditBlock | SuppressReason::Auth => SUPPRESS_UNTIL_SUCCESS,
-            SuppressReason::Other => SUPPRESS_TURN,
+            SuppressReason::RateLimit | SuppressReason::Other => SUPPRESS_BACKOFF,
         }
     }
+
+    fn backoff_secs(self) -> Option<u64> {
+        match self {
+            // Long enough to stop a tight tool-continuation loop, short enough
+            // to recover during a long-running turn without user action.
+            SuppressReason::RateLimit => Some(60),
+            SuppressReason::Other => Some(30),
+            _ => None,
+        }
+    }
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 /// Splice the preserved prefix (`conversation[0..prefix_len]`) onto the compacted
 /// suffix, dropping the suffix's leading System and — if the prefix already has an
@@ -639,11 +667,13 @@ impl SessionActor {
         .await;
         Ok(())
     }
-    /// Suppress AUTO compaction after a deterministic failure so the gates stop
-    /// re-firing a doomed compaction. Scope depends on the reason (see
+    /// Suppress AUTO compaction after a classified failure so the gates stop
+    /// immediately re-firing a doomed or temporarily unavailable compaction.
+    /// Scope depends on the reason (see
     /// [`SuppressReason::suppress_state`]): size/schema are sticky, credit/auth
-    /// hold until a model call succeeds, other clears next turn. Fires telemetry +
-    /// one notification per transition; manual `/compact` is exempt.
+    /// hold until a model call succeeds, and transient failures use a bounded
+    /// cooldown. Fires telemetry + one notification per transition; manual
+    /// `/compact` is exempt.
     async fn suppress_auto_compaction(
         &self,
         reason: SuppressReason,
@@ -651,6 +681,10 @@ impl SessionActor {
         context_window: u64,
     ) {
         let new_state = reason.suppress_state();
+        let retry_not_before = reason
+            .backoff_secs()
+            .map(|seconds| unix_now_secs().saturating_add(seconds))
+            .unwrap_or(0);
         if self
             .compaction
             .auto_compact_suppressed
@@ -662,11 +696,15 @@ impl SessionActor {
             )
             .is_ok()
         {
+            self.compaction
+                .auto_compact_retry_not_before_unix_secs
+                .store(retry_not_before, std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(
                 suppress_reason = reason.as_str(),
                 estimated_tokens,
                 context_window,
-                "auto-compaction suppressed after deterministic compaction failure"
+                retry_after_secs = reason.backoff_secs(),
+                "auto-compaction suppressed after classified compaction failure"
             );
             xai_grok_telemetry::session_ctx::log_event(
                 xai_grok_telemetry::events::AutoCompactSuppressed {
@@ -675,17 +713,28 @@ impl SessionActor {
                     context_window,
                 },
             );
+            let is_codex = self
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .is_some_and(|config| config.provider.is_openai_codex());
             let message = match reason {
                 SuppressReason::CreditBlock => {
-                    "out of credits or over your spending limit. Add credits and retry."
+                    "usage limit reached. Check /usage or wait for the displayed reset, then run /compact."
+                }
+                SuppressReason::RateLimit => {
+                    "temporarily rate limited. Automatic compaction will retry in about a minute; /compact retries now."
+                }
+                SuppressReason::Auth if is_codex => {
+                    "Codex authentication failed. Run `grok login --provider openai-codex`, then /compact."
                 }
                 SuppressReason::Auth => {
-                    "authentication problem — re-authenticate using /login and retry."
+                    "authentication failed. Re-authenticate, then run /compact."
                 }
                 SuppressReason::Size => "this conversation is too large to compact.",
                 SuppressReason::Schema => "this conversation can't be summarized.",
                 SuppressReason::Other => {
-                    "it'll retry on the next turn, or start a new session using /new."
+                    "temporary provider error. Automatic compaction will retry shortly; /compact retries now."
                 }
             };
             self.send_xai_notification(
@@ -696,8 +745,8 @@ impl SessionActor {
             .await;
         }
     }
-    /// Map a deterministic failure's error text to a fixed, content-free
-    /// [`SuppressReason`] (drives telemetry + sticky-vs-per-turn scope).
+    /// Map a compaction failure's error text to a fixed, content-free
+    /// [`SuppressReason`] (drives telemetry and suppression scope).
     fn classify_suppress_reason(error_msg: &str) -> SuppressReason {
         let m = error_msg.to_ascii_lowercase();
         if m.contains("spending-limit")
@@ -705,17 +754,70 @@ impl SessionActor {
             || m.contains("out of credits")
             || m.contains("usage balance exhausted")
             || m.contains("usage limit reached")
+            || m.contains("quota exceeded")
+            || m.contains("insufficient_quota")
         {
             SuppressReason::CreditBlock
+        } else if m.contains("status 429")
+            || m.contains("429 too many requests")
+            || m.contains("rate limit")
+            || m.contains("rate_limit")
+            || m.contains("too many requests")
+        {
+            SuppressReason::RateLimit
         } else if is_context_length_error(&m) {
             SuppressReason::Size
-        } else if m.contains("status 401") || m.contains("unauthorized") {
+        } else if m.contains("status 401")
+            || m.contains("unauthorized")
+            || m.contains("authentication was rejected")
+        {
             SuppressReason::Auth
         } else if m.contains("invalid_request_error") {
             SuppressReason::Schema
         } else {
             SuppressReason::Other
         }
+    }
+
+    /// Return whether an automatic compaction is currently gated. A bounded
+    /// transient backoff self-clears once its deadline passes; every other
+    /// suppression state is cleared only by its documented lifecycle event.
+    /// Manual `/compact` does not call this gate.
+    fn auto_compaction_is_suppressed(&self) -> bool {
+        let state = self
+            .compaction
+            .auto_compact_suppressed
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if state != SUPPRESS_BACKOFF {
+            return state != SUPPRESS_NONE;
+        }
+        let retry_not_before = self
+            .compaction
+            .auto_compact_retry_not_before_unix_secs
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if retry_not_before > unix_now_secs() {
+            return true;
+        }
+        if self
+            .compaction
+            .auto_compact_suppressed
+            .compare_exchange(
+                SUPPRESS_BACKOFF,
+                SUPPRESS_NONE,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            self.compaction
+                .auto_compact_retry_not_before_unix_secs
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!("auto-compaction transient backoff elapsed; retry enabled");
+        }
+        self.compaction
+            .auto_compact_suppressed
+            .load(std::sync::atomic::Ordering::Relaxed)
+            != SUPPRESS_NONE
     }
     /// Choose the post-compaction history for a forked session: re-pin the inherited
     /// prefix, or release it (fall back to the self-contained summary the summarizer
@@ -1047,11 +1149,18 @@ impl SessionActor {
                     } else {
                         CompactionOutcome::Transient
                     };
-                    last_error = Some(acp::Error::internal_error().data(
-                        observer.last_error_message().unwrap_or_else(|| {
-                            "compact failed: model returned empty response".to_string()
-                        }),
-                    ));
+                    let message = observer.last_error_message().unwrap_or_else(|| {
+                        "compact failed: model returned empty response".to_string()
+                    });
+                    if auto_trigger {
+                        self.suppress_auto_compaction(
+                            SuppressReason::Other,
+                            estimated_input_tokens,
+                            context_window,
+                        )
+                        .await;
+                    }
+                    last_error = Some(acp::Error::internal_error().data(message));
                     break;
                 }
                 Err(xai_grok_compaction::FullReplaceError::Sampler {
@@ -1142,6 +1251,15 @@ impl SessionActor {
                         break;
                     }
                     last_failure_outcome = CompactionOutcome::Transient;
+                    if auto_trigger {
+                        let reason = Self::classify_suppress_reason(&message);
+                        self.suppress_auto_compaction(
+                            reason,
+                            estimated_input_tokens,
+                            context_window,
+                        )
+                        .await;
+                    }
                     last_error = Some(acp::Error::internal_error().data(message));
                     break;
                 }
@@ -1401,17 +1519,16 @@ impl SessionActor {
             };
         let memory_backend_impl = {
             let g = self.memory.storage.borrow();
-            g.as_ref()
-                .zip(self.memory.backend_params.as_ref())
-                .map(|(storage, params)| {
-                    crate::session::memory::MemoryBackendImpl::from_session_params(
-                        storage.clone(),
-                        &crate::session::memory::MemoryBackendParams {
-                            search_source: "compaction_recovery",
-                            ..params.clone()
-                        },
-                    )
-                })
+            let params = self.memory.backend_params.borrow().clone();
+            g.as_ref().zip(params.as_ref()).map(|(storage, params)| {
+                crate::session::memory::MemoryBackendImpl::from_session_params(
+                    storage.clone(),
+                    &crate::session::memory::MemoryBackendParams {
+                        search_source: "compaction_recovery",
+                        ..params.clone()
+                    },
+                )
+            })
         };
         let memory_opt_out = false;
         let memory_ref: Option<&dyn xai_grok_tools::types::memory_backend::MemoryBackend> =
@@ -1618,6 +1735,16 @@ impl SessionActor {
                 .auto_compact_suppressed
                 .store(SUPPRESS_NONE, std::sync::atomic::Ordering::Relaxed);
         }
+        if self
+            .compaction
+            .auto_compact_suppressed
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == SUPPRESS_NONE
+        {
+            self.compaction
+                .auto_compact_retry_not_before_unix_secs
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+        }
         self.last_idle_flush_conversation_len
             .store(new_len, std::sync::atomic::Ordering::Relaxed);
         self.memory
@@ -1738,12 +1865,7 @@ impl SessionActor {
         &self,
         err: &xai_grok_sampler::SamplingErrorInfo,
     ) -> bool {
-        if self
-            .compaction
-            .auto_compact_suppressed
-            .load(std::sync::atomic::Ordering::Relaxed)
-            != SUPPRESS_NONE
-        {
+        if self.auto_compaction_is_suppressed() {
             return false;
         }
         let Some(ref metadata) = err.model_metadata else {
@@ -1779,12 +1901,7 @@ impl SessionActor {
         let estimated_total = self.chat_state_handle.get_estimated_total_tokens().await;
         self.signals_handle()
             .update_context_usage(estimated_total, cw);
-        if self
-            .compaction
-            .auto_compact_suppressed
-            .load(std::sync::atomic::Ordering::Relaxed)
-            != SUPPRESS_NONE
-        {
+        if self.auto_compaction_is_suppressed() {
             return None;
         }
         if self
@@ -1821,17 +1938,9 @@ impl SessionActor {
         }
         None
     }
-    /// Returns `Some` when tool call outputs have pushed the estimated token
-    /// count past the context window, indicating pre-emptive compaction is needed.
+    /// Returns `Some` when the current estimated token count is past the hard
+    /// context window, including on a resumed turn and after tool call output.
     pub(crate) async fn check_preflight_overflow(&self) -> Option<AutoCompactTriggerInfo> {
-        if self
-            .compaction
-            .auto_compact_suppressed
-            .load(std::sync::atomic::Ordering::Relaxed)
-            != SUPPRESS_NONE
-        {
-            return None;
-        }
         let estimated_total = self.chat_state_handle.get_estimated_total_tokens().await;
         let cfg = self.chat_state_handle.get_sampling_config().await?;
         let cw = cfg.context_window.get();
@@ -1843,7 +1952,7 @@ impl SessionActor {
         tracing::warn!(
             estimated_total, context_window = cw, overflow, model = % cfg.model,
             "CONTEXT_OVERFLOW_PREFLIGHT: estimated tokens exceed context window \
-             after tool call outputs"
+             before the next sampler request"
         );
         Some(AutoCompactTriggerInfo {
             tokens_used: estimated_total,
@@ -1851,8 +1960,38 @@ impl SessionActor {
             percentage,
         })
     }
+
+    /// Stop or compact before issuing a request that is already known to exceed
+    /// the model's hard context window. Unlike threshold-based auto-compaction,
+    /// hard-overflow detection must remain active while automatic compaction is
+    /// suppressed: suppression means "do not retry the compactor", not "send an
+    /// oversized normal request instead".
+    ///
+    /// Returns `Ok(true)` after a successful compaction so the caller can
+    /// rebuild the request from compacted history. Returns `Ok(false)` when the
+    /// current history fits. A suppressed or failed compaction is terminal for
+    /// this turn and leaves the session resumable after the provider block is
+    /// resolved.
+    pub(crate) async fn resolve_preflight_overflow(self: &Arc<Self>) -> Result<bool, acp::Error> {
+        let Some(trigger_info) = self.check_preflight_overflow().await else {
+            return Ok(false);
+        };
+        if self.auto_compaction_is_suppressed() {
+            tracing::error!(
+                estimated_tokens = trigger_info.tokens_used,
+                context_window = trigger_info.context_window,
+                "hard context overflow while automatic compaction is suppressed"
+            );
+            return Err(acp::Error::internal_error().data(
+                "Context window exceeded while automatic compaction is unavailable. Resolve the active usage or authentication issue, switch to a model with a larger context window, or run /compact when the provider is available."
+                    .to_owned(),
+            ));
+        }
+        self.run_compact_only(trigger_info).await?;
+        Ok(true)
+    }
     /// On a model change, clear stale suppression the switch can resolve (sticky
-    /// size/schema — the new window may fit — and a stale per-turn `other`), then
+    /// size/schema — the new window may fit — and a transient backoff), then
     /// compact now if the new window is smaller. Account-state suppression
     /// (credit/auth → `SUPPRESS_UNTIL_SUCCESS`) is left intact — a switch can't
     /// restore credits or fix auth — and short-circuits the compaction.
@@ -1863,7 +2002,8 @@ impl SessionActor {
         let Some(cfg) = self.chat_state_handle.get_sampling_config().await else {
             return;
         };
-        if cfg.model == prev.model_slug {
+        let provider_changed = cfg.provider != prev.provider;
+        if cfg.model == prev.model_slug && !provider_changed {
             return;
         }
         if self
@@ -1871,12 +2011,16 @@ impl SessionActor {
             .auto_compact_suppressed
             .load(std::sync::atomic::Ordering::Relaxed)
             == SUPPRESS_UNTIL_SUCCESS
+            && !provider_changed
         {
             return;
         }
         self.compaction
             .auto_compact_suppressed
             .store(SUPPRESS_NONE, std::sync::atomic::Ordering::Relaxed);
+        self.compaction
+            .auto_compact_retry_not_before_unix_secs
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         if prev.context_window <= cfg.context_window.get() {
             return;
         }
@@ -1902,6 +2046,7 @@ impl SessionActor {
             self.compaction.previous_model.set(Some(
                 crate::session::compaction_config::PreviousModelInfo {
                     model_slug: cfg.model.clone(),
+                    provider: cfg.provider,
                     context_window: cfg.context_window.get(),
                 },
             ));
@@ -2190,6 +2335,7 @@ mod inline_auto_compact_flow_tests {
                     .expect("test context_window must be non-zero"),
                 reasoning_effort: None,
                 stream_tool_calls: None,
+                service_tier: None,
             },
             Box::new(xai_chat_state::NullChatPersistence),
             chat_event_tx,
@@ -2237,6 +2383,7 @@ mod inline_auto_compact_flow_tests {
                 context_window_override: None,
                 count: std::sync::atomic::AtomicU64::new(0),
                 auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+                auto_compact_retry_not_before_unix_secs: std::sync::atomic::AtomicU64::new(0),
                 previous_model: std::cell::Cell::new(None),
                 compaction_mode: xai_chat_state::CompactionMode::Transcript,
                 verbatim_input: true,
@@ -2249,7 +2396,7 @@ mod inline_auto_compact_flow_tests {
                 last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
                 storage: std::cell::RefCell::new(None),
                 save_on_end: true,
-                backend_params: None,
+                backend_params: std::cell::RefCell::new(None),
                 initial_injection_config: Default::default(),
                 context_injected: std::sync::atomic::AtomicBool::new(false),
                 flush_count: std::sync::atomic::AtomicU64::new(0),
@@ -2448,12 +2595,13 @@ mod inline_auto_compact_flow_tests {
             .await;
     }
     /// Suppression gates both AUTO paths; the reset scope depends on the reason:
-    /// `other` clears next turn, `credit_block` holds until a successful model call,
-    /// `size` is sticky until a full reset (success / rewind / model switch).
+    /// transient `other` expires after a bounded cooldown, `credit_block` holds
+    /// until a successful model call, and `size` is sticky until a full reset
+    /// (success / rewind / model switch).
     #[tokio::test(flavor = "current_thread")]
     async fn suppression_gates_and_reset_is_reason_scoped() {
         use crate::session::compaction_config::{
-            SUPPRESS_NONE, SUPPRESS_TURN, SUPPRESS_UNTIL_SUCCESS,
+            SUPPRESS_BACKOFF, SUPPRESS_NONE, SUPPRESS_TURN, SUPPRESS_UNTIL_SUCCESS,
         };
         use std::sync::atomic::Ordering::Relaxed;
         let local = tokio::task::LocalSet::new();
@@ -2466,18 +2614,26 @@ mod inline_auto_compact_flow_tests {
                 let err = api_error_with_context_window(200_000);
                 assert!(actor.check_auto_compact_needed().await.is_some());
                 assert!(actor.should_compact_on_error(&err).await);
+                assert!(actor.should_prefire_two_pass().await);
                 actor
                     .suppress_auto_compaction(SuppressReason::Other, 1_000, 200_000)
                     .await;
+                assert_eq!(
+                    actor.compaction.auto_compact_suppressed.load(Relaxed),
+                    SUPPRESS_BACKOFF
+                );
                 assert!(actor.check_auto_compact_needed().await.is_none());
                 assert!(!actor.should_compact_on_error(&err).await);
-                let _ = actor.compaction.auto_compact_suppressed.compare_exchange(
-                    SUPPRESS_TURN,
-                    SUPPRESS_NONE,
-                    Relaxed,
-                    Relaxed,
+                assert!(
+                    !actor.should_prefire_two_pass().await,
+                    "transient suppression must also gate speculative prefire"
                 );
+                actor
+                    .compaction
+                    .auto_compact_retry_not_before_unix_secs
+                    .store(super::unix_now_secs().saturating_sub(1), Relaxed);
                 assert!(actor.check_auto_compact_needed().await.is_some());
+                assert!(actor.should_prefire_two_pass().await);
                 actor
                     .suppress_auto_compaction(SuppressReason::CreditBlock, 1_000, 200_000)
                     .await;
@@ -2487,6 +2643,10 @@ mod inline_auto_compact_flow_tests {
                 );
                 assert!(actor.check_auto_compact_needed().await.is_none());
                 assert!(!actor.should_compact_on_error(&err).await);
+                assert!(
+                    !actor.should_prefire_two_pass().await,
+                    "usage-block suppression must prevent speculative spend"
+                );
                 let _ = actor.compaction.auto_compact_suppressed.compare_exchange(
                     SUPPRESS_TURN,
                     SUPPRESS_NONE,
@@ -2527,7 +2687,7 @@ mod inline_auto_compact_flow_tests {
             .await;
     }
     /// A model switch clears suppression the switch (or the fresh budget-driven
-    /// trigger) can resolve — sticky size/schema and a stale per-turn `other` — so
+    /// trigger) can resolve — sticky size/schema and a transient backoff — so
     /// the gates re-evaluate against the new window. Account-state credit/auth is
     /// covered by `model_switch_keeps_account_state_suppression`.
     #[tokio::test(flavor = "current_thread")]
@@ -2551,6 +2711,7 @@ mod inline_auto_compact_flow_tests {
                     );
                     actor.compaction.previous_model.set(Some(PreviousModelInfo {
                         model_slug: "old-small-model".to_string(),
+                        provider: xai_grok_sampling_types::ProviderId::Xai,
                         context_window: 100_000,
                     }));
                     actor.maybe_compact_on_model_switch().await;
@@ -2589,6 +2750,7 @@ mod inline_auto_compact_flow_tests {
                 );
                 actor.compaction.previous_model.set(Some(PreviousModelInfo {
                     model_slug: "old-big-model".to_string(),
+                    provider: xai_grok_sampling_types::ProviderId::Xai,
                     context_window: 400_000,
                 }));
                 actor.maybe_compact_on_model_switch().await;
@@ -2600,7 +2762,49 @@ mod inline_auto_compact_flow_tests {
             })
             .await;
     }
-    /// The per-turn suppression notification is tailored to the failure reason.
+
+    /// Provider-scoped auth suppression must not leak across a provider switch.
+    /// The slug may be identical in both catalogs, so provider identity is part
+    /// of the switch key.
+    #[tokio::test(flavor = "current_thread")]
+    async fn provider_switch_clears_account_state_suppression() {
+        use crate::session::compaction_config::{
+            PreviousModelInfo, SUPPRESS_NONE, SUPPRESS_UNTIL_SUCCESS,
+        };
+        use std::sync::atomic::Ordering::Relaxed;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+                let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+                let actor = Arc::new(
+                    create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await,
+                );
+                actor
+                    .suppress_auto_compaction(SuppressReason::Auth, 50_000, 200_000)
+                    .await;
+                assert_eq!(
+                    actor.compaction.auto_compact_suppressed.load(Relaxed),
+                    SUPPRESS_UNTIL_SUCCESS
+                );
+                actor.compaction.previous_model.set(Some(PreviousModelInfo {
+                    // Same slug as create_test_actor's active xAI model.
+                    model_slug: "test".to_string(),
+                    provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
+                    context_window: 200_000,
+                }));
+
+                actor.maybe_compact_on_model_switch().await;
+
+                assert_eq!(
+                    actor.compaction.auto_compact_suppressed.load(Relaxed),
+                    SUPPRESS_NONE,
+                    "Codex auth suppression must not block the xAI provider"
+                );
+            })
+            .await;
+    }
+    /// The one-shot suppression notification is tailored to the failure reason.
     #[tokio::test(flavor = "current_thread")]
     async fn suppression_notification_is_reason_specific() {
         let local = tokio::task::LocalSet::new();
@@ -2633,15 +2837,17 @@ mod inline_auto_compact_flow_tests {
                     text.expect("expected an AutoCompactFailed notification")
                 }
                 let credit = notification_for(SuppressReason::CreditBlock).await;
-                assert!(credit.contains("spending limit"), "credit_block: {credit}");
+                assert!(credit.contains("usage limit"), "credit_block: {credit}");
+                let rate = notification_for(SuppressReason::RateLimit).await;
+                assert!(rate.contains("rate limited"), "rate_limit: {rate}");
                 let auth = notification_for(SuppressReason::Auth).await;
-                assert!(auth.contains("/login"), "auth: {auth}");
+                assert!(auth.contains("Re-authenticate"), "auth: {auth}");
                 let size = notification_for(SuppressReason::Size).await;
                 assert!(size.contains("too large to compact"), "size: {size}");
                 let schema = notification_for(SuppressReason::Schema).await;
                 assert!(schema.contains("can't be summarized"), "schema: {schema}");
                 let other = notification_for(SuppressReason::Other).await;
-                assert!(other.contains("/new"), "other: {other}");
+                assert!(other.contains("retry shortly"), "other: {other}");
             })
             .await;
     }
@@ -2859,7 +3065,7 @@ mod inline_auto_compact_flow_tests {
             })
             .await;
     }
-    /// `classify_suppress_reason` maps each deterministic-failure shape to its
+    /// `classify_suppress_reason` maps each failure shape to its
     /// fixed [`SuppressReason`].
     #[test]
     fn classify_suppress_reason_maps_error_text() {
@@ -2879,6 +3085,14 @@ mod inline_auto_compact_flow_tests {
         assert_eq!(
             classify("Grok Build usage limit reached"),
             SuppressReason::CreditBlock
+        );
+        assert_eq!(
+            classify("compact failed: API error (status 429 Too Many Requests)"),
+            SuppressReason::RateLimit
+        );
+        assert_eq!(
+            classify("provider rate_limit exceeded"),
+            SuppressReason::RateLimit
         );
         assert_eq!(
             classify("This model's maximum prompt length is 500000"),
@@ -2910,10 +3124,19 @@ mod inline_auto_compact_flow_tests {
     #[test]
     fn suppress_reason_as_str_is_stable() {
         assert_eq!(SuppressReason::CreditBlock.as_str(), "credit_block");
+        assert_eq!(SuppressReason::RateLimit.as_str(), "rate_limit");
         assert_eq!(SuppressReason::Size.as_str(), "size");
         assert_eq!(SuppressReason::Auth.as_str(), "auth");
         assert_eq!(SuppressReason::Schema.as_str(), "schema");
         assert_eq!(SuppressReason::Other.as_str(), "other");
+    }
+
+    #[test]
+    fn transient_suppression_backoffs_are_bounded() {
+        assert_eq!(SuppressReason::RateLimit.backoff_secs(), Some(60));
+        assert_eq!(SuppressReason::Other.backoff_secs(), Some(30));
+        assert_eq!(SuppressReason::CreditBlock.backoff_secs(), None);
+        assert_eq!(SuppressReason::Auth.backoff_secs(), None);
     }
     mod preserve_prefix {
         use super::super::preserve_inherited_prefix;
@@ -3054,7 +3277,7 @@ mod inline_auto_compact_flow_tests {
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
             storage: std::cell::RefCell::new(memory_storage),
             save_on_end: true,
-            backend_params: None,
+            backend_params: std::cell::RefCell::new(None),
             initial_injection_config: memory_initial_injection_config,
             context_injected: std::sync::atomic::AtomicBool::new(false),
             flush_count: std::sync::atomic::AtomicU64::new(0),
@@ -3267,6 +3490,7 @@ mod inline_auto_compact_flow_tests {
                 actor.compaction.previous_model.set(Some(
                     crate::session::compaction_config::PreviousModelInfo {
                         model_slug: "large-model".to_string(),
+                        provider: xai_grok_sampling_types::ProviderId::Xai,
                         context_window: 200_000,
                     },
                 ));
@@ -3282,6 +3506,7 @@ mod inline_auto_compact_flow_tests {
                 actor.compaction.previous_model.set(Some(
                     crate::session::compaction_config::PreviousModelInfo {
                         model_slug: "small-model".to_string(),
+                        provider: xai_grok_sampling_types::ProviderId::Xai,
                         context_window: 50_000,
                     },
                 ));

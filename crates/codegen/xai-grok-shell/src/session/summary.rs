@@ -79,14 +79,13 @@ impl SummaryGenerator {
                 // persistence actor can continue processing messages
                 // (updates, flushes) without waiting for the LLM call.
                 tokio::spawn(async move {
-                    let mut title =
-                        generate_session_summary(
-                            content.clone(),
-                            sampling_client,
-                            &model,
-                            &session_id,
-                        )
-                        .await;
+                    let mut title = generate_session_summary(
+                        content.clone(),
+                        sampling_client,
+                        &model,
+                        &session_id,
+                    )
+                    .await;
                     if title.trim().is_empty() {
                         title =
                             crate::session::helpers::session_summary::title_fallback_from_user_text(

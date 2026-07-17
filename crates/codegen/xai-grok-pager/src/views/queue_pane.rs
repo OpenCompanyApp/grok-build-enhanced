@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::agent::{QueueEntryKind, QueuedPrompt};
 use crate::app::prompt_queue::QueueEntryWire;
 use crate::render::line_utils::truncate_str;
-use crate::theme::{Theme, ThemeKind};
+use crate::theme::Theme;
 
 use super::list_pane::ListItem;
 
@@ -386,7 +386,7 @@ pub struct QueuePane {
     /// refresh `list_style`, whose `selection_bg` is captured from the theme
     /// (otherwise the focused-row highlight keeps the previous theme's
     /// `bg_highlight` — e.g. GrokNight's dark band leaking into GrokDay).
-    last_theme: ThemeKind,
+    last_theme_revision: u64,
     /// Shared visibility/focus state.
     pub overlay: OverlayState,
     /// Previous queue length — used for auto-show detection.
@@ -433,7 +433,7 @@ impl QueuePane {
             entries: Vec::new(),
             list_state,
             list_style: ListPaneStyle::default(),
-            last_theme: Theme::current_kind(),
+            last_theme_revision: crate::theme::cache::current_revision(),
             overlay: OverlayState::hidden(),
             prev_len: 0,
             send_now_rect: None,
@@ -829,9 +829,9 @@ impl QueuePane {
         // theme's `bg_highlight`; without this it would keep the theme active
         // at construction (default GrokNight, dark) after the user switches —
         // painting a dark band on a light GrokDay canvas.
-        let current_theme = Theme::current_kind();
-        if current_theme != self.last_theme {
-            self.last_theme = current_theme;
+        let current_theme_revision = crate::theme::cache::current_revision();
+        if current_theme_revision != self.last_theme_revision {
+            self.last_theme_revision = current_theme_revision;
             self.list_style = ListPaneStyle::default();
         }
 

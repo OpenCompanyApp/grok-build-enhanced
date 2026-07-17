@@ -646,6 +646,31 @@ mod tests {
         }
     }
 
+    struct ZeroGenerationCodexEditTestAuth;
+
+    impl crate::types::ApiKeyProvider for ZeroGenerationCodexEditTestAuth {
+        fn current_api_key(&self) -> Option<String> {
+            None
+        }
+
+        fn current_request_auth_async(
+            &self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<crate::types::RequestAuth>> + Send + '_>,
+        > {
+            Box::pin(std::future::ready(Some(
+                crate::types::RequestAuth::for_provider_snapshot(
+                    "openai_codex",
+                    crate::types::RequestCredentialSnapshot::new("edit-credential", 0),
+                    [
+                        ("authorization".to_owned(), "Bearer edit-access".to_owned()),
+                        ("chatgpt-account-id".to_owned(), "edit-account".to_owned()),
+                    ],
+                ),
+            )))
+        }
+    }
+
     #[test]
     fn tool_name_and_description() {
         let tool = ImageEditTool;
@@ -740,6 +765,45 @@ mod tests {
                 .all(|name| !name.as_str().starts_with("x-grok-"))
         );
         assert!(!headers.contains_key("x-xai-token-auth"));
+    }
+
+    #[tokio::test]
+    async fn codex_edit_rejects_zero_credential_generation_before_request() {
+        use std::sync::Arc;
+
+        let server = wiremock::MockServer::start().await;
+        let config = super::super::image_gen::ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: crate::types::SharedApiKeyProvider =
+            Arc::new(ZeroGenerationCodexEditTestAuth);
+        let client = ImageGenClient::new(&config, Some(provider)).unwrap();
+        let error = client
+            .post_json("images/edits", &serde_json::json!({}))
+            .await
+            .expect_err("generation-zero credentials must fail before edit dispatch");
+
+        assert!(error.to_string().contains("credential generation"));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn codex_edit_rejects_noncanonical_provider_origin() {
+        use std::sync::Arc;
+
+        let config = super::super::image_gen::ImageGenConfig::OpenAiCodex {
+            base_url: "https://chatgpt.com:444/backend-api/codex".to_owned(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: crate::types::SharedApiKeyProvider = Arc::new(CodexEditTestAuth);
+        let error = ImageGenClient::new(&config, Some(provider))
+            .err()
+            .expect("edit credentials must not be bound to a noncanonical origin");
+
+        assert!(error.to_string().contains("ChatGPT Codex endpoint"));
     }
 
     #[test]

@@ -84,6 +84,11 @@ pub struct SamplerConfig {
     // Reasoning effort
     pub reasoning_effort: Option<ReasoningEffort>,
 
+    /// Provider service-tier selection. Only authenticated Codex Responses
+    /// requests consume this field; `default` is an explicit no-tier sentinel.
+    #[serde(default)]
+    pub service_tier: Option<String>,
+
     // Client identity
     pub origin_client: Option<OriginClientInfo>,
     pub client_identifier: Option<String>,
@@ -162,6 +167,7 @@ impl std::fmt::Debug for SamplerConfig {
             .field("stream_tool_calls", &self.stream_tool_calls)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
             .field("reasoning_effort", &self.reasoning_effort)
+            .field("service_tier", &self.service_tier)
             .field("origin_client", &self.origin_client)
             .field("has_client_identifier", &self.client_identifier.is_some())
             .field("has_deployment_id", &self.deployment_id.is_some())
@@ -205,6 +211,7 @@ impl Default for SamplerConfig {
             stream_tool_calls: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
+            service_tier: None,
             origin_client: None,
             client_identifier: None,
             deployment_id: None,

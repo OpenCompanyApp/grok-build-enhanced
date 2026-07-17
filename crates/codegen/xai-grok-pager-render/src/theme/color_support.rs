@@ -75,18 +75,21 @@ static COLOR_LEVEL: OnceLock<ColorLevel> = OnceLock::new();
 /// absent, defaults to [`ColorLevel::TrueColor`] — the safe assumption
 /// for a TUI app that always runs inside a terminal.
 ///
-/// Capped at [`ColorLevel::Basic`] while the terminal-native lock is
-/// engaged.
+/// Capped at [`ColorLevel::Basic`] while either minimal mode or a selected
+/// terminal-native theme is active.
 pub fn detect() -> ColorLevel {
-    let raw = detect_raw();
-    if crate::theme::cache::terminal_native_locked() {
+    let raw = detect_capability();
+    if crate::theme::cache::active_terminal_native() {
         return raw.min(ColorLevel::Basic);
     }
     raw
 }
 
-/// The raw cached detection, without the terminal-native lock cap.
-fn detect_raw() -> ColorLevel {
+/// Raw terminal capability without the active-theme rendering cap.
+///
+/// Use this for picker availability and resolving a switch away from a native
+/// theme; use [`detect`] for colors being painted by the active theme.
+pub fn detect_capability() -> ColorLevel {
     *COLOR_LEVEL.get_or_init(|| {
         // Explicit opt-out via NO_COLOR takes priority.
         if std::env::var_os("NO_COLOR").is_some() {

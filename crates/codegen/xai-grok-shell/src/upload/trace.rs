@@ -953,7 +953,14 @@ pub(crate) async fn upload_permission_events(
     events: &[PermissionEvent],
     wait: UploadWait,
 ) {
-    let events_json = match serde_json::to_vec_pretty(events) {
+    // Permission events normally arrive redacted from the workspace actor.
+    // Re-apply the upload contract here so legacy/replayed/manually-constructed
+    // MCP events can never serialize arbitrary tool arguments into GCS traces.
+    let upload_events: Vec<_> = events
+        .iter()
+        .map(PermissionEvent::redacted_for_upload)
+        .collect();
+    let events_json = match serde_json::to_vec_pretty(&upload_events) {
         Ok(json) => json,
         Err(e) => {
             tracing::warn!(

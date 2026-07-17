@@ -6,6 +6,8 @@ use std::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{ConversationItem, SamplingConfig};
 
+use crate::usage::UsageLedger;
+
 /// Canonical marker for an injected memory-context block. Shared by the
 /// emitter in `xai-grok-shell` and the upsert/detection here — a drift would
 /// silently break dedup and let blocks accumulate in the prompt prefix.
@@ -53,6 +55,10 @@ pub struct ChatStateSnapshot {
     /// Opaque credential secrets (API key, optional extra auth, client version).
     #[serde(default)]
     pub credentials: Credentials,
+    /// Lifetime provider-qualified token ledger used for informational cost
+    /// estimates. Prompt-local usage remains transient.
+    #[serde(default)]
+    pub session_usage: UsageLedger,
 }
 
 /// Metadata for session notifications (timing info).
@@ -174,6 +180,8 @@ mod tests {
         let snapshot = ChatStateSnapshot {
             conversation: vec![],
             sampling_config: SamplingConfig {
+                provider: Default::default(),
+                credential_binding: None,
                 base_url: "https://api.example.com".to_string(),
                 model: "test-model".to_string(),
                 max_completion_tokens: None,
@@ -184,6 +192,7 @@ mod tests {
                 context_window: NonZeroU64::new(128_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
+                service_tier: Some("priority".to_string()),
             },
             prompt_index: 0,
             total_tokens: 0,
@@ -194,6 +203,7 @@ mod tests {
             turn_start_ms: None,
             last_compaction_prompt_index: None,
             credentials: Credentials::default(),
+            session_usage: UsageLedger::default(),
         };
 
         let json = serde_json::to_string(&snapshot).expect("serialize");
@@ -204,6 +214,20 @@ mod tests {
         assert!(deserialized.conversation.is_empty());
         assert!(deserialized.agent_edited_paths.is_empty());
         assert!(deserialized.last_compaction_prompt_index.is_none());
+        assert_eq!(
+            deserialized.sampling_config.service_tier.as_deref(),
+            Some("priority")
+        );
+
+        let mut legacy_json = serde_json::to_value(&snapshot).unwrap();
+        legacy_json.as_object_mut().unwrap().remove("session_usage");
+        legacy_json["sampling_config"]
+            .as_object_mut()
+            .unwrap()
+            .remove("service_tier");
+        let legacy: ChatStateSnapshot = serde_json::from_value(legacy_json).unwrap();
+        assert_eq!(legacy.session_usage, UsageLedger::default());
+        assert_eq!(legacy.sampling_config.service_tier, None);
     }
 
     #[test]
@@ -217,6 +241,8 @@ mod tests {
                 ConversationItem::assistant("Hi there!"),
             ],
             sampling_config: SamplingConfig {
+                provider: Default::default(),
+                credential_binding: None,
                 base_url: "https://api.example.com".to_string(),
                 model: "grok-3".to_string(),
                 max_completion_tokens: Some(4096),
@@ -227,6 +253,7 @@ mod tests {
                 context_window: NonZeroU64::new(128_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
+                service_tier: None,
             },
             prompt_index: 5,
             total_tokens: 1234,
@@ -240,6 +267,11 @@ mod tests {
             turn_start_ms: Some(1234567800),
             last_compaction_prompt_index: Some(2),
             credentials: Credentials::default(),
+            session_usage: UsageLedger {
+                main_loop_model_calls: 3,
+                incomplete: true,
+                ..Default::default()
+            },
         };
 
         let json = serde_json::to_string(&snapshot).expect("serialize");
@@ -253,5 +285,7 @@ mod tests {
         assert_eq!(deserialized.stream_start_ms, Some(1234567890));
         assert_eq!(deserialized.turn_start_ms, Some(1234567800));
         assert_eq!(deserialized.last_compaction_prompt_index, Some(2));
+        assert_eq!(deserialized.session_usage.main_loop_model_calls, 3);
+        assert!(deserialized.session_usage.incomplete);
     }
 }

@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
+use xai_grok_sampling_types::{CredentialBinding, CredentialSourceId, ProviderId};
 
 use super::{CodexAuthError, CodexAuthManager, OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_USAGE_URL};
 
@@ -137,6 +138,104 @@ pub enum CodexUsageError {
     Transport(#[source] reqwest::Error),
     #[error("OpenAI Codex usage response was invalid")]
     InvalidResponse,
+    #[error("OpenAI Codex usage is temporarily unavailable")]
+    TemporarilyUnavailable,
+}
+
+const USAGE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+const USAGE_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_secs(60);
+const USAGE_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+#[derive(Clone)]
+struct CachedUsage {
+    /// Non-secret local credential-record binding retained only to prevent a
+    /// cached account A snapshot from being served after switching to record B.
+    /// This is deliberately a single slot, not an account-keyed cache.
+    binding: CredentialBinding,
+    fetched_at: std::time::Instant,
+    snapshot: CodexUsageSnapshot,
+}
+
+#[derive(Default)]
+struct CodexUsageCache {
+    entry: Option<CachedUsage>,
+    consecutive_failures: u32,
+    retry_not_before: Option<std::time::Instant>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UsageFetchMode {
+    /// Background refresh: obey backoff and use the last same-record snapshot
+    /// while retrying. The cache never crosses credential-record boundaries.
+    Silent,
+    /// User-requested `/usage`: return a fresh cache hit, otherwise attempt the
+    /// network immediately even if a background refresh is backing off.
+    Explicit,
+}
+
+fn usage_cache() -> &'static tokio::sync::Mutex<CodexUsageCache> {
+    static CACHE: std::sync::OnceLock<tokio::sync::Mutex<CodexUsageCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| tokio::sync::Mutex::new(CodexUsageCache::default()))
+}
+
+/// Dedicated credential-bearing client for the ChatGPT usage endpoint.
+///
+/// The process-wide shared client follows redirects. Reqwest strips the
+/// standard Authorization header on a cross-origin redirect, but it cannot
+/// know that ChatGPT-Account-ID and X-OpenAI-FedRAMP are equally sensitive.
+/// Refusing redirects here keeps the complete provider-auth snapshot bound to
+/// the one exact URL selected by this module.
+fn codex_usage_http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .user_agent(crate::http::process_user_agent_string())
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("failed to build OpenAI Codex usage HTTP client")
+        })
+        .clone()
+}
+
+fn validate_binding(binding: &CredentialBinding) -> Result<(), CodexUsageError> {
+    if binding.provider != ProviderId::OpenAiCodex
+        || binding.source != CredentialSourceId::OpenAiCodexSubscription
+        || binding.generation == 0
+        || binding
+            .record_id
+            .as_deref()
+            .is_none_or(|record_id| record_id.trim().is_empty())
+    {
+        return Err(CodexAuthError::AccountChanged.into());
+    }
+    Ok(())
+}
+
+fn validate_auth_binding(
+    auth: &xai_grok_tools::types::RequestAuth,
+    expected: &CredentialBinding,
+) -> Result<(), CodexUsageError> {
+    validate_binding(expected)?;
+    let snapshot = auth
+        .credential_snapshot()
+        .ok_or(CodexUsageError::InvalidAuth)?;
+    let mut actual = CredentialBinding::openai_codex(Some(snapshot.opaque_id().to_owned()));
+    actual.generation = snapshot.generation();
+    validate_binding(&actual)?;
+    if !expected.same_record(&actual) || actual.generation < expected.generation {
+        return Err(CodexAuthError::AccountChanged.into());
+    }
+    Ok(())
+}
+
+fn backoff_for_failures(failures: u32) -> std::time::Duration {
+    let shift = failures.saturating_sub(1).min(8);
+    USAGE_BACKOFF_BASE
+        .saturating_mul(1u32 << shift)
+        .min(USAGE_BACKOFF_MAX)
 }
 
 #[async_trait]
@@ -207,7 +306,9 @@ fn request_headers(
             if raw_value != "true" {
                 return Err(CodexUsageError::InvalidAuth);
             }
-            headers.insert(name, HeaderValue::from_static("true"));
+            let mut value = HeaderValue::from_static("true");
+            value.set_sensitive(true);
+            headers.insert(name, value);
         } else {
             // `RequestAuth` is a provider boundary. Never forward a newly
             // introduced or xAI-specific header to the ChatGPT backend until
@@ -223,13 +324,26 @@ fn request_headers(
     Ok(headers)
 }
 
+#[cfg(test)]
 async fn fetch_from_url<A: UsageAuthProvider + ?Sized>(
     client: &reqwest::Client,
     auth_provider: &A,
     url: &str,
 ) -> Result<CodexUsageSnapshot, CodexUsageError> {
+    fetch_from_url_with_binding(client, auth_provider, url, None).await
+}
+
+async fn fetch_from_url_with_binding<A: UsageAuthProvider + ?Sized>(
+    client: &reqwest::Client,
+    auth_provider: &A,
+    url: &str,
+    expected: Option<&CredentialBinding>,
+) -> Result<CodexUsageSnapshot, CodexUsageError> {
     for attempt in 0..=1 {
         let auth = auth_provider.request_auth().await?;
+        if let Some(expected) = expected {
+            validate_auth_binding(&auth, expected)?;
+        }
         let rejected = auth.credential_snapshot().cloned();
         let response = client
             .get(url)
@@ -261,15 +375,160 @@ async fn fetch_from_url<A: UsageAuthProvider + ?Sized>(
     unreachable!("the bounded Codex usage retry loop always returns")
 }
 
+async fn fetch_cached_from_url<A: UsageAuthProvider + ?Sized>(
+    client: &reqwest::Client,
+    auth_provider: &A,
+    url: &str,
+    expected: &CredentialBinding,
+    mode: UsageFetchMode,
+    cache: &tokio::sync::Mutex<CodexUsageCache>,
+) -> Result<CodexUsageSnapshot, CodexUsageError> {
+    validate_binding(expected)?;
+    let now = std::time::Instant::now();
+    let mut cache = cache.lock().await;
+
+    if cache
+        .entry
+        .as_ref()
+        .is_some_and(|entry| !entry.binding.same_record(expected))
+    {
+        // Account switching replaces the one cache slot. No account identity
+        // or credential material is used as a map key or emitted to logs.
+        *cache = CodexUsageCache::default();
+    }
+
+    if let Some(entry) = cache.entry.as_ref()
+        && now.saturating_duration_since(entry.fetched_at) <= USAGE_CACHE_TTL
+    {
+        return Ok(entry.snapshot.clone());
+    }
+
+    if mode == UsageFetchMode::Silent
+        && cache
+            .retry_not_before
+            .is_some_and(|retry_at| now < retry_at)
+    {
+        return cache
+            .entry
+            .as_ref()
+            .map(|entry| entry.snapshot.clone())
+            .ok_or(CodexUsageError::TemporarilyUnavailable);
+    }
+
+    match fetch_from_url_with_binding(client, auth_provider, url, Some(expected)).await {
+        Ok(snapshot) => {
+            cache.entry = Some(CachedUsage {
+                binding: expected.clone(),
+                fetched_at: std::time::Instant::now(),
+                snapshot: snapshot.clone(),
+            });
+            cache.consecutive_failures = 0;
+            cache.retry_not_before = None;
+            Ok(snapshot)
+        }
+        Err(error) => {
+            cache.consecutive_failures = cache.consecutive_failures.saturating_add(1);
+            let backoff = backoff_for_failures(cache.consecutive_failures);
+            cache.retry_not_before = Some(std::time::Instant::now() + backoff);
+            if mode == UsageFetchMode::Silent
+                && let Some(entry) = cache.entry.as_ref()
+            {
+                return Ok(entry.snapshot.clone());
+            }
+            Err(error)
+        }
+    }
+}
+
+fn snapshot_current_usage_binding(
+    manager: &CodexAuthManager,
+) -> Result<CredentialBinding, CodexUsageError> {
+    let binding = manager.current_verified()?.credential_binding();
+    validate_binding(&binding)?;
+    Ok(binding)
+}
+
+async fn fetch_codex_usage_for_current_from_url(
+    client: &reqwest::Client,
+    manager: &CodexAuthManager,
+    url: &str,
+    silent: bool,
+    cache: &tokio::sync::Mutex<CodexUsageCache>,
+) -> Result<CodexUsageSnapshot, CodexUsageError> {
+    // Snapshot the verified provider-scoped record before the first await.
+    // The cache and every outbound request remain pinned to this record even
+    // if another process logs out or changes accounts while this request runs.
+    let expected = snapshot_current_usage_binding(manager)?;
+    fetch_cached_from_url(
+        client,
+        manager,
+        url,
+        &expected,
+        if silent {
+            UsageFetchMode::Silent
+        } else {
+            UsageFetchMode::Explicit
+        },
+        cache,
+    )
+    .await
+}
+
 /// Fetch the selected ChatGPT account's current Codex subscription usage.
-/// A 401 is recovered once through the Codex credential manager only.
+/// A 401 is recovered once through the Codex credential manager only. This
+/// compatibility entry point is an explicit, account-bound refresh.
 pub async fn fetch_codex_usage(
     manager: &CodexAuthManager,
 ) -> Result<CodexUsageSnapshot, CodexUsageError> {
-    fetch_from_url(
-        &crate::http::shared_client(),
+    fetch_codex_usage_for_current(manager, false).await
+}
+
+/// Fetch usage before an ACP session exists by pinning the credential record
+/// selected at request start. This uses the same account-safe cache, refresh,
+/// and retry path as active-session usage and never consults xAI auth.
+pub async fn fetch_codex_usage_for_current(
+    manager: &CodexAuthManager,
+    silent: bool,
+) -> Result<CodexUsageSnapshot, CodexUsageError> {
+    let client = codex_usage_http_client();
+    fetch_codex_usage_for_current_from_url(
+        &client,
         manager,
         OPENAI_CODEX_USAGE_URL,
+        silent,
+        usage_cache(),
+    )
+    .await
+}
+
+/// Fetch usage for the exact credential record pinned to an active session.
+/// Same-record refresh generations may advance, but a logout/relogin or account
+/// switch fails before any usage HTTP request is sent. Silent callers use a
+/// one-minute cache plus 1m/2m/4m/.../15m capped retry backoff; explicit callers
+/// use a fresh cache hit but otherwise attempt an immediate refresh.
+pub async fn fetch_codex_usage_for_session(
+    manager: &CodexAuthManager,
+    expected: &CredentialBinding,
+    silent: bool,
+) -> Result<CodexUsageSnapshot, CodexUsageError> {
+    validate_binding(expected)?;
+    let current = manager.current().ok_or(CodexAuthError::NotLoggedIn)?;
+    let actual = current.credential_binding();
+    if !expected.same_record(&actual) || actual.generation < expected.generation {
+        return Err(CodexAuthError::AccountChanged.into());
+    }
+    let client = codex_usage_http_client();
+    fetch_cached_from_url(
+        &client,
+        manager,
+        OPENAI_CODEX_USAGE_URL,
+        expected,
+        if silent {
+            UsageFetchMode::Silent
+        } else {
+            UsageFetchMode::Explicit
+        },
+        usage_cache(),
     )
     .await
 }

@@ -764,14 +764,25 @@ pub fn render_picker_row(
     };
     let meta_fg = embed.map_or(theme.gray, |e| e.fg(theme.gray));
 
-    // Fill row background.
+    // Fill row background. Native themes preserve the canvas and carry
+    // selection/hover through modifiers instead of an opaque band.
     let row_rect = Rect {
         x,
         y,
         width,
         height: 1,
     };
-    buf.set_style(row_rect, Style::default().bg(row_bg));
+    let mut row_style = Style::default().bg(row_bg);
+    if embed.is_none() {
+        row_style = if hovered {
+            row_style.patch(theme.hovered_row_style())
+        } else if row.selected {
+            row_style.patch(theme.selected_row_style())
+        } else {
+            row_style
+        };
+    }
+    buf.set_style(row_rect, row_style);
 
     // Left side: indent + cursor indicator + fold indicator + label.
     let indent_str = if row.indent > 0 {

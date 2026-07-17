@@ -24,6 +24,21 @@ Location: `~/.grok/config.toml`
 
 If the file does not exist, Grok uses built-in defaults. Specify only the values you want to override.
 
+To make authenticated ChatGPT Codex sessions prefer Fast mode, enable the
+feature and select the Fast service tier:
+
+```toml
+service_tier = "fast"
+
+[features]
+fast_mode = true
+```
+
+This affects only supported Codex subscription models. `/fast on`, `/fast
+off`, and `/fast status` change or inspect the current session setting. Fast
+mode does not change xAI requests, and ChatGPT credit multipliers do not apply
+to API-key billing.
+
 ### General Settings
 
 ```toml
@@ -750,7 +765,7 @@ Key environment variables. See the README for the complete list.
 |----------|-------------|
 | `GROK_MEMORY` | Enable (`1`) or disable (`0`) cross-session memory |
 | `GROK_SUBAGENTS` | Enable (`1`) or disable (`0`) subagents |
-| `GROK_WEB_FETCH` | Enable (`1`) or disable (`0`) the web_fetch tool |
+| `GROK_WEB_FETCH` | Explicitly enable (`1`) or disable (`0`) local `web_fetch`; absent defaults on for Codex subscription sessions and off for xAI |
 | `GROK_AGENT` | Custom agent definition path or name |
 | `GROK_SANDBOX` | Sandbox profile (off, workspace, devbox, read-only, strict; or a custom profile name) |
 

@@ -114,6 +114,9 @@ tar = { workspace = true }
 workspace = true
 
 [features]
+# Allows downstream crate tests to route Codex web-search requests to a
+# loopback mock. Production builds keep the exact ChatGPT endpoint allowlist.
+test-support = []
 default-bazel = [
     "serde",
     ]

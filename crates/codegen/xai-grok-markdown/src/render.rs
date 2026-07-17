@@ -98,8 +98,8 @@ fn render_replace_ansi(highlighted: &[Vec<(SyntectStyle, String)>]) -> String {
             if text.is_empty() {
                 continue;
             }
-            let full_style = anstyle_syntect::to_anstyle(*style);
-            let fg_only = full_style.bg_color(None);
+            let mapped_style = crate::colors::map_syntect_style(*style);
+            let fg_only = mapped_style.bg_color(None);
             let adapted = adapt_style(fg_only);
             if adapted != Style::new() {
                 write!(out, "{adapted}{text}\x1b[0m").ok();
@@ -797,9 +797,9 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                             current_source_line = code_start_source_line + line_idx;
 
                             for (syn_style, text) in line_spans {
-                                let full_style = anstyle_syntect::to_anstyle(*syn_style);
+                                let mapped_style = crate::colors::map_syntect_style(*syn_style);
                                 let with_bg =
-                                    full_style.bg_color(self.ms.code_background.get_bg_color());
+                                    mapped_style.bg_color(self.ms.code_background.get_bg_color());
                                 // This is the only legitimate inline adapt_style call
                                 // for dynamically created syntect+background combo
                                 let adapted = adapt_style(with_bg);

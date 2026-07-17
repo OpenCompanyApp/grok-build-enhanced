@@ -280,7 +280,7 @@ impl SamplingError {
                 matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504 | 520)
             }
             SamplingError::EventStreamError(_) => true,
-            SamplingError::StreamError { .. } => true,
+            SamplingError::StreamError { error_type, .. } => error_type != "usage_limit_reached",
             SamplingError::IdleTimeout { .. } => false,
             SamplingError::EmptyResponse { .. } => true,
             SamplingError::MaxTokensTruncation => false,
@@ -510,6 +510,21 @@ mod tests {
         // Verify the existing contract hasn't changed — EventStreamError is retryable.
         let err = SamplingError::EventStreamError("connection reset".into());
         assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn usage_limit_stream_error_is_terminal_but_other_stream_errors_remain_retryable() {
+        let usage_limit = SamplingError::StreamError {
+            error_type: "usage_limit_reached".into(),
+            message: "ChatGPT Codex stream rejected (usage limit reached)".into(),
+        };
+        assert!(!usage_limit.is_retryable());
+
+        let overloaded = SamplingError::StreamError {
+            error_type: "overloaded_error".into(),
+            message: "try again".into(),
+        };
+        assert!(overloaded.is_retryable());
     }
 
     #[test]

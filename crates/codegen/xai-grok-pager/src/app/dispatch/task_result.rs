@@ -252,6 +252,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             error,
             silent,
         } => {
+            // A failed high-usage poll must not re-arm itself every 30s forever.
+            // The shell already applies bounded same-record backoff when it has
+            // a stale Codex snapshot; an error here means there is no usable
+            // snapshot, so polling stops until the next turn or explicit usage.
+            app.billing_poll_wanted = false;
             if !silent && let Some(agent) = app.agents.get_mut(&agent_id) {
                 agent.scrollback.push_block(RenderBlock::System(
                     crate::scrollback::blocks::SystemMessageBlock::new(format!(

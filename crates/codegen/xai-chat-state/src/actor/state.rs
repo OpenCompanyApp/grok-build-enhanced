@@ -155,7 +155,8 @@ pub(crate) struct ChatState {
     pub last_turn_usage: Option<TokenUsage>,
     /// Billing for the open prompt (cleared on next prompt; not persisted).
     pub prompt_usage: Option<UsageLedger>,
-    /// Lifetime session billing (not persisted).
+    /// Lifetime session billing. The shell persists this separately from chat
+    /// history so resumed sessions retain provider-qualified cost attribution.
     pub session_usage: UsageLedger,
     /// Offset-based turn capture state. `Some` = capture active, `None` = inactive.
     /// Cleared on `TakeTurnMessages` (consumed), `BeginTurnCapture` (new turn),
@@ -266,6 +267,8 @@ mod tests {
 
     fn test_sampling_config() -> SamplingConfig {
         SamplingConfig {
+            provider: Default::default(),
+            credential_binding: None,
             base_url: "https://api.example.com".to_string(),
             model: "test-model".to_string(),
             max_completion_tokens: None,
@@ -276,6 +279,7 @@ mod tests {
             context_window: std::num::NonZeroU64::new(128_000).unwrap(),
             reasoning_effort: None,
             stream_tool_calls: None,
+            service_tier: None,
         }
     }
 

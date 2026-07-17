@@ -454,7 +454,7 @@ pub(super) fn handle_check_subscription_complete(
 ) -> Vec<Effect> {
     let was_blocked = !app.has_access();
     let applied = match meta {
-        Some(meta_val) => {
+        Some(meta_val) if !meta_val.is_null() => {
             match serde_json::from_value::<xai_grok_shell::auth::AuthMeta>(meta_val) {
                 Ok(auth_meta) => {
                     app.apply_auth_meta(&auth_meta);
@@ -476,9 +476,10 @@ pub(super) fn handle_check_subscription_complete(
                 }
             }
         }
-        // meta: None = shell reports "not authenticated" or the check RPC
-        // failed (already logged as subscription.check.rpc_failed).
-        None => false,
+        // meta: None/null = shell reports "not authenticated" / "not
+        // applicable to this provider", or the check RPC failed (already
+        // logged as subscription.check.rpc_failed).
+        Some(_) | None => false,
     };
     if !applied && let Some(generation) = verify {
         app.promote_deferred_gate(generation, "check_failed");

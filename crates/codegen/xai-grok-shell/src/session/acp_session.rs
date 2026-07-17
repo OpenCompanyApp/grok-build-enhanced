@@ -526,7 +526,8 @@ pub(crate) struct PreparedToolCall {
     tool_call_id: acp::ToolCallId,
     /// The tool name as requested by the model.
     tool_name: String,
-    /// The raw arguments string (for post_tool_use hook payload).
+    /// Arguments string for post-tool hook payloads. WebFetch is projected to
+    /// an origin-only URL before storage; other tools retain the wire input.
     raw_arguments: String,
     /// Parsed JSON arguments ready for bridge.call().
     parsed_args: serde_json::Value,
@@ -1170,7 +1171,7 @@ impl SessionActor {
         slash_commands::CommandAvailability {
             feedback: self.feedback_manager.is_enabled(),
             memory: self.memory.is_enabled() && memory_read_registered,
-            memory_configured: self.memory.backend_params.is_some(),
+            memory_configured: self.memory.backend_params.borrow().is_some(),
             scheduler: tool_names.iter().any(|n| {
                 n == xai_grok_tools::implementations::grok_build::SCHEDULER_CREATE_TOOL_NAME
             }),
@@ -1228,6 +1229,151 @@ impl SessionActor {
     }
 }
 const PROMPT_CONTEXT_FILENAME: &str = "prompt_context.json";
+const SESSION_USAGE_FILENAME: &str = "session_usage.json";
+const SESSION_USAGE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedSessionUsage {
+    schema_version: u32,
+    ledger: xai_chat_state::UsageLedger,
+}
+
+/// Atomically persist the non-secret, provider-qualified session usage ledger.
+/// The sidecar is intentionally local session state: it contains token counts
+/// and model identities, never credential bindings, account IDs, or tokens.
+pub(crate) fn persist_session_usage(
+    session_info: &SessionInfo,
+    ledger: &xai_chat_state::UsageLedger,
+) -> std::io::Result<()> {
+    let path = crate::session::persistence::session_dir(session_info).join(SESSION_USAGE_FILENAME);
+    persist_session_usage_to_path(&path, ledger)
+}
+
+fn persist_session_usage_to_path(
+    path: &std::path::Path,
+    ledger: &xai_chat_state::UsageLedger,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let payload = serde_json::to_vec(&PersistedSessionUsage {
+        schema_version: SESSION_USAGE_SCHEMA_VERSION,
+        ledger: ledger.clone(),
+    })
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), suffix));
+    let result = (|| {
+        let mut file = std::fs::File::create(&tmp_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(&payload)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp_path, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
+}
+
+pub(crate) fn load_session_usage(
+    session_info: &SessionInfo,
+) -> Option<xai_chat_state::UsageLedger> {
+    let path = crate::session::persistence::session_dir(session_info).join(SESSION_USAGE_FILENAME);
+    load_session_usage_from_path(&path)
+}
+
+fn load_session_usage_from_path(path: &std::path::Path) -> Option<xai_chat_state::UsageLedger> {
+    let bytes = std::fs::read(path).ok()?;
+    let persisted: PersistedSessionUsage = serde_json::from_slice(&bytes).ok()?;
+    (persisted.schema_version == SESSION_USAGE_SCHEMA_VERSION).then_some(persisted.ledger)
+}
+
+#[cfg(test)]
+mod session_usage_persistence_tests {
+    use super::*;
+
+    fn sample_ledger() -> xai_chat_state::UsageLedger {
+        let totals = xai_chat_state::UsageTotals {
+            input_tokens: 1_000,
+            output_tokens: 250,
+            cached_read_tokens: 600,
+            reasoning_tokens: 125,
+            model_calls: 2,
+            api_duration_ms: 900,
+            cost_usd_ticks: None,
+            cost_missing_calls: 2,
+        };
+        let mut ledger = xai_chat_state::UsageLedger {
+            totals: totals.clone(),
+            main_loop_model_calls: 2,
+            incomplete: true,
+            ..Default::default()
+        };
+        ledger
+            .by_model
+            .insert("openai_codex::gpt-5.6-luna".to_owned(), totals);
+        ledger
+    }
+
+    #[test]
+    fn session_usage_sidecar_round_trips_and_replaces_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SESSION_USAGE_FILENAME);
+        let ledger = sample_ledger();
+
+        persist_session_usage_to_path(&path, &ledger).unwrap();
+        assert_eq!(load_session_usage_from_path(&path), Some(ledger.clone()));
+
+        let mut replacement = ledger;
+        replacement.totals.input_tokens = 2_000;
+        replacement
+            .by_model
+            .get_mut("openai_codex::gpt-5.6-luna")
+            .unwrap()
+            .input_tokens = 2_000;
+        persist_session_usage_to_path(&path, &replacement).unwrap();
+        assert_eq!(load_session_usage_from_path(&path), Some(replacement));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn session_usage_sidecar_rejects_corrupt_or_unknown_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SESSION_USAGE_FILENAME);
+
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(load_session_usage_from_path(&path).is_none());
+
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": SESSION_USAGE_SCHEMA_VERSION + 1,
+                "ledger": sample_ledger(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(load_session_usage_from_path(&path).is_none());
+    }
+}
 /// Persist the structured prompt context to `{session_dir}/prompt_context.json`.
 ///
 /// This is best-effort: failures are logged but do not block session creation.

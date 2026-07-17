@@ -55,10 +55,8 @@ use xai_grok_mermaid::{
 };
 
 use crate::app::agent_view::AgentView;
-use crate::scrollback::blocks::mermaid_content::{
-    MermaidCacheKey, MermaidRenderQuality, theme_is_dark,
-};
-use crate::theme::ThemeKind;
+use crate::scrollback::blocks::mermaid_content::{MermaidCacheKey, MermaidRenderQuality};
+use crate::theme::ResolvedTheme;
 
 /// Hidden subcommand the pager re-execs itself with to render one diagram in an
 /// isolated child process. Intercepted by [`maybe_run_render_subprocess`] at the
@@ -742,7 +740,7 @@ fn render_job(render: &RenderFn, job: &MermaidJob, timeout: Duration) -> (Mermai
     if read_cached_png(&job.out_path) {
         tracing::debug!(
             target: MERMAID_TRACING_TARGET,
-            theme_kind = ?job.key.theme,
+            theme_fingerprint = %job.key.theme_fingerprint.as_hex(),
             width_bucket = job.key.width_bucket,
             cache_hit = true,
             "mermaid disk-cache hit",
@@ -772,7 +770,7 @@ fn render_job(render: &RenderFn, job: &MermaidJob, timeout: Duration) -> (Mermai
         Ok(()) => {
             tracing::info!(
                 target: MERMAID_TRACING_TARGET,
-                theme_kind = ?job.key.theme,
+                theme_fingerprint = %job.key.theme_fingerprint.as_hex(),
                 width_bucket = job.key.width_bucket,
                 source_len = job.source.len(),
                 theme_dark = job.theme_dark,
@@ -793,7 +791,7 @@ fn render_job(render: &RenderFn, job: &MermaidJob, timeout: Duration) -> (Mermai
             // `fallback_reason` is a source-free category; safe to log at warn.
             tracing::warn!(
                 target: MERMAID_TRACING_TARGET,
-                theme_kind = ?job.key.theme,
+                theme_fingerprint = %job.key.theme_fingerprint.as_hex(),
                 width_bucket = job.key.width_bucket,
                 source_len = job.source.len(),
                 duration_ms = started.elapsed().as_millis() as u64,
@@ -1027,7 +1025,7 @@ impl AgentView {
     fn mermaid_render_target(
         &self,
         source: &str,
-        theme: ThemeKind,
+        theme: &ResolvedTheme,
         cols: u16,
         quality: MermaidRenderQuality,
     ) -> Option<(MermaidCacheKey, PathBuf)> {
@@ -1083,12 +1081,13 @@ impl AgentView {
     /// covers the gap; a failed render shows an error toast). `source` is moved
     /// into the job, never cloned.
     pub(crate) fn request_mermaid_render(&mut self, source: String, action: MermaidClickAction) {
-        let theme = crate::theme::cache::current_kind();
+        let theme = crate::theme::cache::current_resolved();
         let cols = self.mermaid_content_cols();
         // Open Image / Copy Image Path always use the open tier so Preview etc.
         // get a high-res PNG; cache key is tier-separated from any terminal budget.
         let quality = MermaidRenderQuality::Open;
-        let Some((key, out_path)) = self.mermaid_render_target(&source, theme, cols, quality)
+        let Some((key, out_path)) =
+            self.mermaid_render_target(&source, theme.as_ref(), cols, quality)
         else {
             // No session dir yet → nowhere to cache the PNG.
             crate::unified_log::warn(
@@ -1125,7 +1124,7 @@ impl AgentView {
             key: key.clone(),
             source,
             out_path,
-            theme_dark: theme_is_dark(theme),
+            theme_dark: theme.polarity.is_dark(),
             // Terminal width is unused for open tier but kept for job symmetry /
             // future terminal-tier callers.
             target_width_px: target_width_px(cols),
@@ -1134,7 +1133,8 @@ impl AgentView {
         tracing::debug!(
             target: MERMAID_TRACING_TARGET,
             source_len = job.source.len(),
-            theme_kind = ?theme,
+            theme_fingerprint = %theme.fingerprint.as_hex(),
+            theme_polarity = ?theme.polarity,
             target_px = job.target_width_px,
             ?quality,
             "mermaid on-click render dispatched",
@@ -2167,10 +2167,10 @@ mod tests {
         );
 
         // The pending key was hashed at click time from the live theme + width.
-        let theme = crate::theme::cache::current_kind();
+        let theme = crate::theme::cache::current_resolved();
         let cols = agent.mermaid_content_cols();
         let (want_key, out_path) = agent
-            .mermaid_render_target(&src, theme, cols, MermaidRenderQuality::Open)
+            .mermaid_render_target(&src, theme.as_ref(), cols, MermaidRenderQuality::Open)
             .unwrap();
         assert!(
             agent
@@ -2202,10 +2202,10 @@ mod tests {
     fn mermaid_view_disk_hit_runs_action_without_dispatch() {
         let mut agent = agent_with_session("hit");
         let src = "flowchart LR\nA-->B\n".to_string();
-        let theme = crate::theme::cache::current_kind();
+        let theme = crate::theme::cache::current_resolved();
         let cols = agent.mermaid_content_cols();
         let (_key, out_path) = agent
-            .mermaid_render_target(&src, theme, cols, MermaidRenderQuality::Open)
+            .mermaid_render_target(&src, theme.as_ref(), cols, MermaidRenderQuality::Open)
             .unwrap();
         std::fs::create_dir_all(out_path.parent().unwrap()).unwrap();
         image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
@@ -2243,10 +2243,10 @@ mod tests {
         assert_eq!(agent.mermaid.as_ref().unwrap().pending.len(), 1);
 
         // Simulate the worker having written the PNG before the result is polled.
-        let theme = crate::theme::cache::current_kind();
+        let theme = crate::theme::cache::current_resolved();
         let cols = agent.mermaid_content_cols();
         let (_key, out_path) = agent
-            .mermaid_render_target(&src, theme, cols, MermaidRenderQuality::Open)
+            .mermaid_render_target(&src, theme.as_ref(), cols, MermaidRenderQuality::Open)
             .unwrap();
         std::fs::create_dir_all(out_path.parent().unwrap()).unwrap();
         image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 9, 9, 255]))

@@ -10,8 +10,9 @@ use std::sync::atomic::Ordering;
 
 /// Auto-compaction is gated whenever `auto_compact_suppressed` is not [`SUPPRESS_NONE`].
 pub(crate) const SUPPRESS_NONE: u8 = 0;
-/// Resolvable failure (`other`): suppressed for the current turn, then
-/// cleared at the next turn start so compaction self-heals once the cause clears.
+/// Legacy per-turn suppression state. New transient provider failures use
+/// [`SUPPRESS_BACKOFF`], but turn-boundary clearing remains compatible with
+/// sessions/tests that carry this older state.
 pub(crate) const SUPPRESS_TURN: u8 = 1;
 /// Fatal failure (size/schema) retrying can never fix: survives turn boundaries,
 /// cleared only when the context budget changes — a successful compaction, a
@@ -24,11 +25,17 @@ pub(crate) const SUPPRESS_STICKY: u8 = 2;
 /// boundaries; cleared only when a model call actually succeeds — a `200` proves
 /// the account can sample again (see the `ModelResponseReceived` site in `turn.rs`).
 pub(crate) const SUPPRESS_UNTIL_SUCCESS: u8 = 3;
+/// Transient provider failure (rate limit, overload, network/empty response):
+/// suppressed until `auto_compact_retry_not_before_unix_secs`. Unlike
+/// [`SUPPRESS_TURN`], this survives tool continuations and new user turns, but
+/// expires automatically. Manual `/compact` always bypasses it.
+pub(crate) const SUPPRESS_BACKOFF: u8 = 4;
 
 /// Model slug and context window from the previous turn.
 #[derive(Clone, Debug)]
 pub struct PreviousModelInfo {
     pub model_slug: String,
+    pub provider: xai_grok_sampling_types::ProviderId,
     pub context_window: u64,
 }
 
@@ -134,9 +141,15 @@ pub struct CompactionConfig {
     pub threshold_percent: Cell<u8>,
     /// Debug: when set, next auto-compact check triggers unconditionally.
     pub force_compact: Arc<AtomicBool>,
-    /// Auto-compaction suppression state (`SUPPRESS_*`) after a deterministic
-    /// failure; the gates early-return unless `SUPPRESS_NONE`. Manual `/compact` ignores it.
+    /// Auto-compaction suppression state (`SUPPRESS_*`) after a classified
+    /// failure; the gates early-return unless `SUPPRESS_NONE`. Manual `/compact`
+    /// ignores it.
     pub auto_compact_suppressed: AtomicU8,
+    /// Unix timestamp after which [`SUPPRESS_BACKOFF`] may be cleared. Kept
+    /// separate from the state byte so the state remains compatible with the
+    /// existing compare-exchange gates at turn start and after successful
+    /// sampling.
+    pub auto_compact_retry_not_before_unix_secs: AtomicU64,
     /// Locks the context window when `GROK_DEBUG_CONTEXT_WINDOW` is set.
     pub context_window_override: Option<std::num::NonZeroU64>,
     pub count: AtomicU64,

@@ -56,12 +56,6 @@ fn resolve_effective_provider_tools(
 
     match sampling.provider {
         ProviderId::OpenAiCodex => {
-            if !ctx.models_manager.model_supports_image_input_for_provider(
-                sampling.provider,
-                &sampling.model,
-            ) {
-                return (ImageGenConfig::Disabled, VideoGenConfig::Disabled, None);
-            }
             let (default_image_gen, default_image_edit) = ctx.models_manager.image_tool_gates();
             let image_gen_enabled = ctx
                 .agent_config
@@ -71,6 +65,9 @@ fn resolve_effective_provider_tools(
                 .agent_config
                 .as_ref()
                 .map_or(default_image_edit, |cfg| cfg.resolve_image_edit().value);
+            if !image_gen_enabled && !image_edit_enabled {
+                return (ImageGenConfig::Disabled, VideoGenConfig::Disabled, None);
+            }
             let provider = crate::auth::codex::CodexAuthManager::new(
                 &crate::util::grok_home::grok_home(),
             )
@@ -78,6 +75,8 @@ fn resolve_effective_provider_tools(
             .map(std::sync::Arc::new)
             .map(crate::auth::codex::shared_api_key_provider);
             (
+                // The selected coding model's image-input modality controls
+                // reading attachments, not the standalone gpt-image-2 tools.
                 ImageGenConfig::OpenAiCodex {
                     base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
                     image_gen_enabled,

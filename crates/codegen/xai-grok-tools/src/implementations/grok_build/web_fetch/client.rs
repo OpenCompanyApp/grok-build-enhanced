@@ -9,7 +9,7 @@ use url::Url;
 
 use super::cache::FetchCache;
 use super::config::{MAX_REDIRECTS, MAX_URL_LENGTH, USER_AGENT_STRING, WebFetchParams};
-use super::error::WebFetchError;
+use super::error::{WebFetchError, safe_url_origin};
 use super::http::HttpClient;
 use super::overflow::{OverflowHandler, RecoveryTools, inline_budget};
 use super::ssrf;
@@ -39,6 +39,13 @@ struct ProcessedText {
     was_truncated: bool,
     artifact_path: Option<PathBuf>,
     inline_fallback: Option<String>,
+}
+
+fn cross_host_redirect_output(original_host: String, redirect_url: String) -> WebFetchOutput {
+    WebFetchOutput::CrossHostRedirect {
+        original_host,
+        redirect_url: safe_url_origin(&redirect_url),
+    }
 }
 
 impl WebFetchClient {
@@ -89,19 +96,18 @@ impl WebFetchClient {
         {
             let cache = self.cache.read();
             if let Some(cached) = cache.get(&url_str) {
-                tracing::debug!("web_fetch cache hit for {url_str}");
+                // Never log the full URL: query strings and paths commonly
+                // contain signed credentials or other private identifiers.
+                tracing::debug!("web_fetch cache hit");
                 return Ok(cached.clone());
             }
         }
-
-        // SSRF check.
-        ssrf::check_ssrf(&url).await?;
 
         // Make request and build output.
         let http = self.http.get_or_rebuild()?;
         let result = match fetch_url(&http, &url, self.params.max_content_length()).await {
             Ok(result) => result,
-            Err(e @ WebFetchError::HttpRequest(_)) => {
+            Err(e @ WebFetchError::HttpRequest { .. }) => {
                 self.http.invalidate();
                 return Err(e);
             }
@@ -119,10 +125,7 @@ impl WebFetchClient {
                 original_host,
                 redirect_url,
             } => {
-                return Ok(WebFetchOutput::CrossHostRedirect {
-                    original_host,
-                    redirect_url,
-                });
+                return Ok(cross_host_redirect_output(original_host, redirect_url));
             }
         };
 
@@ -147,7 +150,7 @@ impl WebFetchClient {
             if !validate_media_magic_bytes(&content_type, &body) {
                 return Err(WebFetchError::ContentTypeMismatch {
                     content_type,
-                    url: final_url,
+                    url: safe_url_origin(&final_url),
                 });
             }
             let media_session_folder = require_media_session_folder(session_folder)?;
@@ -169,7 +172,7 @@ impl WebFetchClient {
             if !validate_media_magic_bytes(&content_type, &body) {
                 return Err(WebFetchError::ContentTypeMismatch {
                     content_type,
-                    url: final_url,
+                    url: safe_url_origin(&final_url),
                 });
             }
             let media_session_folder = require_media_session_folder(session_folder)?;
@@ -189,7 +192,7 @@ impl WebFetchClient {
         if is_binary_content_type(&content_type) {
             return Err(WebFetchError::UnsupportedContentType {
                 content_type,
-                url: final_url,
+                url: safe_url_origin(&final_url),
             });
         }
 
@@ -321,6 +324,7 @@ fn upgrade_to_https(url: &mut Url) {
 // HTTP Fetching
 // ───────────────────────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 enum FetchResult {
     Content {
         body: Vec<u8>,
@@ -334,17 +338,73 @@ enum FetchResult {
     },
 }
 
+#[async_trait::async_trait]
+trait SsrfValidator: Send + Sync {
+    async fn validate(&self, url: &Url) -> Result<(), WebFetchError>;
+}
+
+struct ProductionSsrfValidator;
+
+#[async_trait::async_trait]
+impl SsrfValidator for ProductionSsrfValidator {
+    async fn validate(&self, url: &Url) -> Result<(), WebFetchError> {
+        ssrf::check_ssrf(url).await
+    }
+}
+
+async fn read_web_fetch_response_with_limit(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, WebFetchError> {
+    use futures_util::StreamExt as _;
+
+    let response_origin = safe_url_origin(response.url().as_str());
+
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(WebFetchError::ResponseTooLarge { max: max_bytes });
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| WebFetchError::http_request(error, &response_origin))?;
+        if chunk.len() > max_bytes.saturating_sub(body.len()) {
+            return Err(WebFetchError::ResponseTooLarge { max: max_bytes });
+        }
+        body.try_reserve_exact(chunk.len())
+            .map_err(|error| WebFetchError::IoError(std::io::Error::other(error)))?;
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 /// Fetch a URL with manual same-host redirect handling.
 async fn fetch_url(
     client: &reqwest::Client,
     url: &Url,
     max_content_length: usize,
 ) -> Result<FetchResult, WebFetchError> {
+    fetch_url_with_ssrf_validator(client, url, max_content_length, &ProductionSsrfValidator).await
+}
+
+async fn fetch_url_with_ssrf_validator(
+    client: &reqwest::Client,
+    url: &Url,
+    max_content_length: usize,
+    ssrf_validator: &dyn SsrfValidator,
+) -> Result<FetchResult, WebFetchError> {
     let mut current_url = url.clone();
     let mut hops = 0;
 
     // Loop to follow redirects under the same host.
     loop {
+        // Validate immediately before every network hop. Rechecking followed
+        // same-host redirects closes DNS-rebinding and redirect-to-private-IP
+        // gaps; cross-host redirects are still returned for explicit approval.
+        ssrf_validator.validate(&current_url).await?;
         let resp = client
             .get(current_url.as_str())
             .header(USER_AGENT, USER_AGENT_STRING)
@@ -354,7 +414,8 @@ async fn fetch_url(
             )
             .header(ACCEPT_LANGUAGE, "en-US,en;q=0.9")
             .send()
-            .await?;
+            .await
+            .map_err(|error| WebFetchError::http_request(error, current_url.as_str()))?;
 
         let status = resp.status();
 
@@ -369,7 +430,8 @@ async fn fetch_url(
                 let location_str = location.to_str().unwrap_or("");
                 let next_url = current_url
                     .join(location_str)
-                    .map_err(|e| WebFetchError::InvalidRedirect(format!("{e}")))?;
+                    .map_err(|_| WebFetchError::InvalidRedirect)?;
+                let next_url = validate_url(next_url.as_str())?;
                 if is_same_host(&current_url, &next_url) {
                     current_url = next_url;
                     continue;
@@ -390,16 +452,10 @@ async fn fetch_url(
         let final_url = resp.url().to_string();
         let status_code = status.as_u16();
 
-        let body = resp.bytes().await?;
-
-        if body.len() > max_content_length {
-            return Err(WebFetchError::ResponseTooLarge {
-                max: max_content_length,
-            });
-        }
+        let body = read_web_fetch_response_with_limit(resp, max_content_length).await?;
 
         return Ok(FetchResult::Content {
-            body: body.to_vec(),
+            body,
             content_type,
             final_url,
             status_code,
@@ -817,12 +873,158 @@ fn strip_base64_data_uris(content: String) -> String {
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct RejectBlockedRedirectValidator {
+        seen_paths: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SsrfValidator for RejectBlockedRedirectValidator {
+        async fn validate(&self, url: &Url) -> Result<(), WebFetchError> {
+            self.seen_paths.lock().unwrap().push(url.path().to_owned());
+            if url.path() == "/blocked" {
+                return Err(WebFetchError::SsrfBlocked {
+                    host: url.host_str().unwrap_or("unknown").to_owned(),
+                    ip: "127.0.0.1".parse().unwrap(),
+                });
+            }
+            Ok(())
+        }
+    }
+
     fn test_converter() -> htmd::HtmlToMarkdown {
         htmd::HtmlToMarkdown::builder()
             .skip_tags(vec![
                 "script", "style", "noscript", "svg", "iframe", "object", "embed",
             ])
             .build()
+    }
+
+    #[test]
+    fn public_redirect_output_exposes_only_destination_origin() {
+        let output = cross_host_redirect_output(
+            "source.example".to_owned(),
+            "https://user:password@example.com:8443/private?token=super-secret#fragment".to_owned(),
+        );
+        let WebFetchOutput::CrossHostRedirect {
+            original_host,
+            redirect_url,
+        } = output
+        else {
+            panic!("expected cross-host redirect output");
+        };
+        assert_eq!(original_host, "source.example");
+        assert_eq!(redirect_url, "https://example.com:8443");
+        for secret in [
+            "user",
+            "password",
+            "private",
+            "token",
+            "super-secret",
+            "fragment",
+        ] {
+            assert!(
+                !redirect_url.contains(secret),
+                "redirect leaked {secret}: {redirect_url}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn chunked_response_without_content_length_is_stream_bounded() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{address}/chunked"))
+            .await
+            .unwrap();
+        assert_eq!(response.content_length(), None);
+        let error = read_web_fetch_response_with_limit(response, 5)
+            .await
+            .expect_err("six streamed bytes must exceed the five-byte cap");
+        assert!(matches!(error, WebFetchError::ResponseTooLarge { max: 5 }));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn same_host_redirect_is_ssrf_checked_before_second_network_hop() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/blocked"))
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let validator = RejectBlockedRedirectValidator::default();
+        let url = Url::parse(&format!("{}/start", server.uri())).unwrap();
+
+        let error = fetch_url_with_ssrf_validator(&client, &url, 1024, &validator)
+            .await
+            .expect_err("redirect target should be rejected before it is requested");
+        assert!(matches!(error, WebFetchError::SsrfBlocked { .. }));
+        assert_eq!(
+            validator.seen_paths.lock().unwrap().as_slice(),
+            ["/start", "/blocked"]
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "blocked redirect target was requested");
+        assert_eq!(requests[0].url.path(), "/start");
+    }
+
+    #[tokio::test]
+    async fn cross_host_redirect_still_returns_for_explicit_approval() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "https://other.example/next"),
+            )
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let validator = RejectBlockedRedirectValidator::default();
+        let url = Url::parse(&format!("{}/start", server.uri())).unwrap();
+
+        let result = fetch_url_with_ssrf_validator(&client, &url, 1024, &validator)
+            .await
+            .expect("cross-host redirect should be returned, not followed");
+        match result {
+            FetchResult::CrossHostRedirect {
+                original_host,
+                redirect_url,
+            } => {
+                assert_eq!(original_host, "127.0.0.1");
+                assert_eq!(redirect_url, "https://other.example/next");
+            }
+            FetchResult::Content { .. } => panic!("cross-host redirect was followed"),
+        }
+        assert_eq!(validator.seen_paths.lock().unwrap().as_slice(), ["/start"]);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

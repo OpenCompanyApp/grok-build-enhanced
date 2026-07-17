@@ -706,7 +706,11 @@ impl AgentBuilder {
                 use xai_grok_tools::implementations::grok_build;
                 tool_config.tools.push((&grok_build::WebSearchTool).into());
             }
-            if self.web_fetch_config.is_enabled() {
+            if self
+                .web_fetch_config
+                .params_for_codex_subscription(self.web_search_config.is_codex_subscription())
+                .is_some()
+            {
                 use xai_grok_tools::implementations::grok_build;
                 tool_config.tools.push((&grok_build::WebFetchTool).into());
             }
@@ -825,9 +829,20 @@ impl AgentBuilder {
                     .retain(|tc| !lifecycle.contains(&short_tool_name(&tc.id)));
             }
         }
-        if let xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig::Enabled {
-            ref params,
-        } = self.web_fetch_config
+        // This controls the exported schema/description, not request auth.
+        // Seal it after definition params are merged so an xAI session can
+        // never advertise Codex-only navigation commands.
+        for tool in &mut tool_config.tools {
+            if tool.id == "GrokBuild:web_search" {
+                tool.params.get_or_insert_with(Default::default).insert(
+                    "codex_subscription".to_string(),
+                    self.web_search_config.is_codex_subscription().into(),
+                );
+            }
+        }
+        if let Some(params) = self
+            .web_fetch_config
+            .params_for_codex_subscription(self.web_search_config.is_codex_subscription())
             && let Ok(params_value) = serde_json::to_value(params)
             && let Some(obj) = params_value.as_object()
         {
@@ -1005,7 +1020,8 @@ impl AgentBuilder {
             }
         }
         let use_backend_search = self.backend_search;
-        let web_search_enabled = self.web_search_config.is_enabled();
+        let hosted_web_search_enabled = self.web_search_config.allows_hosted_responses_tool();
+        let codex_subscription_search = self.web_search_config.is_codex_subscription();
         let tool_bridge = ToolBridge::finalize_builder(
             tool_bridge_builder,
             tool_config,
@@ -1172,12 +1188,12 @@ impl AgentBuilder {
         }
         let mut hosted_tools = Vec::new();
         if use_backend_search {
-            if web_search_enabled && definition.hosted_tool_allowed("web_search") {
+            if hosted_web_search_enabled && definition.hosted_tool_allowed("web_search") {
                 hosted_tools.push(xai_grok_sampling_types::HostedTool::WebSearch {
                     allowed_domains: None,
                 });
             }
-            if definition.hosted_tool_allowed("x_search") {
+            if !codex_subscription_search && definition.hosted_tool_allowed("x_search") {
                 hosted_tools.push(xai_grok_sampling_types::HostedTool::XSearch);
             }
         }
@@ -2424,6 +2440,20 @@ mod tests {
                 .any(|t| matches!(t, xai_grok_sampling_types::HostedTool::XSearch)),
             "expected XSearch hosted tool, got: {hosted:?}"
         );
+        let definitions = agent.tool_definitions().await;
+        let web = definitions
+            .iter()
+            .find(|tool| short_tool_name(&tool.function.name) == "web_search")
+            .expect("xAI web_search function");
+        let properties = web.function.parameters["properties"]
+            .as_object()
+            .expect("xAI web_search properties");
+        assert!(properties.contains_key("query"));
+        assert!(!properties.contains_key("open"));
+        assert_eq!(
+            web.function.parameters["required"],
+            serde_json::json!(["query"])
+        );
     }
     /// XSearch is added unconditionally when backend search is on;
     /// WebSearch requires the web-search config.
@@ -2451,5 +2481,97 @@ mod tests {
         let agent = build_with_web_search(true, false, &[]).await;
         assert!(!agent.backend_search_enabled());
         assert!(agent.hosted_tools().is_empty());
+    }
+
+    #[tokio::test]
+    async fn codex_subscription_search_is_local_function_without_xai_hosted_tools() {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        use xai_grok_tools::implementations::web_search::WebSearchConfig;
+        use xai_grok_tools::notification::ToolNotificationHandle;
+
+        let agent = AgentBuilder::new(
+            std::env::temp_dir(),
+            Arc::new(LocalTerminalBackend::new()),
+            ToolNotificationHandle::noop(),
+        )
+        .from_definition(crate::config::AgentDefinition::default_grok_build())
+        .with_web_search_config(WebSearchConfig::CodexSubscription {
+            base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+            model: "gpt-5.6-luna".to_string(),
+            session_id: "session-public".to_string(),
+        })
+        .with_backend_search(true)
+        .build()
+        .await
+        .expect("Codex subscription agent should build");
+
+        assert!(agent.hosted_tools().is_empty());
+        let definitions = agent.tool_definitions().await;
+        let web = definitions
+            .iter()
+            .find(|tool| short_tool_name(&tool.function.name) == "web_search")
+            .expect("Codex web_search function");
+        let properties = web.function.parameters["properties"]
+            .as_object()
+            .expect("Codex web_search properties");
+        for command in ["search_query", "open", "click", "find", "screenshot"] {
+            assert!(
+                properties.contains_key(command),
+                "Codex schema omitted {command}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_search_state_switches_xai_to_codex_and_back_without_leaking_xsearch() {
+        let mut agent = build_with_web_search(true, true, &[]).await;
+        assert!(
+            agent
+                .hosted_tools()
+                .iter()
+                .any(|tool| matches!(tool, xai_grok_sampling_types::HostedTool::WebSearch { .. }))
+        );
+        assert!(
+            agent
+                .hosted_tools()
+                .iter()
+                .any(|tool| matches!(tool, xai_grok_sampling_types::HostedTool::XSearch))
+        );
+
+        agent.refresh_backend_search_config(false, false, true);
+        assert!(!agent.backend_search_enabled());
+        assert!(
+            agent.hosted_tools().is_empty(),
+            "Codex subscription route must expose neither xAI hosted search tool"
+        );
+
+        agent.refresh_backend_search_config(true, true, false);
+        assert!(agent.backend_search_enabled());
+        assert!(
+            agent
+                .hosted_tools()
+                .iter()
+                .any(|tool| matches!(tool, xai_grok_sampling_types::HostedTool::WebSearch { .. }))
+        );
+        assert!(
+            agent
+                .hosted_tools()
+                .iter()
+                .any(|tool| matches!(tool, xai_grok_sampling_types::HostedTool::XSearch))
+        );
+
+        agent.refresh_backend_search_config(true, false, false);
+        assert!(
+            !agent
+                .hosted_tools()
+                .iter()
+                .any(|tool| matches!(tool, xai_grok_sampling_types::HostedTool::WebSearch { .. }))
+        );
+        assert!(
+            agent
+                .hosted_tools()
+                .iter()
+                .any(|tool| matches!(tool, xai_grok_sampling_types::HostedTool::XSearch))
+        );
     }
 }

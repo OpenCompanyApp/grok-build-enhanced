@@ -112,8 +112,8 @@ pub struct BillingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BillingConfigResponse {
     pub config: Option<BillingConfig>,
-    /// Authoritative ChatGPT Codex subscription limits for a Codex-backed
-    /// session. Never populated on the xAI billing path.
+    /// Authoritative ChatGPT Codex subscription limits for the selected Codex
+    /// provider or a Codex-backed session. Never populated on the xAI path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_usage: Option<crate::auth::codex::CodexUsageSnapshot>,
     /// Informational API-price comparison from actual session token counters.
@@ -210,6 +210,18 @@ fn billing_unified_log_ctx(billing: &BillingConfigResponse) -> serde_json::Value
 struct BillingRequest {
     #[serde(default)]
     session_id: Option<acp::SessionId>,
+    /// Background callers may use stale same-record data while the usage
+    /// endpoint is backing off. Explicit `/usage` bypasses backoff unless its
+    /// one-minute cache entry is still fresh.
+    #[serde(default)]
+    silent: bool,
+}
+
+fn billing_provider(
+    session_provider: Option<xai_grok_sampling_types::ProviderId>,
+    configured_provider: xai_grok_sampling_types::ProviderId,
+) -> xai_grok_sampling_types::ProviderId {
+    session_provider.unwrap_or(configured_provider)
 }
 
 async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -229,10 +241,11 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
         Some(session) => session.chat_state_handle.get_sampling_config().await,
         None => None,
     };
-    let provider = session_sampling
-        .as_ref()
-        .map(|sampling| sampling.provider)
-        .unwrap_or_else(|| agent.sampling_config.borrow().provider);
+    let configured_provider = agent.sampling_config.borrow().provider;
+    let provider = billing_provider(
+        session_sampling.as_ref().map(|sampling| sampling.provider),
+        configured_provider,
+    );
 
     if provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
         let manager =
@@ -241,14 +254,41 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
                     acp::Error::auth_required()
                         .data(format!("OpenAI Codex usage unavailable: {error}"))
                 })?;
-        let codex_usage = crate::auth::codex::fetch_codex_usage(&manager)
-            .await
-            .map_err(|error| {
-                // The usage client never includes an upstream body, token, or
-                // account ID in this display-safe error.
-                acp::Error::internal_error()
-                    .data(format!("Failed to fetch OpenAI Codex usage: {error}"))
-            })?;
+        let codex_usage_result = match session_sampling.as_ref() {
+            Some(sampling) => {
+                let expected_binding = sampling.credential_binding.as_ref().ok_or_else(|| {
+                    acp::Error::auth_required().data(
+                        "OpenAI Codex session credential binding is unavailable; restart or select the model again",
+                    )
+                })?;
+                crate::auth::codex::fetch_codex_usage_for_session(
+                    &manager,
+                    expected_binding,
+                    request.silent,
+                )
+                .await
+            }
+            None => {
+                crate::auth::codex::fetch_codex_usage_for_current(&manager, request.silent).await
+            }
+        };
+        let codex_usage = codex_usage_result.map_err(|error| {
+            // The usage client never includes an upstream body, token, account
+            // ID, or credential-record ID in this display-safe error.
+            let display = error.to_string();
+            match error {
+                crate::auth::codex::CodexUsageError::Auth(
+                    crate::auth::codex::CodexAuthError::NotLoggedIn,
+                ) => acp::Error::auth_required().data(display),
+                crate::auth::codex::CodexUsageError::Auth(
+                    crate::auth::codex::CodexAuthError::AccountChanged,
+                ) => acp::Error::auth_required().data(format!(
+                    "OpenAI Codex usage authentication changed: {display}"
+                )),
+                _ => acp::Error::internal_error()
+                    .data(format!("Failed to fetch OpenAI Codex usage: {display}")),
+            }
+        })?;
         let codex_api_equivalent_cost = match (session.as_ref(), session_sampling.as_ref()) {
             (Some(session), Some(sampling)) => session
                 .chat_state_handle
@@ -256,7 +296,10 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
                 .await
                 .ok()
                 .map(|ledger| {
-                    crate::auth::codex::estimate_api_equivalent_cost(&ledger, &sampling.model)
+                    crate::auth::codex::estimate_api_equivalent_cost(
+                        &ledger,
+                        &format!("openai_codex::{}", sampling.model),
+                    )
                 }),
             _ => None,
         };
@@ -423,6 +466,36 @@ async fn handle_get_auto_topup_rule(agent: &MvpAgent) -> ExtResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn billing_request_defaults_to_explicit_and_accepts_silent_polling() {
+        let explicit: BillingRequest = serde_json::from_value(serde_json::json!({
+            "sessionId": "session-1"
+        }))
+        .unwrap();
+        assert!(!explicit.silent);
+        assert!(explicit.session_id.is_some());
+
+        let silent: BillingRequest = serde_json::from_value(serde_json::json!({
+            "sessionId": "session-1",
+            "silent": true
+        }))
+        .unwrap();
+        assert!(silent.silent);
+    }
+
+    #[test]
+    fn no_session_billing_keeps_the_explicit_agent_provider() {
+        assert_eq!(
+            billing_provider(None, xai_grok_sampling_types::ProviderId::OpenAiCodex),
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            "Codex startup billing must not fall through to xAI"
+        );
+        assert_eq!(
+            billing_provider(None, xai_grok_sampling_types::ProviderId::Xai),
+            xai_grok_sampling_types::ProviderId::Xai
+        );
+    }
 
     #[test]
     fn auto_topup_disabled_rule_omits_enabled_field() {

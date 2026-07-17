@@ -364,6 +364,8 @@ mod tests {
         let _ = ChatStateCommand::IncrementPromptIndex;
         let _ = ChatStateCommand::UpdateSamplingConfig {
             config: SamplingConfig {
+                provider: Default::default(),
+                credential_binding: None,
                 base_url: String::new(),
                 model: String::new(),
                 max_completion_tokens: None,
@@ -374,6 +376,7 @@ mod tests {
                 context_window: std::num::NonZeroU64::new(128_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
+                service_tier: None,
             },
         };
         let _ = ChatStateCommand::RecordAgentEditedPath {

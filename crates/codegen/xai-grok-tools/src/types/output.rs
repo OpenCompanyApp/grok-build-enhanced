@@ -490,11 +490,27 @@ pub struct BackgroundTaskStarted {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WebSearchReference {
+    /// Provider-stable reference used by follow-up `open`, `find`, and
+    /// `click` commands (for example `turn0search0`).
+    pub ref_id: String,
+    /// Human-readable result title, when supplied by the provider.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// Public HTTP(S) source URL associated with this reference.
+    pub url: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WebSearchOutput {
     pub query: String,
     pub content: String,
     pub citations: Vec<String>,
+    /// Bounded, sanitized projection of standalone-search result records.
+    /// Opaque provider result JSON is never exposed wholesale.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<WebSearchReference>,
     pub allowed_domains: Option<Vec<String>>,
     /// When set, `to_prompt_format()` returns this text directly instead of
     /// wrapping `content` with the default header. Used by the compat adapter
@@ -759,10 +775,34 @@ impl ToolOutput {
                 if let Some(ref pre) = web_search_output.pre_formatted {
                     pre.clone()
                 } else {
-                    format!(
+                    let mut rendered = format!(
                         "Web search results for: \"{}\"\n\n{}",
                         web_search_output.query, web_search_output.content
-                    )
+                    );
+                    if !web_search_output.references.is_empty() {
+                        rendered.push_str("\n\nReferences:\n");
+                        for reference in &web_search_output.references {
+                            if reference.title.is_empty() {
+                                rendered.push_str(&format!(
+                                    "- {}: {}\n",
+                                    reference.ref_id, reference.url
+                                ));
+                            } else {
+                                rendered.push_str(&format!(
+                                    "- {}: {} — {}\n",
+                                    reference.ref_id, reference.title, reference.url
+                                ));
+                            }
+                        }
+                        rendered.pop();
+                    } else if !web_search_output.citations.is_empty() {
+                        rendered.push_str("\n\nSources:\n");
+                        for url in &web_search_output.citations {
+                            rendered.push_str(&format!("- {url}\n"));
+                        }
+                        rendered.pop();
+                    }
+                    rendered
                 }
             }
             ToolOutput::WebFetch(o) => o.to_prompt_format(),
@@ -1318,6 +1358,28 @@ mod tests {
             round_trip.consumed_completion_task_id.as_deref(),
             Some("task-abc")
         );
+    }
+    #[test]
+    fn codex_web_search_references_are_model_visible_without_opaque_results() {
+        let output = ToolOutput::WebSearch(WebSearchOutput {
+            query: "current Codex release".to_string(),
+            content: "The current release is documented in turn0search0.".to_string(),
+            citations: vec!["https://fallback.example/".to_string()],
+            references: vec![WebSearchReference {
+                ref_id: "turn0search0".to_string(),
+                title: "Codex release notes".to_string(),
+                url: "https://openai.com/codex/".to_string(),
+            }],
+            allowed_domains: None,
+            pre_formatted: None,
+        });
+
+        let prompt = output.to_prompt_format();
+        assert!(prompt.contains("References:"));
+        assert!(prompt.contains("turn0search0: Codex release notes"));
+        assert!(prompt.contains("https://openai.com/codex/"));
+        assert!(!prompt.contains("https://fallback.example/"));
+        assert!(!prompt.contains("opaque"));
     }
     #[test]
     fn media_gen_output() {

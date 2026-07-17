@@ -690,6 +690,23 @@ fn action_for_enum(key: SettingKey, choice: &'static str) -> Option<Action> {
 
 /// Construct `Action::Set*` commit variant for an Enum setting.
 /// Commit actions persist to disk and fire a toast.
+fn action_for_dynamic_enum_preview(key: SettingKey, choice: String) -> Option<Action> {
+    match key {
+        "theme" => Some(Action::PreviewTheme(choice)),
+        "auto_dark_theme" => Some(Action::PreviewAutoDarkTheme(choice)),
+        "auto_light_theme" => Some(Action::PreviewAutoLightTheme(choice)),
+        _ => None,
+    }
+}
+
+fn action_for_picker_preview_revert(key: SettingKey, original: &SettingValue) -> Option<Action> {
+    match original {
+        SettingValue::Enum(value) => action_for_enum(key, value),
+        SettingValue::String(value) => action_for_dynamic_enum_preview(key, value.clone()),
+        _ => None,
+    }
+}
+
 fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> Option<Action> {
     match key {
         "theme" => Some(Action::SetTheme(choice.to_string())),
@@ -753,6 +770,9 @@ fn action_for_string(
     snapshot: &PagerLocalSnapshot,
 ) -> Option<Action> {
     match key {
+        "theme" => Some(Action::SetTheme(value)),
+        "auto_dark_theme" => Some(Action::SetAutoDarkTheme(value)),
+        "auto_light_theme" => Some(Action::SetAutoLightTheme(value)),
         "default_model" => {
             if value.is_empty() {
                 Some(Action::ClearDefaultModel)
@@ -1087,12 +1107,12 @@ fn render_reset_confirm_overlay(
         width: content_area.width,
         height: 1,
     };
-    let prompt_bg_style = Style::default().bg(theme.bg_visual);
-    buf.set_style(prompt_area, prompt_bg_style);
+    let prompt_overlay = theme.selected_row_style();
+    buf.set_style(prompt_area, prompt_overlay);
     let prompt_style = Style::default()
         .fg(theme.accent_user)
-        .bg(theme.bg_visual)
-        .add_modifier(Modifier::BOLD);
+        .add_modifier(Modifier::BOLD)
+        .patch(prompt_overlay);
     let prompt_text: std::borrow::Cow<'_, str> =
         if overlay.prompt.width() <= content_area.width as usize {
             std::borrow::Cow::Borrowed(overlay.prompt)
@@ -1494,7 +1514,7 @@ fn render_rows(buf: &mut Buffer, area: Rect, state: &mut SettingsModalState, the
                         if s.is_empty() && matches!(meta.kind, SettingKind::DynamicEnum { .. }) {
                             "(no override)".to_string()
                         } else {
-                            s.clone()
+                            display_for_dynamic_value(meta.key, s)
                         }
                     }
                     SettingValue::Enum(e) => display_for_enum_canonical(&meta.kind, e).to_string(),
@@ -1659,7 +1679,7 @@ fn compute_filtered_row_heights(state: &SettingsModalState, area_width: u16) -> 
                         if s.is_empty() && matches!(meta.kind, SettingKind::DynamicEnum { .. }) {
                             "(no override)".to_string()
                         } else {
-                            s.clone()
+                            display_for_dynamic_value(meta.key, s)
                         }
                     }
                     SettingValue::Enum(e) => display_for_enum_canonical(&meta.kind, e).to_string(),
@@ -1865,9 +1885,7 @@ fn render_picking_enum(buf: &mut Buffer, area: Rect, state: &SettingsModalState,
     let mut picker_choice_rects: Vec<Rect> = vec![Rect::default(); choices.len()];
 
     // ── Choice rows ───────────────────────────────────────────────
-    let bg_focused = theme.bg_visual;
     let bg_unfocused = theme.bg_base;
-    let bg_hovered = theme.bg_hover;
     let fg_primary = theme.text_primary;
     let fg_gray = theme.gray;
     let fg_accent = theme.accent_user;
@@ -1883,27 +1901,40 @@ fn render_picking_enum(buf: &mut Buffer, area: Rect, state: &SettingsModalState,
         let is_focused = choice_i == choices_idx;
 
         let is_hovered = !is_focused && state.hover_row == Some(choice_i);
-        let bg = if is_focused {
-            bg_focused
+        let row_overlay = if is_focused {
+            theme.selected_row_style()
         } else if is_hovered {
-            bg_hovered
+            theme.hovered_row_style()
         } else {
-            bg_unfocused
+            Style::default()
         };
 
         let display_style = if is_focused {
             Style::default()
                 .fg(fg_primary)
-                .bg(bg)
+                .bg(bg_unfocused)
                 .add_modifier(Modifier::BOLD)
+                .patch(row_overlay)
         } else {
-            Style::default().fg(fg_primary).bg(bg)
+            Style::default()
+                .fg(fg_primary)
+                .bg(bg_unfocused)
+                .patch(row_overlay)
         };
-        let desc_style = Style::default().fg(fg_gray).bg(bg);
+        let desc_style = Style::default()
+            .fg(fg_gray)
+            .bg(bg_unfocused)
+            .patch(row_overlay);
         let marker_style = if is_focused {
-            Style::default().fg(fg_accent).bg(bg)
+            Style::default()
+                .fg(fg_accent)
+                .bg(bg_unfocused)
+                .patch(row_overlay)
         } else {
-            Style::default().fg(fg_gray).bg(bg)
+            Style::default()
+                .fg(fg_gray)
+                .bg(bg_unfocused)
+                .patch(row_overlay)
         };
         let marker = if is_focused {
             crate::glyphs::filled_dot()
@@ -1917,7 +1948,10 @@ fn render_picking_enum(buf: &mut Buffer, area: Rect, state: &SettingsModalState,
             width: area.width,
             height: layout.height,
         };
-        buf.set_style(block_rect, Style::default().bg(bg));
+        buf.set_style(
+            block_rect,
+            Style::default().bg(bg_unfocused).patch(row_overlay),
+        );
         picker_choice_rects[choice_i] = block_rect;
 
         // ── Line 1: prefix + display + (· + first wrap line) ──────
@@ -2138,20 +2172,21 @@ fn render_picking_group(
         };
         let is_focused = i == child_idx;
         let is_hovered = !is_focused && state.hover_row == Some(i);
-        let bg = if is_focused {
-            theme.bg_visual
+        let row_overlay = if is_focused {
+            theme.selected_row_style()
         } else if is_hovered {
-            theme.bg_hover
+            theme.hovered_row_style()
         } else {
-            theme.bg_base
+            Style::default()
         };
+        let base_style = Style::default().bg(theme.bg_base).patch(row_overlay);
         let row_rect = Rect {
             x: area.x,
             y,
             width: area.width,
             height: 1,
         };
-        buf.set_style(row_rect, Style::default().bg(bg));
+        buf.set_style(row_rect, base_style);
         rects[i] = row_rect;
 
         let marker = if is_focused {
@@ -2160,26 +2195,42 @@ fn render_picking_group(
             "\u{25CB}"
         };
         let marker_style = if is_focused {
-            Style::default().fg(theme.accent_user).bg(bg)
+            Style::default()
+                .fg(theme.accent_user)
+                .bg(theme.bg_base)
+                .patch(row_overlay)
         } else {
-            Style::default().fg(theme.gray).bg(bg)
+            Style::default()
+                .fg(theme.gray)
+                .bg(theme.bg_base)
+                .patch(row_overlay)
         };
         let label_style = if is_focused {
             Style::default()
                 .fg(theme.text_primary)
-                .bg(bg)
+                .bg(theme.bg_base)
                 .add_modifier(Modifier::BOLD)
+                .patch(row_overlay)
         } else {
-            Style::default().fg(theme.text_primary).bg(bg)
+            Style::default()
+                .fg(theme.text_primary)
+                .bg(theme.bg_base)
+                .patch(row_overlay)
         };
 
         // Value read live from the snapshot (refreshed after each toggle).
         let on = matches!(state.value_for(child_key), Some(SettingValue::Bool(true)));
         let value_text = if on { "on" } else { "off" };
         let value_style = if on {
-            Style::default().fg(theme.accent_user).bg(bg)
+            Style::default()
+                .fg(theme.accent_user)
+                .bg(theme.bg_base)
+                .patch(row_overlay)
         } else {
-            Style::default().fg(theme.gray).bg(bg)
+            Style::default()
+                .fg(theme.gray)
+                .bg(theme.bg_base)
+                .patch(row_overlay)
         };
 
         // " <marker>  <label> … <value> " (value right-aligned with a pad).
@@ -2462,14 +2513,20 @@ fn render_editing_value(
 
     // ── Row 3: input line. ────────────────────────────────────────
     let has_error = validation_error.is_some();
-    let input_bg = theme.bg_visual;
+    let input_overlay = theme.selected_row_style();
     let input_fg = if has_error {
         theme.accent_error
     } else {
         theme.text_primary
     };
-    let cursor_style = Style::default().fg(theme.accent_user).bg(input_bg);
-    let input_style = Style::default().fg(input_fg).bg(input_bg);
+    let cursor_style = Style::default()
+        .fg(theme.accent_user)
+        .bg(theme.bg_base)
+        .patch(input_overlay);
+    let input_style = Style::default()
+        .fg(input_fg)
+        .bg(theme.bg_base)
+        .patch(input_overlay);
 
     let input_row_rect = Rect {
         x: area.x,
@@ -2492,7 +2549,10 @@ fn render_editing_value(
         width: buffer_room as u16,
         height: 1,
     };
-    buf.set_style(input_strip_rect, Style::default().bg(input_bg));
+    buf.set_style(
+        input_strip_rect,
+        Style::default().bg(theme.bg_base).patch(input_overlay),
+    );
 
     let cursor_reserve = 1usize;
     let visible_buffer_w = buffer_room.saturating_sub(cursor_reserve);
@@ -2515,7 +2575,10 @@ fn render_editing_value(
                     std::borrow::Cow::Owned(truncate_str(placeholder, visible_buffer_w))
                 };
             let placeholder_w = (placeholder_text.width() as u16).min(visible_buffer_w as u16);
-            let placeholder_style = Style::default().fg(theme.gray_dim).bg(input_bg);
+            let placeholder_style = Style::default()
+                .fg(theme.gray_dim)
+                .bg(theme.bg_base)
+                .patch(input_overlay);
             buf.set_span(
                 input_x,
                 input_y,
@@ -3070,6 +3133,18 @@ fn display_for_enum_canonical<'a>(kind: &'a SettingKind, canonical: &'a str) -> 
     canonical
 }
 
+fn display_for_dynamic_value(key: SettingKey, canonical: &str) -> String {
+    if matches!(key, "theme" | "auto_dark_theme" | "auto_light_theme") {
+        if canonical == "warp-sync" {
+            return crate::theme::cache::current_resolved().display_name.clone();
+        }
+        if let Some(selection) = crate::theme::ThemeSelection::from_name(canonical) {
+            return selection.display_name();
+        }
+    }
+    canonical.to_owned()
+}
+
 /// Word-wrap a description string. Returns owned lines for re-styling.
 /// Asserts descriptions are single-line (no `\n`/`\t`).
 fn wrap_description(description: &str, width: u16) -> Vec<String> {
@@ -3166,25 +3241,27 @@ fn render_setting_row(
     is_expanded: bool,
     is_hovered: bool,
 ) -> Rect {
-    let bg = if is_selected {
-        theme.bg_visual
+    let row_overlay = if is_selected {
+        theme.selected_row_style()
     } else if is_hovered {
-        theme.bg_hover
+        theme.hovered_row_style()
     } else {
-        theme.bg_base
+        Style::default()
     };
-    // Paint the row bg across the full area (1 or 2 lines).
-    buf.set_style(area, Style::default().bg(bg));
+    let apply_row = |style: Style| style.bg(theme.bg_base).patch(row_overlay);
+    // Paint the row across the full area (1 or 2 lines).
+    buf.set_style(area, apply_row(Style::default()));
 
-    let label_style = Style::default().fg(theme.text_primary).bg(bg);
+    let label_style = apply_row(Style::default().fg(theme.text_primary));
     // Bool(false) renders muted; all other values use accent.
-    let value_style = Style::default().fg(theme.accent_user).bg(bg);
-    let chevron_style = Style::default().fg(theme.gray).bg(bg);
-    let restart_style = Style::default()
-        .fg(theme.gray_dim)
-        .bg(bg)
-        .add_modifier(Modifier::ITALIC);
-    let desc_style = Style::default().fg(theme.gray).bg(bg);
+    let value_style = apply_row(Style::default().fg(theme.accent_user));
+    let chevron_style = apply_row(Style::default().fg(theme.gray));
+    let restart_style = apply_row(
+        Style::default()
+            .fg(theme.gray_dim)
+            .add_modifier(Modifier::ITALIC),
+    );
+    let desc_style = apply_row(Style::default().fg(theme.gray));
 
     // Enum rows display the user-friendly name, not the canonical.
     let value_text_owned;
@@ -3199,6 +3276,9 @@ fn render_setting_row(
         SettingValue::String(s) => {
             if s.is_empty() && matches!(meta.kind, SettingKind::DynamicEnum { .. }) {
                 "(no override)"
+            } else if matches!(meta.kind, SettingKind::DynamicEnum { .. }) {
+                value_text_owned = display_for_dynamic_value(meta.key, s);
+                &value_text_owned
             } else {
                 s.as_str()
             }
@@ -3211,7 +3291,7 @@ fn render_setting_row(
     };
 
     let value_style = if matches!(value, SettingValue::Bool(false)) {
-        Style::default().fg(theme.gray).bg(bg)
+        apply_row(Style::default().fg(theme.gray))
     } else {
         value_style
     };
@@ -3492,16 +3572,18 @@ fn render_setting_row_no_value(
     is_selected: bool,
     theme: &Theme,
 ) {
-    let bg = if is_selected {
-        theme.bg_visual
+    let row_overlay = if is_selected {
+        theme.selected_row_style()
     } else {
-        theme.bg_base
+        Style::default()
     };
-    buf.set_style(area, Style::default().bg(bg));
+    let row_style = Style::default().bg(theme.bg_base).patch(row_overlay);
+    buf.set_style(area, row_style);
     let label_style = Style::default()
         .fg(theme.accent_error)
-        .bg(bg)
-        .add_modifier(Modifier::BOLD);
+        .bg(theme.bg_base)
+        .add_modifier(Modifier::BOLD)
+        .patch(row_overlay);
 
     let label_max_w = max_label_w;
     let label_truncated: std::borrow::Cow<'_, str> = if meta.label.width() <= label_max_w as usize {
@@ -3531,16 +3613,23 @@ fn render_setting_group_row(
     is_expanded: bool,
     theme: &Theme,
 ) -> Rect {
-    let bg = if is_selected {
-        theme.bg_visual
+    let row_overlay = if is_selected {
+        theme.selected_row_style()
     } else if is_hovered {
-        theme.bg_hover
+        theme.hovered_row_style()
     } else {
-        theme.bg_base
+        Style::default()
     };
-    buf.set_style(area, Style::default().bg(bg));
-    let label_style = Style::default().fg(theme.text_primary).bg(bg);
-    let chevron_style = Style::default().fg(theme.gray).bg(bg);
+    let row_style = Style::default().bg(theme.bg_base).patch(row_overlay);
+    buf.set_style(area, row_style);
+    let label_style = Style::default()
+        .fg(theme.text_primary)
+        .bg(theme.bg_base)
+        .patch(row_overlay);
+    let chevron_style = Style::default()
+        .fg(theme.gray)
+        .bg(theme.bg_base)
+        .patch(row_overlay);
 
     let chevron_str = format!(" {}", crate::glyphs::chevron());
     let chevron_w = chevron_str.width() as u16;
@@ -3901,9 +3990,7 @@ fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> Settin
             // Revert preview and return to Browse. Non-preview Enums
             // skip the revert (no live visual was applied).
             state.transition_to_browse();
-            if let SettingValue::Enum(orig) = &original_value
-                && let Some(action) = action_for_enum(setting_key, orig)
-            {
+            if let Some(action) = action_for_picker_preview_revert(setting_key, &original_value) {
                 return SettingsKeyOutcome::Action(action);
             }
             SettingsKeyOutcome::Changed
@@ -3913,8 +4000,7 @@ fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> Settin
         KeyCode::Char('d') if key.modifiers.is_empty() => {
             state.transition_to_browse();
             if supports_preview
-                && let SettingValue::Enum(orig) = &original_value
-                && let Some(revert) = action_for_enum(setting_key, orig)
+                && let Some(revert) = action_for_picker_preview_revert(setting_key, &original_value)
             {
                 return SettingsKeyOutcome::ActionPair(
                     revert,
@@ -4020,12 +4106,22 @@ fn set_picker_idx(
         supports_preview,
         original_value,
     };
-    // Preview dispatch for static Enums with preview support.
-    if supports_preview
-        && let Some(new_canonical) = picker_choice_at(state, setting_key, new_idx)
-        && let Some(action) = action_for_enum(setting_key, new_canonical)
-    {
-        return SettingsKeyOutcome::Action(action);
+    if supports_preview {
+        let is_dynamic = matches!(
+            state.registry.find(setting_key).map(|meta| &meta.kind),
+            Some(SettingKind::DynamicEnum { .. })
+        );
+        if is_dynamic {
+            if let Some(canonical) = picker_choice_at_owned(state, setting_key, new_idx)
+                && let Some(action) = action_for_dynamic_enum_preview(setting_key, canonical)
+            {
+                return SettingsKeyOutcome::Action(action);
+            }
+        } else if let Some(new_canonical) = picker_choice_at(state, setting_key, new_idx)
+            && let Some(action) = action_for_enum(setting_key, new_canonical)
+        {
+            return SettingsKeyOutcome::Action(action);
+        }
     }
     SettingsKeyOutcome::Changed
 }
@@ -5606,6 +5702,40 @@ mod tests {
         assert!(
             rendered.contains("A very long label that exceeds the budget"),
             "full label must be visible when one-line layout fits: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn dynamic_theme_row_renders_and_measures_the_friendly_label() {
+        let registry = SettingsRegistry::defaults();
+        let meta = registry.find("theme").expect("theme setting");
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 48,
+            height: 1,
+        };
+        let mut buf = Buffer::empty(area);
+        render_setting_row(
+            &mut buf,
+            area,
+            meta,
+            &SettingValue::String("warp:standard/cherry".to_owned()),
+            15,
+            false,
+            &Theme::current(),
+            false,
+            false,
+        );
+
+        let rendered = (0..area.width)
+            .filter_map(|x| buf.cell((x, 0)))
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Cherry"), "friendly label: {rendered:?}");
+        assert!(
+            !rendered.contains("warp:standard/cherry"),
+            "canonical must not leak into the row: {rendered:?}"
         );
     }
 
@@ -7266,7 +7396,7 @@ mod tests {
     /// original canonical AND returns to Browse:
     /// preview-revert restores the live visual without persisting,
     /// since the picker's preview navs never persisted in the first
-    /// place. Parameterised across all 3 theme enum keys.
+    /// place. Parameterised across all 3 dynamic theme keys.
     #[test]
     fn picking_enum_esc_dispatches_preview_revert_for_each_key() {
         let cases: &[(&str, &str)] = &[
@@ -7279,7 +7409,7 @@ mod tests {
             s.mode = SettingsModalMode::PickingEnum {
                 key,
                 choices_idx: 0,
-                original_value: SettingValue::Enum(original),
+                original_value: SettingValue::String(original.to_owned()),
                 supports_preview: true,
             };
             let outcome =
@@ -7321,7 +7451,7 @@ mod tests {
         s.mode = SettingsModalMode::PickingEnum {
             key: "theme",
             choices_idx: 0,
-            original_value: SettingValue::Enum("groknight"),
+            original_value: SettingValue::String("groknight".to_owned()),
             supports_preview: true,
         };
         let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -11684,7 +11814,10 @@ mod tests {
             crate::theme::ThemeKind::RosePineMoon => crate::theme::Theme::rosepine_moon(),
             // Resolved via `Theme::current()` rather than a constructor
             // because `theme::oscura` is a private module.
-            crate::theme::ThemeKind::OscuraMidnight => crate::theme::Theme::current(),
+            crate::theme::ThemeKind::OscuraMidnight
+            | crate::theme::ThemeKind::TerminalNative
+            | crate::theme::ThemeKind::WarpSync
+            | crate::theme::ThemeKind::WarpCustom => crate::theme::Theme::current(),
             crate::theme::ThemeKind::Auto => crate::theme::Theme::groknight(),
         };
         assert_ne!(

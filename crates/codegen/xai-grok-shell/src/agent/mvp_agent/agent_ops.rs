@@ -1338,18 +1338,9 @@ impl MvpAgent {
             return ImageGenConfig::Disabled;
         }
         if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
-            if !self
-                .models_manager
-                .model_supports_image_input_for_provider(
-                    sampling_config.provider,
-                    &sampling_config.model,
-                )
-            {
-                return ImageGenConfig::Unavailable {
-                    image_gen_enabled,
-                    image_edit_enabled,
-                };
-            }
+            // Codex generation/editing is a standalone provider capability
+            // backed by gpt-image-2. Whether the selected reasoning model can
+            // *read* image inputs must not disable these separate tools.
             return ImageGenConfig::OpenAiCodex {
                 base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
                 image_gen_enabled,
@@ -1513,13 +1504,20 @@ impl MvpAgent {
         &self,
     ) -> xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig {
         use xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig;
+        use xai_grok_config_types::ConfigSource;
+
         let cfg = self.cfg.borrow();
         if cfg.disable_web_search {
             return WebFetchConfig::Disabled;
         }
         let remote = cfg.remote_settings.as_ref();
         let enabled = cfg.resolve_web_fetch();
-        if !enabled.value {
+        // Preserve provenance even when the active/default model is currently
+        // xAI. A later in-session switch to Codex must be able to enable the
+        // implicit Codex default, and a switch back must disable only that
+        // implicit default while preserving every explicit enable.
+        let codex_default = !enabled.value && enabled.source == ConfigSource::Default;
+        if !enabled.value && !codex_default {
             return WebFetchConfig::Disabled;
         }
         let context_window = Some(self.sampling_config.borrow().context_window);
@@ -1535,7 +1533,11 @@ impl MvpAgent {
             tracing::info!("web_fetch disabled: allowed_domains is explicitly empty");
             return WebFetchConfig::Disabled;
         }
-        WebFetchConfig::Enabled { params }
+        if codex_default {
+            WebFetchConfig::CodexDefault { params }
+        } else {
+            WebFetchConfig::Enabled { params }
+        }
     }
     /// Construct from pre-built components. Use when the caller needs the
     /// `ModelsManager` handle externally (e.g. `run_leader` wires it to the
