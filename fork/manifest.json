@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "patch_stack": {
     "baseline": {
       "commit": "c1b5909ec707c069f1d21a93917af044e71da0d7",
@@ -9,11 +9,148 @@
       "commit": "da3076874292c538bfc4efeede0cf517c2e975f0",
       "tree": "bbeaf9575ffa5f7bcd75b8352a178455f04c98c7"
     },
-    "fingerprints": {
-      "algorithm": "sha256",
-      "diff_sha256": "a847902433770c47890c321d4fc5683bffd6420c138a9b481ec803c98098a4e9",
-      "name_status_sha256": "c5711d5e25ee349e9fbfe2da9fd8a2364ca22492843f63741a8eb816177fbdff",
-      "numstat_sha256": "49ed966d9cca3f7635a3423388d7e5235a5ea14d92c72b3d99c73aa778261b32"
+    "history": {
+      "series_format": "git-linear-history-v1",
+      "delta_format": "git-tree-delta-v1",
+      "exact": {
+        "commit_count": 3,
+        "series_sha256": "41fe3f4dfb20a9dc4dc9611f2a15a23170120a4f8b18cb86c902bdf9036e47f1",
+        "commits": [
+          {
+            "commit": "289f790efb2261b43c68b775dc598b85050c8142",
+            "tree": "a8ff2ec4c891eea819baa074fabb440ae70ff089",
+            "delta_sha256": "d673be50bb3c9f40eb2b8c3557a863abeff6806dd58efb43f8b6d3f7b1ab8e26"
+          },
+          {
+            "commit": "4b251a3ee5daee51153253048dcda69ee16c6591",
+            "tree": "53e5f10f9a425eeea87fd7c67d93ae4dcac7a16c",
+            "delta_sha256": "fd8c47950a13b72bddf7f6fcd5b86a294d44cf92cb007b06e3ea57ee3dca1e6c"
+          },
+          {
+            "commit": "da3076874292c538bfc4efeede0cf517c2e975f0",
+            "tree": "bbeaf9575ffa5f7bcd75b8352a178455f04c98c7",
+            "delta_sha256": "4946bfbebe94c1a4ff07398c14519dcfa92431258a06560238f56fd0c26eac1f"
+          }
+        ]
+      },
+      "thematic_equivalents": [
+        {
+          "id": "archive-tree-equivalent-da30768",
+          "candidate": {
+            "commit": "7ed3320c797852ed5894f1fc2fca7cee6827768f",
+            "tree": "bbeaf9575ffa5f7bcd75b8352a178455f04c98c7"
+          },
+          "commit_count": 21,
+          "series_sha256": "f36f6d13d1a707f3ecfeed20fff98365ac7b7efc477dd862f55a8e7080bef47c",
+          "commits": [
+            {
+              "commit": "4b13abce5449366d540378baae386b8dd7aca052",
+              "tree": "da1680f48714b9c4caf6b815cd2726cb355b210b",
+              "delta_sha256": "466a56fd70971faddcbf6db9700ca297d409261518145fc1c07d19c0944046ed"
+            },
+            {
+              "commit": "ee8bc5809d6b8f9b81c9bca4067d349ff8acab76",
+              "tree": "12d285a3f7dd788c581e90aae21309addea16ac7",
+              "delta_sha256": "074cfe39736a49d47f956f5709cc9016c75826af361aa2c7807f3ea31a9f06ad"
+            },
+            {
+              "commit": "5a83d0d2de74a4451e0112cd3a9af055f013c92c",
+              "tree": "f661bf285f1f45fc7fd174e4b29fa1ea806ee35c",
+              "delta_sha256": "c0587a7838eec2b3fa11529d7b51b0b8a760c374f68d006255a3dec59a7314d5"
+            },
+            {
+              "commit": "27f03b9b0f6baa6a1f5d5bc9c80d412f6f8dfc1e",
+              "tree": "8d2dcf06c594c48ef4a7e3f349899419e853595a",
+              "delta_sha256": "fdfa3910b43fb2fb4e4cf04fb56cc1ad99dc37644e1a48c2b6da79a2fc567f40"
+            },
+            {
+              "commit": "ea81026b66cac345c9182dbebd1a35795399b392",
+              "tree": "e9ae1aa0fcbb7a2ba2e4a0cd22846dadb844ae40",
+              "delta_sha256": "5721334ec345def3fe765742f1ead297feee3573bda34572b9b716a38ff0f89f"
+            },
+            {
+              "commit": "d2a6e0091c0e4a1a46db6c45d121d81f9c39c854",
+              "tree": "5995010ce1f11b9e77e8e33b98b6863c7900492b",
+              "delta_sha256": "a9f290e2b26768affcf5b948e510058c4d7bba1acad544c822205af75db9e268"
+            },
+            {
+              "commit": "3d889a050decdbdeece2e24c2792b7d770decd26",
+              "tree": "61d26f189043db55aed0b3309c337373c503c642",
+              "delta_sha256": "41a770696cf378dd6306d261d81498b660fd15004c3eb1c8da19ff3dd7ed4e9f"
+            },
+            {
+              "commit": "44eb31bbcf0da9aeaf74647097e6a17a3818d481",
+              "tree": "d0468283d666b2f5fc46793437a6578fffa286ca",
+              "delta_sha256": "2275896426eb0e07c4be1f524f1ade70bdf605bc27c88faf75bf0039c2eff582"
+            },
+            {
+              "commit": "cf803adcfbcf3045d34d8304a52d8eb91e92f68b",
+              "tree": "c3439ff9a4abbfa565b5cdbe126e27cdac3c30bd",
+              "delta_sha256": "3d7b76f4583f9f598d11f401f09b4c13835b8cdb8143a6a3eea61fe8dfe58cc1"
+            },
+            {
+              "commit": "5a816c46c5be7fa71a82db820d72fc0a95722477",
+              "tree": "d67e9cf73f0a567afdc0923723ac8f2a97fe04cf",
+              "delta_sha256": "180386101bfe1696b138d08580109d85bcec32fab830436d61b399e470f034ea"
+            },
+            {
+              "commit": "24252c23cbd13af308136d59f2cdf42d97cda87e",
+              "tree": "4e8ef28e0d3b6e6b1c716bbafdf06fac3148d167",
+              "delta_sha256": "46956cfcdf4e7f217996fab6fa947195b186bcb9b22d367b16ccad27d9363b0a"
+            },
+            {
+              "commit": "7982f3c85e3ca5c0c381d08ed28f4973110293b9",
+              "tree": "8581935dd650e807838b70bae190c41a705bee85",
+              "delta_sha256": "85675c5f8da29266af23ec82bd759a8fa183b134b8600b024f839481d248d901"
+            },
+            {
+              "commit": "614d6f84f290140f17617415896f4673c5e99ede",
+              "tree": "9882599147df7e33e676b21dc50ccc96d067c11d",
+              "delta_sha256": "7e1b5fdbf6331060933af5dcd5c5867f766907725fd67efd1dcea5249dc0b159"
+            },
+            {
+              "commit": "3317e5602cf4f8d80cac4d7953ae0629fc4035c2",
+              "tree": "21094da7d268a2c9692a568a129d4c14b8d6625b",
+              "delta_sha256": "3a90327a475cbb1c56d60cc28094f8662d12e185d8fc7ad1c877a4291001aa21"
+            },
+            {
+              "commit": "87c1db9fd5fe39b1333449f6e1d2caa996a73b57",
+              "tree": "9b69986606829ef49469627244850e902f3d76d5",
+              "delta_sha256": "65e885e62a882548856d3ef6e16506ba40a2d7e5e333a1009b2dcda0724588b7"
+            },
+            {
+              "commit": "bfd774eb4d91393037b27646a26ab80740ffa52c",
+              "tree": "d3c55925977ac77a1e2e7d551af8a20b72315e5b",
+              "delta_sha256": "ce37e3185b5af73e57c0b95414d3efaf13f1eb43a35dbcd605bfbcf39194d1e3"
+            },
+            {
+              "commit": "1ca543fcabf9afbda3422571f44ada3d40f0ccff",
+              "tree": "59d95d127e125d94151e9bac0f0121cdfd7ab686",
+              "delta_sha256": "6a170c1a4809fb0b48a910112272451fb09d1eec8c9e1a4674b6f90522a54841"
+            },
+            {
+              "commit": "6a37c6915dc26f02e37d5ef8d590daff0ac86678",
+              "tree": "792285f1acc886a43af61f775858931337cbcb1c",
+              "delta_sha256": "bd7a984d689be233d9eb9dc8141533667176cf652b97faaf39a872087165c5a0"
+            },
+            {
+              "commit": "b7399230ee378ed8e36e7a1e0bb77fe14c187693",
+              "tree": "d736b0376512bc79359174ca1ffd9f9b6c3fa404",
+              "delta_sha256": "c3b78478577df312fd1c36d1e81b06c5580466cac0de4375f73aa85c1bfa328d"
+            },
+            {
+              "commit": "ff65f1b9f0191908fa953c4ab498ae7187bf9f4e",
+              "tree": "d5fdf9bb956f4434e69856f4a85e8314377df099",
+              "delta_sha256": "c053bf186bf8df7fd6fe8bfff23a8a0c57b2b5784207425e16434d07d7bb95e9"
+            },
+            {
+              "commit": "7ed3320c797852ed5894f1fc2fca7cee6827768f",
+              "tree": "bbeaf9575ffa5f7bcd75b8352a178455f04c98c7",
+              "delta_sha256": "2bf7c2e99f69751cef48a87e6aecf5c19c2ad9b2efb44b8fcd6d819a7657f20e"
+            }
+          ]
+        }
+      ]
     }
   },
   "sources": [
@@ -23,12 +160,10 @@
       "remote": "https://github.com/openai/codex.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "18110b810f0a328147f6cd85e6f1ab6414927366",
-        "tree": "4c0b4168f2948373af4d70dd043e2d747b341017"
+        "commit": "18110b810f0a328147f6cd85e6f1ab6414927366"
       },
       "latest_fetched": {
-        "commit": "315195492c80fdade38e917c18f9584efd599304",
-        "tree": "86db7865611fdbe85a86bc3cc8e15e6839e16d22"
+        "commit": "315195492c80fdade38e917c18f9584efd599304"
       }
     },
     {
@@ -37,12 +172,10 @@
       "remote": "https://github.com/anomalyco/opencode.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "1d2a7b4c860f6a29eb90bdda07757b2adf34ab61",
-        "tree": "eec9c9c6f0e4f7a558fdad4115b67e8f998de767"
+        "commit": "1d2a7b4c860f6a29eb90bdda07757b2adf34ab61"
       },
       "latest_fetched": {
-        "commit": "efb6cc2d4bf6332eb156709795d2b3a649198b65",
-        "tree": "eca8302a08ef6f6ce9f721103cf0379c6dba11ac"
+        "commit": "efb6cc2d4bf6332eb156709795d2b3a649198b65"
       }
     },
     {
@@ -51,12 +184,10 @@
       "remote": "https://github.com/xai-org/grok-build.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "c1b5909ec707c069f1d21a93917af044e71da0d7",
-        "tree": "54a0606cc804815975eda042f60cb3320cfb5347"
+        "commit": "c1b5909ec707c069f1d21a93917af044e71da0d7"
       },
       "latest_fetched": {
-        "commit": "8adf9013a0929e5c7f1d4e849492d2387837a28d",
-        "tree": "bb4f45fc4aca5741d0f50172f3274ffe8ae11f7e"
+        "commit": "8adf9013a0929e5c7f1d4e849492d2387837a28d"
       }
     },
     {
@@ -65,12 +196,10 @@
       "remote": "https://github.com/numman-ali/opencode-openai-codex-auth.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
-        "tree": "1da59bae7069563b2817143567b57c78e5758300"
+        "commit": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016"
       },
       "latest_fetched": {
-        "commit": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
-        "tree": "1da59bae7069563b2817143567b57c78e5758300"
+        "commit": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016"
       }
     },
     {
@@ -79,18 +208,16 @@
       "remote": "https://github.com/warpdotdev/themes.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4",
-        "tree": "c678999ab9ef62cfba1d70822b117db727d06f8a"
+        "commit": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4"
       },
       "latest_fetched": {
-        "commit": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4",
-        "tree": "c678999ab9ef62cfba1d70822b117db727d06f8a"
+        "commit": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4"
       }
     }
   ],
   "checks": [
     "patch-stack-objects",
-    "patch-stack-fingerprints",
+    "patch-stack-history",
     "upstream-revisions",
     "feature-paths",
     "downstream-coverage"
