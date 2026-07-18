@@ -54,7 +54,6 @@ pub fn maybe_commit_welcome(app: &mut AppView, terminal: &mut PagerTerminal) {
     let _ = terminal.clear();
 
     let theme = Theme::current();
-    let version = xai_grok_version::VERSION;
     let (cwd, model) = match &app.active_view {
         ActiveView::Agent(id) => {
             let agent = app.agents.get(id);
@@ -81,7 +80,14 @@ pub fn maybe_commit_welcome(app: &mut AppView, terminal: &mut PagerTerminal) {
         theme.muted(),
     )));
     info.push(Line::from(Span::styled(
-        format!("Upstream base · {version}"),
+        format!("Enhanced release · {}", xai_grok_version::VERSION),
+        theme.muted(),
+    )));
+    info.push(Line::from(Span::styled(
+        format!(
+            "Upstream base · {}",
+            xai_grok_version::UPSTREAM_BASE_VERSION
+        ),
         theme.muted(),
     )));
     if !cwd.is_empty() {

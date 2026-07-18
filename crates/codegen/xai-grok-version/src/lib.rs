@@ -20,10 +20,16 @@ pub const UPSTREAM_PRODUCT_NAME: &str = "Grok Build";
 /// changing this backend-protocol value; it is not the Grok Build app version.
 pub const OPENAI_CODEX_COMPATIBILITY_VERSION: &str = "0.144.0";
 
+/// Installed Grok Build Enhanced release version. Distribution builds may
+/// override this with the fork release tag through `GROK_VERSION`.
 pub const VERSION: &str = match option_env!("GROK_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
 };
+
+/// Audited Grok Build package version this fork was based on. Unlike
+/// [`VERSION`], this is never replaced by a downstream release tag.
+pub const UPSTREAM_BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// [`TEST_VERSION_ENV`] override first, then [`VERSION`]. Trimmed so
 /// non-semver-aware callers can pass the result straight into parsing.
@@ -69,15 +75,18 @@ pub fn fork_revision(revision: &str) -> Option<&str> {
 /// Format the additive one-line identity used by `grok --version`.
 ///
 /// The Enhanced name and Codex compatibility version are labels only and never
-/// flow into protocol headers. The upstream package version and fork checkout
-/// revision are deliberately separate inputs: the checkout revision is not an
-/// upstream source revision.
+/// flow into protocol headers. The Enhanced release version, audited upstream
+/// base version, and fork checkout revision are deliberately separate inputs:
+/// neither the release tag nor checkout revision is upstream provenance.
 pub fn enhanced_cli_version(
-    upstream_version: &str,
+    enhanced_version: &str,
+    upstream_base_version: &str,
     fork_revision: Option<&str>,
     channel_label: &str,
 ) -> String {
-    let mut identity = format!("{ENHANCED_PRODUCT_NAME} · upstream {upstream_version}");
+    let mut identity = format!(
+        "{ENHANCED_PRODUCT_NAME} {enhanced_version} · upstream base {upstream_base_version}"
+    );
     let channel_label = channel_label.trim();
     if !channel_label.is_empty() {
         identity.push_str(" · Enhanced updates ");
@@ -146,15 +155,15 @@ mod tests {
 
     #[test]
     fn enhanced_cli_version_labels_each_compatibility_layer() {
-        let rendered = enhanced_cli_version("0.2.5", Some("fork123"), " [stable]");
+        let rendered = enhanced_cli_version("1.4.0", "0.2.5", Some("fork123"), " [stable]");
         assert_eq!(
             rendered,
-            "Grok Build Enhanced · upstream 0.2.5 · Enhanced updates [stable] · fork fork123 · Codex compat 0.144.0"
+            "Grok Build Enhanced 1.4.0 · upstream base 0.2.5 · Enhanced updates [stable] · fork fork123 · Codex compat 0.144.0"
         );
 
-        let without_revision = enhanced_cli_version("0.2.5", Some("unknown"), "");
+        let without_revision = enhanced_cli_version("1.4.0", "0.2.5", Some("unknown"), "");
         assert!(!without_revision.contains(" · fork "));
         assert!(!without_revision.contains("Enhanced updates"));
-        assert!(without_revision.contains("Grok Build Enhanced · upstream 0.2.5"));
+        assert!(without_revision.contains("Grok Build Enhanced 1.4.0 · upstream base 0.2.5"));
     }
 }

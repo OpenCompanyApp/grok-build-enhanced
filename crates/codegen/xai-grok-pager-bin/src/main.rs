@@ -881,6 +881,7 @@ async fn run_agent_command(
             "{}",
             xai_grok_version::enhanced_cli_version(
                 xai_grok_version::VERSION,
+                xai_grok_version::UPSTREAM_BASE_VERSION,
                 xai_grok_version::fork_revision(env!("GROK_ENHANCED_REVISION")),
                 xai_grok_update::channel_label(),
             )
@@ -1534,7 +1535,8 @@ fn version_json_payload(fork_revision: Option<&str>, channel: Option<&str>) -> s
         "currentVersion": env!("VERSION_WITH_COMMIT"),
         "channel": channel.unwrap_or("unknown"),
         "product": xai_grok_version::ENHANCED_PRODUCT_NAME,
-        "upstreamBaseVersion": xai_grok_version::VERSION,
+        "enhancedVersion": xai_grok_version::VERSION,
+        "upstreamBaseVersion": xai_grok_version::UPSTREAM_BASE_VERSION,
         "forkRevision": fork_revision,
         "codexCompatibilityVersion": xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION,
         "updateSource": "enhanced-fork",
@@ -1543,8 +1545,15 @@ fn version_json_payload(fork_revision: Option<&str>, channel: Option<&str>) -> s
 
 fn version_report_lines(fork_revision: Option<&str>, channel_label: &str) -> Vec<String> {
     let mut lines = vec![
-        xai_grok_version::ENHANCED_PRODUCT_NAME.to_string(),
-        format!("  Upstream base: {}", xai_grok_version::VERSION),
+        format!(
+            "{} {}",
+            xai_grok_version::ENHANCED_PRODUCT_NAME,
+            xai_grok_version::VERSION
+        ),
+        format!(
+            "  Upstream base: {}",
+            xai_grok_version::UPSTREAM_BASE_VERSION
+        ),
     ];
     if let Some(revision) = fork_revision {
         lines.push(format!("  Fork revision: {revision}"));
@@ -2177,7 +2186,10 @@ mod tests {
     #[test]
     fn version_reports_distinguish_fork_upstream_and_codex_layers() {
         let lines = version_report_lines(Some("fork123"), " [stable]");
-        assert_eq!(lines[0], "Grok Build Enhanced");
+        assert_eq!(
+            lines[0],
+            format!("Grok Build Enhanced {}", xai_grok_version::VERSION)
+        );
         assert!(
             lines
                 .iter()
@@ -2200,7 +2212,11 @@ mod tests {
 
         let payload = version_json_payload(Some("fork123"), Some("stable"));
         assert_eq!(payload["product"], "Grok Build Enhanced");
-        assert_eq!(payload["upstreamBaseVersion"], xai_grok_version::VERSION);
+        assert_eq!(payload["enhancedVersion"], xai_grok_version::VERSION);
+        assert_eq!(
+            payload["upstreamBaseVersion"],
+            xai_grok_version::UPSTREAM_BASE_VERSION
+        );
         assert_eq!(payload["forkRevision"], "fork123");
         assert_eq!(payload["updateSource"], "enhanced-fork");
         assert_eq!(

@@ -405,6 +405,7 @@ fn version_with_channel() -> &'static str {
         let label = xai_grok_update::channel_label();
         xai_grok_version::enhanced_cli_version(
             xai_grok_version::VERSION,
+            xai_grok_version::UPSTREAM_BASE_VERSION,
             xai_grok_version::fork_revision(env!("GROK_ENHANCED_REVISION")),
             label,
         )

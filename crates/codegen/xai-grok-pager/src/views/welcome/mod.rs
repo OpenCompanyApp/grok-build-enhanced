@@ -510,7 +510,11 @@ pub(super) fn render_version_badge(
     match &mode {
         VersionBadgeMode::Full { .. } => {
             spans.push(Span::styled(
-                format!("upstream base {}", xai_grok_version::VERSION),
+                format!(
+                    "Enhanced {} · upstream base {}",
+                    xai_grok_version::VERSION,
+                    xai_grok_version::UPSTREAM_BASE_VERSION
+                ),
                 metadata_style,
             ));
             if let Some(revision) = compiled_fork_revision() {
@@ -534,7 +538,11 @@ pub(super) fn render_version_badge(
                 title_style,
             ));
             spans.push(Span::styled(
-                format!("  upstream {}", xai_grok_version::VERSION),
+                format!(
+                    "  {} · upstream {}",
+                    xai_grok_version::VERSION,
+                    xai_grok_version::UPSTREAM_BASE_VERSION
+                ),
                 metadata_style,
             ));
         }
