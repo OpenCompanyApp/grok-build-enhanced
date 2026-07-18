@@ -447,23 +447,40 @@ def verify_release(args: argparse.Namespace) -> None:
 
 
 def validate_updater_contract(root: Path) -> None:
-    source = (root / "crates/codegen/xai-grok-update/src/auto_update.rs").read_text(
-        encoding="utf-8"
+    update_dir = root / "crates/codegen/xai-grok-update/src"
+    version_source = (update_dir / "version.rs").read_text(encoding="utf-8")
+    install_source = (update_dir / "auto_update.rs").read_text(encoding="utf-8")
+
+    version_fragments = (
+        'pub const GH_RELEASE_REPO: &str = "OpenCompanyApp/grok-build-enhanced";',
+        '"https://api.github.com/repos/OpenCompanyApp/grok-build-enhanced/releases?per_page=100"',
+        '"https://github.com/OpenCompanyApp/grok-build-enhanced/releases/download"',
+        'format!("grok-{version}-{os}-{arch}")',
+        'if installer != "gh-release"',
+        'fetch_gh_release_version(&config.channel).await',
+        'fetch_gh_release_version("stable")',
     )
-    required_fragments = (
-        'cfg!(target_os = "macos") {\n        "macos"',
-        'cfg!(target_os = "linux") {\n        "linux"',
-        'cfg!(target_arch = "x86_64") {\n        "x86_64"',
-        'cfg!(target_arch = "aarch64") {\n        "aarch64"',
-        'let platform = format!("{}-{}", os, arch);',
-        'let binary_name = format!("grok-{}-{}", version, platform);',
+    install_fragments = (
+        'Some("gh-release")',
+        'if installer == "gh-release"',
+        'install_gh_release(target).await',
+        'ensure_release_asset_exists(&version, release_api_url, os, arch).await?',
+        'release_asset_name(&version, os, arch)',
+        'gh_release_download(&download_url, &binary_path).await?',
     )
-    for fragment in required_fragments:
-        if fragment not in source:
-            raise ValueError(
-                "updater asset-selection contract changed; missing source fragment "
-                f"{fragment!r}"
-            )
+    for source, fragments in (
+        (version_source, version_fragments),
+        (install_source, install_fragments),
+    ):
+        for fragment in fragments:
+            if fragment not in source:
+                raise ValueError(
+                    "fork updater routing contract changed; missing source fragment "
+                    f"{fragment!r}"
+                )
+
+    if "xai-org-shared/grok-build" in version_source[:2_000]:
+        raise ValueError("updater repository constant points at the old official release repo")
 
     sample_version = "1.2.3-alpha.1"
     updater_names = {

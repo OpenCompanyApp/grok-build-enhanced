@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::fs;
@@ -11,19 +11,30 @@ use xai_grok_shell::util::grok_home::grok_home;
 
 const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
 const NPM_PACKAGE: &str = "@xai-official/grok";
-pub const GH_RELEASE_REPO: &str = "xai-org-shared/grok-build";
+const RELEASE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Fork-owned source used by every production update check and install path.
+pub const GH_RELEASE_REPO: &str = "OpenCompanyApp/grok-build-enhanced";
+pub const GH_RELEASE_API_URL: &str =
+    "https://api.github.com/repos/OpenCompanyApp/grok-build-enhanced/releases?per_page=100";
+pub const GH_RELEASE_DOWNLOAD_BASE_URL: &str =
+    "https://github.com/OpenCompanyApp/grok-build-enhanced/releases/download";
+pub const GH_RELEASES_URL: &str = "https://github.com/OpenCompanyApp/grok-build-enhanced/releases";
 
 /// Primary CLI base URL: Cloudflare-fronted x.ai endpoint with edge caching
 /// for binaries and origin-respecting no-cache for channel pointers.
+#[allow(dead_code)] // inherited low-level test helper; never selected by production routing
 pub(crate) const CLI_BASE_URL_PRIMARY: &str = "https://x.ai/cli";
 
 /// Fallback CLI base URL: direct GCS, used when the primary is unreachable
 /// (Cloudflare outage, regional CF egress issue, DNS hijack, etc.).
+#[allow(dead_code)] // inherited low-level test helper; never selected by production routing
 pub(crate) const CLI_BASE_URL_FALLBACK: &str =
     "https://storage.googleapis.com/grok-build-public-artifacts/cli";
 
 /// CLI base URLs in preference order. Callers (channel-pointer fetch, binary
 /// download, in-app updater) try each in turn and stop at the first success.
+#[allow(dead_code)] // inherited low-level test helper; never selected by production routing
 pub(crate) const CLI_BASE_URLS: &[&str] = &[CLI_BASE_URL_PRIMARY, CLI_BASE_URL_FALLBACK];
 
 /// Minimal configuration the update system needs from the environment.
@@ -171,57 +182,146 @@ async fn fetch_npm_tag(tag: &str, npm_registry: Option<&str>) -> Result<String> 
     }
 }
 
-/// Fetch the latest version from GitHub Releases using `gh release list`.
-/// For alpha channel, fetches both pre-release and stable-only, returns the
-/// semver-greater — `gh release list --limit 1` orders by publication date,
-/// not semver, so we need both to guarantee correctness.
-#[doc(hidden)]
-pub async fn fetch_gh_release_version(channel: &str) -> Result<String> {
-    if channel == "alpha" {
-        let (with_pre, stable_only) = tokio::try_join!(
-            fetch_gh_release_latest(false),
-            fetch_gh_release_latest(true),
-        )?;
-        return semver_max(&with_pre, &stable_only);
-    }
-    fetch_gh_release_latest(true).await
+#[derive(Debug, Deserialize)]
+struct GitHubReleaseAsset {
+    name: String,
 }
 
-async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
-    let mut args = vec![
-        "release",
-        "list",
-        "--repo",
-        GH_RELEASE_REPO,
-        "--limit",
-        "1",
-        "--exclude-drafts",
-        "--json",
-        "tagName",
-        "--jq",
-        ".[0].tagName",
-    ];
-    if exclude_pre {
-        args.push("--exclude-pre-releases");
-    }
-    let mut cmd = Command::new("gh");
-    cmd.args(&args).stdin(std::process::Stdio::null());
-    xai_grok_tools::util::detach_command(&mut cmd);
-    cmd.envs(xai_grok_tools::util::pager_env());
-    let output = cmd.output().await?;
+#[derive(Debug, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    assets: Vec<GitHubReleaseAsset>,
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh release list failed: {}", stderr.trim());
-    }
+fn current_release_platform() -> Result<(&'static str, &'static str)> {
+    let os = if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        anyhow::bail!("unsupported OS for Enhanced release assets");
+    };
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        anyhow::bail!("unsupported architecture for Enhanced release assets");
+    };
+    Ok((os, arch))
+}
 
-    let tag = String::from_utf8(output.stdout)?.trim().to_string();
-    // Tags are formatted as "v0.1.141", strip the leading "v"
-    let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
-    if version.is_empty() {
-        anyhow::bail!("No releases found in {}", GH_RELEASE_REPO);
+pub(crate) fn release_asset_name(version: &str, os: &str, arch: &str) -> String {
+    format!("grok-{version}-{os}-{arch}")
+}
+
+fn select_release_version(
+    releases: &[GitHubRelease],
+    channel: &str,
+    os: &str,
+    arch: &str,
+) -> Result<String> {
+    if !matches!(channel, "stable" | "alpha" | "enterprise") {
+        anyhow::bail!("unsupported Enhanced release channel '{channel}'");
     }
-    Ok(version)
+    let include_prereleases = channel == "alpha";
+    releases
+        .iter()
+        .filter(|release| !release.draft)
+        .filter_map(|release| {
+            let version = release.tag_name.strip_prefix('v')?;
+            let parsed = semver::Version::parse(version).ok()?;
+            if !include_prereleases && (release.prerelease || !parsed.pre.is_empty()) {
+                return None;
+            }
+            let expected_asset = release_asset_name(version, os, arch);
+            release
+                .assets
+                .iter()
+                .any(|asset| asset.name == expected_asset)
+                .then_some(parsed)
+        })
+        .max()
+        .map(|version| version.to_string())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no {channel} Enhanced release with a matching {os}-{arch} asset was found in {GH_RELEASE_REPO}"
+            )
+        })
+}
+
+async fn fetch_release_catalog(api_url: &str) -> Result<Vec<GitHubRelease>> {
+    let client = reqwest::Client::builder()
+        .timeout(RELEASE_LOOKUP_TIMEOUT)
+        .user_agent(format!(
+            "grok-build-enhanced-updater/{}",
+            xai_grok_version::VERSION
+        ))
+        .build()?;
+    let response = client.get(api_url).send().await?;
+    let status = response.status();
+    if !status.is_success() {
+        anyhow::bail!("Enhanced release lookup failed with HTTP {status}");
+    }
+    response
+        .json::<Vec<GitHubRelease>>()
+        .await
+        .context("Enhanced release metadata was not valid GitHub release JSON")
+}
+
+/// Fetch the latest installable version from the fork's public GitHub Releases
+/// API. Drafts, malformed tags, and releases without the exact native asset are
+/// ignored, so an announcement alone can never become an update candidate.
+#[doc(hidden)]
+pub async fn fetch_gh_release_version(channel: &str) -> Result<String> {
+    let (os, arch) = current_release_platform()?;
+    fetch_gh_release_version_from_api(channel, GH_RELEASE_API_URL, os, arch).await
+}
+
+/// Explicit API seam for hermetic updater tests.
+#[doc(hidden)]
+pub async fn fetch_gh_release_version_from_api(
+    channel: &str,
+    api_url: &str,
+    os: &str,
+    arch: &str,
+) -> Result<String> {
+    let releases = fetch_release_catalog(api_url).await?;
+    select_release_version(&releases, channel, os, arch)
+}
+
+pub(crate) async fn ensure_release_asset_exists(
+    version: &str,
+    api_url: &str,
+    os: &str,
+    arch: &str,
+) -> Result<()> {
+    let parsed_target = semver::Version::parse(version)
+        .with_context(|| format!("invalid Enhanced release version '{version}'"))?;
+    let expected_tag = format!("v{version}");
+    let expected_asset = release_asset_name(version, os, arch);
+    let releases = fetch_release_catalog(api_url).await?;
+    let found = releases.iter().any(|release| {
+        !release.draft
+            && release.tag_name == expected_tag
+            && semver::Version::parse(release.tag_name.trim_start_matches('v'))
+                .is_ok_and(|candidate| candidate == parsed_target)
+            && release
+                .assets
+                .iter()
+                .any(|asset| asset.name == expected_asset)
+    });
+    if !found {
+        anyhow::bail!(
+            "Enhanced release {expected_tag} does not contain the required {expected_asset} asset"
+        );
+    }
+    Ok(())
 }
 
 /// Fetch the latest version from a public CLI channel pointer.
@@ -237,6 +337,7 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
 /// success. Each individual base also retries up to 3 times with exponential
 /// backoff (1s, 2s, 4s) on transient failures before falling through to the
 /// next base.
+#[allow(dead_code)] // inherited low-level test helper; never selected by production routing
 pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
     let mut last_err: Option<anyhow::Error> = None;
     for (i, base) in CLI_BASE_URLS.iter().enumerate() {
@@ -338,16 +439,14 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
     Err(last_err.unwrap())
 }
 
-/// Fetch the latest version for the given installer type without writing the
-/// version cache. Use this when the caller needs to control when the cache is
-/// written (e.g. auto-update should only cache after a successful install or
-/// when no update is needed).
+/// Fetch the latest version without writing the cache. Production update
+/// routing accepts only the fork-owned GitHub Releases backend; legacy npm and
+/// official artifact sources remain testable helpers but are never fallbacks.
 pub async fn fetch_latest_version(installer: &str, config: &UpdateConfig) -> Result<String> {
-    match installer {
-        "npm" => fetch_npm_version(&config.channel, config.npm_registry.as_deref()).await,
-        "gh-release" => fetch_gh_release_version(&config.channel).await,
-        _ => fetch_gcs_version(&config.channel).await,
+    if installer != "gh-release" {
+        anyhow::bail!("unsupported Enhanced update installer '{installer}'");
     }
+    fetch_gh_release_version(&config.channel).await
 }
 
 /// Write the version cache to disk, recording that `version` was seen at the
@@ -387,13 +486,11 @@ pub async fn write_version_cache(version: &str, stable_version: Option<&str>) {
     }
 }
 
-/// Fetch the latest version for the given installer type and cache it.
+/// Fetch the latest Enhanced version and cache it.
 ///
-/// Each installer is fully independent — no cross-installer fallback.
-///
-/// - `"npm"` — uses `npm view` against the public registry.
-/// - `"internal"` — reads the channel pointer from the public GCS bucket.
-/// - `"gh-release"` — uses `gh release list` against GitHub Releases.
+/// Production accepts only `"gh-release"`, which reads public REST metadata
+/// from the fork repository and requires an exact native asset. Legacy npm and
+/// official artifact helpers are never selected or used as fallbacks.
 pub async fn get_latest_version(installer: &str, config: &UpdateConfig) -> Result<String> {
     let version = fetch_latest_version(installer, config).await?;
     let stable_ptr = try_fetch_stable_pointer().await;
@@ -476,29 +573,17 @@ pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -
     Some(ver_str)
 }
 
-/// Fetch the stable channel pointer for caching alongside the version.
-///
-/// Tries each base URL in [`CLI_BASE_URLS`] and returns the first success.
-/// Best-effort: returns `None` on any failure (the caller will simply omit
-/// the stable pointer from the cache, and `channel_label()` will return `""`
-/// until the next successful fetch).
-///
-/// The entire operation is capped at 500 ms. The stable pointer is only used
-/// to derive the `[alpha]`/`[stable]` channel label — it is never required
-/// for correctness. On slow or unreachable networks the timeout fires and we
-/// return `None`; the label will populate on the next successful TTL check
-/// (~30 min). This keeps startup and post-install paths fast.
+/// Fetch the latest stable Enhanced release for caching alongside the selected
+/// version. This is best-effort display metadata and uses the same fork-owned
+/// GitHub Releases source as update discovery.
 pub(crate) async fn try_fetch_stable_pointer() -> Option<String> {
-    tokio::time::timeout(Duration::from_millis(500), async {
-        for base in CLI_BASE_URLS {
-            if let Ok(v) = fetch_gcs_channel_pointer("stable", base).await {
-                return Some(v);
-            }
-        }
-        None
-    })
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        fetch_gh_release_version("stable"),
+    )
     .await
-    .unwrap_or(None)
+    .ok()
+    .and_then(|result| result.ok())
 }
 
 /// Read the cached stable version from `~/.grok/version.json` (sync, for display).
@@ -570,6 +655,82 @@ pub fn channel_label() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{header_regex, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn release(tag: &str, prerelease: bool, assets: &[&str]) -> GitHubRelease {
+        GitHubRelease {
+            tag_name: tag.to_string(),
+            draft: false,
+            prerelease,
+            assets: assets
+                .iter()
+                .map(|name| GitHubReleaseAsset {
+                    name: (*name).to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn enhanced_release_selection_requires_the_exact_native_asset() {
+        let releases = vec![
+            release("v2.0.0", false, &["grok-2.0.0-linux-aarch64"]),
+            release("v1.9.0", false, &["grok-1.9.0-linux-x86_64"]),
+            release("v2.1.0-alpha.1", true, &["grok-2.1.0-alpha.1-linux-x86_64"]),
+        ];
+
+        assert_eq!(
+            select_release_version(&releases, "stable", "linux", "x86_64").unwrap(),
+            "1.9.0"
+        );
+        assert_eq!(
+            select_release_version(&releases, "alpha", "linux", "x86_64").unwrap(),
+            "2.1.0-alpha.1"
+        );
+    }
+
+    #[test]
+    fn enhanced_release_routes_are_fork_owned() {
+        for route in [
+            GH_RELEASE_API_URL,
+            GH_RELEASE_DOWNLOAD_BASE_URL,
+            GH_RELEASES_URL,
+        ] {
+            assert!(route.contains("OpenCompanyApp/grok-build-enhanced"));
+            assert!(!route.contains("xai-org"));
+            assert!(!route.contains("x.ai/cli"));
+        }
+    }
+
+    #[tokio::test]
+    async fn github_release_lookup_uses_public_api_metadata() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/releases"))
+            .and(header_regex("user-agent", "^grok-build-enhanced-updater/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "tag_name": "v3.2.1",
+                    "draft": false,
+                    "prerelease": false,
+                    "assets": [{"name": "grok-3.2.1-linux-x86_64"}]
+                }
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let version = fetch_gh_release_version_from_api(
+            "stable",
+            &format!("{}/releases", server.uri()),
+            "linux",
+            "x86_64",
+        )
+        .await
+        .unwrap();
+        assert_eq!(version, "3.2.1");
+    }
 
     /// Verifies that a future `checked_at` timestamp (e.g. from clock skew or
     /// NTP time-warp) is never considered fresh. Without the clock-skew guard

@@ -96,6 +96,7 @@ See ~/.grok/README.md for more information.
     /// Export or upload session trace data
     Trace(crate::trace_cmd::TraceArgs),
     /// Check for or install a Grok Build Enhanced update
+    #[command(visible_alias = "upgrade")]
     Update {
         /// Check the Enhanced update channel without installing.
         #[arg(long)]
@@ -944,6 +945,18 @@ mod tests {
             "{output}"
         );
     }
+    #[test]
+    fn upgrade_alias_uses_the_enhanced_update_command() {
+        for command in ["update", "upgrade"] {
+            let args = PagerArgs::try_parse_from(["grok", command, "--check"])
+                .unwrap_or_else(|error| panic!("{command} must parse: {error}"));
+            assert!(
+                matches!(args.command, Some(Command::Update { check: true, .. })),
+                "{command} must resolve to the update implementation"
+            );
+        }
+    }
+
     #[test]
     fn resume_target_classifies_flags() {
         assert_eq!(
