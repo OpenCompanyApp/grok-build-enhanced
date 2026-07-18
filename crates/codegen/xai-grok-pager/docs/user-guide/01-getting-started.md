@@ -1,50 +1,66 @@
 # Getting Started
 
-Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
+> [!IMPORTANT]
+> This guide ships with **Grok Build Enhanced**, the unofficial OpenCompanyApp
+> daily-driver fork. It preserves the `grok` executable and `~/.grok`
+> compatibility surfaces but is not affiliated with or supported by
+> xAI/SpaceXAI or OpenAI.
 
-You can use it interactively as a full-screen TUI, run it headlessly for scripting and CI/CD, or integrate it into editors via the Agent Client Protocol (ACP).
+Grok Build Enhanced is a terminal-based AI coding assistant built on Grok Build.
+It runs as a TUI (Terminal User Interface) that understands your codebase,
+executes shell commands, edits files, searches the web, and manages tasks. You
+can use it interactively, run it headlessly for scripting and CI/CD, or
+integrate it into editors through the Agent Client Protocol (ACP).
 
 ---
 
-## Installation
+## Install Grok Build Enhanced
 
-Install the latest stable release (macOS, Linux, or Windows via Git Bash):
-
-```bash
-curl -fsSL https://x.ai/cli/install.sh | bash
-```
-
-Install a specific version:
+The fork source and reviewed release assets live only at
+[`OpenCompanyApp/grok-build-enhanced`](https://github.com/OpenCompanyApp/grok-build-enhanced).
+Until a matching reviewed release asset exists for your platform, build from
+source:
 
 ```bash
-curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
+git clone https://github.com/OpenCompanyApp/grok-build-enhanced.git
+cd grok-build-enhanced
+cargo build --locked --release -p xai-grok-pager-bin
+mkdir -p "$HOME/.local/bin"
+install -m 0755 target/release/xai-grok-pager "$HOME/.local/bin/grok"
 ```
 
-On **Windows (PowerShell)**, use the native PowerShell installer:
-
-```powershell
-irm https://x.ai/cli/install.ps1 | iex
-```
-
-Install a specific version:
-
-```powershell
-$env:GROK_VERSION="0.1.42"; irm https://x.ai/cli/install.ps1 | iex
-```
-
-The PowerShell installer automatically adds `%USERPROFILE%\.grok\bin` to your User PATH. Alternatively, install via [Git for Windows](https://gitforwindows.org/) (Git Bash) or MSYS2 using the bash script above. WSL users get the Linux binary automatically.
-
-Verify the installation:
+Verify both the Enhanced release and audited upstream-base labels:
 
 ```bash
-grok --version
+grok version
 ```
 
-Update to the latest version at any time:
+Update or check for updates through the fork-owned GitHub Release route:
 
 ```bash
 grok update
+grok upgrade --check
 ```
+
+Enhanced updates require an exact `grok-<version>-<os>-<arch>` asset from the
+fork repository and never fall back to xAI installers, npm, or official artifact
+buckets.
+
+### Official upstream distribution (not Enhanced)
+
+Use the following commands **only** when you intentionally want to replace this
+fork with the official xAI/SpaceXAI Grok Build distribution:
+
+```bash
+curl -fsSL https://x.ai/cli/install.sh | bash   # macOS/Linux/Git Bash
+```
+
+```powershell
+irm https://x.ai/cli/install.ps1 | iex          # Windows PowerShell
+```
+
+These installers do not contain Enhanced Codex integration, bundled Warp-theme
+work, fork branding, or fork-owned updates.
 
 ---
 

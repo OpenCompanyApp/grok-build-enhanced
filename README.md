@@ -23,7 +23,7 @@ responsive Grok braille symbol remain compatible.
 | Grok Build TUI, agent loop, sessions, permissions, tools, headless mode, and ACP | Implemented; kept compatible with the upstream base |
 | xAI login and models | Implemented upstream behavior; provider identity remains explicit |
 | ChatGPT Codex subscription login, catalog, usage, fast mode, web/image tools | Implemented, experimental, and isolated from xAI credentials |
-| Custom OpenAI-compatible endpoint path | Existing upstream-compatible path retained |
+| Custom OpenAI-compatible endpoint path | Retained with explicit provider identity; custom entries use only their own configured credentials |
 | Bundled Warp themes and theme UX | Implemented |
 | Kimi Code managed provider | Researched/planned only; no Kimi runtime provider or login is shipped |
 | Z.AI GLM Coding Plan provider | Researched/planned only; no GLM runtime provider or login is shipped |
@@ -39,7 +39,7 @@ existing braille artwork appears when the terminal supports it and space allows.
 ```text
 ╭──────────────────────────────────────────────────────────────────────╮
 │  [responsive Grok braille symbol]   Grok Build Enhanced              │
-│                                     upstream <base> · fork <revision>│
+│     Enhanced <release> · upstream <base> · fork <revision>          │
 │  The unofficial daily-driver fork of Grok Build.                    │
 │                                     New worktree                     │
 │                                     Resume session                   │
@@ -189,7 +189,7 @@ that metadata is compiled in. No wire protocol or provider identity is renamed.
 
 ## Documentation
 
-The upstream-compatible user guide ships with the pager crate:
+The Enhanced-labeled, upstream-compatible user guide ships with the pager crate:
 [`crates/codegen/xai-grok-pager/docs/user-guide/`](crates/codegen/xai-grok-pager/docs/user-guide/)
 — getting started, keyboard shortcuts, slash commands, configuration, theming,
 MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
