@@ -575,6 +575,8 @@ These flags supplement the [Command-Line Options](#command-line-options) table a
 | `--no-subagents`              | Disable subagent spawning                         |
 | `--no-memory`                 | Disable cross-session memory                      |
 | `--disable-web-search`        | Disable web search and fetch tools                |
+| `--web-search-mode <MODE>`    | Codex search mode: cached, indexed, live, disabled |
+| `--search`                    | Shorthand for Codex live search mode              |
 | `--no-alt-screen`             | Run inline (no alternate screen)                  |
 | `--worktree [NAME]`           | Start session in a new git worktree               |
 | `--ref <REF>` / `--worktree-ref <REF>` | Branch/tag/commit to base the worktree on (with `--worktree`) |

@@ -209,7 +209,7 @@ async fn pre_tool_use_resolves_meta_dispatch_tool_name_end_to_end() {
             let mut deferred = Vec::new();
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                actor.prepare_tool_call(call, &mut deferred),
+                actor.prepare_tool_call(call, &mut deferred, None),
             )
             .await
             .expect("prepare_tool_call must not hang")

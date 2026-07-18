@@ -219,18 +219,43 @@ owned by xAI/SpaceXAI and are not Enhanced fork releases. See the
 ### ChatGPT Codex subscription provider (experimental)
 
 An eligible ChatGPT account can supply its entitled Codex models without
-reusing xAI authentication or static API keys:
+reusing xAI authentication or static API keys.
+
+1. Start the browser OAuth login and complete the ChatGPT sign-in in the browser:
+
+   ```sh
+   grok login --provider openai-codex
+   ```
+
+   On a headless machine, use device authorization instead and follow the
+   displayed URL and code:
+
+   ```sh
+   grok login --provider openai-codex --device-auth
+   ```
+
+2. List the Codex models currently available to the signed-in account:
+
+   ```sh
+   grok models --provider openai-codex
+   ```
+
+3. Start Grok with one of the returned model slugs:
+
+   ```sh
+   grok -m openai-codex/<entitled-model-slug>
+   ```
+
+Disconnect only the ChatGPT Codex subscription login, without changing the xAI
+login, with:
 
 ```sh
-grok login --provider openai-codex
-grok models --provider openai-codex
-grok -m openai-codex/<entitled-model-slug>
+grok logout --provider openai-codex
 ```
 
-Use `--device-auth` for headless login and
-`grok logout --provider openai-codex` to disconnect ChatGPT without changing
-the xAI login. The authenticated account supplies the model, service-tier, and
-reasoning-effort catalog; the fork does not hardcode entitlement claims.
+The authenticated account supplies the model, service-tier, and reasoning-effort
+catalog; the fork does not hardcode entitlement claims.
+
 Supported Codex sessions expose provider-scoped fast mode, usage state,
 standalone web search/navigation, local protected `web_fetch`, image input with
 catalog metadata that is currently descriptive rather than enforced, and

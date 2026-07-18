@@ -2,9 +2,9 @@
 """Credential-free static contracts for Grok Build Enhanced.
 
 This checker intentionally covers fork identity, provider isolation sentinels,
-Warp provenance, updater routing, generated-workspace discipline, workflow
-pinning, and tracked secret-file hygiene. It does not impose telemetry or
-privacy product policy.
+Codex search-contract drift, Warp provenance, updater routing,
+generated-workspace discipline, workflow pinning, and tracked secret-file
+hygiene. It does not impose telemetry or privacy product policy.
 """
 
 from __future__ import annotations
@@ -97,6 +97,21 @@ def check_provider_isolation_sentinels() -> None:
     }
     for path, test_name in sentinels.items():
         require_fragment(path, test_name)
+
+
+def check_openai_codex_search_contract() -> None:
+    checker = ROOT / "fork/scripts/check_openai_codex_search_contract.py"
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", str(checker), "--repo-root", str(ROOT)],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or "checker exited without an error message"
+        raise ContractError(f"OpenAI Codex search contract failed: {detail}")
 
 
 def check_warp_lock(manifest: dict[str, object]) -> None:
@@ -217,6 +232,7 @@ def main() -> int:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         check_branding_and_charter()
         check_provider_isolation_sentinels()
+        check_openai_codex_search_contract()
         check_warp_lock(manifest)
         check_updater_routes()
         check_generated_workspace(manifest)
@@ -225,7 +241,10 @@ def main() -> int:
     except (ContractError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
         print(f"fork contract validation failed: {error}", file=sys.stderr)
         return 1
-    print("fork contracts OK: branding, providers, Warp, updater, workspace, workflows, secrets")
+    print(
+        "fork contracts OK: branding, providers, Codex search, Warp, updater, "
+        "workspace, workflows, secrets"
+    )
     return 0
 
 

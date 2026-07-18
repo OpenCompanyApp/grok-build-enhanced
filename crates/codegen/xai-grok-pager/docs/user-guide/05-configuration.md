@@ -93,6 +93,57 @@ load_envrc = true                      # load .envrc environment variables
 respect_gitignore = false              # default: false; set true to make every tool skip gitignored files
 ```
 
+### ChatGPT Codex web search
+
+The experimental ChatGPT Codex subscription provider uses Grok's native
+`web_search` and `web_fetch` functions. Configure its standalone-search adapter
+at the top level:
+
+```toml
+[web_search]
+mode = "cached"                        # cached (default), indexed, live, disabled
+search_context_size = "low"            # low, medium, high
+allowed_domains = ["openai.com"]
+blocked_domains = ["example.org"]
+
+[web_search.user_location]
+country = "US"
+region = "California"
+city = "San Francisco"
+timezone = "America/Los_Angeles"
+
+[web_search.image_settings]
+max_results = 4
+caption = true
+```
+
+`--web-search-mode <mode>` overrides local mode, and `--search` selects live
+mode. Conflicting explicit CLI values are rejected. For this policy, the
+general precedence list above has an important safety exception: the global
+`--disable-web-search` kill switch and managed requirements outrank CLI/local
+settings. Managed allowlists can only narrow local/call-level domains, and all
+blocklists remain effective.
+
+Location is omitted unless explicitly configured; Grok does not infer it from
+IP, OS, account, or credentials. `country` is a two-letter code, and `timezone`
+uses a bounded IANA-style identifier such as `America/Los_Angeles`. Codex mode
+`disabled` removes Codex's implicit
+search/fetch defaults, but an explicitly enabled provider-independent
+`web_fetch` remains available. `--disable-web-search` removes both.
+
+Local fetch blocks loopback, private, link-local, and cloud metadata addresses
+by default. For local development only, loopback can be enabled without
+broadening the other blocks:
+
+```toml
+[toolset.web_fetch]
+allow_loopback = true
+```
+
+See the [OpenAI Codex subscription provider reference](../../../../../docs/providers/openai-codex-subscription-provider-reference.md#web-tools)
+for exact wire values, output budgets, trust metadata, failure codes, and live
+validation.
+
 #### Input Mode
 
 The `simple_mode` setting under `[ui]` controls how you edit text in the

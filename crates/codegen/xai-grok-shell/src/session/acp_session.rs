@@ -613,6 +613,10 @@ pub(crate) struct SessionActor {
     pub(crate) chat_state_handle: xai_chat_state::ChatStateHandle,
     /// Current running prompt/turn id, shared with SessionHandle.
     pub(crate) current_prompt_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Per-user-turn native web dedup/retry state. It stores only one-way
+    /// argument fingerprints plus sanitized outcomes and is cleared on every
+    /// turn exit.
+    pub(crate) web_attempt_ledger: Arc<crate::session::web_attempts::WebAttemptLedger>,
     /// Open blocking reverse-requests (permission / question / plan-approval),
     /// keyed by `tool_call_id`. Shared with `SessionHandle` so the roster can
     /// read it synchronously to surface `NeedsInput`. Mutated by
@@ -1799,7 +1803,7 @@ mod tool_meta_stamp_tests {
                 );
                 let prepared = fixture
                     .actor
-                    .prepare_tool_call(read_file_call(), &mut Vec::new())
+                    .prepare_tool_call(read_file_call(), &mut Vec::new(), None)
                     .await
                     .expect("prepare_tool_call should not error");
                 assert!(prepared.is_ok(), "read_file should prepare cleanly");
@@ -1869,7 +1873,7 @@ mod tool_meta_stamp_tests {
                 });
                 let prepared = fixture
                     .actor
-                    .prepare_tool_call(read_file_call(), &mut Vec::new())
+                    .prepare_tool_call(read_file_call(), &mut Vec::new(), None)
                     .await
                     .expect("prepare_tool_call should not error");
                 assert!(prepared.is_ok(), "allowed read_file should prepare cleanly");

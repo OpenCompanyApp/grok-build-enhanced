@@ -10,6 +10,8 @@ pub mod pending_interaction;
 pub mod prompt_queue;
 pub(crate) mod provider;
 pub mod two_pass;
+pub(crate) mod web_attempts;
+pub(crate) mod web_browsing;
 pub use self::acp_session::*;
 pub use self::acp_types::*;
 pub use self::commands::*;

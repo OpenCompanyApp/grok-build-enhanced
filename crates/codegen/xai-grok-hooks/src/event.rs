@@ -1,4 +1,5 @@
 use serde::Serialize;
+use xai_grok_tools::types::output::{ExternalContentMetadata, WebToolErrorCode};
 
 /// Maximum serialized size for `toolInput` or `toolResult` in bytes (128 KB).
 pub const MAX_PAYLOAD_SIZE: usize = 128 * 1024;
@@ -232,6 +233,13 @@ pub enum HookPayload {
         tool_input_truncated: bool,
         #[serde(rename = "toolResultTruncated")]
         tool_result_truncated: bool,
+        /// Non-secret typed provenance when the model-visible result came from
+        /// an untrusted external web source.
+        #[serde(rename = "externalContent", skip_serializing_if = "Option::is_none")]
+        external_content: Option<ExternalContentMetadata>,
+        /// Stable sanitized failure code for native web tools.
+        #[serde(rename = "webFailureCode", skip_serializing_if = "Option::is_none")]
+        web_failure_code: Option<WebToolErrorCode>,
         #[serde(rename = "durationMs", skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
         #[serde(rename = "isBackgrounded")]
@@ -541,5 +549,30 @@ mod tests {
         // Should NOT contain snake_case versions
         assert!(!json.contains("hook_event_name"));
         assert!(!json.contains("session_id"));
+    }
+
+    #[test]
+    fn post_tool_use_serializes_external_content_metadata() {
+        use xai_grok_tools::types::output::ExternalContentSource;
+
+        let payload = HookPayload::PostToolUse {
+            tool_name: "web_search".into(),
+            tool_use_id: "call-web".into(),
+            tool_input: serde_json::json!({"query": "example"}),
+            tool_result: serde_json::json!({"type": "web_search"}),
+            tool_input_truncated: false,
+            tool_result_truncated: false,
+            external_content: Some(ExternalContentMetadata::direct(
+                ExternalContentSource::WebSearch,
+            )),
+            web_failure_code: None,
+            duration_ms: Some(5),
+            is_backgrounded: false,
+            subagent_type: None,
+        };
+
+        let json = serde_json::to_value(payload).unwrap();
+        assert_eq!(json["externalContent"]["sources"][0], "web_search");
+        assert_eq!(json["externalContent"]["derived"], false);
     }
 }

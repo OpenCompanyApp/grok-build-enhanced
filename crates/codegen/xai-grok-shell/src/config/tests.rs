@@ -2758,6 +2758,137 @@ fn apply_requirements_value_overrides_user_settings() {
         "[redacted]")
     );
 }
+
+#[test]
+fn web_search_requirements_narrow_local_policy_and_override_cli_mode() {
+    use crate::agent::config::{CodexWebSearchMode, RuntimeResolutionContext};
+
+    let raw: toml::Value = toml::from_str(
+        r#"
+[web_search]
+mode = "live"
+allowed_domains = ["Example.COM.", "docs.rust-lang.org"]
+blocked_domains = ["Private.Example.COM.", "private.example.com"]
+"#,
+    )
+    .unwrap();
+    let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap();
+    let requirements: toml::Value = toml::from_str(
+        r#"
+[web_search]
+mode = "indexed"
+allowed_domains = ["docs.example.com", "rust-lang.org"]
+blocked_domains = ["DOCS.EXAMPLE.COM.", "blocked.example"]
+"#,
+    )
+    .unwrap();
+    let source = RequirementSource::Requirements {
+        path: std::path::PathBuf::from("/test/requirements.toml"),
+    };
+    let enforced = apply_requirements_inner(&mut cfg, &requirements, &source);
+
+    assert_eq!(cfg.web_search.mode, CodexWebSearchMode::Indexed);
+    assert_eq!(
+        cfg.web_search.allowed_domains,
+        Some(vec!["docs.rust-lang.org".to_owned()]),
+        "managed allowlists intersect local allowlists and blocked domains subtract"
+    );
+    assert_eq!(
+        cfg.web_search.blocked_domains,
+        vec![
+            "private.example.com".to_owned(),
+            "docs.example.com".to_owned(),
+            "blocked.example".to_owned(),
+        ]
+    );
+    assert_eq!(
+        cfg.requirements.web_search_allowed_domains.pinned(),
+        Some(vec![
+            "docs.example.com".to_owned(),
+            "rust-lang.org".to_owned(),
+        ])
+    );
+    assert_eq!(
+        cfg.requirements.web_search_blocked_domains.pinned(),
+        Some(vec![
+            "docs.example.com".to_owned(),
+            "blocked.example".to_owned(),
+        ])
+    );
+    for path in [
+        "web_search.mode",
+        "web_search.allowed_domains",
+        "web_search.blocked_domains",
+    ] {
+        assert!(enforced.iter().any(|entry| entry.path == path));
+    }
+
+    cfg.resolve_runtime_fields(&RuntimeResolutionContext {
+        raw_config: &raw,
+        remote_settings: None,
+        cwd: None,
+        is_headless: false,
+        cli_subagents: None,
+        cli_web_search_model: None,
+        cli_web_search_mode: Some(CodexWebSearchMode::Live),
+        cli_session_summary_model: None,
+        cli_experimental_memory: false,
+        cli_no_memory: false,
+        disable_web_search: true,
+        todo_gate: false,
+        laziness_debug_log: None,
+        storage_mode: None,
+    });
+    assert_eq!(
+        cfg.web_search.mode,
+        CodexWebSearchMode::Indexed,
+        "managed mode cannot be weakened by the CLI"
+    );
+    assert!(cfg.disable_web_search, "global kill switch remains absolute");
+}
+
+#[test]
+fn web_search_requirements_fail_closed_for_invalid_or_disjoint_policy() {
+    use crate::agent::config::CodexWebSearchMode;
+
+    for requirements in [
+        r#"
+[web_search]
+mode = "unknown-future-mode"
+"#,
+        r#"
+[web_search]
+allowed_domains = ["managed.example"]
+"#,
+        r#"
+[web_search]
+blocked_domains = ["https://invalid.example/path"]
+"#,
+    ] {
+        let has_mode = requirements.contains("mode");
+        let raw: toml::Value = toml::from_str(
+            r#"
+[web_search]
+mode = "live"
+allowed_domains = ["local.example"]
+"#,
+        )
+        .unwrap();
+        let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap();
+        let requirements: toml::Value = toml::from_str(requirements).unwrap();
+        let source = RequirementSource::Requirements {
+            path: std::path::PathBuf::from("/test/requirements.toml"),
+        };
+        apply_requirements_inner(&mut cfg, &requirements, &source);
+
+        if has_mode {
+            assert_eq!(cfg.web_search.mode, CodexWebSearchMode::Disabled);
+        } else {
+            assert_eq!(cfg.web_search.allowed_domains, Some(Vec::new()));
+        }
+    }
+}
+
 /// Strict precedence: requirement always wins (covers from-None and
 /// from-higher-user cases). The enforced floor lives in
 /// `resolve_minimum_version`, not this field.

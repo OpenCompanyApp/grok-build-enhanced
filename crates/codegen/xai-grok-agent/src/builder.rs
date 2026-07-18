@@ -2499,6 +2499,7 @@ mod tests {
             base_url: "https://chatgpt.com/backend-api/codex".to_string(),
             model: "gpt-5.6-luna".to_string(),
             session_id: "session-public".to_string(),
+            settings: Default::default(),
         })
         .with_backend_search(true)
         .build()

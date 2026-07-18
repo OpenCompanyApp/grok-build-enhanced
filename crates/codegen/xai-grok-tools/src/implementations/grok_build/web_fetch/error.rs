@@ -70,6 +70,53 @@ pub enum WebFetchError {
 }
 
 impl WebFetchError {
+    pub fn failure_code(&self) -> crate::types::output::WebToolErrorCode {
+        use crate::types::output::WebToolErrorCode;
+        match self {
+            Self::SsrfBlocked { .. } => WebToolErrorCode::SsrfBlocked,
+            Self::ResponseTooLarge { .. } => WebToolErrorCode::ResponseTooLarge,
+            Self::UnsupportedContentType { .. } | Self::ContentTypeMismatch { .. } => {
+                WebToolErrorCode::UnsupportedContent
+            }
+            Self::HttpRequest {
+                kind: "timeout", ..
+            } => WebToolErrorCode::Timeout,
+            Self::InvalidRedirect | Self::TooManyRedirects { .. } => {
+                WebToolErrorCode::CrossHostRedirect
+            }
+            Self::UrlTooLong { .. }
+            | Self::UnsupportedScheme { .. }
+            | Self::CredentialsInUrl
+            | Self::SingleLabelHost { .. }
+            | Self::InvalidUrl(_) => WebToolErrorCode::DomainRejected,
+            Self::DnsResolution { .. }
+            | Self::DnsEmpty(_)
+            | Self::ClientBuildError
+            | Self::HttpRequest { .. }
+            | Self::ProxyConfigError
+            | Self::IoError(_) => WebToolErrorCode::ProviderUnavailable,
+        }
+    }
+
+    pub fn into_tool_error(self) -> xai_tool_runtime::ToolError {
+        use crate::types::output::{WebToolErrorCode, WebToolFailure};
+        let code = self.failure_code();
+        let failure = WebToolFailure::for_code(code);
+        let kind = match code {
+            WebToolErrorCode::Timeout => xai_tool_runtime::ToolErrorKind::Timeout,
+            WebToolErrorCode::ProviderUnavailable => xai_tool_runtime::ToolErrorKind::NetworkError,
+            WebToolErrorCode::DomainRejected
+            | WebToolErrorCode::SsrfBlocked
+            | WebToolErrorCode::CrossHostRedirect
+            | WebToolErrorCode::UnsupportedContent
+            | WebToolErrorCode::ResponseTooLarge => xai_tool_runtime::ToolErrorKind::Execution,
+            _ => xai_tool_runtime::ToolErrorKind::Execution,
+        };
+        xai_tool_runtime::ToolError::new(kind, failure.prompt_text()).with_details(
+            serde_json::to_value(failure).expect("web failure envelope is JSON-serializable"),
+        )
+    }
+
     /// Convert a reqwest failure into a bounded, URL-safe diagnostic. The
     /// original reqwest error is deliberately not retained because both its
     /// Display and Debug implementations may include the full request URL.

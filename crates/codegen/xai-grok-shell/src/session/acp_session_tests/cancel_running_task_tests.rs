@@ -149,6 +149,9 @@ fn persist_ack_waits_for_disk_flush_before_success() {
                 mcp_strategy: McpInitStrategy::Blocking,
                 chat_state_handle,
                 current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                web_attempt_ledger: std::sync::Arc::new(
+                    crate::session::web_attempts::WebAttemptLedger::default(),
+                ),
                 pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
                 )),
@@ -624,6 +627,9 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 mcp_strategy: McpInitStrategy::Blocking,
                 chat_state_handle,
                 current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                web_attempt_ledger: std::sync::Arc::new(
+                    crate::session::web_attempts::WebAttemptLedger::default(),
+                ),
                 pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
                 )),
@@ -781,7 +787,13 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 trace_config_template: std::cell::RefCell::new(None),
             });
             let _ = actor
-                .process_conversation_turn_with_recovery("disabled-memory", None, None, None)
+                .process_conversation_turn_with_recovery(
+                    "disabled-memory",
+                    None,
+                    None,
+                    None,
+                    crate::session::web_browsing::BrowseRequirement::Optional,
+                )
                 .await;
             let (flush_tx, flush_rx) = tokio::sync::oneshot::channel();
             persistence
@@ -893,6 +905,9 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
                 current_prompt_id: std::sync::Arc::new(
                     std::sync::Mutex::new(Some("running".to_string())),
+                ),
+                web_attempt_ledger: std::sync::Arc::new(
+                    crate::session::web_attempts::WebAttemptLedger::default(),
                 ),
                 pending_interactions: std::sync::Arc::new(
                     std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1944,6 +1959,9 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
                 current_prompt_id: std::sync::Arc::new(
                     std::sync::Mutex::new(Some("running".to_string())),
+                ),
+                web_attempt_ledger: std::sync::Arc::new(
+                    crate::session::web_attempts::WebAttemptLedger::default(),
                 ),
                 pending_interactions: std::sync::Arc::new(
                     std::sync::Mutex::new(std::collections::HashMap::new()),

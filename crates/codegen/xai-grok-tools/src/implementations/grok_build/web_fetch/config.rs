@@ -40,6 +40,10 @@ pub struct WebFetchParams {
     /// routed through this URL.
     #[serde(default)]
     pub proxy_endpoint: Option<String>,
+    /// Explicit local-development opt-in for loopback destinations. Defaults
+    /// to `false`; private, link-local, and metadata ranges remain blocked.
+    #[serde(default)]
+    pub allow_loopback: Option<bool>,
 }
 
 register_resource!("grok_build", "WebFetch", WebFetchParams);
@@ -69,6 +73,10 @@ impl WebFetchParams {
 
     pub fn context_window_tokens(&self) -> u64 {
         self.context_window_tokens.unwrap_or(128_000)
+    }
+
+    pub fn allow_loopback(&self) -> bool {
+        self.allow_loopback.unwrap_or(false)
     }
 
     pub fn allowed_domains(&self) -> Vec<String> {

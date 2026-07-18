@@ -1,9 +1,9 @@
 # OpenAI Codex subscription provider reference
 
 > Status: implemented, experimental provider reference. Reconciled on
-> 2026-07-17 against the checked-in fork implementation and tests.
-> [`UPSTREAM_VERSIONS.md`][upstream-versions] separately records external
-> revisions; this reconciliation did not fetch or promote an upstream revision.
+> 2026-07-18 against the checked-in fork implementation, tests, and normalized
+> standalone-search contract. [`UPSTREAM_VERSIONS.md`][upstream-versions]
+> records the reviewed external revisions.
 >
 > This is an unofficial Grok Build fork. Direct use of the ChatGPT Codex
 > backend follows the compatibility contract implemented here; it is not a
@@ -34,21 +34,22 @@ public `openai/codex` source, then verify with an entitled-account smoke test.
 
 At this document's reconciliation date, `UPSTREAM_VERSIONS.md` records:
 
-- `openai/codex` last reviewed at
-  `18110b810f0a328147f6cd85e6f1ab6414927366`, with
-  `315195492c80fdade38e917c18f9584efd599304` only the latest fetched revision;
+- `openai/codex` reviewed and latest-fetched at
+  `315195492c80fdade38e917c18f9584efd599304`;
 - OpenCode last reviewed at
   `1d2a7b4c860f6a29eb90bdda07757b2adf34ab61`, with
   `efb6cc2d4bf6332eb156709795d2b3a649198b65` only the latest fetched revision;
   and
 - fork compatibility version `0.144.0`.
 
-OpenCode is an interoperability and provenance reference, not a runtime
-provider identity. This documentation reconciliation did not inspect either
-latest-fetched revision, so it leaves the upstream ledger unchanged and does
-not promote either revision to reviewed. The dated GPT-5.6 table below retains
-its exact source-revision label as a compatibility snapshot, not as evidence
-that the complete upstream diff was reviewed.
+The focused diff from the prior reviewed Codex revision
+`18110b810f0a328147f6cd85e6f1ab6414927366` to `315195...` contained no changes
+to `codex-api/src/search.rs`, `codex-api/src/endpoint/search.rs`, or the
+standalone web-search extension. The normalized reviewed contract is committed
+at `fork/contracts/openai_codex_search_contract.json`; the offline checker also
+supports extracting the immutable Git object without checking it out. OpenCode
+remains an interoperability and provenance reference, not a runtime provider
+identity.
 
 The shortest operational sequence is:
 
@@ -474,59 +475,158 @@ contract.
 
 ## Web tools
 
-### Subscription web search
+### Modes, settings, and precedence
 
-Codex sessions expose Grok's `web_search` tool without `XAI_API_KEY`. Its
-provider-specific backend posts to `{codex-base}/alpha/search` and supports the
-current structured command set:
+Codex sessions expose Grok's native `web_search` function without
+`XAI_API_KEY`. The provider adapter posts to `{codex-base}/alpha/search`; it
+does not expose Codex code mode, JavaScript execution, Codex exec, or a
+provider-custom web tool. The mode defaults to `cached`:
 
-- `search_query` and domain filters;
-- `image_query`;
-- `open`, `click`, and `find`;
-- PDF `screenshot`;
-- `finance`, `weather`, `sports`, and `time`; and
-- `response_length`.
+| Mode | Provider wire value | Tool availability |
+| --- | --- | --- |
+| `cached` | `external_web_access: false` | `web_search` available |
+| `indexed` | `external_web_access: "indexed"` | `web_search` available |
+| `live` | `external_web_access: true` | `web_search` available |
+| `disabled` | No request value | Codex `web_search` is not registered |
 
-Search results retain complete source URLs, citations, numbered links, and
-stable result references so later `open`, `click`, `find`, and `screenshot`
-calls work. Do not redact source URLs out of tool output: they are functional
-navigation state. Remember that user-configured tool hooks can receive those
-URLs and are therefore an explicit data boundary.
+Configure the standalone adapter in `~/.grok/config.toml`:
+
+```toml
+[web_search]
+mode = "cached"
+search_context_size = "low" # low, medium, or high
+allowed_domains = ["openai.com"]
+blocked_domains = ["example.org"]
+
+[web_search.user_location]
+country = "US"
+region = "California"
+city = "San Francisco"
+timezone = "America/Los_Angeles"
+
+[web_search.image_settings]
+max_results = 4
+caption = true
+```
+
+Location is always sent as `type: "approximate"` and is omitted unless the
+user configured it. `country` must be a two-letter code; `timezone` is locally
+validated as a bounded IANA-style identifier. Grok does not infer location from
+the IP address, OS, credentials, account metadata, or ambient timezone. The adapter always seals
+`allowed_callers: ["direct"]`.
+
+Use `--web-search-mode cached|indexed|live|disabled` to override local mode for
+the process. `--search` is shorthand for live mode. Conflicting explicit CLI
+values fail argument parsing. Resolution is fail-closed, in this order:
+
+1. `--disable-web-search`, which removes both native web functions;
+2. managed requirements, including a pinned mode and narrowing domain policy;
+3. explicit CLI mode;
+4. local configuration; and
+5. the `cached` default.
+
+Managed pins cannot be weakened by CLI flags. Blocklists are unioned and
+subtract from every allowlist. Allowlist layers are intersected; exact domains
+and subdomains retain the narrower common domain. Domains are normalized for
+case, IDNA, and trailing dots, while IP literals, wildcard tricks, and an
+explicitly empty intersection fail before network I/O. These settings affect
+the Codex standalone-search adapter only; xAI and generic custom providers keep
+their existing behavior.
+
+### Native invocation and output budget
+
+The command schema supports `search_query`, `image_query`, `open`, `click`,
+`find`, PDF `screenshot`, `finance`, `weather`, `sports`, `time`, and
+`response_length`. References returned by search may be passed only to the
+standalone search operations. A literal URL sent to `web_search.open` stays on
+the sealed provider endpoint; a URL sent to `web_fetch` stays in the local
+fetch client. The shell never silently crosses or falls back between them.
+
+When the current genuine user request explicitly requires current sources,
+verification, citations, a URL lookup, or other clearly time-sensitive data,
+the Codex turn must call `web_search` or `web_fetch` directly. If the model
+stops without doing so, the shell injects one trusted corrective continuation.
+A second no-tool stop ends normally with the stable
+`required_browsing_not_invoked` failure. A real web call, including a failed
+one, consumes the requirement and is never converted into a no-tool retry.
+Synthetic reminders and external web text are not classified as user intent.
+
+The shell—not the model—computes `max_output_tokens`. It reserves completion
+runway below the compaction threshold, gives at most half of remaining safe
+runway to web output, applies `short < medium < long` caps, clamps at 16,384,
+and divides concurrent search calls deterministically in call order. Less than
+1,024 useful tokens fails before network I/O with
+`context_budget_exhausted`. Provider output is also truncated on a UTF-8
+boundary if it exceeds the requested ceiling.
 
 Search receives only a bounded visible-history projection:
 
 - at most eight messages and 32 KiB total;
-- one or two recent user text messages, each at most 16 KiB;
-- at most 4 KiB of assistant text between those user messages;
-- no system or synthetic reminders; and
-- no reasoning, tool traffic, credentials, images, or hidden state.
+- one or two recent genuine user text messages;
+- at most 4 KiB of assistant text between those messages; and
+- no system/synthetic reminders, reasoning, tool traffic, credentials, images,
+  or provider turn state.
 
-`x-codex-turn-metadata` is separately bounded to 4 KiB and contains only
-session, thread, turn, model, and reasoning identifiers. It is marked sensitive
-and is distinct from the provider-private `x-codex-turn-state`, which search
-does not receive.
+A model-supplied `_grok_codex_context` field is always discarded. The shell
+then injects fresh bounded context and sensitive `x-codex-turn-metadata` after
+argument validation, even when no visible history exists. Search refuses
+redirects, caps the response at 10 MiB, bounds result projection to 32
+references, 64 citations, 4096 nodes, and depth 16, and owns exact-binding
+one-shot 401 recovery. See [`web_search/backends/openai_codex.rs`][codex-search].
 
-Search refuses redirects, caps the response at 10 MiB, bounds result projection
-to 32 references, 64 citations, 4096 nodes, and depth 16, resolves auth for
-each attempt, and owns its exact-binding one-shot 401 recovery. See
-[`web_search/backends/openai_codex.rs`][codex-search].
+### Untrusted content and structured failures
+
+Successful `web_search` and `web_fetch` results carry typed
+`external_untrusted` provenance. The JSONL record stores original content plus
+metadata; provider conversion adds the model-visible boundary, so marker text
+is never parsed as trust state. Provenance survives resume, provider switches,
+ordinary/verbatim compaction, flattened subagent context, ACP updates, and
+post-tool hooks. Derived summaries are marked external-derived when any input
+was external. ACP and hook metadata expose only source kind, derived state, and
+a stable failure code—not bodies, URLs, queries, or credential state.
+
+Both native web tools use bounded failure envelopes with `code`, `retryable`,
+and safe advice. Stable codes include `domain_rejected`, `ssrf_blocked`,
+`cross_host_redirect`, `unsupported_content`, `provider_unavailable`,
+`reference_expired`, `authentication_required`, `response_too_large`,
+`timeout`, `rate_limited`, `context_budget_exhausted`,
+`required_browsing_not_invoked`, and `repeated_failure`.
+
+Within one user turn, identical effective-tool/argument fingerprints share one
+sanitized result. Successes and non-retryable failures replay without network.
+A retryable failure gets at most one later network attempt; another identical
+request returns `repeated_failure`. The ledger stores no raw URL, query, host,
+or auth data and is cleared at turn exit. Telemetry contains aggregate dedup,
+retry, repeated-failure, and local fetch cache counters only.
 
 ### Local web fetch
 
-The existing local `web_fetch` tool defaults on for Codex only when no local,
-managed, remote, or environment setting made an explicit choice. Its SSRF
-protection, DNS/IP validation, content limits, and fixed domain/path allowlist
-remain unchanged.
+The provider-independent `web_fetch` keeps its own allowlist, DNS re-resolution,
+body limits, MIME handling, same-host redirect validation, and SSRF policy.
+Loopback is blocked by default. Local development may opt in with:
 
-An arbitrary search-result domain may therefore work through subscription
-search `open`/`click` but be rejected by local `web_fetch`. That is intentional.
-Use:
+```toml
+[toolset.web_fetch]
+allow_loopback = true
+```
+
+That switch permits loopback only; private, link-local, and cloud metadata
+addresses remain blocked, and every redirect is revalidated. It is local-only
+and cannot be broadened by managed or remote policy.
+
+Codex mode `disabled` removes the implicit Codex fetch default but does not
+remove an explicitly enabled provider-independent fetch tool. The global kill
+switch remains absolute:
 
 ```text
---disable-web-search   # disable both search and local fetch
+--disable-web-search   # disable both search and fetch
 GROK_WEB_FETCH=0       # disable only local fetch
 GROK_WEB_FETCH=1       # explicitly enable local fetch
 ```
+
+A search-result domain may therefore work through subscription search `open`
+or `click` but be rejected by local `web_fetch`. That distinction is
+intentional.
 
 ## Image input, generation, and editing
 
@@ -717,6 +817,7 @@ SSRF policy than the hosted subscription search service.
 | Model catalog | [`xai-grok-shell/src/remote/openai_codex_catalog.rs`][codex-catalog] |
 | Sampler configuration/Responses transport | [`xai-grok-sampler/src/config.rs`][sampler-config], [`xai-grok-sampler/src/client.rs`][sampler-client], [`provider/openai_codex/`][codex-sampler-dir] |
 | Search | [`web_search/backends/openai_codex.rs`][codex-search] |
+| Search contract guardrail | [`fork/contracts/openai_codex_search_contract.json`][codex-search-contract], [`check_openai_codex_search_contract.py`][codex-search-checker] |
 | Local fetch | [`xai-grok-tools/src/implementations/grok_build/web_fetch/`][web-fetch-dir] |
 | Images | [`image_gen/mod.rs`][image-gen], [`image_edit/mod.rs`][image-edit] |
 | Session wiring and provider switching | [`session/provider/openai_codex.rs`][codex-session-provider], [`session/agent_rebuild.rs`][agent-rebuild] |
@@ -732,6 +833,8 @@ SSRF policy than the hosted subscription search service.
 Run focused tests before the broader binary check:
 
 ```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -I -B fork/scripts/check_openai_codex_search_contract.py
+PYTHONDONTWRITEBYTECODE=1 python3 -I -B fork/scripts/tests/test_check_openai_codex_search_contract.py
 PYTHONDONTWRITEBYTECODE=1 python3 -I -B fork/scripts/check_manifest.py --strict-coverage
 cargo test -p xai-grok-pager --lib openai_codex_provider_parses_for_auth_and_models
 cargo test -p xai-grok-shell --lib auth::codex
@@ -768,8 +871,26 @@ ChatGPT backend. The suite should cover at least:
 
 ### Live entitled-account smoke test
 
+The automated live search test is ignored **and** checks a second opt-in:
+
+```sh
+GROK_RUN_LIVE_CODEX_TESTS=1 \
+  cargo test -p xai-grok-shell --lib \
+  auth::codex::live_web_search_tests::live_codex_search_modes_settings_and_reference_flow \
+  -- --ignored --exact --nocapture
+```
+
+Optionally set `GROK_LIVE_CODEX_MODEL=<entitled-slug>`; otherwise the scoped
+catalog selects a visible entitled model. The test reads only Grok's existing
+`~/.grok` Codex scope, never `~/.codex/auth.json` or a token environment
+variable. It makes a catalog request plus up to four search/open requests,
+which can consume ChatGPT plan credits and encounter account limits. It prints
+only safe skip categories. Missing opt-in/auth/model entitlement and provider
+rate limits skip; endpoint, schema, decoding, redirect, and credential-safety
+failures do not.
+
 Never print or capture token/account headers. With a test account or the user's
-own private session, verify:
+own private session, additionally verify:
 
 1. Browser login and device login independently.
 2. Authenticated catalog fetch and selection of Luna, Terra, and Sol when
@@ -864,6 +985,8 @@ directory.
 [codex-responses]: ../../crates/codegen/xai-grok-sampler/src/provider/openai_codex/responses.rs
 [codex-sampler-dir]: ../../crates/codegen/xai-grok-sampler/src/provider/openai_codex/
 [codex-search]: ../../crates/codegen/xai-grok-tools/src/implementations/web_search/backends/openai_codex.rs
+[codex-search-checker]: ../../fork/scripts/check_openai_codex_search_contract.py
+[codex-search-contract]: ../../fork/contracts/openai_codex_search_contract.json
 [codex-session-provider]: ../../crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs
 [image-edit]: ../../crates/codegen/xai-grok-tools/src/implementations/grok_build/image_edit/mod.rs
 [image-gen]: ../../crates/codegen/xai-grok-tools/src/implementations/grok_build/image_gen/mod.rs

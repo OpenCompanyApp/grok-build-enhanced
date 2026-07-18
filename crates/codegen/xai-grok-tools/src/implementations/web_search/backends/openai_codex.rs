@@ -6,7 +6,8 @@ use super::{
 };
 use crate::attribution::{SharedAttributionCallback, ToolConsumer};
 use crate::implementations::web_search::types::{
-    CodexWebSearchContext, CodexWebSearchMessageRole, CodexWebSearchTurnMetadata,
+    CodexWebSearchContext, CodexWebSearchContextSize, CodexWebSearchMessageRole,
+    CodexWebSearchMode, CodexWebSearchSettings, CodexWebSearchTurnMetadata,
 };
 use crate::types::SharedApiKeyProvider;
 use crate::types::api_key_provider::{
@@ -14,7 +15,7 @@ use crate::types::api_key_provider::{
     OPENAI_CODEX_PROVIDER_ID, OpenAiCodexAuthError, require_openai_codex_auth_provider,
     resolve_openai_codex_request_auth,
 };
-use crate::types::output::WebSearchReference;
+use crate::types::output::{WebSearchReference, WebToolErrorCode, WebToolFailure};
 
 const OPENAI_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENAI_CODEX_ORIGINATOR: &str = "grok_build_codex";
@@ -32,6 +33,77 @@ const MAX_CODEX_RESULT_DEPTH: usize = 16;
 const MAX_CODEX_REF_ID_BYTES: usize = 512;
 const MAX_CODEX_RESULT_TITLE_CHARS: usize = 512;
 const MAX_CODEX_RESULT_URL_BYTES: usize = 4_096;
+const MAX_CODEX_IMAGE_RESULTS: u64 = 50;
+const MAX_CODEX_OUTPUT_BYTES_PER_TOKEN: u64 = 8;
+const CODEX_OUTPUT_TRUNCATION_MARKER: &str =
+    "\n\n[web search output truncated to the safe context budget]";
+pub(crate) const MIN_CODEX_SEARCH_OUTPUT_TOKENS: u64 = 1_024;
+pub(crate) const MAX_CODEX_SEARCH_OUTPUT_TOKENS: u64 = 16_384;
+
+fn web_failure_error(code: WebToolErrorCode) -> xai_tool_runtime::ToolError {
+    let failure = WebToolFailure::for_code(code);
+    let kind = match code {
+        WebToolErrorCode::AuthenticationRequired => xai_tool_runtime::ToolErrorKind::Unauthorized,
+        WebToolErrorCode::Timeout => xai_tool_runtime::ToolErrorKind::Timeout,
+        WebToolErrorCode::RateLimited => xai_tool_runtime::ToolErrorKind::RateLimited,
+        WebToolErrorCode::ProviderUnavailable => {
+            xai_tool_runtime::ToolErrorKind::ServiceUnavailable
+        }
+        _ => xai_tool_runtime::ToolErrorKind::Execution,
+    };
+    xai_tool_runtime::ToolError::new(kind, failure.prompt_text()).with_details(
+        serde_json::to_value(&failure).expect("web failure envelope is JSON-serializable"),
+    )
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(untagged)]
+enum ExternalWebAccessWire {
+    Boolean(bool),
+    Mode(ExternalWebAccessModeWire),
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ExternalWebAccessModeWire {
+    Indexed,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SearchSettingsWire<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_location: Option<ApproximateLocationWire<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_context_size: Option<CodexWebSearchContextSize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filters: Option<SearchFiltersWire<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_settings:
+        Option<&'a crate::implementations::web_search::types::CodexWebSearchImageSettings>,
+    allowed_callers: [&'static str; 1],
+    external_web_access: ExternalWebAccessWire,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ApproximateLocationWire<'a> {
+    r#type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    country: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    region: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    city: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timezone: Option<&'a str>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SearchFiltersWire<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed_domains: Option<&'a [String]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked_domains: Option<&'a [String]>,
+}
 
 /// ChatGPT Codex standalone search backend.
 ///
@@ -44,6 +116,7 @@ pub(in crate::implementations::web_search) struct OpenAiCodexBackend {
     base_url: String,
     model: String,
     session_id: String,
+    settings: CodexWebSearchSettings,
     request_auth_provider: SharedApiKeyProvider,
     attribution_callback: Option<SharedAttributionCallback>,
 }
@@ -53,11 +126,13 @@ impl OpenAiCodexBackend {
         base_url: &str,
         model: &str,
         session_id: &str,
+        settings: CodexWebSearchSettings,
         request_auth_provider: SharedApiKeyProvider,
     ) -> Result<Self, xai_tool_runtime::ToolError> {
         let base_url = validate_codex_base_url(base_url)?;
         validate_body_identifier("session", session_id)?;
         validate_body_identifier("model", model)?;
+        let settings = normalize_codex_search_settings(settings)?;
         require_openai_codex_auth_provider(&request_auth_provider).map_err(codex_auth_error)?;
 
         let mut headers = HeaderMap::new();
@@ -89,6 +164,7 @@ impl OpenAiCodexBackend {
             base_url,
             model: model.to_owned(),
             session_id: session_id.to_owned(),
+            settings,
             request_auth_provider,
             attribution_callback: None,
         })
@@ -126,32 +202,33 @@ impl OpenAiCodexBackend {
         context: Option<&CodexWebSearchContext>,
     ) -> Result<BackendSearchResult, xai_tool_runtime::ToolError> {
         validate_search_commands(&commands)?;
-        let allowed_domains = validate_allowed_domains(allowed_domains)?;
-
-        let mut settings = serde_json::Map::from_iter([
-            ("allowed_callers".to_owned(), serde_json::json!(["direct"])),
-            (
-                "external_web_access".to_owned(),
-                serde_json::Value::Bool(true),
-            ),
-        ]);
-        if let Some(domains) = allowed_domains.filter(|domains| !domains.is_empty()) {
-            settings.insert(
-                "filters".to_owned(),
-                serde_json::json!({"allowed_domains": domains}),
-            );
-        }
+        let call_allowed_domains = validate_allowed_domains(allowed_domains)?;
+        let effective_allowed_domains = intersect_domain_constraints(
+            self.settings.allowed_domains.as_deref(),
+            call_allowed_domains.as_deref(),
+        )?;
+        let commands = narrow_command_domains(
+            commands,
+            effective_allowed_domains.as_deref(),
+            &self.settings.blocked_domains,
+        )?;
+        let settings = search_settings_wire(&self.settings, effective_allowed_domains.as_deref());
+        let settings = serde_json::to_value(settings)
+            .map_err(|_| execution_error("Codex web search settings could not be encoded"))?;
 
         let mut body = serde_json::Map::from_iter([
             ("id".to_owned(), serde_json::json!(self.session_id)),
             ("model".to_owned(), serde_json::json!(self.model)),
             ("commands".to_owned(), commands),
-            ("settings".to_owned(), serde_json::Value::Object(settings)),
-            ("max_output_tokens".to_owned(), serde_json::json!(8192)),
+            ("settings".to_owned(), settings),
         ]);
         let turn_metadata = if let Some(context) = context {
             let (input, metadata) = validate_codex_search_context(context)?;
             body.insert("input".to_owned(), input);
+            body.insert(
+                "max_output_tokens".to_owned(),
+                serde_json::json!(context.max_output_tokens),
+            );
             Some(metadata)
         } else if !input_text.trim().is_empty() {
             if input_text.len() > MAX_CODEX_SEARCH_USER_MESSAGE_BYTES {
@@ -167,6 +244,8 @@ impl OpenAiCodexBackend {
         } else {
             None
         };
+        body.entry("max_output_tokens".to_owned())
+            .or_insert_with(|| serde_json::json!(8_192));
 
         self.execute(serde_json::Value::Object(body), turn_metadata)
             .await
@@ -180,6 +259,11 @@ impl OpenAiCodexBackend {
         // `base_url` is sealed by the constructor, so this exact suffix is the
         // only Codex search endpoint that can receive provider credentials.
         let url = format!("{}/alpha/search", self.base_url);
+        let max_output_tokens = body
+            .get("max_output_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(8_192)
+            .min(MAX_CODEX_SEARCH_OUTPUT_TOKENS);
         let mut recovered = false;
 
         loop {
@@ -195,11 +279,13 @@ impl OpenAiCodexBackend {
                     value.clone(),
                 );
             }
-            let response = auth
-                .apply(request)
-                .send()
-                .await
-                .map_err(|_| execution_error("Codex web search request could not be sent"))?;
+            let response = auth.apply(request).send().await.map_err(|error| {
+                web_failure_error(if error.is_timeout() {
+                    WebToolErrorCode::Timeout
+                } else {
+                    WebToolErrorCode::ProviderUnavailable
+                })
+            })?;
             let status = response.status();
 
             if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -213,20 +299,30 @@ impl OpenAiCodexBackend {
                     recovered = true;
                     continue;
                 }
-                return Err(xai_tool_runtime::ToolError::unauthorized(
-                    "ChatGPT Codex rejected web search authentication".to_owned(),
-                )
-                .with_details(serde_json::json!({
-                    "tool_id": "web_search",
-                    "status": 401,
-                    (AUTH_RECOVERY_PROVIDER_DETAILS_KEY): OPENAI_CODEX_PROVIDER_ID,
-                    (AUTH_RECOVERY_EXHAUSTED_DETAILS_KEY): true,
-                })));
+                let failure = WebToolFailure::for_code(WebToolErrorCode::AuthenticationRequired);
+                return Err(
+                    xai_tool_runtime::ToolError::unauthorized(failure.prompt_text()).with_details(
+                        serde_json::json!({
+                            "code": failure.code,
+                            "retryable": failure.retryable,
+                            "advice": failure.advice,
+                            "tool_id": "web_search",
+                            "status": 401,
+                            (AUTH_RECOVERY_PROVIDER_DETAILS_KEY): OPENAI_CODEX_PROVIDER_ID,
+                            (AUTH_RECOVERY_EXHAUSTED_DETAILS_KEY): true,
+                        }),
+                    ),
+                );
             }
             if !status.is_success() {
-                return Err(execution_error(format!(
-                    "Codex web search request failed with HTTP {status}"
-                )));
+                let code = match status {
+                    reqwest::StatusCode::TOO_MANY_REQUESTS => WebToolErrorCode::RateLimited,
+                    reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE => {
+                        WebToolErrorCode::ReferenceExpired
+                    }
+                    _ => WebToolErrorCode::ProviderUnavailable,
+                };
+                return Err(web_failure_error(code));
             }
 
             let bytes = read_response_with_limit(response, MAX_CODEX_SEARCH_RESPONSE_BYTES).await?;
@@ -234,7 +330,7 @@ impl OpenAiCodexBackend {
                 .map_err(|_| execution_error("Codex web search returned an invalid response"))?;
             let projection = codex_result_projection(response.results.as_deref());
             return Ok(BackendSearchResult {
-                content: response.output,
+                content: truncate_codex_output(response.output, max_output_tokens),
                 citation_pairs: projection.citation_pairs,
                 references: projection.references,
             });
@@ -246,6 +342,233 @@ impl OpenAiCodexBackend {
             callback.record_401(ToolConsumer::WebSearch, true);
         }
     }
+}
+
+fn truncate_codex_output(output: String, max_output_tokens: u64) -> String {
+    let max_bytes_u64 = max_output_tokens.saturating_mul(MAX_CODEX_OUTPUT_BYTES_PER_TOKEN);
+    let max_bytes = usize::try_from(max_bytes_u64).unwrap_or(usize::MAX);
+    if output.len() <= max_bytes {
+        return output;
+    }
+    let content_budget = max_bytes.saturating_sub(CODEX_OUTPUT_TRUNCATION_MARKER.len());
+    let mut end = content_budget.min(output.len());
+    while end > 0 && !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = output[..end].to_owned();
+    truncated.push_str(CODEX_OUTPUT_TRUNCATION_MARKER);
+    truncated
+}
+
+fn invalid_location_error() -> xai_tool_runtime::ToolError {
+    execution_error("Codex web search location configuration is invalid")
+}
+
+fn normalize_location_text(
+    value: &mut Option<String>,
+    max_bytes: usize,
+) -> Result<(), xai_tool_runtime::ToolError> {
+    let Some(current) = value.as_mut() else {
+        return Ok(());
+    };
+    let normalized = current.trim();
+    if normalized.is_empty()
+        || normalized.len() > max_bytes
+        || normalized.chars().any(char::is_control)
+    {
+        return Err(invalid_location_error());
+    }
+    *current = normalized.to_owned();
+    Ok(())
+}
+
+fn normalize_codex_search_settings(
+    mut settings: CodexWebSearchSettings,
+) -> Result<CodexWebSearchSettings, xai_tool_runtime::ToolError> {
+    if !settings.mode.is_enabled() {
+        return Err(execution_error(
+            "Cannot construct Codex web search in disabled mode",
+        ));
+    }
+    settings.allowed_domains = settings
+        .allowed_domains
+        .take()
+        .map(|domains| {
+            if domains.is_empty() {
+                Ok(Vec::new())
+            } else {
+                validate_allowed_domains(Some(domains)).map(|domains| domains.unwrap_or_default())
+            }
+        })
+        .transpose()?;
+    settings.blocked_domains = if settings.blocked_domains.is_empty() {
+        Vec::new()
+    } else {
+        validate_allowed_domains(Some(settings.blocked_domains))?.unwrap_or_default()
+    };
+    if let Some(allowed_domains) = settings.allowed_domains.as_mut() {
+        allowed_domains.retain(|allowed| !is_domain_within_any(allowed, &settings.blocked_domains));
+    }
+    if let Some(location) = settings.user_location.as_mut() {
+        normalize_location_text(&mut location.region, 256)?;
+        normalize_location_text(&mut location.city, 256)?;
+        normalize_location_text(&mut location.country, 2)?;
+        if let Some(country) = location.country.as_mut() {
+            if country.len() != 2 || !country.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+                return Err(invalid_location_error());
+            }
+            country.make_ascii_uppercase();
+        }
+        normalize_location_text(&mut location.timezone, 128)?;
+        if let Some(timezone) = location.timezone.as_ref()
+            && (timezone.starts_with('/')
+                || timezone.ends_with('/')
+                || timezone.contains("//")
+                || timezone.contains("..")
+                || !timezone.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'+' | b'-')
+                }))
+        {
+            return Err(invalid_location_error());
+        }
+    }
+    if settings
+        .image_settings
+        .as_ref()
+        .and_then(|image| image.max_results)
+        .is_some_and(|max| max == 0 || max > MAX_CODEX_IMAGE_RESULTS)
+    {
+        return Err(execution_error(
+            "Codex web search image result limit is invalid",
+        ));
+    }
+    Ok(settings)
+}
+
+fn search_settings_wire<'a>(
+    settings: &'a CodexWebSearchSettings,
+    allowed_domains: Option<&'a [String]>,
+) -> SearchSettingsWire<'a> {
+    let user_location = settings
+        .user_location
+        .as_ref()
+        .map(|location| ApproximateLocationWire {
+            r#type: "approximate",
+            country: location.country.as_deref(),
+            region: location.region.as_deref(),
+            city: location.city.as_deref(),
+            timezone: location.timezone.as_deref(),
+        });
+    let filters = (allowed_domains.is_some() || !settings.blocked_domains.is_empty()).then_some(
+        SearchFiltersWire {
+            allowed_domains,
+            blocked_domains: (!settings.blocked_domains.is_empty())
+                .then_some(settings.blocked_domains.as_slice()),
+        },
+    );
+    SearchSettingsWire {
+        user_location,
+        search_context_size: settings.search_context_size,
+        filters,
+        image_settings: settings.image_settings.as_ref(),
+        allowed_callers: ["direct"],
+        external_web_access: match settings.mode {
+            CodexWebSearchMode::Cached => ExternalWebAccessWire::Boolean(false),
+            CodexWebSearchMode::Indexed => {
+                ExternalWebAccessWire::Mode(ExternalWebAccessModeWire::Indexed)
+            }
+            CodexWebSearchMode::Live => ExternalWebAccessWire::Boolean(true),
+            CodexWebSearchMode::Disabled => ExternalWebAccessWire::Boolean(false),
+        },
+    }
+}
+
+fn intersect_domain_constraints(
+    left: Option<&[String]>,
+    right: Option<&[String]>,
+) -> Result<Option<Vec<String>>, xai_tool_runtime::ToolError> {
+    if left.is_some_and(<[String]>::is_empty) || right.is_some_and(<[String]>::is_empty) {
+        return Err(web_failure_error(WebToolErrorCode::DomainRejected));
+    }
+    match (left, right) {
+        (None, None) => Ok(None),
+        (Some(domains), None) | (None, Some(domains)) => Ok(Some(domains.to_vec())),
+        (Some(left), Some(right)) => {
+            let mut result = Vec::new();
+            for left_domain in left {
+                for right_domain in right {
+                    let common = if domain_is_same_or_subdomain(left_domain, right_domain) {
+                        Some(left_domain)
+                    } else if domain_is_same_or_subdomain(right_domain, left_domain) {
+                        Some(right_domain)
+                    } else {
+                        None
+                    };
+                    if let Some(common) = common {
+                        if !result.contains(common) {
+                            result.push(common.clone());
+                        }
+                    }
+                }
+            }
+            if result.is_empty() {
+                return Err(web_failure_error(WebToolErrorCode::DomainRejected));
+            }
+            Ok(Some(result))
+        }
+    }
+}
+
+fn narrow_command_domains(
+    mut commands: serde_json::Value,
+    allowed_domains: Option<&[String]>,
+    blocked_domains: &[String],
+) -> Result<serde_json::Value, xai_tool_runtime::ToolError> {
+    let Some(object) = commands.as_object_mut() else {
+        return Ok(commands);
+    };
+    for key in ["search_query", "image_query"] {
+        let Some(queries) = object
+            .get_mut(key)
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            continue;
+        };
+        for query in queries {
+            let Some(query) = query.as_object_mut() else {
+                continue;
+            };
+            let Some(query_domains) = query.get("domains").cloned() else {
+                continue;
+            };
+            let query_domains = serde_json::from_value::<Vec<String>>(query_domains)
+                .map_err(|_| web_failure_error(WebToolErrorCode::DomainRejected))?;
+            let query_domains = validate_allowed_domains(Some(query_domains))?;
+            let mut effective =
+                intersect_domain_constraints(allowed_domains, query_domains.as_deref())?;
+            if let Some(domains) = effective.as_mut() {
+                domains.retain(|domain| !is_domain_within_any(domain, blocked_domains));
+                if domains.is_empty() {
+                    return Err(web_failure_error(WebToolErrorCode::DomainRejected));
+                }
+                query.insert("domains".to_owned(), serde_json::json!(&*domains));
+            }
+        }
+    }
+    Ok(commands)
+}
+
+fn is_domain_within_any(domain: &str, blocked_domains: &[String]) -> bool {
+    blocked_domains
+        .iter()
+        .any(|blocked| domain_is_same_or_subdomain(domain, blocked))
+}
+
+fn domain_is_same_or_subdomain(domain: &str, parent: &str) -> bool {
+    domain == parent
+        || domain
+            .strip_suffix(parent)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 fn codex_auth_error(_error: OpenAiCodexAuthError) -> xai_tool_runtime::ToolError {
@@ -301,23 +624,18 @@ async fn read_response_with_limit(
         .content_length()
         .is_some_and(|length| length > max_bytes as u64)
     {
-        return Err(execution_error(
-            "Codex web search response exceeded the size limit",
-        ));
+        return Err(web_failure_error(WebToolErrorCode::ResponseTooLarge));
     }
 
     let mut stream = response.bytes_stream();
     let mut body = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let chunk =
-            chunk.map_err(|_| execution_error("Codex web search response could not be read"))?;
+        let chunk = chunk.map_err(|_| web_failure_error(WebToolErrorCode::ProviderUnavailable))?;
         if chunk.len() > max_bytes.saturating_sub(body.len()) {
-            return Err(execution_error(
-                "Codex web search response exceeded the size limit",
-            ));
+            return Err(web_failure_error(WebToolErrorCode::ResponseTooLarge));
         }
         body.try_reserve_exact(chunk.len())
-            .map_err(|_| execution_error("Codex web search response could not be read"))?;
+            .map_err(|_| web_failure_error(WebToolErrorCode::ResponseTooLarge))?;
         body.extend_from_slice(&chunk);
     }
     Ok(body)
@@ -326,13 +644,21 @@ async fn read_response_with_limit(
 fn validate_codex_search_context(
     context: &CodexWebSearchContext,
 ) -> Result<(serde_json::Value, HeaderValue), xai_tool_runtime::ToolError> {
-    if context.input.is_empty() || context.input.len() > MAX_CODEX_SEARCH_INPUT_MESSAGES {
+    if !(MIN_CODEX_SEARCH_OUTPUT_TOKENS..=MAX_CODEX_SEARCH_OUTPUT_TOKENS)
+        .contains(&context.max_output_tokens)
+    {
+        return Err(web_failure_error(WebToolErrorCode::ContextBudgetExhausted));
+    }
+    if context.input.len() > MAX_CODEX_SEARCH_INPUT_MESSAGES {
         return Err(execution_error(
             "Codex web search context has an invalid message count",
         ));
     }
-    if context.input.first().map(|message| message.role) != Some(CodexWebSearchMessageRole::User)
-        || context.input.last().map(|message| message.role) != Some(CodexWebSearchMessageRole::User)
+    if !context.input.is_empty()
+        && (context.input.first().map(|message| message.role)
+            != Some(CodexWebSearchMessageRole::User)
+            || context.input.last().map(|message| message.role)
+                != Some(CodexWebSearchMessageRole::User))
     {
         return Err(execution_error(
             "Codex web search context must start and end with visible user text",
@@ -374,7 +700,7 @@ fn validate_codex_search_context(
             }],
         }));
     }
-    if !(1..=2).contains(&user_messages)
+    if user_messages > 2
         || total_bytes > MAX_CODEX_SEARCH_INPUT_BYTES
         || assistant_bytes > MAX_CODEX_SEARCH_ASSISTANT_BYTES
     {
@@ -701,6 +1027,7 @@ mod tests {
             base_url,
             "codex-search-model",
             "sentinel-session-id",
+            CodexWebSearchSettings::default(),
             provider,
         )
     }
@@ -757,6 +1084,161 @@ mod tests {
         assert!(!error.contains("sentinel-static-key"));
     }
 
+    #[test]
+    fn mode_and_full_settings_wire_projection_are_exact() {
+        use crate::implementations::web_search::types::{
+            CodexWebSearchImageSettings, CodexWebSearchLocation,
+        };
+
+        for (mode, expected) in [
+            (CodexWebSearchMode::Cached, serde_json::json!(false)),
+            (CodexWebSearchMode::Indexed, serde_json::json!("indexed")),
+            (CodexWebSearchMode::Live, serde_json::json!(true)),
+        ] {
+            let settings = CodexWebSearchSettings {
+                mode,
+                ..Default::default()
+            };
+            let wire = serde_json::to_value(search_settings_wire(&settings, None)).unwrap();
+            assert_eq!(wire["external_web_access"], expected);
+            assert_eq!(wire["allowed_callers"], serde_json::json!(["direct"]));
+            assert!(wire.get("user_location").is_none());
+            assert!(wire.get("filters").is_none());
+        }
+
+        let settings = CodexWebSearchSettings {
+            mode: CodexWebSearchMode::Live,
+            search_context_size: Some(CodexWebSearchContextSize::High),
+            allowed_domains: Some(vec!["docs.example.com".to_string()]),
+            blocked_domains: vec!["private.example.com".to_string()],
+            user_location: Some(CodexWebSearchLocation {
+                country: Some("US".to_string()),
+                region: Some("California".to_string()),
+                city: Some("San Francisco".to_string()),
+                timezone: Some("America/Los_Angeles".to_string()),
+            }),
+            image_settings: Some(CodexWebSearchImageSettings {
+                max_results: Some(4),
+                caption: Some(true),
+            }),
+        };
+        let normalized = normalize_codex_search_settings(settings).unwrap();
+        let wire = serde_json::to_value(search_settings_wire(
+            &normalized,
+            normalized.allowed_domains.as_deref(),
+        ))
+        .unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "user_location": {
+                    "type": "approximate",
+                    "country": "US",
+                    "region": "California",
+                    "city": "San Francisco",
+                    "timezone": "America/Los_Angeles"
+                },
+                "search_context_size": "high",
+                "filters": {
+                    "allowed_domains": ["docs.example.com"],
+                    "blocked_domains": ["private.example.com"]
+                },
+                "image_settings": {"max_results": 4, "caption": true},
+                "allowed_callers": ["direct"],
+                "external_web_access": true
+            })
+        );
+    }
+
+    #[test]
+    fn location_and_image_settings_are_normalized_and_validated_locally() {
+        use crate::implementations::web_search::types::{
+            CodexWebSearchImageSettings, CodexWebSearchLocation,
+        };
+
+        let normalized = normalize_codex_search_settings(CodexWebSearchSettings {
+            user_location: Some(CodexWebSearchLocation {
+                country: Some(" us ".to_owned()),
+                region: Some(" California ".to_owned()),
+                city: Some(" San Francisco ".to_owned()),
+                timezone: Some(" America/Los_Angeles ".to_owned()),
+            }),
+            image_settings: Some(CodexWebSearchImageSettings {
+                max_results: Some(50),
+                caption: Some(false),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        let location = normalized.user_location.unwrap();
+        assert_eq!(location.country.as_deref(), Some("US"));
+        assert_eq!(location.region.as_deref(), Some("California"));
+        assert_eq!(location.city.as_deref(), Some("San Francisco"));
+        assert_eq!(location.timezone.as_deref(), Some("America/Los_Angeles"));
+
+        for invalid in [
+            CodexWebSearchSettings {
+                user_location: Some(CodexWebSearchLocation {
+                    country: Some("USA".to_owned()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            CodexWebSearchSettings {
+                user_location: Some(CodexWebSearchLocation {
+                    timezone: Some("../UTC".to_owned()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            CodexWebSearchSettings {
+                user_location: Some(CodexWebSearchLocation {
+                    city: Some("   ".to_owned()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            CodexWebSearchSettings {
+                image_settings: Some(CodexWebSearchImageSettings {
+                    max_results: Some(0),
+                    caption: None,
+                }),
+                ..Default::default()
+            },
+            CodexWebSearchSettings {
+                image_settings: Some(CodexWebSearchImageSettings {
+                    max_results: Some(51),
+                    caption: None,
+                }),
+                ..Default::default()
+            },
+        ] {
+            assert!(normalize_codex_search_settings(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn domain_constraints_intersect_to_the_more_specific_domain() {
+        let left = vec!["example.com".to_string(), "rust-lang.org".to_string()];
+        let right = vec!["docs.example.com".to_string()];
+        assert_eq!(
+            intersect_domain_constraints(Some(&left), Some(&right)).unwrap(),
+            Some(vec!["docs.example.com".to_string()])
+        );
+        let disjoint = vec!["other.example".to_string()];
+        for error in [
+            intersect_domain_constraints(Some(&left), Some(&disjoint)).unwrap_err(),
+            intersect_domain_constraints(Some(&left), Some(&[])).unwrap_err(),
+        ] {
+            assert_eq!(
+                error
+                    .details
+                    .and_then(|details| details.get("code").cloned()),
+                Some(serde_json::json!("domain_rejected"))
+            );
+        }
+    }
+
     #[tokio::test]
     async fn redirects_are_terminal_and_never_receive_codex_credentials() {
         let target = MockServer::start().await;
@@ -778,7 +1260,7 @@ mod tests {
             .err()
             .expect("redirect must be terminal")
             .to_string();
-        assert!(error.contains("307"));
+        assert!(error.contains("provider_unavailable"));
 
         let source_requests = source.received_requests().await.unwrap();
         assert_eq!(source_requests.len(), 1);
@@ -814,7 +1296,7 @@ mod tests {
             .await
             .expect_err("streamed response must obey the byte cap")
             .to_string();
-        assert!(error.contains("size limit"));
+        assert!(error.contains("response_too_large"));
         server.await.unwrap();
     }
 
@@ -827,6 +1309,7 @@ mod tests {
                 CodexWebSearchMessage::user("current user"),
             ],
             turn_metadata: metadata(),
+            max_output_tokens: 8_192,
         };
         let (wire, header) =
             validate_codex_search_context(&context).expect("bounded visible context should pass");
@@ -848,6 +1331,7 @@ mod tests {
                 CodexWebSearchMessage::user("current user"),
             ],
             turn_metadata: metadata(),
+            max_output_tokens: 8_192,
         };
         assert!(validate_codex_search_context(&oversized).is_err());
 
@@ -858,6 +1342,7 @@ mod tests {
                 CodexWebSearchMessage::user("three"),
             ],
             turn_metadata: metadata(),
+            max_output_tokens: 8_192,
         };
         assert!(validate_codex_search_context(&too_many_users).is_err());
     }
@@ -932,6 +1417,7 @@ mod tests {
                 CodexWebSearchMessage::user("current user"),
             ],
             turn_metadata: metadata(),
+            max_output_tokens: 8_192,
         };
         let commands = serde_json::json!({
             "search_query": [{"q": "current release", "recency": 7}],
@@ -1096,7 +1582,7 @@ mod tests {
             .err()
             .expect("500 should fail")
             .to_string();
-        assert!(error.contains("500"));
+        assert!(error.contains("provider_unavailable"));
         assert!(!error.contains("sentinel-token-account-provider-body"));
 
         let untouched = MockServer::start().await;

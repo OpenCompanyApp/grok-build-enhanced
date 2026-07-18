@@ -3,11 +3,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, USER_AGENT};
 use url::Url;
 
-use super::cache::FetchCache;
+use super::cache::{FetchCache, FetchCacheLookup};
 use super::config::{MAX_REDIRECTS, MAX_URL_LENGTH, USER_AGENT_STRING, WebFetchParams};
 use super::error::{WebFetchError, safe_url_origin};
 use super::http::HttpClient;
@@ -19,11 +20,61 @@ use scraper::{Html, Selector};
 
 const DEFAULT_DOWNLOAD_DIR: &str = "downloads";
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WebFetchCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub revalidations: u64,
+}
+
+#[derive(Default)]
+struct WebFetchCacheCounters {
+    hits: AtomicU64,
+    misses: AtomicU64,
+    revalidations: AtomicU64,
+}
+
+impl WebFetchCacheCounters {
+    fn snapshot(&self) -> WebFetchCacheStats {
+        WebFetchCacheStats {
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            revalidations: self.revalidations.load(Ordering::Relaxed),
+        }
+    }
+
+    fn record_lookup(&self, lookup: &FetchCacheLookup) {
+        match lookup {
+            FetchCacheLookup::Hit(_) => {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+            }
+            FetchCacheLookup::Miss => {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+            }
+            FetchCacheLookup::Stale => {
+                self.revalidations.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.trace();
+    }
+
+    fn trace(&self) {
+        let stats = self.snapshot();
+        tracing::debug!(
+            cache_hits = stats.hits,
+            cache_misses = stats.misses,
+            cache_revalidations = stats.revalidations,
+            "web_fetch cache counters"
+        );
+    }
+}
+
 /// Shared HTTP client and cache for web fetching.
 #[derive(Clone)]
 pub struct WebFetchClient {
     http: HttpClient,
     cache: Arc<parking_lot::RwLock<FetchCache>>,
+    cache_counters: Arc<WebFetchCacheCounters>,
     converter: Arc<htmd::HtmlToMarkdown>,
     params: WebFetchParams,
     download_writer: SessionFileWriter,
@@ -65,6 +116,7 @@ impl WebFetchClient {
                 params.cache_ttl_secs(),
                 params.max_cache_entries(),
             ))),
+            cache_counters: Arc::new(WebFetchCacheCounters::default()),
             converter,
             params: params.clone(),
             download_writer: SessionFileWriter::new(DEFAULT_DOWNLOAD_DIR, "pdf"),
@@ -72,6 +124,12 @@ impl WebFetchClient {
             video_writer: SessionFileWriter::new("videos", "mp4"),
             overflow: OverflowHandler::new(),
         })
+    }
+
+    /// Aggregate cache counters. No key, URL, host, or response data is retained
+    /// in this telemetry projection.
+    pub fn cache_stats(&self) -> WebFetchCacheStats {
+        self.cache_counters.snapshot()
     }
 
     /// Fetch a URL and return its content as markdown.
@@ -92,20 +150,25 @@ impl WebFetchClient {
 
         let url_str = url.to_string();
 
-        // Check cache.
-        {
-            let cache = self.cache.read();
-            if let Some(cached) = cache.get(&url_str) {
-                // Never log the full URL: query strings and paths commonly
-                // contain signed credentials or other private identifiers.
-                tracing::debug!("web_fetch cache hit");
-                return Ok(cached.clone());
-            }
+        // Check cache. Only aggregate counters are logged; cache keys can
+        // contain signed URLs and never cross this boundary.
+        let cache_lookup = self.cache.write().lookup(&url_str);
+        self.cache_counters.record_lookup(&cache_lookup);
+        match cache_lookup {
+            FetchCacheLookup::Hit(output) => return Ok(output),
+            FetchCacheLookup::Miss | FetchCacheLookup::Stale => {}
         }
 
         // Make request and build output.
         let http = self.http.get_or_rebuild()?;
-        let result = match fetch_url(&http, &url, self.params.max_content_length()).await {
+        let result = match fetch_url(
+            &http,
+            &url,
+            self.params.max_content_length(),
+            self.params.allow_loopback(),
+        )
+        .await
+        {
             Ok(result) => result,
             Err(e @ WebFetchError::HttpRequest { .. }) => {
                 self.http.invalidate();
@@ -343,12 +406,14 @@ trait SsrfValidator: Send + Sync {
     async fn validate(&self, url: &Url) -> Result<(), WebFetchError>;
 }
 
-struct ProductionSsrfValidator;
+struct ProductionSsrfValidator {
+    allow_loopback: bool,
+}
 
 #[async_trait::async_trait]
 impl SsrfValidator for ProductionSsrfValidator {
     async fn validate(&self, url: &Url) -> Result<(), WebFetchError> {
-        ssrf::check_ssrf(url).await
+        ssrf::check_ssrf(url, self.allow_loopback).await
     }
 }
 
@@ -386,8 +451,15 @@ async fn fetch_url(
     client: &reqwest::Client,
     url: &Url,
     max_content_length: usize,
+    allow_loopback: bool,
 ) -> Result<FetchResult, WebFetchError> {
-    fetch_url_with_ssrf_validator(client, url, max_content_length, &ProductionSsrfValidator).await
+    fetch_url_with_ssrf_validator(
+        client,
+        url,
+        max_content_length,
+        &ProductionSsrfValidator { allow_loopback },
+    )
+    .await
 }
 
 async fn fetch_url_with_ssrf_validator(
@@ -898,6 +970,25 @@ mod tests {
                 "script", "style", "noscript", "svg", "iframe", "object", "embed",
             ])
             .build()
+    }
+
+    #[test]
+    fn cache_counters_record_only_aggregate_lookup_classes() {
+        let counters = WebFetchCacheCounters::default();
+        counters.record_lookup(&FetchCacheLookup::Miss);
+        counters.record_lookup(&FetchCacheLookup::Stale);
+        counters.record_lookup(&FetchCacheLookup::Hit(WebFetchOutput::Error {
+            url: None,
+            message: "sanitized".to_owned(),
+        }));
+        assert_eq!(
+            counters.snapshot(),
+            WebFetchCacheStats {
+                hits: 1,
+                misses: 1,
+                revalidations: 1,
+            }
+        );
     }
 
     #[test]

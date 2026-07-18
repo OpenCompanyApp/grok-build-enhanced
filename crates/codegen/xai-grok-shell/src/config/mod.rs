@@ -994,6 +994,59 @@ fn apply_requirements_inner(
     fn req_str<'a>(req: &'a toml::Value, section: &str, key: &str) -> Option<&'a str> {
         req.get(section)?.get(key)?.as_str()
     }
+    fn req_string_vec(req: &toml::Value, section: &str, key: &str) -> Option<Vec<String>> {
+        Some(
+            req.get(section)?
+                .get(key)?
+                .as_array()?
+                .iter()
+                .map(|value| value.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()?,
+        )
+    }
+    fn normalize_domain(domain: &str) -> Option<String> {
+        let domain = domain.trim().trim_end_matches('.');
+        match url::Host::parse(domain).ok()? {
+            url::Host::Domain(host) if !host.is_empty() => Some(host.to_ascii_lowercase()),
+            url::Host::Domain(_) | url::Host::Ipv4(_) | url::Host::Ipv6(_) => None,
+        }
+    }
+    fn normalize_domains(domains: Vec<String>) -> Option<Vec<String>> {
+        let mut normalized = Vec::with_capacity(domains.len());
+        for domain in domains {
+            let domain = normalize_domain(&domain)?;
+            if !normalized.contains(&domain) {
+                normalized.push(domain);
+            }
+        }
+        Some(normalized)
+    }
+    fn is_same_or_subdomain(domain: &str, parent: &str) -> bool {
+        domain == parent
+            || domain
+                .strip_suffix(parent)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    }
+    fn intersect_domains(left: &[String], right: &[String]) -> Vec<String> {
+        let mut result = Vec::new();
+        for left_domain in left {
+            for right_domain in right {
+                let common = if is_same_or_subdomain(left_domain, right_domain) {
+                    Some(left_domain)
+                } else if is_same_or_subdomain(right_domain, left_domain) {
+                    Some(right_domain)
+                } else {
+                    None
+                };
+                if let Some(common) = common
+                    && !result.contains(common)
+                {
+                    result.push(common.clone());
+                }
+            }
+        }
+        result
+    }
     let mut enforced: Vec<EnforcedField> = Vec::new();
     let mut push = |path: &'static str, value: String| {
         enforced.push(EnforcedField {
@@ -1043,6 +1096,78 @@ fn apply_requirements_inner(
             config.features.telemetry = Some(mode);
             push("features.telemetry", format!("{mode}"));
         }
+    }
+    if let Some(value) = req_str(req, "web_search", "mode") {
+        let mode = value
+            .parse::<xai_grok_tools::implementations::web_search::CodexWebSearchMode>()
+            .unwrap_or(xai_grok_tools::implementations::web_search::CodexWebSearchMode::Disabled);
+        config
+            .requirements
+            .web_search_mode
+            .pin(mode, source.clone());
+        if config.web_search.mode != mode {
+            config.web_search.mode = mode;
+            push("web_search.mode", mode.to_string());
+        }
+    }
+    if let Some(domains) = req_string_vec(req, "web_search", "allowed_domains") {
+        let normalized = normalize_domains(domains);
+        let managed = normalized.clone().unwrap_or_default();
+        config
+            .requirements
+            .web_search_allowed_domains
+            .pin(managed.clone(), source.clone());
+        config.web_search.allowed_domains = Some(
+            match (config.web_search.allowed_domains.take(), normalized) {
+                (Some(local), Some(managed)) => normalize_domains(local)
+                    .map(|local| intersect_domains(&local, &managed))
+                    .unwrap_or_default(),
+                (None, Some(managed)) => managed,
+                (_, None) => Vec::new(),
+            },
+        );
+        push(
+            "web_search.allowed_domains",
+            format!("{} managed domain constraint(s)", managed.len()),
+        );
+    }
+    if let Some(domains) = req_string_vec(req, "web_search", "blocked_domains") {
+        let normalized = normalize_domains(domains);
+        let managed = normalized.clone().unwrap_or_default();
+        config
+            .requirements
+            .web_search_blocked_domains
+            .pin(managed.clone(), source.clone());
+        let local = normalize_domains(std::mem::take(&mut config.web_search.blocked_domains));
+        match (local, normalized) {
+            (Some(mut local), Some(managed)) => {
+                for domain in managed {
+                    if !local.contains(&domain) {
+                        local.push(domain);
+                    }
+                }
+                config.web_search.blocked_domains = local;
+            }
+            _ => {
+                // An invalid policy layer cannot be safely ignored. Preserve
+                // the valid managed projection for inspection, but prevent
+                // any search request from escaping the empty allowlist.
+                config.web_search.blocked_domains = managed.clone();
+                config.web_search.allowed_domains = Some(Vec::new());
+            }
+        }
+        let blocked_domains = config.web_search.blocked_domains.clone();
+        if let Some(allowed) = config.web_search.allowed_domains.as_mut() {
+            allowed.retain(|domain| {
+                !blocked_domains
+                    .iter()
+                    .any(|blocked| is_same_or_subdomain(domain, blocked))
+            });
+        }
+        push(
+            "web_search.blocked_domains",
+            format!("{} managed blocked domain(s)", managed.len()),
+        );
     }
     macro_rules! pin_requirement_only {
         ($name:ident) => {

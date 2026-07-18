@@ -13,8 +13,9 @@ use std::sync::Arc;
 
 use agent_client_protocol as acp;
 use xai_grok_tools::types::output::{
-    ApplyPatchOutput, CodexGrepFilesOutput, ListDirOutput, MCPOutputDetails, ReadFileOutput,
-    SearchReplaceEditContextInformation, SearchReplaceEditDetail, SearchReplaceOutput, ToolOutput,
+    ApplyPatchOutput, CodexGrepFilesOutput, ExternalContentMetadata, ListDirOutput,
+    MCPOutputDetails, ReadFileOutput, SearchReplaceEditContextInformation, SearchReplaceEditDetail,
+    SearchReplaceOutput, ToolOutput, WebToolFailure,
 };
 use xai_tool_types::{KillTaskOutput, TaskOutputOutput};
 
@@ -119,6 +120,43 @@ pub fn raw_output_json(
         Some(rw) => rw.rewrite_json(value),
         None => value,
     })
+}
+
+/// Attach the typed external-content trust boundary to an ACP tool update.
+///
+/// The namespaced `_meta` entry carries only non-secret provenance. Existing
+/// MCP Apps metadata is preserved.
+pub fn attach_external_content_meta(
+    update: &mut acp::ToolCallUpdate,
+    metadata: Option<&ExternalContentMetadata>,
+) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+    let meta = update.meta.get_or_insert_with(serde_json::Map::new);
+    meta.insert(
+        "grok.externalContent".to_string(),
+        serde_json::json!({
+            "trust": "untrusted",
+            "sources": metadata.sources,
+            "derived": metadata.derived,
+        }),
+    );
+}
+
+/// Attach only the stable, sanitized web failure classification to ACP.
+pub fn attach_web_failure_meta(update: &mut acp::ToolCallUpdate, failure: Option<&WebToolFailure>) {
+    let Some(failure) = failure else {
+        return;
+    };
+    let meta = update.meta.get_or_insert_with(serde_json::Map::new);
+    meta.insert(
+        "grok.webFailure".to_string(),
+        serde_json::json!({
+            "code": failure.code,
+            "retryable": failure.retryable,
+        }),
+    );
 }
 
 /// Convert tool output to an ACP `ToolCallUpdate` for rich TUI rendering.
@@ -766,6 +804,32 @@ mod tests {
         let update = acp_tool_update(&output, "call-1", None, None).unwrap();
         assert_eq!(update.fields.status, Some(acp::ToolCallStatus::Completed));
         assert!(update.fields.content.is_some());
+    }
+
+    #[test]
+    fn external_content_meta_is_namespaced_and_preserves_existing_meta() {
+        let output = ToolOutput::WebSearch(WebSearchOutput {
+            query: "query".to_string(),
+            content: "result".to_string(),
+            citations: Vec::new(),
+            references: Vec::new(),
+            allowed_domains: None,
+            pre_formatted: None,
+        });
+        let existing = serde_json::json!({ "ui": { "resourceUri": "ui://example" } });
+        let mut update = acp_tool_update(&output, "call-web", None, Some(existing)).unwrap();
+        let metadata = ExternalContentMetadata::direct(ExternalContentSource::WebSearch);
+
+        attach_external_content_meta(&mut update, Some(&metadata));
+
+        let meta = update.meta.expect("ACP _meta");
+        assert_eq!(meta["ui"]["resourceUri"], "ui://example");
+        assert_eq!(meta["grok.externalContent"]["trust"], "untrusted");
+        assert_eq!(
+            meta["grok.externalContent"]["sources"],
+            serde_json::json!(["web_search"])
+        );
+        assert_eq!(meta["grok.externalContent"]["derived"], false);
     }
 
     #[test]

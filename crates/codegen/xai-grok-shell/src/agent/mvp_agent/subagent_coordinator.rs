@@ -483,6 +483,7 @@ impl MvpAgent {
             session_env,
             memory_config: self.memory_config.clone(),
             web_search_sampling_config: self.prepare_web_search_sampling_config(),
+            codex_web_search_settings: self.cfg.borrow().web_search.clone(),
             web_fetch_config: self.prepare_web_fetch_config(),
             image_gen_config: parent_image_gen_config,
             video_gen_config: parent_video_gen_config,

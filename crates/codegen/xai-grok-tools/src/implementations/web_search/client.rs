@@ -72,7 +72,13 @@ impl WebSearchClient {
                 base_url,
                 model,
                 session_id,
+                settings,
             } => {
+                if !settings.mode.is_enabled() {
+                    return Err(super::backends::execution_error(
+                        "Cannot create a Codex web search client in disabled mode",
+                    ));
+                }
                 let request_auth_provider = api_key_provider.ok_or_else(|| {
                     super::backends::execution_error(
                         "Cannot create a Codex web search client without provider authentication",
@@ -82,6 +88,7 @@ impl WebSearchClient {
                     base_url,
                     model,
                     session_id,
+                    settings.clone(),
                     request_auth_provider,
                 )?)
             }
@@ -206,6 +213,7 @@ mod tests {
             base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
             model: "codex-search-model".to_owned(),
             session_id: "session-present".to_owned(),
+            settings: Default::default(),
         };
         let error = WebSearchClient::new(&config, None)
             .err()
@@ -228,6 +236,7 @@ mod tests {
             base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
             model: "codex-search-model".to_owned(),
             session_id: "session-present".to_owned(),
+            settings: Default::default(),
         };
         let provider: SharedApiKeyProvider = std::sync::Arc::new(StaticKeyProvider);
         let error = WebSearchClient::new(&config, Some(provider))

@@ -45,6 +45,7 @@ fn assistant_text(text: &str) -> ConversationItem {
         model_id: None,
         model_fingerprint: None,
         reasoning_effort: None,
+        external_content: None,
     })
 }
 
@@ -59,6 +60,7 @@ fn assistant_with_tool_call(text: &str, name: &str, args: &str) -> ConversationI
         model_id: None,
         model_fingerprint: None,
         reasoning_effort: None,
+        external_content: None,
     })
 }
 
@@ -100,6 +102,7 @@ fn assistant_with_reasoning_items(
         model_id: None,
         model_fingerprint: None,
         reasoning_effort: None,
+        external_content: None,
     }));
     out
 }
@@ -150,6 +153,7 @@ fn flatten_truncates_long_fields() {
         tool_call_id: "call-1".to_string(),
         content: long.into(),
         images: vec![],
+        external_content: None,
     })];
     let out = flatten_transcript_for_classifier(&items, true);
     assert!(
@@ -219,6 +223,7 @@ fn flatten_skips_reasoning_when_encrypted_only() {
             model_id: None,
             model_fingerprint: None,
             reasoning_effort: None,
+            external_content: None,
         }),
     ];
     let out = flatten_transcript_for_classifier(&items, true);
@@ -251,6 +256,7 @@ fn flatten_skips_reasoning_when_text_is_empty() {
             model_id: None,
             model_fingerprint: None,
             reasoning_effort: None,
+            external_content: None,
         }),
     ];
     let out = flatten_transcript_for_classifier(&items, true);
@@ -556,6 +562,7 @@ fn window_assistant_text_pin_skips_empty_assistant_turns() {
         model_id: None,
         model_fingerprint: None,
         reasoning_effort: None,
+        external_content: None,
     });
     // 5 real text turns at idxs 0..5, then 10 empty turns.
     let mut items: Vec<ConversationItem> =

@@ -15,6 +15,7 @@ use xai_grok_sampling_types::{
     REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption,
     reasoning_effort_meta_value, reasoning_efforts_meta_value,
 };
+pub use xai_grok_tools::implementations::web_search::{CodexWebSearchMode, CodexWebSearchSettings};
 use xai_grok_tools::types::compat::{
     COMPAT_CELLS, CompatConfig, CompatConfigToml, CompatRemoteKey, CompatSurface, CompatVendor,
 };
@@ -610,6 +611,9 @@ pub struct Requirements {
     pub lsp_tools: Constrained<bool>,
     pub tool_search: Constrained<bool>,
     pub web_fetch: Constrained<bool>,
+    pub web_search_mode: Constrained<CodexWebSearchMode>,
+    pub web_search_allowed_domains: Constrained<Vec<String>>,
+    pub web_search_blocked_domains: Constrained<Vec<String>>,
     pub ask_user_question: Constrained<bool>,
     pub image_gen: Constrained<bool>,
     pub image_edit: Constrained<bool>,
@@ -632,6 +636,8 @@ pub struct RuntimeResolutionContext<'a> {
     /// `Some(true)` = CLI explicitly enabled, `None` = defer to config/env/remote.
     pub cli_subagents: Option<bool>,
     pub cli_web_search_model: Option<&'a str>,
+    /// CLI Codex standalone-search mode override (`--web-search-mode`/`--search`).
+    pub cli_web_search_mode: Option<CodexWebSearchMode>,
     pub cli_session_summary_model: Option<&'a str>,
     /// CLI `--experimental-memory` flag. Enables cross-session memory.
     pub cli_experimental_memory: bool,
@@ -1261,6 +1267,10 @@ pub struct PermissionKnownKeys {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub features: Features,
+    /// `[web_search]` Codex standalone-search policy. Existing xAI/custom
+    /// provider search behavior ignores these provider-scoped settings.
+    #[serde(default)]
+    pub web_search: CodexWebSearchSettings,
     /// Top-level Codex service-tier preference. `fast` is the user-facing
     /// alias for the catalog/wire tier `priority`; `default` explicitly opts
     /// out of a catalog Fast default.
@@ -1416,6 +1426,9 @@ pub struct Config {
     /// CLI `--no-memory` flag. Stored for `ConfigReloader` hot-reload re-resolution.
     #[serde(skip)]
     pub cli_no_memory: bool,
+    /// Original CLI Codex web-search mode, preserved for hot-reload re-resolution.
+    #[serde(skip)]
+    pub cli_web_search_mode: Option<CodexWebSearchMode>,
     /// Original CLI `--subagents` tri-state, preserved for re-resolution
     /// when remote settings settings are refreshed on /new.
     #[serde(skip)]
@@ -1704,6 +1717,7 @@ impl Default for Config {
         let endpoints = EndpointsConfig::default();
         let mut cfg = Self {
             features: Features::default(),
+            web_search: CodexWebSearchSettings::default(),
             service_tier: None,
             goal: GoalConfig::default(),
             doom_loop_recovery: crate::util::config::DoomLoopRecoverySettings::default(),
@@ -1777,6 +1791,7 @@ impl Default for Config {
             path_not_found_hints: false,
             cli_experimental_memory: false,
             cli_no_memory: false,
+            cli_web_search_mode: None,
             cli_subagents: None,
             memory_config: None,
             managed_mcps_enabled: true,
@@ -1961,6 +1976,14 @@ impl Config {
             ctx.remote_settings,
         );
         self.memory_config = if mem.enabled { Some(mem) } else { None };
+        self.cli_web_search_mode = ctx.cli_web_search_mode;
+        if let Some(mode) = self.requirements.web_search_mode.pinned() {
+            // Managed requirements are applied before runtime CLI resolution
+            // and cannot be weakened by a later command-line override.
+            self.web_search.mode = mode;
+        } else if let Some(mode) = ctx.cli_web_search_mode {
+            self.web_search.mode = mode;
+        }
         self.disable_web_search = self.disable_web_search || ctx.disable_web_search;
         self.todo_gate = ctx.todo_gate;
         self.laziness_debug_log = ctx.laziness_debug_log.map(std::path::Path::to_path_buf);
@@ -1999,6 +2022,7 @@ impl Config {
             is_headless: self.mode == AgentMode::Headless,
             cli_subagents: self.cli_subagents,
             cli_web_search_model: cli_web_search_model.as_deref(),
+            cli_web_search_mode: self.cli_web_search_mode,
             cli_session_summary_model: cli_session_summary_model.as_deref(),
             cli_experimental_memory: self.cli_experimental_memory,
             cli_no_memory: self.cli_no_memory,
@@ -5315,6 +5339,7 @@ reasoning_effort = "low"
                 is_headless: false,
                 cli_subagents: None,
                 cli_web_search_model: None,
+                cli_web_search_mode: None,
                 cli_session_summary_model: None,
                 cli_experimental_memory: false,
                 cli_no_memory: false,
@@ -5344,6 +5369,7 @@ reasoning_effort = "low"
                 is_headless: true,
                 cli_subagents: None,
                 cli_web_search_model: None,
+                cli_web_search_mode: None,
                 cli_session_summary_model: None,
                 cli_experimental_memory: false,
                 cli_no_memory: false,
@@ -10369,6 +10395,7 @@ hooks = true
             is_headless: false,
             cli_subagents: None,
             cli_web_search_model: None,
+            cli_web_search_mode: None,
             cli_session_summary_model: None,
             cli_experimental_memory: false,
             cli_no_memory: false,
@@ -10395,6 +10422,7 @@ hooks = true
             is_headless: false,
             cli_subagents: None,
             cli_web_search_model: None,
+            cli_web_search_mode: None,
             cli_session_summary_model: None,
             cli_experimental_memory: false,
             cli_no_memory: false,
@@ -10431,6 +10459,7 @@ hooks = true
             is_headless: true,
             cli_subagents: None,
             cli_web_search_model: None,
+            cli_web_search_mode: None,
             cli_session_summary_model: None,
             cli_experimental_memory: false,
             cli_no_memory: false,
@@ -10463,6 +10492,7 @@ hooks = true
             is_headless: false,
             cli_subagents: None,
             cli_web_search_model: None,
+            cli_web_search_mode: None,
             cli_session_summary_model: None,
             cli_experimental_memory: false,
             cli_no_memory: false,
@@ -10486,6 +10516,7 @@ hooks = true
             is_headless: false,
             cli_subagents: None,
             cli_web_search_model: None,
+            cli_web_search_mode: None,
             cli_session_summary_model: None,
             cli_experimental_memory: false,
             cli_no_memory: false,
@@ -10509,6 +10540,7 @@ hooks = true
             is_headless: false,
             cli_subagents: Some(true),
             cli_web_search_model: None,
+            cli_web_search_mode: None,
             cli_session_summary_model: None,
             cli_experimental_memory: false,
             cli_no_memory: false,
@@ -10533,6 +10565,7 @@ hooks = true
             is_headless: false,
             cli_subagents: None,
             cli_web_search_model: None,
+            cli_web_search_mode: None,
             cli_session_summary_model: None,
             cli_experimental_memory: false,
             cli_no_memory: false,
@@ -10557,6 +10590,7 @@ hooks = true
             is_headless: false,
             cli_subagents: None,
             cli_web_search_model: Some("custom-ws"),
+            cli_web_search_mode: None,
             cli_session_summary_model: Some("custom-ss"),
             cli_experimental_memory: false,
             cli_no_memory: false,
@@ -10585,6 +10619,7 @@ hooks = true
             is_headless: false,
             cli_subagents: None,
             cli_web_search_model: None,
+            cli_web_search_mode: None,
             cli_session_summary_model: None,
             cli_experimental_memory: false,
             cli_no_memory: false,
@@ -10608,6 +10643,7 @@ hooks = true
             is_headless: false,
             cli_subagents: None,
             cli_web_search_model: None,
+            cli_web_search_mode: None,
             cli_session_summary_model: None,
             cli_experimental_memory: false,
             cli_no_memory: false,

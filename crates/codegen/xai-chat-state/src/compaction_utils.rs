@@ -4,7 +4,9 @@
 //! no I/O, no actor state. They live in `xai-chat-state` so that both
 //! this crate and `xai-grok-shell` can share them without duplication.
 use std::collections::BTreeSet;
-use xai_grok_sampling_types::{ContentPart, ConversationItem, ToolResultItem};
+use xai_grok_sampling_types::{
+    ContentPart, ConversationItem, ExternalContentMetadata, ToolResultItem,
+};
 /// Drops tool results and flattens assistant `tool_calls` into
 /// `[Called tools: ...]` text annotations.
 ///
@@ -419,6 +421,7 @@ pub fn extract_messages_since_last_user(
                 tool_call_id: t.tool_call_id.clone(),
                 content: std::sync::Arc::<str>::from("Tool call omitted..."),
                 images: Vec::new(),
+                external_content: t.external_content.clone(),
             })),
             _ => None,
         })
@@ -457,6 +460,7 @@ pub fn extract_messages_since_last_real_user(
                 tool_call_id: t.tool_call_id.clone(),
                 content: std::sync::Arc::<str>::from("Tool call omitted..."),
                 images: Vec::new(),
+                external_content: t.external_content.clone(),
             })),
             _ => None,
         })
@@ -799,6 +803,11 @@ pub struct CompactedHistoryInput<'a> {
     pub state_context: &'a CompactionStateContext,
     /// The LLM-generated compaction summary text.
     pub compaction_summary: String,
+    /// Typed provenance derived from the pre-compaction conversation supplied
+    /// to the summarizer. When present, the generated summary remains inside
+    /// the untrusted external-content boundary after the original items are
+    /// replaced.
+    pub summary_external_content: Option<ExternalContentMetadata>,
     /// An optional pre-rendered `<system-reminder>` block to append after the
     /// summary. `None` means no state reminder is appended.
     pub system_reminder: Option<String>,
@@ -828,13 +837,21 @@ fn summary_before_recent_carrier(_input: &CompactedHistoryInput<'_>) -> Option<S
 pub fn build_compacted_history(input: CompactedHistoryInput<'_>) -> Vec<ConversationItem> {
     let carrier = summary_before_recent_carrier(&input);
     let summary_first = carrier.is_some();
-    let summary_item = carrier.map(ConversationItem::user_meta).unwrap_or_else(|| {
+    let mut summary_item = carrier.map(ConversationItem::user_meta).unwrap_or_else(|| {
         let mut formatted_summary = format_compact_summary_content(&input.compaction_summary);
         if let Some(ref hint) = input.transcript_hint {
             formatted_summary.push_str(hint);
         }
         ConversationItem::user_meta(formatted_summary)
     });
+    if let Some(metadata) = input.summary_external_content {
+        debug_assert!(metadata.derived);
+        let attached = summary_item.set_external_content(metadata);
+        debug_assert!(
+            attached,
+            "compaction summary must use a provenance-capable item"
+        );
+    }
     let mut compacted: Vec<ConversationItem> = vec![
         input.system_message,
         ConversationItem::user_meta(input.user_message_prefix),
@@ -2499,6 +2516,7 @@ actual user question";
             agents_md_reminder: None,
             state_context: &state_context,
             compaction_summary: "Summary: fixed login bug.".to_string(),
+            summary_external_content: None,
             system_reminder: Some(system_reminder.clone()),
             summary_before_recent: false,
             transcript_hint: None,
@@ -2568,6 +2586,7 @@ actual user question";
             agents_md_reminder: None,
             state_context: &state_context,
             compaction_summary: "Summary: user said hello.".to_string(),
+            summary_external_content: None,
             system_reminder: None,
             summary_before_recent: false,
             transcript_hint: None,
@@ -2589,6 +2608,49 @@ actual user question";
         );
         assert!(!summary.contains("<system-reminder>"));
     }
+
+    #[tokio::test]
+    async fn compacted_summary_preserves_derived_external_content_provenance() {
+        use xai_grok_sampling_types::ExternalContentSource;
+
+        let conversation = vec![
+            ConversationItem::system("sys"),
+            ConversationItem::user("research this"),
+            ConversationItem::assistant("working"),
+        ];
+        let state_context =
+            CompactionStateContext::build(&conversation, CompactionInputs::default()).await;
+        let metadata = ExternalContentMetadata {
+            sources: vec![
+                ExternalContentSource::WebSearch,
+                ExternalContentSource::WebFetch,
+            ],
+            derived: true,
+        };
+        let compacted = build_compacted_history(CompactedHistoryInput {
+            system_message: ConversationItem::system("sys"),
+            user_message_prefix: "prefix".to_string(),
+            agents_md_reminder: None,
+            state_context: &state_context,
+            compaction_summary: "Summary derived from web research.".to_string(),
+            summary_external_content: Some(metadata.clone()),
+            system_reminder: None,
+            summary_before_recent: false,
+            transcript_hint: None,
+            summary_count: 1,
+        });
+
+        assert_eq!(
+            compacted.last().unwrap().external_content(),
+            Some(&metadata)
+        );
+        assert!(
+            compacted[..compacted.len() - 1]
+                .iter()
+                .all(|item| item.external_content().is_none())
+        );
+    }
+
     #[tokio::test]
     async fn build_compacted_history_no_user_query() {
         let conversation = vec![
@@ -2604,6 +2666,7 @@ actual user question";
             agents_md_reminder: None,
             state_context: &state_context,
             compaction_summary: "Summary".to_string(),
+            summary_external_content: None,
             system_reminder: None,
             summary_before_recent: false,
             transcript_hint: None,
@@ -2627,6 +2690,7 @@ actual user question";
             agents_md_reminder: None,
             state_context: &state_context,
             compaction_summary: "Summary of work.".to_string(),
+            summary_external_content: None,
             system_reminder: None,
             summary_before_recent: false,
             transcript_hint: crate::CompactionMode::Transcript.transcript_hint(path.as_deref()),
@@ -2684,6 +2748,7 @@ actual user question";
                 model_id: Some("grok-3".to_string()),
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
             ConversationItem::tool_result(
                 "call_1",
@@ -2717,6 +2782,7 @@ actual user question";
                 model_id: Some("grok-3".to_string()),
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
             ConversationItem::tool_result("call_3", "File edited successfully."),
             ConversationItem::tool_result(
@@ -2757,6 +2823,7 @@ actual user question";
             state_context: &state_context,
             compaction_summary: "The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs has an add function. The user then asked to fix a typo in main.rs and run tests. The typo was fixed and tests passed."
                 .to_string(),
+            summary_external_content: None,
             system_reminder: Some(system_reminder),
             summary_before_recent: false,
             transcript_hint: None,
@@ -2882,6 +2949,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
             agents_md_reminder: Some(reminder.clone()),
             state_context: &state_context,
             compaction_summary: "Summary body.".to_string(),
+            summary_external_content: None,
             system_reminder: None,
             summary_before_recent: false,
             transcript_hint: None,
@@ -2922,6 +2990,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
             agents_md_reminder: None,
             state_context: &state_context,
             compaction_summary: "Summary body.".to_string(),
+            summary_external_content: None,
             system_reminder: None,
             summary_before_recent: false,
             transcript_hint: None,
@@ -2976,6 +3045,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
         ]);
         assert_eq!(result.len(), 3);
@@ -3000,6 +3070,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
         ]);
         assert_eq!(result.len(), 1, "reasoning sibling must be dropped");
@@ -3050,6 +3121,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
             ConversationItem::tool_result("tc1", "match found"),
         ]);
@@ -3093,6 +3165,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
         ]);
         assert_eq!(result.len(), 1);
@@ -3129,6 +3202,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
             ConversationItem::tool_result("tc1", "match"),
             ConversationItem::user("second turn"),
@@ -3139,6 +3213,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
             ConversationItem::tool_result("tc2", "stray"),
             ConversationItem::user("third turn"),
@@ -3148,6 +3223,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
         ]);
         assert_eq!(result.len(), 6);
@@ -3217,6 +3293,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
             ConversationItem::tool_result("tc1", "files"),
         ];

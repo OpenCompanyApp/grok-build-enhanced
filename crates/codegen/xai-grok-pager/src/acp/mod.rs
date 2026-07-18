@@ -104,6 +104,7 @@ pub struct ConnectFlags {
     pub experimental_memory: bool,
     pub no_memory: bool,
     pub disable_web_search: bool,
+    pub web_search_mode: Option<xai_grok_tools::implementations::web_search::CodexWebSearchMode>,
     /// Session-scoped `--todo-gate` override. Forces
     /// `ReminderPolicy.todo_gate.enabled = true` for this session.
     pub todo_gate: bool,
@@ -163,6 +164,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
         is_headless: false,
         cli_subagents: Some(flags.subagents),
         cli_web_search_model: None,
+        cli_web_search_mode: flags.web_search_mode,
         cli_session_summary_model: None,
         cli_experimental_memory: flags.experimental_memory,
         cli_no_memory: flags.no_memory,
@@ -392,6 +394,9 @@ fn unsupported_leader_flags(flags: &ConnectFlags) -> Vec<&'static str> {
     }
     if flags.disable_web_search {
         out.push("--disable-web-search");
+    }
+    if flags.web_search_mode.is_some() {
+        out.push("--web-search-mode/--search");
     }
     if flags.storage_mode.is_some() {
         out.push("--storage-mode");

@@ -3759,6 +3759,7 @@ impl MvpAgent {
                     inference_idle_timeout_secs,
                     model_max_retries,
                     web_search_sampling_config,
+                    self.cfg.borrow().web_search.clone(),
                     web_fetch_config,
                     image_gen_config,
                     video_gen_config,

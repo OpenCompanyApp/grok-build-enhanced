@@ -212,7 +212,8 @@ impl xai_tool_runtime::Tool for WebFetchTool {
                 read_tool_name.as_deref(),
                 execute_tool_name.as_deref(),
             )
-            .await?;
+            .await
+            .map_err(WebFetchError::into_tool_error)?;
         Ok(output)
     }
 }

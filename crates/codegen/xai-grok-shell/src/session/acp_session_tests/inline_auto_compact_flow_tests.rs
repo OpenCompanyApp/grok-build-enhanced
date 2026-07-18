@@ -89,6 +89,9 @@ async fn create_test_actor(
         mcp_strategy: McpInitStrategy::Blocking,
         chat_state_handle,
         current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        web_attempt_ledger: std::sync::Arc::new(
+            crate::session::web_attempts::WebAttemptLedger::default(),
+        ),
         pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -373,6 +376,7 @@ async fn suppressed_hard_overflow_does_not_issue_second_sampler_call() {
                     None,
                     None,
                     None,
+                    crate::session::web_browsing::BrowseRequirement::Optional,
                 ),
             )
             .await
@@ -638,6 +642,9 @@ async fn create_test_actor_with_memory(
         mcp_strategy: McpInitStrategy::Blocking,
         chat_state_handle,
         current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        web_attempt_ledger: std::sync::Arc::new(
+            crate::session::web_attempts::WebAttemptLedger::default(),
+        ),
         pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -1410,6 +1417,9 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 mcp_strategy: McpInitStrategy::Blocking,
                 chat_state_handle,
                 current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                web_attempt_ledger: std::sync::Arc::new(
+                    crate::session::web_attempts::WebAttemptLedger::default(),
+                ),
                 pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
                 )),

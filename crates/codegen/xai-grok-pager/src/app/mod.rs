@@ -538,6 +538,9 @@ pub async fn run(
         experimental_memory: args.experimental_memory,
         no_memory: args.no_memory,
         disable_web_search: args.disable_web_search,
+        web_search_mode: args.web_search_mode.map(Into::into).or(args
+            .search
+            .then_some(xai_grok_tools::implementations::web_search::CodexWebSearchMode::Live)),
         todo_gate: args.todo_gate,
         laziness_debug_log: None,
         storage_mode: args.storage_mode.clone(),

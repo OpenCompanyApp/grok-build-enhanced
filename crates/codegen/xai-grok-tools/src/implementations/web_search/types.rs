@@ -76,6 +76,9 @@ impl std::fmt::Debug for CodexWebSearchTurnMetadata {
 pub struct CodexWebSearchContext {
     pub input: Vec<CodexWebSearchMessage>,
     pub turn_metadata: CodexWebSearchTurnMetadata,
+    /// Shell-computed output ceiling. This field is hidden from the tool schema
+    /// and replaces any model-supplied reserved context before dispatch.
+    pub max_output_tokens: u64,
 }
 
 impl std::fmt::Debug for CodexWebSearchContext {
@@ -83,6 +86,116 @@ impl std::fmt::Debug for CodexWebSearchContext {
         f.debug_struct("CodexWebSearchContext")
             .finish_non_exhaustive()
     }
+}
+
+/// Provider-side external access mode for ChatGPT Codex standalone search.
+/// `Disabled` is a registration policy and is never serialized on the wire.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexWebSearchMode {
+    Disabled,
+    #[default]
+    Cached,
+    Indexed,
+    Live,
+}
+
+impl CodexWebSearchMode {
+    pub fn is_enabled(self) -> bool {
+        self != Self::Disabled
+    }
+}
+
+impl std::fmt::Display for CodexWebSearchMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Disabled => "disabled",
+            Self::Cached => "cached",
+            Self::Indexed => "indexed",
+            Self::Live => "live",
+        })
+    }
+}
+
+impl std::str::FromStr for CodexWebSearchMode {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "disabled" => Ok(Self::Disabled),
+            "cached" => Ok(Self::Cached),
+            "indexed" => Ok(Self::Indexed),
+            "live" => Ok(Self::Live),
+            _ => Err("expected disabled, cached, indexed, or live"),
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum CodexWebSearchContextSize {
+    Low,
+    Medium,
+    High,
+}
+
+/// Explicit approximate location supplied by configuration. No field is
+/// inferred from credentials, IP addresses, account metadata, or the host.
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct CodexWebSearchLocation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+}
+
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct CodexWebSearchImageSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<bool>,
+}
+
+/// Fully resolved, provider-scoped standalone-search settings.
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct CodexWebSearchSettings {
+    pub mode: CodexWebSearchMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_context_size: Option<CodexWebSearchContextSize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_domains: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_domains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_location: Option<CodexWebSearchLocation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_settings: Option<CodexWebSearchImageSettings>,
 }
 
 /// Configuration for the web search tool.
@@ -111,6 +224,8 @@ pub enum WebSearchConfig {
         base_url: String,
         model: String,
         session_id: String,
+        #[serde(default)]
+        settings: CodexWebSearchSettings,
     },
 }
 
@@ -169,10 +284,12 @@ impl WebSearchConfig {
                 base_url,
                 model,
                 session_id: _,
+                settings,
             } => Self::CodexSubscription {
                 base_url: sanitize_redacted_base_url(base_url),
                 model: model.clone(),
                 session_id: "***REDACTED***".to_owned(),
+                settings: settings.clone(),
             },
         }
     }
@@ -225,6 +342,7 @@ mod tests {
             base_url: "https://chatgpt.com/backend-api/codex".to_string(),
             model: "gpt-5.6-luna".to_string(),
             session_id: "session-public-id".to_string(),
+            settings: CodexWebSearchSettings::default(),
         };
 
         assert!(config.is_enabled());
@@ -268,6 +386,7 @@ mod tests {
             base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
             model: "codex-search-model".to_owned(),
             session_id: "sentinel-session".to_owned(),
+            settings: CodexWebSearchSettings::default(),
         };
         let redacted = config.redacted();
         assert!(matches!(
@@ -326,6 +445,7 @@ mod tests {
                 model: "sentinel-turn-model".to_owned(),
                 reasoning_effort: Some("sentinel-effort".to_owned()),
             },
+            max_output_tokens: 8_192,
         };
 
         assert_eq!(format!("{responses:?}"), "WebSearchConfig { .. }");

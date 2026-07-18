@@ -163,6 +163,27 @@ pub enum AuthProviderArg {
     #[value(name = "openai-codex", alias = "openai_codex")]
     OpenAiCodex,
 }
+
+/// ChatGPT Codex standalone-search access mode selected at launch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum WebSearchModeArg {
+    Disabled,
+    #[default]
+    Cached,
+    Indexed,
+    Live,
+}
+
+impl From<WebSearchModeArg> for xai_grok_tools::implementations::web_search::CodexWebSearchMode {
+    fn from(value: WebSearchModeArg) -> Self {
+        match value {
+            WebSearchModeArg::Disabled => Self::Disabled,
+            WebSearchModeArg::Cached => Self::Cached,
+            WebSearchModeArg::Indexed => Self::Indexed,
+            WebSearchModeArg::Live => Self::Live,
+        }
+    }
+}
 /// Arguments for the `wrap` subcommand: the command to run, then its args.
 #[derive(Debug, clap::Args, Clone)]
 pub struct WrapArgs {
@@ -644,8 +665,22 @@ pub struct PagerArgs {
     )]
     pub permission_mode_flag: Option<String>,
     /// Disable web search and web fetch tools.
-    #[arg(long = "disable-web-search")]
+    #[arg(
+        long = "disable-web-search",
+        conflicts_with_all = ["web_search_mode", "search"]
+    )]
     pub disable_web_search: bool,
+    /// ChatGPT Codex standalone-search access mode. The default is `cached`.
+    #[arg(
+        long = "web-search-mode",
+        value_enum,
+        value_name = "MODE",
+        conflicts_with = "search"
+    )]
+    pub web_search_mode: Option<WebSearchModeArg>,
+    /// Use live ChatGPT Codex standalone search (`--web-search-mode live`).
+    #[arg(long = "search", conflicts_with = "web_search_mode")]
+    pub search: bool,
     /// Append a self-verification loop to the prompt (headless only).
     #[arg(long = "check", alias = "self-verify", conflicts_with = "no_subagents")]
     pub self_verify: bool,

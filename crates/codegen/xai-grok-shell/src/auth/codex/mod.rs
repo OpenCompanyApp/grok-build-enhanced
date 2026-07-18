@@ -9,6 +9,8 @@ mod adapters;
 mod credentials;
 mod error;
 mod flow;
+#[cfg(test)]
+mod live_web_search_tests;
 mod manager;
 mod oauth;
 mod pricing;

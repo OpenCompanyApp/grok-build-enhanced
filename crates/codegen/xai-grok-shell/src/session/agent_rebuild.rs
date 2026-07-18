@@ -97,6 +97,10 @@ pub(crate) struct AgentRebuildSpec {
     /// this config and use FTS-only search.
     pub memory_embedding_config: Option<crate::config::MemoryEmbeddingConfig>,
     pub web_search_config: WebSearchConfig,
+    /// Provider-scoped Codex standalone-search policy retained even when the
+    /// current provider is xAI/custom or the Codex tool is disabled.
+    pub codex_web_search_settings:
+        xai_grok_tools::implementations::web_search::CodexWebSearchSettings,
     /// Explicit user/managed kill-switch provenance. `WebSearchConfig::Disabled`
     /// is ambiguous because it may also mean credentials were unavailable at
     /// spawn; only this flag is allowed to suppress a later entitled provider.
@@ -201,6 +205,7 @@ impl AgentRebuildSpec {
             memory_backend,
             memory_embedding_config,
             web_search_config,
+            codex_web_search_settings,
             web_search_disabled,
             web_search_provider,
             backend_search,
@@ -241,6 +246,7 @@ impl AgentRebuildSpec {
         } = self.as_ref();
         let _ = mcp_state;
         let _ = memory_embedding_config;
+        let _ = codex_web_search_settings;
         let _ = web_search_disabled;
         let _ = web_search_provider;
         #[allow(unused_variables)]
@@ -409,6 +415,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         memory_backend: None,
         memory_embedding_config: None,
         web_search_config: WebSearchConfig::default(),
+        codex_web_search_settings: Default::default(),
         web_search_disabled: false,
         web_search_provider: None,
         backend_search: false,

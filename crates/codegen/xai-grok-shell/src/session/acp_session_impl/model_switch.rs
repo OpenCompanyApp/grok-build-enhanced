@@ -301,6 +301,7 @@ async fn refresh_provider_memory_resource(
 
 fn web_search_config_for_provider(
     configured: &xai_grok_tools::implementations::web_search::WebSearchConfig,
+    codex_settings: &xai_grok_tools::implementations::web_search::CodexWebSearchSettings,
     explicitly_disabled: bool,
     configured_provider: Option<xai_grok_sampling_types::ProviderId>,
     sampling_config: &xai_grok_sampler::SamplerConfig,
@@ -313,10 +314,14 @@ fn web_search_config_for_provider(
         return WebSearchConfig::Disabled;
     }
     if sampling_config.provider.is_openai_codex() {
+        if !codex_settings.mode.is_enabled() {
+            return WebSearchConfig::Disabled;
+        }
         return WebSearchConfig::CodexSubscription {
             base_url: sampling_config.base_url.clone(),
             model: sampling_config.model.clone(),
             session_id: session_id.to_owned(),
+            settings: codex_settings.clone(),
         };
     }
 
@@ -357,6 +362,24 @@ fn web_search_config_for_provider(
         extra_headers: sampling_config.extra_headers.clone(),
         alpha_test_key: alpha_test_key.map(str::to_owned),
     }
+}
+
+fn web_fetch_params_for_provider(
+    configured: &xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig,
+    codex_settings: &xai_grok_tools::implementations::web_search::CodexWebSearchSettings,
+    provider: xai_grok_sampling_types::ProviderId,
+) -> Option<xai_grok_tools::implementations::grok_build::web_fetch::WebFetchParams> {
+    use xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig;
+
+    if provider.is_openai_codex()
+        && !codex_settings.mode.is_enabled()
+        && matches!(configured, WebFetchConfig::CodexDefault { .. })
+    {
+        return None;
+    }
+    configured
+        .params_for_codex_subscription(provider.is_openai_codex())
+        .cloned()
 }
 
 async fn web_search_tool_name(bridge: &crate::tools::bridge::ToolBridge) -> String {
@@ -645,6 +668,7 @@ impl SessionActor {
         let bridge = self.agent.borrow().tool_bridge().clone();
         let mut web_search_config = web_search_config_for_provider(
             &self.rebuild_spec.web_search_config,
+            &self.rebuild_spec.codex_web_search_settings,
             self.rebuild_spec.web_search_disabled,
             self.rebuild_spec.web_search_provider,
             sampling_config,
@@ -706,11 +730,11 @@ impl SessionActor {
             bridge.remove_resource::<WebSearchClient>().await;
         }
 
-        let fetch_params: Option<WebFetchParams> = self
-            .rebuild_spec
-            .web_fetch_config
-            .params_for_codex_subscription(sampling_config.provider.is_openai_codex())
-            .cloned();
+        let fetch_params: Option<WebFetchParams> = web_fetch_params_for_provider(
+            &self.rebuild_spec.web_fetch_config,
+            &self.rebuild_spec.codex_web_search_settings,
+            sampling_config.provider,
+        );
         self.permissions.set_web_fetch_allowed_domains(
             fetch_params
                 .as_ref()
@@ -1063,7 +1087,10 @@ mod provider_media_switch_tests {
     use super::*;
     use xai_grok_tools::implementations::grok_build::image_gen::{ImageGenClient, ImageGenConfig};
     use xai_grok_tools::implementations::grok_build::video_gen::{VideoGenClient, VideoGenConfig};
-    use xai_grok_tools::implementations::web_search::WebSearchConfig;
+    use xai_grok_tools::implementations::grok_build::web_fetch::{WebFetchConfig, WebFetchParams};
+    use xai_grok_tools::implementations::web_search::{
+        CodexWebSearchMode, CodexWebSearchSettings, WebSearchConfig,
+    };
 
     fn enabled_xai_web_search_config() -> WebSearchConfig {
         WebSearchConfig::Enabled {
@@ -1082,6 +1109,7 @@ mod provider_media_switch_tests {
         let sampling = xai_grok_sampler::SamplerConfig::openai_codex("gpt-5.6-luna");
         let config = web_search_config_for_provider(
             &enabled_xai_web_search_config(),
+            &Default::default(),
             false,
             Some(xai_grok_sampling_types::ProviderId::Xai),
             &sampling,
@@ -1094,6 +1122,7 @@ mod provider_media_switch_tests {
                 ref base_url,
                 ref model,
                 ref session_id,
+                ..
             } if base_url == xai_grok_sampling_types::OPENAI_CODEX_BASE_URL
                 && model == "gpt-5.6-luna"
                 && session_id == "session-public-id"
@@ -1105,6 +1134,7 @@ mod provider_media_switch_tests {
         let sampling = xai_grok_sampler::SamplerConfig::openai_codex("gpt-5.6-luna");
         let config = web_search_config_for_provider(
             &WebSearchConfig::Disabled,
+            &Default::default(),
             false,
             None,
             &sampling,
@@ -1124,6 +1154,7 @@ mod provider_media_switch_tests {
         assert!(matches!(
             web_search_config_for_provider(
                 &enabled_xai_web_search_config(),
+                &Default::default(),
                 true,
                 Some(xai_grok_sampling_types::ProviderId::Xai),
                 &sampling,
@@ -1132,6 +1163,92 @@ mod provider_media_switch_tests {
             ),
             WebSearchConfig::Disabled
         ));
+    }
+
+    #[test]
+    fn codex_disabled_search_does_not_survive_switches_in_either_direction() {
+        let disabled = CodexWebSearchSettings {
+            mode: CodexWebSearchMode::Disabled,
+            ..Default::default()
+        };
+        let codex = xai_grok_sampler::SamplerConfig::openai_codex("gpt-5.6-luna");
+        assert!(matches!(
+            web_search_config_for_provider(
+                &enabled_xai_web_search_config(),
+                &disabled,
+                false,
+                Some(xai_grok_sampling_types::ProviderId::Xai),
+                &codex,
+                "session-public-id",
+                None,
+            ),
+            WebSearchConfig::Disabled
+        ));
+
+        let mut xai = xai_grok_sampler::SamplerConfig::default();
+        xai.provider = xai_grok_sampling_types::ProviderId::Xai;
+        xai.api_key = Some("rotated-xai-key".to_owned());
+        assert!(matches!(
+            web_search_config_for_provider(
+                &enabled_xai_web_search_config(),
+                &disabled,
+                false,
+                Some(xai_grok_sampling_types::ProviderId::Xai),
+                &xai,
+                "session-public-id",
+                None,
+            ),
+            WebSearchConfig::Enabled { .. }
+        ));
+    }
+
+    #[test]
+    fn implicit_fetch_tracks_codex_mode_but_explicit_fetch_survives_switches() {
+        let implicit = WebFetchConfig::CodexDefault {
+            params: WebFetchParams::default(),
+        };
+        let explicit = WebFetchConfig::Enabled {
+            params: WebFetchParams::default(),
+        };
+        let cached = CodexWebSearchSettings::default();
+        let disabled = CodexWebSearchSettings {
+            mode: CodexWebSearchMode::Disabled,
+            ..Default::default()
+        };
+
+        assert!(
+            web_fetch_params_for_provider(
+                &implicit,
+                &cached,
+                xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            )
+            .is_some()
+        );
+        assert!(
+            web_fetch_params_for_provider(
+                &implicit,
+                &disabled,
+                xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            )
+            .is_none()
+        );
+        assert!(
+            web_fetch_params_for_provider(
+                &implicit,
+                &cached,
+                xai_grok_sampling_types::ProviderId::Xai,
+            )
+            .is_none()
+        );
+        for provider in [
+            xai_grok_sampling_types::ProviderId::Xai,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+        ] {
+            assert!(
+                web_fetch_params_for_provider(&explicit, &disabled, provider).is_some(),
+                "explicit provider-independent fetch must survive {provider:?}"
+            );
+        }
     }
 
     #[test]
@@ -1147,6 +1264,7 @@ mod provider_media_switch_tests {
 
         let config = web_search_config_for_provider(
             &enabled_xai_web_search_config(),
+            &Default::default(),
             false,
             Some(xai_grok_sampling_types::ProviderId::Xai),
             &sampling,
@@ -1184,6 +1302,7 @@ mod provider_media_switch_tests {
 
         let config = web_search_config_for_provider(
             &enabled_xai_web_search_config(),
+            &Default::default(),
             false,
             Some(xai_grok_sampling_types::ProviderId::Xai),
             &sampling,

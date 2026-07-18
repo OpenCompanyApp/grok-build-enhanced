@@ -125,12 +125,147 @@ impl MediaGenOutput {
 use crate::implementations::grok_build::todo::{TodoItem, TodoState};
 use crate::implementations::skills::skill::SkillOutput;
 use crate::util::truncate::{DEFAULT_SOFT_WRAP_WIDTH, soft_wrap_lines};
+/// Stable, non-sensitive failure categories shared by native web tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WebToolErrorCode {
+    DomainRejected,
+    SsrfBlocked,
+    CrossHostRedirect,
+    UnsupportedContent,
+    ProviderUnavailable,
+    ReferenceExpired,
+    AuthenticationRequired,
+    ResponseTooLarge,
+    Timeout,
+    RateLimited,
+    ContextBudgetExhausted,
+    RequiredBrowsingNotInvoked,
+    RepeatedFailure,
+}
+
+/// Sanitized web failure envelope. It deliberately contains no URL, host,
+/// query, provider body, credential state, or account identifier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WebToolFailure {
+    pub code: WebToolErrorCode,
+    pub retryable: bool,
+    pub advice: String,
+}
+
+impl WebToolFailure {
+    pub fn for_code(code: WebToolErrorCode) -> Self {
+        let (retryable, advice) = match code {
+            WebToolErrorCode::DomainRejected => (
+                false,
+                "Narrow the request to an allowed domain or use an explicit search/open operation when policy permits.",
+            ),
+            WebToolErrorCode::SsrfBlocked => (
+                false,
+                "Use a public HTTP(S) destination or an explicitly allowed local-development configuration.",
+            ),
+            WebToolErrorCode::CrossHostRedirect => (
+                false,
+                "Review the redirect target and make a new explicit request if policy permits it.",
+            ),
+            WebToolErrorCode::UnsupportedContent => (
+                false,
+                "Use a supported textual page or a specialized file-reading tool.",
+            ),
+            WebToolErrorCode::ProviderUnavailable => (
+                true,
+                "Retry later or use another explicitly configured browsing provider.",
+            ),
+            WebToolErrorCode::ReferenceExpired => (
+                false,
+                "Repeat the search to obtain a fresh reference, then retry the operation.",
+            ),
+            WebToolErrorCode::AuthenticationRequired => (
+                false,
+                "Authenticate the selected browsing provider and retry.",
+            ),
+            WebToolErrorCode::ResponseTooLarge => {
+                (false, "Narrow the request or request a shorter response.")
+            }
+            WebToolErrorCode::Timeout => (true, "Retry once or narrow the request."),
+            WebToolErrorCode::RateLimited => (
+                true,
+                "Wait for the provider limit to reset, then retry once.",
+            ),
+            WebToolErrorCode::ContextBudgetExhausted => (
+                false,
+                "Compact the conversation, narrow the request, or request a shorter response.",
+            ),
+            WebToolErrorCode::RequiredBrowsingNotInvoked => (
+                false,
+                "Retry the request after enabling or explicitly invoking web_search/web_fetch.",
+            ),
+            WebToolErrorCode::RepeatedFailure => {
+                (false, "Change the request or wait before retrying again.")
+            }
+        };
+        Self {
+            code,
+            retryable,
+            advice: advice.to_string(),
+        }
+    }
+
+    pub fn prompt_text(&self) -> String {
+        serde_json::json!({ "web_failure": self }).to_string()
+    }
+}
+
+/// Non-secret provenance for content that originated outside the trusted
+/// conversation boundary. This metadata never stores URLs, queries, payloads,
+/// account identifiers, or provider state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalContentSource {
+    WebSearch,
+    WebFetch,
+    HostedWebSearch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalContentMetadata {
+    pub sources: Vec<ExternalContentSource>,
+    #[serde(default)]
+    pub derived: bool,
+}
+
+impl ExternalContentMetadata {
+    pub fn direct(source: ExternalContentSource) -> Self {
+        Self {
+            sources: vec![source],
+            derived: false,
+        }
+    }
+
+    pub fn derived_from<'a>(
+        metadata: impl IntoIterator<Item = &'a ExternalContentMetadata>,
+    ) -> Option<Self> {
+        let mut sources = Vec::new();
+        for item in metadata {
+            for source in item.sources.iter().copied() {
+                if !sources.contains(&source) {
+                    sources.push(source);
+                }
+            }
+        }
+        (!sources.is_empty()).then_some(Self {
+            sources,
+            derived: true,
+        })
+    }
+}
+
 /// Result of running a tool through the ToolRunner pipeline.
 ///
 /// This is the **single return type** from `ToolRunner::run()`. It carries:
 /// 1. Clean `output` — never mutated by layers; for JSON serialization, protocol translation.
 /// 2. `prompt_text` — rendered with system reminders appended; for model prompt.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolRunResult {
     /// Clean tool output — never mutated by layers.
     /// Consumers use this for: JSON serialization, protocol translation, hunk tracking.
@@ -142,6 +277,9 @@ pub struct ToolRunResult {
     /// `use_tool` → `linear__save_issue`), this carries the effective tool name.
     /// `None` means the requested tool and executed tool are the same.
     pub effective_tool_name: Option<String>,
+    /// Typed trust boundary for model-visible content returned by web tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_content: Option<ExternalContentMetadata>,
 }
 impl ToolRunResult {
     /// Like [`TypedToolOutput::from_value`], but reattaches `chat_completion_output` from `output`.
@@ -581,31 +719,28 @@ pub enum WebFetchOutput {
     },
 }
 impl WebFetchOutput {
+    pub fn failure(&self) -> Option<WebToolFailure> {
+        match self {
+            Self::Content(_) => None,
+            Self::DomainNotAllowed(_) => {
+                Some(WebToolFailure::for_code(WebToolErrorCode::DomainRejected))
+            }
+            Self::CrossHostRedirect { .. } => Some(WebToolFailure::for_code(
+                WebToolErrorCode::CrossHostRedirect,
+            )),
+            Self::Error { .. } => Some(WebToolFailure::for_code(
+                WebToolErrorCode::ProviderUnavailable,
+            )),
+        }
+    }
+
     pub fn to_prompt_format(&self) -> String {
         match self {
             Self::Content(c) => c.content.clone(),
-            Self::DomainNotAllowed(domain) => {
-                format!(
-                    "Error: domain {} is not in the allowed domains list",
-                    domain
-                )
-            }
-            Self::CrossHostRedirect {
-                original_host,
-                redirect_url,
-            } => {
-                format!(
-                    "Error: cross-host redirect from {} to {}. Make a new web_fetch call with the redirect URL if needed.",
-                    original_host, redirect_url
-                )
-            }
-            Self::Error {
-                url: Some(url),
-                message,
-            } => {
-                format!("Error fetching URL {url}: {message}")
-            }
-            Self::Error { url: None, message } => format!("Error: {message}"),
+            Self::DomainNotAllowed(_) | Self::CrossHostRedirect { .. } | Self::Error { .. } => self
+                .failure()
+                .expect("web fetch error variants have a failure envelope")
+                .prompt_text(),
         }
     }
 }
@@ -711,6 +846,15 @@ impl ToolOutput {
             _ => false,
         }
     }
+
+    /// Return a sanitized stable web failure for typed partial-output errors.
+    pub fn web_failure(&self) -> Option<WebToolFailure> {
+        match self {
+            ToolOutput::WebFetch(output) => output.failure(),
+            _ => None,
+        }
+    }
+
     /// Render tool output for inclusion in the model prompt with specified format.
     pub fn to_prompt_format(&self) -> String {
         match self {
@@ -2474,6 +2618,7 @@ mod tests {
         ToolRunResult {
             prompt_text: "prompt".into(),
             effective_tool_name: None,
+            external_content: None,
             output,
         }
     }

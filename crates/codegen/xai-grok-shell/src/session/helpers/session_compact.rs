@@ -1273,6 +1273,7 @@ mod compacted_history_shape_tests {
             agents_md_reminder: None,
             state_context,
             compaction_summary: compaction_summary.to_string(),
+            summary_external_content: None,
             system_reminder,
             summary_before_recent: false,
             transcript_hint: None,
@@ -1301,6 +1302,7 @@ mod compacted_history_shape_tests {
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
             ConversationItem::tool_result("tc1", "fn login() { /* buggy code */ }"),
             ConversationItem::Assistant(AssistantItem {
@@ -1312,6 +1314,7 @@ mod compacted_history_shape_tests {
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
             ConversationItem::tool_result("tc2", "Successfully replaced text."),
         ];
@@ -1477,6 +1480,7 @@ mod compacted_history_shape_tests {
                 model_id: None,
                 model_fingerprint: None,
                 reasoning_effort: None,
+                external_content: None,
             }),
             ConversationItem::tool_result("tc1", "fn login() { /* ... */ }"),
         ];

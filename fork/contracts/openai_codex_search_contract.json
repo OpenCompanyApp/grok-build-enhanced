@@ -1,0 +1,348 @@
+{
+  "schema_version": 1,
+  "source": {
+    "project": "OpenAI Codex",
+    "repository": "https://github.com/openai/codex.git",
+    "commit": "315195492c80fdade38e917c18f9584efd599304",
+    "files": [
+      "codex-rs/codex-api/src/search.rs",
+      "codex-rs/codex-api/src/endpoint/search.rs",
+      "codex-rs/ext/web-search/src/extension.rs"
+    ]
+  },
+  "endpoint": {
+    "method": "POST",
+    "path": "alpha/search"
+  },
+  "request": {
+    "required": [
+      "id",
+      "model"
+    ],
+    "optional": [
+      "reasoning",
+      "input",
+      "commands",
+      "settings",
+      "max_output_tokens"
+    ],
+    "types": {
+      "id": "string",
+      "model": "string",
+      "reasoning": "Reasoning",
+      "input": "SearchInput",
+      "commands": "SearchCommands",
+      "settings": "SearchSettings",
+      "max_output_tokens": "u64"
+    },
+    "input_wire_types": [
+      "string",
+      "array<ResponseItem>"
+    ]
+  },
+  "response": {
+    "required": [
+      "output"
+    ],
+    "optional": [
+      "encrypted_output",
+      "results"
+    ],
+    "types": {
+      "encrypted_output": "string",
+      "output": "string",
+      "results": "array<JsonValue>"
+    }
+  },
+  "commands": {
+    "search_query": {
+      "wire_type": "array<SearchQuery>",
+      "required": [
+        "q"
+      ],
+      "optional": [
+        "recency",
+        "domains"
+      ],
+      "types": {
+        "q": "string",
+        "recency": "u64",
+        "domains": "array<string>"
+      }
+    },
+    "image_query": {
+      "wire_type": "array<SearchQuery>",
+      "required": [
+        "q"
+      ],
+      "optional": [
+        "recency",
+        "domains"
+      ],
+      "types": {
+        "q": "string",
+        "recency": "u64",
+        "domains": "array<string>"
+      }
+    },
+    "open": {
+      "wire_type": "array<OpenOperation>",
+      "required": [
+        "ref_id"
+      ],
+      "optional": [
+        "lineno"
+      ],
+      "types": {
+        "ref_id": "string",
+        "lineno": "u64"
+      }
+    },
+    "click": {
+      "wire_type": "array<ClickOperation>",
+      "required": [
+        "ref_id",
+        "id"
+      ],
+      "optional": [],
+      "types": {
+        "ref_id": "string",
+        "id": "u64"
+      }
+    },
+    "find": {
+      "wire_type": "array<FindOperation>",
+      "required": [
+        "ref_id",
+        "pattern"
+      ],
+      "optional": [],
+      "types": {
+        "ref_id": "string",
+        "pattern": "string"
+      }
+    },
+    "screenshot": {
+      "wire_type": "array<ScreenshotOperation>",
+      "required": [
+        "ref_id",
+        "pageno"
+      ],
+      "optional": [],
+      "types": {
+        "ref_id": "string",
+        "pageno": "u64"
+      }
+    },
+    "finance": {
+      "wire_type": "array<FinanceOperation>",
+      "required": [
+        "ticker",
+        "type"
+      ],
+      "optional": [
+        "market"
+      ],
+      "types": {
+        "ticker": "string",
+        "type": "FinanceAssetType",
+        "market": "string"
+      }
+    },
+    "weather": {
+      "wire_type": "array<WeatherOperation>",
+      "required": [
+        "location"
+      ],
+      "optional": [
+        "start",
+        "duration"
+      ],
+      "types": {
+        "location": "string",
+        "start": "string",
+        "duration": "u64"
+      }
+    },
+    "sports": {
+      "wire_type": "array<SportsOperation>",
+      "required": [
+        "fn",
+        "league"
+      ],
+      "optional": [
+        "tool",
+        "team",
+        "opponent",
+        "date_from",
+        "date_to",
+        "num_games",
+        "locale"
+      ],
+      "types": {
+        "tool": "SportsToolName",
+        "fn": "SportsFunction",
+        "league": "SportsLeague",
+        "team": "string",
+        "opponent": "string",
+        "date_from": "string",
+        "date_to": "string",
+        "num_games": "u64",
+        "locale": "string"
+      }
+    },
+    "time": {
+      "wire_type": "array<TimeOperation>",
+      "required": [
+        "utc_offset"
+      ],
+      "optional": [],
+      "types": {
+        "utc_offset": "string"
+      }
+    },
+    "response_length": {
+      "wire_type": "SearchResponseLength",
+      "required": [],
+      "optional": [],
+      "types": {}
+    }
+  },
+  "settings": {
+    "required": [],
+    "optional": [
+      "user_location",
+      "search_context_size",
+      "filters",
+      "image_settings",
+      "allowed_callers",
+      "external_web_access"
+    ],
+    "types": {
+      "user_location": "ApproximateLocation",
+      "search_context_size": "SearchContextSize",
+      "filters": "SearchFilters",
+      "image_settings": "SearchImageSettings",
+      "allowed_callers": "array<AllowedCaller>",
+      "external_web_access": "ExternalWebAccess"
+    },
+    "objects": {
+      "user_location": {
+        "required": [
+          "type"
+        ],
+        "optional": [
+          "country",
+          "region",
+          "city",
+          "timezone"
+        ],
+        "types": {
+          "type": "LocationType",
+          "country": "string",
+          "region": "string",
+          "city": "string",
+          "timezone": "string"
+        }
+      },
+      "filters": {
+        "required": [],
+        "optional": [
+          "allowed_domains",
+          "blocked_domains"
+        ],
+        "types": {
+          "allowed_domains": "array<string>",
+          "blocked_domains": "array<string>"
+        }
+      },
+      "image_settings": {
+        "required": [],
+        "optional": [
+          "max_results",
+          "caption"
+        ],
+        "types": {
+          "max_results": "u64",
+          "caption": "boolean"
+        }
+      }
+    }
+  },
+  "enums": {
+    "FinanceAssetType": [
+      "equity",
+      "fund",
+      "crypto",
+      "index"
+    ],
+    "SportsToolName": [
+      "sports"
+    ],
+    "SportsFunction": [
+      "schedule",
+      "standings"
+    ],
+    "SportsLeague": [
+      "nba",
+      "wnba",
+      "nfl",
+      "nhl",
+      "mlb",
+      "epl",
+      "ncaamb",
+      "ncaawb",
+      "ipl"
+    ],
+    "SearchResponseLength": [
+      "short",
+      "medium",
+      "long"
+    ],
+    "ExternalWebAccessMode": [
+      "cached",
+      "indexed",
+      "live"
+    ],
+    "LocationType": [
+      "approximate"
+    ],
+    "SearchContextSize": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "AllowedCaller": [
+      "direct",
+      "shell",
+      "code_interpreter"
+    ]
+  },
+  "wire_unions": {
+    "ExternalWebAccess": [
+      "boolean",
+      "ExternalWebAccessMode"
+    ]
+  },
+  "mode_projection": {
+    "disabled": false,
+    "cached": false,
+    "indexed": "indexed",
+    "live": true
+  },
+  "security_defaults": {
+    "allowed_callers": [
+      "direct"
+    ],
+    "location_type": "approximate"
+  },
+  "numeric_bounds": {
+    "u64_min": 0,
+    "u64_max": 18446744073709551615
+  },
+  "adapter_limits": {
+    "max_output_tokens": 16384,
+    "min_useful_output_tokens": 1024,
+    "max_image_results": 50
+  }
+}

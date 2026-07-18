@@ -14,15 +14,22 @@ use super::error::WebFetchError;
 /// Returns `true` if an IP address is in a private, link-local, or cloud
 /// metadata range that should be blocked to prevent SSRF attacks.
 ///
-/// **Allowed:** loopback (`127.x` / `::1`) for local development.
-/// **Blocked:** RFC 1918, link-local, CGNAT/cloud metadata, unspecified.
+/// **Blocked by default:** loopback, RFC 1918, link-local, CGNAT/cloud
+/// metadata, and unspecified addresses. Loopback can be enabled only through
+/// the explicit local-development option passed to [`check_ssrf`].
+#[cfg(test)]
 pub(crate) fn is_blocked_ip(ip: &IpAddr) -> bool {
+    is_blocked_ip_with_loopback(ip, false)
+}
+
+fn is_blocked_ip_with_loopback(ip: &IpAddr, allow_loopback: bool) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             let octets = v4.octets();
-            // Loopback (127.0.0.0/8) — allowed for local dev servers.
+            // Loopback (127.0.0.0/8) — blocked unless explicitly enabled
+            // for local development.
             if octets[0] == 127 {
-                return false;
+                return !allow_loopback;
             }
             // RFC 1918: 10.0.0.0/8 — private network.
             if octets[0] == 10 {
@@ -53,9 +60,9 @@ pub(crate) fn is_blocked_ip(ip: &IpAddr) -> bool {
             false
         }
         IpAddr::V6(v6) => {
-            // ::1 — loopback, allowed for local dev.
+            // ::1 — blocked unless explicitly enabled for local development.
             if v6.is_loopback() {
-                return false;
+                return !allow_loopback;
             }
             // :: — unspecified.
             if v6.is_unspecified() {
@@ -63,7 +70,7 @@ pub(crate) fn is_blocked_ip(ip: &IpAddr) -> bool {
             }
             // IPv4-mapped IPv6 (::ffff:x.x.x.x) — delegate to v4 checks.
             if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_blocked_ip(&IpAddr::V4(v4));
+                return is_blocked_ip_with_loopback(&IpAddr::V4(v4), allow_loopback);
             }
             let segments = v6.segments();
             // RFC 4291: fe80::/10 — link-local unicast.
@@ -81,7 +88,7 @@ pub(crate) fn is_blocked_ip(ip: &IpAddr) -> bool {
 
 /// Resolve hostname via DNS and verify none of the resolved addresses are
 /// in blocked private/link-local ranges.
-pub(crate) async fn check_ssrf(url: &Url) -> Result<(), WebFetchError> {
+pub(crate) async fn check_ssrf(url: &Url, allow_loopback: bool) -> Result<(), WebFetchError> {
     let host = url
         .host_str()
         .ok_or_else(|| WebFetchError::SingleLabelHost {
@@ -90,7 +97,7 @@ pub(crate) async fn check_ssrf(url: &Url) -> Result<(), WebFetchError> {
 
     // If the host is already a literal IP, check it directly.
     if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_blocked_ip(&ip) {
+        if is_blocked_ip_with_loopback(&ip, allow_loopback) {
             return Err(WebFetchError::SsrfBlocked {
                 host: host.to_string(),
                 ip,
@@ -116,7 +123,7 @@ pub(crate) async fn check_ssrf(url: &Url) -> Result<(), WebFetchError> {
 
     addrs
         .iter()
-        .find(|addr| is_blocked_ip(&addr.ip()))
+        .find(|addr| is_blocked_ip_with_loopback(&addr.ip(), allow_loopback))
         .map_or(Ok(()), |addr| {
             Err(WebFetchError::SsrfBlocked {
                 host: host.to_string(),
@@ -172,10 +179,12 @@ mod tests {
     }
 
     #[test]
-    fn allows_loopback() {
-        assert!(!is_blocked_ip(&"127.0.0.1".parse().unwrap()));
-        assert!(!is_blocked_ip(&"127.0.0.2".parse().unwrap()));
-        assert!(!is_blocked_ip(&"::1".parse().unwrap()));
+    fn blocks_loopback_by_default_and_allows_explicit_local_opt_in() {
+        for ip in ["127.0.0.1", "127.0.0.2", "::1"] {
+            let ip = ip.parse().unwrap();
+            assert!(is_blocked_ip(&ip));
+            assert!(!is_blocked_ip_with_loopback(&ip, true));
+        }
     }
 
     #[test]
@@ -216,7 +225,7 @@ mod tests {
     #[tokio::test]
     async fn ssrf_blocks_ip_literal_private() {
         let url = Url::parse("https://10.0.0.1/secret").unwrap();
-        let result = check_ssrf(&url).await;
+        let result = check_ssrf(&url, false).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("private"));
     }
@@ -224,7 +233,7 @@ mod tests {
     #[tokio::test]
     async fn ssrf_allows_ip_literal_public() {
         let url = Url::parse("https://1.1.1.1/").unwrap();
-        let result = check_ssrf(&url).await;
+        let result = check_ssrf(&url, false).await;
         assert!(result.is_ok());
     }
 }

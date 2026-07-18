@@ -1619,6 +1619,19 @@ impl FinalizedToolset {
         } else {
             Vec::new()
         };
+        let external_content = match &output {
+            ToolOutput::WebSearch(_) => {
+                Some(crate::types::output::ExternalContentMetadata::direct(
+                    crate::types::output::ExternalContentSource::WebSearch,
+                ))
+            }
+            ToolOutput::WebFetch(crate::types::output::WebFetchOutput::Content(_)) => {
+                Some(crate::types::output::ExternalContentMetadata::direct(
+                    crate::types::output::ExternalContentSource::WebFetch,
+                ))
+            }
+            _ => None,
+        };
         let prompt_text = output.to_prompt_format();
         let prompt_text = crate::reminders::format_with_reminders(
             prompt_text,
@@ -1633,6 +1646,7 @@ impl FinalizedToolset {
             output,
             prompt_text,
             effective_tool_name,
+            external_content,
         })
     }
     /// Reverse-remap client-facing param names to canonical names.

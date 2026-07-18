@@ -977,6 +977,15 @@ impl SessionActor {
         } else {
             Vec::new()
         };
+        // The summary may synthesize any model-visible item in the supplied
+        // pre-compaction transcript. Carry only typed, non-secret provenance;
+        // never infer trust from rendered text.
+        let summary_external_content =
+            xai_grok_sampling_types::ExternalContentMetadata::derived_from(
+                full_conversation
+                    .iter()
+                    .filter_map(ConversationItem::external_content),
+            );
         const SUMMARY_BUDGET_RESERVE_TOKENS: u64 = 32_768;
         let verbatim_input_enabled = self.compaction.verbatim_input;
         let simplified_messages = if verbatim_input_enabled {
@@ -1622,6 +1631,7 @@ impl SessionActor {
             agents_md_reminder: agents_md_reminder.clone(),
             state_context: compaction_state_context,
             compaction_summary: generate_session_compact.clone(),
+            summary_external_content: summary_external_content.clone(),
             system_reminder: system_reminder.clone(),
             summary_before_recent: use_short_prompt,
             transcript_hint: transcript_hint.clone(),
@@ -1655,6 +1665,7 @@ impl SessionActor {
                 agents_md_reminder,
                 state_context: &state_context.for_compaction(),
                 compaction_summary: generate_session_compact,
+                summary_external_content,
                 system_reminder,
                 summary_before_recent: use_short_prompt,
                 transcript_hint,
@@ -2362,6 +2373,9 @@ mod inline_auto_compact_flow_tests {
             mcp_strategy: McpInitStrategy::Blocking,
             chat_state_handle,
             current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            web_attempt_ledger: std::sync::Arc::new(
+                crate::session::web_attempts::WebAttemptLedger::default(),
+            ),
             pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),

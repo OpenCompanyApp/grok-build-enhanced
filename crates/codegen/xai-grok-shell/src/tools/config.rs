@@ -110,6 +110,9 @@ pub struct WebFetchToolConfig {
     /// default allowlist. An explicit empty list blocks all fetches.
     /// Resolution: TOML > remote settings > built-in defaults.
     pub allowed_domains: Option<Vec<String>>,
+    /// Explicit local-development opt-in for loopback fetches. This is never
+    /// enabled by environment or remote settings and defaults to `false`.
+    pub allow_loopback: Option<bool>,
 }
 
 impl WebFetchToolConfig {
@@ -142,6 +145,7 @@ impl WebFetchToolConfig {
         xai_grok_tools::implementations::grok_build::web_fetch::WebFetchParams {
             proxy_endpoint,
             allowed_domains,
+            allow_loopback: self.allow_loopback,
             context_window_tokens,
             ..Default::default()
         }
@@ -581,6 +585,7 @@ mod tests {
         let local = WebFetchToolConfig {
             proxy_endpoint: Some("https://toml-proxy.example.com".to_owned()),
             allowed_domains: Some(vec!["toml.example.com".to_owned()]),
+            allow_loopback: None,
         };
         let params = local.resolve_params(
             Some("https://remote-proxy.example.com"),
@@ -628,6 +633,7 @@ mod tests {
         let local = WebFetchToolConfig {
             proxy_endpoint: None,
             allowed_domains: Some(vec![]),
+            allow_loopback: None,
         };
         let params = local.resolve_params(None, Some(&["remote.example.com".to_owned()]), None);
         assert_eq!(params.allowed_domains, Some(vec![]));

@@ -8,7 +8,7 @@ blindly copy upstream code.
 
 | Project | Remote and tracked ref | Last reviewed / fork baseline | Latest fetched |
 | --- | --- | --- | --- |
-| OpenAI Codex CLI | `https://github.com/openai/codex.git` `main` | [`18110b810f0a328147f6cd85e6f1ab6414927366`](https://github.com/openai/codex/commit/18110b810f0a328147f6cd85e6f1ab6414927366) | [`315195492c80fdade38e917c18f9584efd599304`](https://github.com/openai/codex/commit/315195492c80fdade38e917c18f9584efd599304) |
+| OpenAI Codex CLI | `https://github.com/openai/codex.git` `main` | [`315195492c80fdade38e917c18f9584efd599304`](https://github.com/openai/codex/commit/315195492c80fdade38e917c18f9584efd599304) | [`315195492c80fdade38e917c18f9584efd599304`](https://github.com/openai/codex/commit/315195492c80fdade38e917c18f9584efd599304) |
 | OpenCode | `https://github.com/anomalyco/opencode.git` `dev` | [`1d2a7b4c860f6a29eb90bdda07757b2adf34ab61`](https://github.com/anomalyco/opencode/commit/1d2a7b4c860f6a29eb90bdda07757b2adf34ab61) | [`efb6cc2d4bf6332eb156709795d2b3a649198b65`](https://github.com/anomalyco/opencode/commit/efb6cc2d4bf6332eb156709795d2b3a649198b65) |
 | Grok Build upstream | `https://github.com/xai-org/grok-build.git` `main` | Fork base [`c1b5909ec707c069f1d21a93917af044e71da0d7`](https://github.com/OpenCompanyApp/grok-build-enhanced/commit/c1b5909ec707c069f1d21a93917af044e71da0d7) | [`8adf9013a0929e5c7f1d4e849492d2387837a28d`](https://github.com/xai-org/grok-build/commit/8adf9013a0929e5c7f1d4e849492d2387837a28d) |
 | OpenCode Codex auth reference | `https://github.com/numman-ali/opencode-openai-codex-auth.git` `main` | [`bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016`](https://github.com/numman-ali/opencode-openai-codex-auth/commit/bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016) | same |

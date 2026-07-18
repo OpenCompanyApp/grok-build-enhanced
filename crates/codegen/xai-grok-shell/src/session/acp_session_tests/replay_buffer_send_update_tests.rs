@@ -93,6 +93,9 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         mcp_strategy: McpInitStrategy::Blocking,
         chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
         current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        web_attempt_ledger: std::sync::Arc::new(
+            crate::session::web_attempts::WebAttemptLedger::default(),
+        ),
         pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),

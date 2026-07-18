@@ -117,34 +117,35 @@ subscription video-generation endpoint, so the xAI video tools are unavailable
 while a Codex model is selected and return when the session switches back to
 xAI.
 
-Codex subscription sessions also expose Grok Build's `web_search` function
-without requiring `XAI_API_KEY`. The function follows the current public Codex
-standalone-search contract and sends provider-authenticated requests to
-`{codex-base}/alpha/search`. It supports ordinary and image queries, opening a
-search reference or URL, following numbered links, in-page find, PDF
-screenshots, finance, weather, sports, time, response sizing, and repeated
-search/navigation calls. Result URLs are retained as citations for the TUI and
-the model can pass returned references to later `open`, `click`, `find`, or
-`screenshot` operations. Each request reloads the scoped ChatGPT credential;
-an authentication rejection gets at most one provider-owned refresh/retry and
-is never routed through xAI authentication.
+Codex subscription sessions expose Grok Build's native `web_search` function
+without requiring `XAI_API_KEY`. It sends provider-authenticated requests to
+`{codex-base}/alpha/search` and supports cached (default), indexed, live, and
+disabled modes. Use `--web-search-mode <mode>` or `--search` for live mode;
+configure filters, approximate location, context size, and image settings under
+`[web_search]`. Managed policy can narrow but never broaden these settings.
+Each request reloads the scoped ChatGPT credential; an authentication rejection
+gets at most one provider-owned refresh/retry and is never routed through xAI.
 
-To match the public Codex client without copying provider-private response
-state, standalone search receives only a bounded text projection of the last
-two visible user turns and the assistant text between them. System context,
-synthetic reminders, images, reasoning records, tool traffic, credentials,
-account identifiers, and `x-codex-turn-state` are not forwarded. Grok adds a
-bounded `x-codex-turn-metadata` correlation header containing only its stable
-session/turn identifiers, selected model, and reasoning effort.
+Search receives only a bounded text projection of recent genuine user turns
+and assistant text. System/synthetic reminders, images, reasoning, tool
+traffic, credentials, account identifiers, and `x-codex-turn-state` are not
+forwarded. Any model-supplied hidden context is discarded before Grok injects
+its bounded, sensitive turn metadata and adaptive output budget.
+
+Search and fetch results are stored with typed untrusted-external provenance.
+That classification survives JSONL resume, compaction, subagent flattening,
+provider switching, ACP, and hooks; provider conversion adds the model-visible
+warning. Stable sanitized failure codes and a per-turn fingerprint ledger bound
+identical retries without logging URLs or queries.
 
 The local `web_fetch` tool is enabled by default for Codex only when no local,
-managed, remote, or environment setting made an explicit choice. Its existing
-SSRF protection and fixed domain allowlist remain in force, so an arbitrary
-search-result domain may be rejected by `web_fetch`; use the subscription
-search tool's `open`/`click` commands for those results. `--disable-web-search`
-disables both web tools. `GROK_WEB_FETCH=0` disables only local URL fetching;
-`GROK_WEB_FETCH=1` still opts it in explicitly. xAI sessions retain their
-existing web-search and opt-in web-fetch behavior.
+managed, remote, or environment setting made an explicit choice. Its allowlist
+and SSRF policy remain separate, and loopback is blocked unless explicitly
+allowed for local development. An arbitrary search-result domain may be
+rejected by `web_fetch`; use search `open`/`click` instead. The absolute
+`--disable-web-search` switch disables both tools. `GROK_WEB_FETCH=0` disables
+only local fetching; `GROK_WEB_FETCH=1` opts it in explicitly. xAI sessions
+retain their existing web-search and opt-in fetch behavior.
 
 Search citations intentionally retain their complete source URLs so the model
 can navigate and cite them. User-configured tool lifecycle hooks receive tool

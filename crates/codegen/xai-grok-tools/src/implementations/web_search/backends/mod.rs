@@ -50,6 +50,15 @@ pub(super) fn execution_error(message: impl Into<String>) -> xai_tool_runtime::T
     )
 }
 
+fn domain_rejected_error() -> xai_tool_runtime::ToolError {
+    let failure = crate::types::output::WebToolFailure::for_code(
+        crate::types::output::WebToolErrorCode::DomainRejected,
+    );
+    execution_error(failure.prompt_text()).with_details(
+        serde_json::to_value(failure).expect("web failure envelope is JSON-serializable"),
+    )
+}
+
 pub(super) fn validate_search_query(query: &str) -> Result<(), xai_tool_runtime::ToolError> {
     if query.trim().is_empty() {
         return Err(execution_error("A non-empty web search query is required"));
@@ -66,39 +75,37 @@ pub(super) fn validate_allowed_domains(
     let Some(domains) = domains else {
         return Ok(None);
     };
-    if domains.len() > MAX_ALLOWED_DOMAINS {
-        return Err(execution_error(
-            "Web search domain filters exceeded the count limit",
-        ));
+    if domains.is_empty() || domains.len() > MAX_ALLOWED_DOMAINS {
+        return Err(domain_rejected_error());
     }
 
     let mut normalized = Vec::with_capacity(domains.len());
     let mut seen = std::collections::HashSet::with_capacity(domains.len());
     let mut total_bytes = 0usize;
     for domain in domains {
-        let domain = domain.trim();
+        let domain = domain.trim().trim_end_matches('.');
         if domain.is_empty()
             || domain.len() > MAX_ALLOWED_DOMAIN_BYTES
             || domain.chars().any(char::is_control)
         {
-            return Err(execution_error("Web search domain filter is invalid"));
+            return Err(domain_rejected_error());
         }
-        let host = url::Host::parse(domain)
-            .map_err(|_| execution_error("Web search domain filter is invalid"))?
-            .to_string()
-            .to_ascii_lowercase();
+        let host = match url::Host::parse(domain).map_err(|_| domain_rejected_error())? {
+            url::Host::Domain(host) => host.to_ascii_lowercase(),
+            url::Host::Ipv4(_) | url::Host::Ipv6(_) => {
+                return Err(domain_rejected_error());
+            }
+        };
         total_bytes = total_bytes.saturating_add(host.len());
         if total_bytes > MAX_ALLOWED_DOMAINS_BYTES {
-            return Err(execution_error(
-                "Web search domain filters exceeded the size limit",
-            ));
+            return Err(domain_rejected_error());
         }
         if seen.insert(host.clone()) {
             normalized.push(host);
         }
     }
 
-    Ok((!normalized.is_empty()).then_some(normalized))
+    Ok(Some(normalized))
 }
 
 pub(super) fn validate_search_commands(
@@ -179,8 +186,23 @@ mod tests {
             "example.com/path",
             "example.com:443",
         ] {
-            assert!(validate_allowed_domains(Some(vec![invalid.to_owned()])).is_err());
+            let error = validate_allowed_domains(Some(vec![invalid.to_owned()])).unwrap_err();
+            assert_eq!(
+                error
+                    .details
+                    .and_then(|details| details.get("code").cloned()),
+                Some(serde_json::json!("domain_rejected"))
+            );
         }
+
+        let empty = validate_allowed_domains(Some(Vec::new())).unwrap_err();
+        assert_eq!(
+            empty
+                .details
+                .and_then(|details| details.get("code").cloned()),
+            Some(serde_json::json!("domain_rejected")),
+            "an explicitly empty allowlist must fail closed before network I/O"
+        );
     }
 
     #[test]

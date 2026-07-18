@@ -17,6 +17,13 @@ pub(crate) struct FetchCache {
     max_entries: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum FetchCacheLookup {
+    Hit(WebFetchOutput),
+    Miss,
+    Stale,
+}
+
 /// Simple cache that holds N completed fetch requests on a TTL.
 impl FetchCache {
     pub(crate) fn new(ttl: Duration, max_entries: usize) -> Self {
@@ -27,14 +34,23 @@ impl FetchCache {
         }
     }
 
-    pub(crate) fn get(&self, url: &str) -> Option<&WebFetchOutput> {
-        self.entries.get(url).and_then(|entry| {
-            if entry.inserted.elapsed() < self.ttl {
-                Some(&entry.output)
-            } else {
-                None
-            }
-        })
+    pub(crate) fn lookup(&mut self, url: &str) -> FetchCacheLookup {
+        let Some(entry) = self.entries.get(url) else {
+            return FetchCacheLookup::Miss;
+        };
+        if entry.inserted.elapsed() < self.ttl {
+            return FetchCacheLookup::Hit(entry.output.clone());
+        }
+        self.entries.remove(url);
+        FetchCacheLookup::Stale
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get(&mut self, url: &str) -> Option<WebFetchOutput> {
+        match self.lookup(url) {
+            FetchCacheLookup::Hit(output) => Some(output),
+            FetchCacheLookup::Miss | FetchCacheLookup::Stale => None,
+        }
     }
 
     /// Cache only inline text; path-bearing outputs must be materialized per call.
@@ -90,5 +106,19 @@ mod tests {
 
         cache.insert_text(url.to_string(), output("fully inline"), false);
         assert!(cache.get(url).is_some());
+    }
+
+    #[test]
+    fn lookup_distinguishes_hit_miss_and_stale_revalidation() {
+        let url = "https://example.com/";
+        let mut live = FetchCache::new(Duration::from_secs(60), 10);
+        assert!(matches!(live.lookup(url), FetchCacheLookup::Miss));
+        live.insert_text(url.to_owned(), output("cached"), false);
+        assert!(matches!(live.lookup(url), FetchCacheLookup::Hit(_)));
+
+        let mut expired = FetchCache::new(Duration::ZERO, 10);
+        expired.insert_text(url.to_owned(), output("expired"), false);
+        assert!(matches!(expired.lookup(url), FetchCacheLookup::Stale));
+        assert!(matches!(expired.lookup(url), FetchCacheLookup::Miss));
     }
 }

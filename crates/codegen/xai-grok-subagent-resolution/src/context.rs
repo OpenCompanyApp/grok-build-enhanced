@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use xai_grok_sampling_types::conversation::ConversationItem;
+use xai_grok_sampling_types::conversation::{ConversationItem, ExternalContentMetadata};
 
 /// Maximum number of complete turns to render verbatim in the background
 /// context. Turns beyond this threshold (counting from the end) are
@@ -59,6 +59,11 @@ pub fn normalize_forked_context(items: Vec<ConversationItem>) -> (Vec<Conversati
         .skip(1) // skip System
         .filter(|i| !matches!(i, ConversationItem::System(_)))
         .collect();
+    let background_external_content = ExternalContentMetadata::derived_from(
+        parent_items
+            .iter()
+            .filter_map(|item| item.external_content()),
+    );
 
     if parent_items.is_empty() {
         return (vec![system], 1);
@@ -90,7 +95,12 @@ pub fn normalize_forked_context(items: Vec<ConversationItem>) -> (Vec<Conversati
     }
     background.push_str("</background_context>");
 
-    let conversation = vec![system, ConversationItem::user(&background)];
+    let mut background_item = ConversationItem::user(&background);
+    if let Some(metadata) = background_external_content {
+        let attached = background_item.set_external_content(metadata);
+        debug_assert!(attached, "background context must carry user provenance");
+    }
+    let conversation = vec![system, background_item];
     (conversation, 2)
 }
 
@@ -411,6 +421,7 @@ mod tests {
             tool_call_id: "tc-1".to_string(),
             content: content.into(),
             images: Vec::new(),
+            external_content: None,
         })
     }
 
@@ -481,6 +492,35 @@ mod tests {
         } else {
             panic!("Expected User item");
         }
+    }
+
+    #[test]
+    fn flattened_background_preserves_external_content_provenance() {
+        use xai_grok_sampling_types::conversation::{
+            ExternalContentMetadata, ExternalContentSource,
+        };
+
+        let mut web_result = tool_result("untrusted search result");
+        assert!(
+            web_result.set_external_content(ExternalContentMetadata::direct(
+                ExternalContentSource::WebSearch,
+            ))
+        );
+        let items = vec![
+            system_item("System"),
+            user_item("Research this"),
+            assistant_with_tool_calls("Searching", &["web_search"]),
+            web_result,
+        ];
+
+        let (result, _) = normalize_forked_context(items);
+        assert_eq!(
+            result[1].external_content(),
+            Some(&ExternalContentMetadata {
+                sources: vec![ExternalContentSource::WebSearch],
+                derived: true,
+            })
+        );
     }
 
     #[test]

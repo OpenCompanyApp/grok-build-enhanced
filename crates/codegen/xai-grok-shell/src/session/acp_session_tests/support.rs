@@ -31,6 +31,15 @@ pub(crate) async fn test_agent_with_goal_tool() -> xai_grok_agent::Agent {
     use xai_grok_tools::registry::types::ToolConfig;
     test_agent_with_tools(vec![ToolConfig::for_tool::<UpdateGoalTool>()]).await
 }
+
+/// Agent advertising the native `web_fetch` definition. The recovery tests do
+/// not execute it, so no network client/resource is needed.
+#[cfg(test)]
+pub(crate) async fn test_agent_with_web_fetch_tool() -> xai_grok_agent::Agent {
+    use xai_grok_tools::implementations::grok_build::web_fetch::WebFetchTool;
+    use xai_grok_tools::registry::types::ToolConfig;
+    test_agent_with_tools(vec![ToolConfig::for_tool::<WebFetchTool>()]).await
+}
 /// Grok-build agent with the real `TodoWriteTool` (id `todo_write`, kind
 /// `Plan`) registered, so `tool_for_kind(ToolKind::Plan)` resolves through the
 /// live toolset instead of the literal fallback.
@@ -216,6 +225,9 @@ pub(crate) async fn create_test_actor_ex(
         mcp_strategy: McpInitStrategy::Blocking,
         chat_state_handle,
         current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        web_attempt_ledger: std::sync::Arc::new(
+            crate::session::web_attempts::WebAttemptLedger::default(),
+        ),
         pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),

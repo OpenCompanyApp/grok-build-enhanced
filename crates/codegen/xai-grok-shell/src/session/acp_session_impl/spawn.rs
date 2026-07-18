@@ -254,6 +254,7 @@ pub(crate) async fn spawn_session_actor(
     inference_idle_timeout_secs: u64,
     max_retries: Option<u32>,
     web_search_sampling_config: Option<xai_grok_sampler::SamplerConfig>,
+    codex_web_search_settings: xai_grok_tools::implementations::web_search::CodexWebSearchSettings,
     web_fetch_config: xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig,
     image_gen_config: xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig,
     video_gen_config: xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig,
@@ -484,11 +485,14 @@ pub(crate) async fn spawn_session_actor(
     let web_search_config = if disable_web_search {
         xai_grok_tools::implementations::WebSearchConfig::Disabled
     } else if sampling_config.provider.is_openai_codex() {
-        if api_key_provider.is_some() {
+        if !codex_web_search_settings.mode.is_enabled() {
+            xai_grok_tools::implementations::WebSearchConfig::Disabled
+        } else if api_key_provider.is_some() {
             xai_grok_tools::implementations::WebSearchConfig::CodexSubscription {
                 base_url: sampling_config.base_url.clone(),
                 model: sampling_config.model.clone(),
                 session_id: session_info.id.0.to_string(),
+                settings: codex_web_search_settings.clone(),
             }
         } else {
             tracing::warn!(
@@ -513,6 +517,16 @@ pub(crate) async fn spawn_session_actor(
     } else {
         tracing::warn!("web_search disabled: configured model could not be resolved");
         xai_grok_tools::implementations::WebSearchConfig::Disabled
+    };
+    let web_fetch_config = if sampling_config.provider.is_openai_codex()
+        && !codex_web_search_settings.mode.is_enabled()
+        && matches!(
+            web_fetch_config,
+            xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig::CodexDefault { .. }
+        ) {
+        xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig::Disabled
+    } else {
+        web_fetch_config
     };
     let memory_embedding_route = resolve_memory_embedding_route(
         sampling_config.provider,
@@ -1000,6 +1014,7 @@ pub(crate) async fn spawn_session_actor(
         memory_backend: memory_backend_for_spec,
         memory_embedding_config: memory_config.as_ref().map(|mc| mc.embedding.clone()),
         web_search_config: web_search_config.clone(),
+        codex_web_search_settings: codex_web_search_settings.clone(),
         web_search_disabled: disable_web_search,
         web_search_provider: match web_search_config {
             xai_grok_tools::implementations::WebSearchConfig::Disabled => None,
@@ -1324,6 +1339,7 @@ pub(crate) async fn spawn_session_actor(
         initial_client_mcp_servers: initial_client_mcp_servers.clone(),
         chat_state_handle,
         current_prompt_id: current_prompt_id.clone(),
+        web_attempt_ledger: Arc::new(crate::session::web_attempts::WebAttemptLedger::default()),
         pending_interactions: pending_interactions.clone(),
         telemetry_enabled,
         supports_backend_search: std::cell::Cell::new(sampling_config.supports_backend_search),
@@ -1921,6 +1937,7 @@ pub(crate) async fn spawn_session_on_thread(
     inference_idle_timeout_secs: u64,
     max_retries: Option<u32>,
     web_search_sampling_config: Option<xai_grok_sampler::SamplerConfig>,
+    codex_web_search_settings: xai_grok_tools::implementations::web_search::CodexWebSearchSettings,
     web_fetch_config: xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig,
     image_gen_config: xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig,
     video_gen_config: xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig,
@@ -2083,6 +2100,7 @@ pub(crate) async fn spawn_session_on_thread(
                         inference_idle_timeout_secs,
                         max_retries,
                         web_search_sampling_config,
+                        codex_web_search_settings,
                         web_fetch_config,
                         image_gen_config,
                         video_gen_config,

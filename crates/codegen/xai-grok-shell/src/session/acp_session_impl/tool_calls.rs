@@ -48,6 +48,31 @@ fn external_tool_input(
     serde_json::json!({ "url": origin })
 }
 
+/// Preserve the untrusted-data boundary even if an intermediate tool adapter
+/// fails to carry the registry-projected metadata. The finalized native tool
+/// kind is authoritative; names and provider payloads are deliberately not
+/// inspected. Logical fetch failures remain ordinary failure envelopes rather
+/// than external content.
+fn ensure_native_web_external_content(
+    tool_kind: Option<xai_grok_tools::types::tool::ToolKind>,
+    result: &mut xai_grok_tools::types::output::ToolRunResult,
+) {
+    if result.external_content.is_some() || result.output.is_error() {
+        return;
+    }
+    let source = match tool_kind {
+        Some(xai_grok_tools::types::tool::ToolKind::WebSearch) => {
+            xai_grok_tools::types::output::ExternalContentSource::WebSearch
+        }
+        Some(xai_grok_tools::types::tool::ToolKind::WebFetch) => {
+            xai_grok_tools::types::output::ExternalContentSource::WebFetch
+        }
+        _ => return,
+    };
+    result.external_content =
+        Some(xai_grok_tools::types::output::ExternalContentMetadata::direct(source));
+}
+
 fn bound_codex_search_user_text(text: &str, max_bytes: usize) -> String {
     let text = text.trim();
     if text.len() <= max_bytes {
@@ -149,6 +174,50 @@ fn codex_search_recent_input(conversation: &[ConversationItem]) -> Vec<CodexWebS
         user_budget,
     )));
     messages
+}
+
+const CODEX_SEARCH_MIN_OUTPUT_TOKENS: u64 = 1_024;
+const CODEX_SEARCH_MAX_OUTPUT_TOKENS: u64 = 16_384;
+const CODEX_SEARCH_SHORT_OUTPUT_TOKENS: u64 = 2_048;
+const CODEX_SEARCH_MEDIUM_OUTPUT_TOKENS: u64 = 8_192;
+const CODEX_SEARCH_MIN_COMPLETION_RESERVE: u64 = 2_048;
+
+fn codex_search_response_cap(arguments: &serde_json::Value) -> u64 {
+    match arguments
+        .get("response_length")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("short") => CODEX_SEARCH_SHORT_OUTPUT_TOKENS,
+        Some("long") => CODEX_SEARCH_MAX_OUTPUT_TOKENS,
+        Some("medium") | None | Some(_) => CODEX_SEARCH_MEDIUM_OUTPUT_TOKENS,
+    }
+}
+
+fn codex_search_output_budget(
+    context_window: u64,
+    estimated_context_tokens: u64,
+    compaction_threshold_percent: u8,
+    max_completion_tokens: Option<u32>,
+    call_index: usize,
+    call_count: usize,
+    arguments: &serde_json::Value,
+) -> Option<u64> {
+    let safe_limit =
+        context_window.saturating_mul(u64::from(compaction_threshold_percent.min(100))) / 100;
+    let completion_reserve =
+        u64::from(max_completion_tokens.unwrap_or(0)).max(CODEX_SEARCH_MIN_COMPLETION_RESERVE);
+    let remaining =
+        safe_limit.saturating_sub(estimated_context_tokens.saturating_add(completion_reserve));
+    let pool = remaining / 2;
+    let count = u64::try_from(call_count.max(1)).unwrap_or(u64::MAX);
+    let index = u64::try_from(call_index).unwrap_or(u64::MAX);
+    let base = pool / count;
+    let remainder = pool % count;
+    let share = base.saturating_add(u64::from(index < remainder));
+    let budget = share
+        .min(codex_search_response_cap(arguments))
+        .min(CODEX_SEARCH_MAX_OUTPUT_TOKENS);
+    (budget >= CODEX_SEARCH_MIN_OUTPUT_TOKENS).then_some(budget)
 }
 
 async fn media_gen_inline_image(
@@ -291,6 +360,7 @@ fn interrupted_wait_tool_result_with_msg(args: &serde_json::Value, msg: &str) ->
         output: ToolsToolOutput::TaskOutput(TaskOutputOutput::Result(result)),
         prompt_text: msg.to_string(),
         effective_tool_name: None,
+        external_content: None,
     }
 }
 /// Clears `awaiting_plan_approval` (and re-persists) when the
@@ -513,6 +583,15 @@ impl SessionActor {
         let mut final_result: Option<ToolLoop> = None;
         let mut deferred_followups: Vec<ConversationItem> = Vec::new();
         let mut approved: Vec<PreparedToolCall> = Vec::new();
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        let codex_web_search_call_count = tool_calls
+            .iter()
+            .filter(|call| {
+                bridge.tool_kind(&call.function.name)
+                    == Some(xai_grok_tools::types::tool::ToolKind::WebSearch)
+            })
+            .count();
+        let mut codex_web_search_call_index = 0usize;
         for call in tool_calls.into_iter() {
             if final_result.is_some() {
                 let message = match &final_result {
@@ -555,8 +634,15 @@ impl SessionActor {
                 )
                 .await;
             let call_name = call.function.name.clone();
+            let codex_search_share = (bridge.tool_kind(&call.function.name)
+                == Some(xai_grok_tools::types::tool::ToolKind::WebSearch))
+            .then(|| {
+                let share = (codex_web_search_call_index, codex_web_search_call_count);
+                codex_web_search_call_index = codex_web_search_call_index.saturating_add(1);
+                share
+            });
             match self
-                .prepare_tool_call(call, &mut deferred_followups)
+                .prepare_tool_call(call, &mut deferred_followups, codex_search_share)
                 .await?
             {
                 Ok(prepared) => approved.push(prepared),
@@ -641,6 +727,20 @@ impl SessionActor {
                 let blocking_wait_depth = self.tool_context.blocking_wait_depth.clone();
                 let interruptible =
                     is_interruptible_wait_tool(&prepared.tool_name, &prepared.parsed_args);
+                let web_attempt_key = matches!(
+                    bridge.tool_kind(&prepared.tool_name),
+                    Some(
+                        xai_grok_tools::types::tool::ToolKind::WebSearch
+                            | xai_grok_tools::types::tool::ToolKind::WebFetch
+                    )
+                )
+                .then(|| {
+                    crate::session::web_attempts::WebAttemptLedger::fingerprint(
+                        prepared.hook_tool_name(),
+                        &prepared.parsed_args,
+                    )
+                });
+                let web_attempt_ledger = Arc::clone(&self.web_attempt_ledger);
                 let lock = lock_path_for_args(&prepared.parsed_args)
                     .and_then(|fp| file_locks.get(fp).cloned());
                 async move {
@@ -669,6 +769,17 @@ impl SessionActor {
                             "abort wait tool: interjection pending");
                             Ok(interrupted_wait_tool_result(& prepared.parsed_args)) }
                         }
+                    } else if let Some(key) = web_attempt_key {
+                        web_attempt_ledger
+                            .run(key, || {
+                                call_with_auth_retry(
+                                    am.as_ref(),
+                                    Some(&shared_recovery),
+                                    &prepared.tool_name,
+                                    run_tool,
+                                )
+                            })
+                            .await
                     } else {
                         call_with_auth_retry(
                             am.as_ref(),
@@ -715,9 +826,17 @@ impl SessionActor {
             let prepared = approved_slots[idx]
                 .take()
                 .expect("dispatch index should match an approved slot exactly once");
+            if let Ok(tool_result) = &mut result {
+                ensure_native_web_external_content(
+                    bridge.tool_kind(&prepared.tool_name),
+                    tool_result,
+                );
+            }
             self.signals_handle().record_tool_call(&prepared.tool_name);
             let tool_start = self.events.tool_started(prepared.tool_name.clone());
             let mut post_tool_use_result: Option<serde_json::Value> = None;
+            let mut post_tool_use_external_content = None;
+            let mut post_tool_use_web_failure_code = None;
             if let Some((server, _)) =
                 crate::session::mcp_servers::parse_mcp_tool_name(&prepared.tool_name)
                 && server.starts_with(crate::session::managed_mcp::MANAGED_MCP_PREFIX)
@@ -757,6 +876,9 @@ impl SessionActor {
                             serde_json::to_value(&tool_result.output)
                                 .unwrap_or(serde_json::Value::Null)
                         });
+                    post_tool_use_external_content = tool_result.external_content.clone();
+                    post_tool_use_web_failure_code =
+                        tool_result.output.web_failure().map(|failure| failure.code);
                     let followups = self
                         .handle_bridge_tool_success(
                             &prepared.tool_call_id,
@@ -845,6 +967,8 @@ impl SessionActor {
                         tool_result: tool_result_val,
                         tool_input_truncated,
                         tool_result_truncated,
+                        external_content: post_tool_use_external_content,
+                        web_failure_code: post_tool_use_web_failure_code,
                         duration_ms: None,
                         is_backgrounded: false,
                         subagent_type: self.subagent_type_label(),
@@ -965,6 +1089,7 @@ impl SessionActor {
         &self,
         call: crate::sampling::types::ToolCallResponse,
         deferred_followups: &mut Vec<ConversationItem>,
+        codex_search_share: Option<(usize, usize)>,
     ) -> Result<Result<PreparedToolCall, ToolLoop>, acp::Error> {
         let tool_call_id = acp::ToolCallId::new(Arc::from(call.id.clone()));
         let model_id_str = self.current_model_id().await;
@@ -1583,13 +1708,31 @@ impl SessionActor {
             .unwrap_or(false);
         let mut dispatch_args = raw_input.clone();
         if tool_kind == Some(xai_grok_tools::types::tool::ToolKind::WebSearch)
+            && let serde_json::Value::Object(arguments) = &mut dispatch_args
+        {
+            // Defense in depth: parsing already stripped this field, but the
+            // dispatch copy is the final trust boundary before bridge.call().
+            arguments.remove(CODEX_WEB_SEARCH_CONTEXT_FIELD);
+        }
+        if tool_kind == Some(xai_grok_tools::types::tool::ToolKind::WebSearch)
             && let Some(sampling_config) = self.chat_state_handle.get_sampling_config().await
             && sampling_config.provider.is_openai_codex()
         {
             let input = codex_search_recent_input(&self.chat_state_handle.get_conversation().await);
-            if !input.is_empty()
-                && let serde_json::Value::Object(arguments) = &mut dispatch_args
-            {
+            let estimated_context_tokens =
+                self.chat_state_handle.get_estimated_total_tokens().await;
+            let (call_index, call_count) = codex_search_share.unwrap_or((0, 1));
+            let max_output_tokens = codex_search_output_budget(
+                sampling_config.context_window.get(),
+                estimated_context_tokens,
+                self.compaction.threshold_percent.get(),
+                sampling_config.max_completion_tokens,
+                call_index,
+                call_count,
+                &dispatch_args,
+            )
+            .unwrap_or(0);
+            if let serde_json::Value::Object(arguments) = &mut dispatch_args {
                 let session_id = self.session_id_string();
                 let turn_id = self
                     .current_prompt_id
@@ -1611,6 +1754,7 @@ impl SessionActor {
                             .reasoning_effort
                             .map(|effort| effort.as_str().to_string()),
                     },
+                    max_output_tokens,
                 };
                 arguments.insert(
                     CODEX_WEB_SEARCH_CONTEXT_FIELD.to_string(),
@@ -2294,7 +2438,10 @@ impl SessionActor {
         model_id: &str,
         tool_parsed_args: &serde_json::Value,
     ) -> Result<Vec<ConversationItem>, acp::Error> {
-        use crate::session::acp_conversion::{acp_plan_update, acp_tool_update, maybe_rewrite};
+        use crate::session::acp_conversion::{
+            acp_plan_update, acp_tool_update, attach_external_content_meta,
+            attach_web_failure_meta, maybe_rewrite,
+        };
         let consumed_ids =
             xai_grok_tools::reminders::task_completion::consumed_completion_ids(&result.output);
         if !consumed_ids.is_empty() {
@@ -2357,6 +2504,9 @@ impl SessionActor {
                     }
                 }
             }
+            attach_external_content_meta(&mut tool_update, result.external_content.as_ref());
+            let web_failure = result.output.web_failure();
+            attach_web_failure_meta(&mut tool_update, web_failure.as_ref());
             tool_update.tool_call_id = tool_call_id.clone();
             self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
                 .await;
@@ -2368,6 +2518,7 @@ impl SessionActor {
             self.send_update(acp::SessionUpdate::Plan(acp_plan), None)
                 .await;
         }
+        let external_content = result.external_content.clone();
         #[allow(unused_mut)]
         let mut prompt_text = if concatenated_json_count > 0 && !self.is_cursor_harness() {
             let remaining = concatenated_json_count - 1;
@@ -2468,7 +2619,7 @@ impl SessionActor {
         {
             inline_images.push(image);
         }
-        let tool_chat = if inline_images.is_empty() {
+        let mut tool_chat = if inline_images.is_empty() {
             ConversationItem::tool_result(call_id.to_string(), prompt_text)
         } else {
             ConversationItem::tool_result_with_images(
@@ -2477,6 +2628,9 @@ impl SessionActor {
                 inline_images,
             )
         };
+        if let ConversationItem::ToolResult(tool_result) = &mut tool_chat {
+            tool_result.external_content = external_content;
+        }
         self.chat_state_handle.push_tool_result(tool_chat);
         let mut deferred_followups = Vec::new();
         if !extracted_images.is_empty() {
@@ -2901,8 +3055,21 @@ fn execute_tool_call_parts(
 }
 #[cfg(test)]
 mod web_fetch_external_input_tests {
-    use super::external_tool_input;
+    use super::{ensure_native_web_external_content, external_tool_input};
+    use xai_grok_tools::types::output::{
+        ExternalContentMetadata, ExternalContentSource, TextOutput, ToolOutput, ToolRunResult,
+        WebFetchOutput,
+    };
     use xai_grok_tools::types::tool::ToolKind;
+
+    fn run_result(output: ToolOutput) -> ToolRunResult {
+        ToolRunResult {
+            output,
+            prompt_text: "bounded test output".to_owned(),
+            effective_tool_name: None,
+            external_content: None,
+        }
+    }
 
     #[test]
     fn external_web_fetch_input_exposes_only_origin() {
@@ -2941,6 +3108,36 @@ mod web_fetch_external_input_tests {
             ),
             serde_json::json!({ "url": "<redacted-url>" })
         );
+    }
+
+    #[test]
+    fn native_web_kind_restores_missing_external_content_boundary() {
+        let mut result = run_result(ToolOutput::Text(TextOutput::from("external result")));
+        ensure_native_web_external_content(Some(ToolKind::WebSearch), &mut result);
+        assert_eq!(
+            result.external_content,
+            Some(ExternalContentMetadata::direct(
+                ExternalContentSource::WebSearch
+            ))
+        );
+    }
+
+    #[test]
+    fn existing_external_content_boundary_is_preserved() {
+        let expected = ExternalContentMetadata::direct(ExternalContentSource::HostedWebSearch);
+        let mut result = run_result(ToolOutput::Text(TextOutput::from("external result")));
+        result.external_content = Some(expected.clone());
+        ensure_native_web_external_content(Some(ToolKind::WebSearch), &mut result);
+        assert_eq!(result.external_content, Some(expected));
+    }
+
+    #[test]
+    fn logical_web_fetch_failure_is_not_marked_as_external_content() {
+        let mut result = run_result(ToolOutput::WebFetch(WebFetchOutput::DomainNotAllowed(
+            "blocked.example".to_owned(),
+        )));
+        ensure_native_web_external_content(Some(ToolKind::WebFetch), &mut result);
+        assert!(result.external_content.is_none());
     }
 }
 
@@ -3353,7 +3550,8 @@ mod wait_interrupt_tests {
 mod codex_search_context_tests {
     use super::{
         CODEX_SEARCH_ASSISTANT_BYTES, CODEX_SEARCH_MAX_MESSAGES, CODEX_SEARCH_TWO_USER_BYTES,
-        CodexWebSearchMessage, ConversationItem, codex_search_recent_input,
+        CodexWebSearchMessage, ConversationItem, codex_search_output_budget,
+        codex_search_recent_input,
     };
     use xai_grok_tools::implementations::web_search::CodexWebSearchMessageRole;
 
@@ -3433,6 +3631,63 @@ mod codex_search_context_tests {
                 .sum::<usize>()
                 <= 32 * 1024
         );
+    }
+
+    #[test]
+    fn adaptive_output_budget_obeys_length_caps_and_minimum() {
+        let budget = |length: &str| {
+            codex_search_output_budget(
+                100_000,
+                10_000,
+                80,
+                Some(10_000),
+                0,
+                1,
+                &serde_json::json!({"response_length": length}),
+            )
+        };
+        assert_eq!(budget("short"), Some(2_048));
+        assert_eq!(budget("medium"), Some(8_192));
+        assert_eq!(budget("long"), Some(16_384));
+
+        assert_eq!(
+            codex_search_output_budget(
+                4_096,
+                2_048,
+                80,
+                Some(2_048),
+                0,
+                1,
+                &serde_json::json!({"response_length": "long"}),
+            ),
+            None,
+            "less than the useful minimum must fail before network I/O"
+        );
+        assert_eq!(
+            codex_search_output_budget(
+                0,
+                u64::MAX,
+                100,
+                Some(u32::MAX),
+                usize::MAX,
+                usize::MAX,
+                &serde_json::json!({}),
+            ),
+            None,
+            "zero/overflow boundaries must saturate safely"
+        );
+    }
+
+    #[test]
+    fn parallel_budget_split_is_deterministic_and_conserves_pool() {
+        let args = serde_json::json!({"response_length": "long"});
+        let shares = (0..3)
+            .map(|index| {
+                codex_search_output_budget(100_000, 0, 100, Some(2_048), index, 3, &args).unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(shares, vec![16_326, 16_325, 16_325]);
+        assert_eq!(shares.iter().sum::<u64>(), 48_976);
     }
 }
 
