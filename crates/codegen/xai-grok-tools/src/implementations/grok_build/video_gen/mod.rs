@@ -62,6 +62,39 @@ fn sensitive_bearer_header(api_key: &str) -> Result<HeaderValue, xai_tool_runtim
     Ok(value)
 }
 
+fn video_default_headers(
+    api_key: &str,
+    extra_headers: &indexmap::IndexMap<String, String>,
+) -> Result<reqwest::header::HeaderMap, xai_tool_runtime::ToolError> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    // Always bake the static api_key as the default Authorization header.
+    // The dynamic provider overrides per-request; this is the fallback.
+    headers.insert(AUTHORIZATION, sensitive_bearer_header(api_key)?);
+
+    extra_headers.iter().try_for_each(|(key, value)| {
+        let header_name = reqwest::header::HeaderName::from_bytes(key.as_bytes()).map_err(|e| {
+            xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "Invalid header name '{key}': {e}"
+            ))
+        })?;
+        let mut header_value = HeaderValue::from_str(value).map_err(|e| {
+            xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "Invalid header value for '{key}': {e}"
+            ))
+        })?;
+        // Preserve HeaderValue redaction even when an explicitly configured
+        // Authorization header replaces the static bearer fallback.
+        if header_name == AUTHORIZATION {
+            header_value.set_sensitive(true);
+        }
+        headers.insert(header_name, header_value);
+        Ok::<(), xai_tool_runtime::ToolError>(())
+    })?;
+
+    Ok(headers)
+}
+
 pub use xai_grok_tools_api::slash_commands::{
     IMAGE_TO_VIDEO_TOOL_NAME, IMAGINE_VIDEO_COMMAND_NAME, imagine_video_instruction,
     imagine_video_usage_message,
@@ -180,27 +213,7 @@ impl VideoGenClient {
             ));
         };
 
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        // Always bake the static api_key as the default Authorization header.
-        // The dynamic provider overrides per-request; this is the fallback.
-        headers.insert(AUTHORIZATION, sensitive_bearer_header(api_key)?);
-
-        extra_headers.into_iter().try_for_each(|(key, value)| {
-            let header_name =
-                reqwest::header::HeaderName::from_bytes(key.as_bytes()).map_err(|e| {
-                    xai_tool_runtime::ToolError::invalid_arguments(format!(
-                        "Invalid header name '{key}': {e}"
-                    ))
-                })?;
-            let header_value = HeaderValue::from_str(value).map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
-                    "Invalid header value for '{key}': {e}"
-                ))
-            })?;
-            headers.insert(header_name, header_value);
-            Ok::<(), xai_tool_runtime::ToolError>(())
-        })?;
+        let headers = video_default_headers(api_key, extra_headers)?;
 
         let http = reqwest::Client::builder()
             .default_headers(headers)
@@ -1207,6 +1220,21 @@ mod tests {
         assert!(header.is_sensitive());
         assert_eq!(header.as_bytes(), b"Bearer credential-sentinel");
         assert!(!format!("{header:?}").contains("credential-sentinel"));
+    }
+
+    #[test]
+    fn extra_authorization_header_cannot_disable_redaction() {
+        let extra_headers = indexmap::indexmap! {
+            "authorization".to_owned() => "Bearer replacement-sentinel".to_owned(),
+        };
+        let headers = video_default_headers("fallback-sentinel", &extra_headers).unwrap();
+        let authorization = headers.get(AUTHORIZATION).unwrap();
+
+        assert!(authorization.is_sensitive());
+        assert_eq!(authorization.as_bytes(), b"Bearer replacement-sentinel");
+        let debug = format!("{headers:?}");
+        assert!(!debug.contains("fallback-sentinel"));
+        assert!(!debug.contains("replacement-sentinel"));
     }
 
     #[test]

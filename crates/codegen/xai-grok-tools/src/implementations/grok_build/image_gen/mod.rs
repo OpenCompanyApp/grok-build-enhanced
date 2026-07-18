@@ -620,10 +620,10 @@ fn validate_codex_base_url(base_url: &str) -> Result<String, xai_tool_runtime::T
 pub enum ImageGenConfig {
     #[default]
     Disabled,
-    /// Stable fail-closed tool facade. The feature gates are enabled, so the
-    /// definitions remain in a finalized session toolset across provider/model
-    /// switches, but no client resource is constructed until the host supplies
-    /// a provider-backed configuration.
+    /// Fail-closed facade used while the feature gates are known but provider
+    /// credentials are not yet available. Initial construction may advertise
+    /// the gated definitions without a client; provider switching later removes
+    /// or restores both the definitions and client as one lifecycle.
     Unavailable {
         image_gen_enabled: bool,
         image_edit_enabled: bool,

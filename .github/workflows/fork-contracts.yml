@@ -61,6 +61,10 @@ jobs:
             'types::api_key_provider::tests::codex_auth_resolution_rejects_generic_static_key_fallback' -- --exact
           cargo test --locked -p xai-grok-tools --lib \
             'implementations::grok_build::video_gen::tests::authorization_header_values_are_always_sensitive' -- --exact
+          cargo test --locked -p xai-grok-tools --lib \
+            'implementations::grok_build::video_gen::tests::extra_authorization_header_cannot_disable_redaction' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'session::acp_session::model_switch::provider_media_switch_tests::image_resource_and_definitions_follow_provider_switches' -- --exact
           cargo test --locked -p xai-grok-shell --lib \
             'agent::config::tests::custom_credentials_never_inherit_xai_session_or_global_keys' -- --exact
           cargo test --locked -p xai-grok-shell --lib \

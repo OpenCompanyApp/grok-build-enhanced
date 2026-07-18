@@ -32,6 +32,87 @@ fn xai_image_gen_config_with_rotated_key(
     })
 }
 
+fn remove_image_tool_definitions(bridge: &crate::tools::bridge::ToolBridge) {
+    use xai_grok_tools::implementations::grok_build::{IMAGE_EDIT_TOOL_NAME, IMAGE_GEN_TOOL_NAME};
+
+    bridge.unregister_tool_by_name(IMAGE_GEN_TOOL_NAME);
+    bridge.unregister_tool_by_name(IMAGE_EDIT_TOOL_NAME);
+}
+
+async fn sync_image_tool_definitions(
+    bridge: &crate::tools::bridge::ToolBridge,
+    image_gen_enabled: bool,
+    image_edit_enabled: bool,
+) -> Result<(), xai_tool_runtime::ToolError> {
+    use xai_grok_tools::implementations::grok_build::{
+        IMAGE_EDIT_TOOL_NAME, IMAGE_GEN_TOOL_NAME, ImageEditTool, ImageGenTool,
+    };
+
+    if image_gen_enabled {
+        if bridge.tool_kind(IMAGE_GEN_TOOL_NAME).is_none() {
+            bridge
+                .register_mcp_tools(IMAGE_GEN_TOOL_NAME.to_owned(), ImageGenTool, None)
+                .await?;
+        }
+    } else {
+        bridge.unregister_tool_by_name(IMAGE_GEN_TOOL_NAME);
+    }
+
+    if image_edit_enabled {
+        if bridge.tool_kind(IMAGE_EDIT_TOOL_NAME).is_none() {
+            bridge
+                .register_mcp_tools(IMAGE_EDIT_TOOL_NAME.to_owned(), ImageEditTool, None)
+                .await?;
+        }
+    } else {
+        bridge.unregister_tool_by_name(IMAGE_EDIT_TOOL_NAME);
+    }
+
+    Ok(())
+}
+
+async fn refresh_image_gen_resource(
+    bridge: &crate::tools::bridge::ToolBridge,
+    config: Option<xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig>,
+    api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider>,
+    attribution_callback: Option<xai_grok_tools::SharedAttributionCallback>,
+) {
+    use xai_grok_tools::implementations::grok_build::image_gen::ImageGenClient;
+
+    let Some(config) = config else {
+        remove_image_tool_definitions(bridge);
+        bridge.remove_resource::<ImageGenClient>().await;
+        return;
+    };
+    let image_gen_enabled = config.image_gen_enabled();
+    let image_edit_enabled = config.image_edit_enabled();
+    if !image_gen_enabled && !image_edit_enabled {
+        remove_image_tool_definitions(bridge);
+        bridge.remove_resource::<ImageGenClient>().await;
+        return;
+    }
+
+    match ImageGenClient::new(&config, api_key_provider) {
+        Ok(client) => {
+            bridge
+                .update_resource(client.with_attribution_callback(attribution_callback))
+                .await;
+            if let Err(error) =
+                sync_image_tool_definitions(bridge, image_gen_enabled, image_edit_enabled).await
+            {
+                tracing::warn!(%error, "failed to restore image tool definitions after provider switch");
+                remove_image_tool_definitions(bridge);
+                bridge.remove_resource::<ImageGenClient>().await;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to restore image generation after provider switch");
+            remove_image_tool_definitions(bridge);
+            bridge.remove_resource::<ImageGenClient>().await;
+        }
+    }
+}
+
 fn video_gen_config_for_provider(
     provider: xai_grok_sampling_types::ProviderId,
     configured: &xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig,
@@ -669,44 +750,23 @@ impl SessionActor {
         sampling_config: &xai_grok_sampler::SamplerConfig,
         api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider>,
     ) {
-        use xai_grok_tools::implementations::grok_build::image_gen::{
-            ImageGenClient, ImageGenConfig,
-        };
+        use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
 
         let bridge = self.agent.borrow().tool_bridge().clone();
         let endpoints = self.models_manager.endpoints();
         if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
             let (image_gen_enabled, image_edit_enabled) = self.models_manager.image_tool_gates();
-            if !image_gen_enabled && !image_edit_enabled {
-                bridge.remove_resource::<ImageGenClient>().await;
-                refresh_video_gen_resource(
-                    &bridge,
-                    sampling_config.provider,
-                    &self.rebuild_spec.video_gen_config,
-                    sampling_config.api_key.as_deref(),
-                    &endpoints.xai_api_base_url,
-                    None,
-                    None,
-                )
-                .await;
-                return;
-            }
             // Image generation/editing uses the standalone Codex image model;
             // selected-model image-input support remains an input/read concern.
             // Reuse the binder-owned provider so sampler and tools cannot
             // attest different credential records.
-            let config = ImageGenConfig::OpenAiCodex {
-                base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
-                image_gen_enabled,
-                image_edit_enabled,
-            };
-            if let Ok(client) = ImageGenClient::new(&config, api_key_provider) {
-                bridge
-                    .update_resource(client.with_attribution_callback(None))
-                    .await;
-            } else {
-                bridge.remove_resource::<ImageGenClient>().await;
-            }
+            let config =
+                (image_gen_enabled || image_edit_enabled).then(|| ImageGenConfig::OpenAiCodex {
+                    base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
+                    image_gen_enabled,
+                    image_edit_enabled,
+                });
+            refresh_image_gen_resource(&bridge, config, api_key_provider, None).await;
             refresh_video_gen_resource(
                 &bridge,
                 sampling_config.provider,
@@ -721,8 +781,9 @@ impl SessionActor {
         }
         if sampling_config.provider == xai_grok_sampling_types::ProviderId::Custom {
             // Custom inference providers do not implicitly own xAI media
-            // resources. Remove both clients instead of reusing their key.
-            bridge.remove_resource::<ImageGenClient>().await;
+            // resources. Remove both clients and their advertised tools
+            // instead of reusing a custom key for xAI-owned services.
+            refresh_image_gen_resource(&bridge, None, None, None).await;
             refresh_video_gen_resource(
                 &bridge,
                 sampling_config.provider,
@@ -738,52 +799,49 @@ impl SessionActor {
 
         let provider = api_key_provider;
         let (image_gen_enabled, image_edit_enabled) = self.models_manager.image_tool_gates();
-        if let Some(api_key) = sampling_config.api_key.clone()
+        let config = if let Some(api_key) = sampling_config.api_key.clone()
             && (image_gen_enabled || image_edit_enabled)
         {
-            let config = xai_image_gen_config_with_rotated_key(
-                &self.rebuild_spec.image_gen_config,
-                Some(&api_key),
+            Some(
+                xai_image_gen_config_with_rotated_key(
+                    &self.rebuild_spec.image_gen_config,
+                    Some(&api_key),
+                )
+                .unwrap_or_else(|| {
+                    // A session that began on Codex has no xAI image recipe in
+                    // its rebuild spec. Construct the safe first xAI config from
+                    // the provider endpoint and current feature gates. xAI-origin
+                    // sessions take the lossless branch above.
+                    let mut extra_headers = indexmap::IndexMap::new();
+                    extra_headers.insert(
+                        "user-agent".to_owned(),
+                        format!("xai-grok-build/{}", xai_grok_version::VERSION),
+                    );
+                    ImageGenConfig::Enabled {
+                        api_key,
+                        base_url: endpoints.xai_api_base_url.clone(),
+                        extra_headers,
+                        image_gen_enabled,
+                        image_edit_enabled,
+                        model_override: self
+                            .rebuild_spec
+                            .image_gen_config
+                            .model_override()
+                            .map(ToOwned::to_owned),
+                        tier_restricted: false,
+                    }
+                }),
             )
-            .unwrap_or_else(|| {
-                // A session that began on Codex has no xAI image recipe in
-                // its rebuild spec. Construct the safe first xAI config from
-                // the provider endpoint and current feature gates. xAI-origin
-                // sessions take the lossless branch above.
-                let mut extra_headers = indexmap::IndexMap::new();
-                extra_headers.insert(
-                    "user-agent".to_owned(),
-                    format!("xai-grok-build/{}", xai_grok_version::VERSION),
-                );
-                ImageGenConfig::Enabled {
-                    api_key,
-                    base_url: endpoints.xai_api_base_url.clone(),
-                    extra_headers,
-                    image_gen_enabled,
-                    image_edit_enabled,
-                    model_override: self
-                        .rebuild_spec
-                        .image_gen_config
-                        .model_override()
-                        .map(ToOwned::to_owned),
-                    tier_restricted: false,
-                }
-            });
-            match ImageGenClient::new(&config, provider.clone()) {
-                Ok(client) => {
-                    bridge
-                        .update_resource(client.with_attribution_callback(
-                            self.rebuild_spec.attribution_callback.clone(),
-                        ))
-                        .await;
-                }
-                Err(_) => {
-                    bridge.remove_resource::<ImageGenClient>().await;
-                }
-            }
         } else {
-            bridge.remove_resource::<ImageGenClient>().await;
-        }
+            None
+        };
+        refresh_image_gen_resource(
+            &bridge,
+            config,
+            provider.clone(),
+            self.rebuild_spec.attribution_callback.clone(),
+        )
+        .await;
 
         // The Codex leg removes the xAI-only video client. Rebuild it from the
         // session's original xAI media configuration when switching back,
@@ -1003,7 +1061,7 @@ impl SessionActor {
 #[cfg(test)]
 mod provider_media_switch_tests {
     use super::*;
-    use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
+    use xai_grok_tools::implementations::grok_build::image_gen::{ImageGenClient, ImageGenConfig};
     use xai_grok_tools::implementations::grok_build::video_gen::{VideoGenClient, VideoGenConfig};
     use xai_grok_tools::implementations::web_search::WebSearchConfig;
 
@@ -1262,6 +1320,85 @@ mod provider_media_switch_tests {
             ImageGenConfig::Enabled { ref api_key, .. } if api_key == "old-key"
         ));
         assert!(xai_image_gen_config_with_rotated_key(&ImageGenConfig::Disabled, None).is_none());
+    }
+
+    fn enabled_image_config() -> ImageGenConfig {
+        ImageGenConfig::Enabled {
+            api_key: "xai-image-key".to_owned(),
+            base_url: "https://api.x.ai/v1".to_owned(),
+            extra_headers: indexmap::IndexMap::new(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+            model_override: None,
+            tier_restricted: false,
+        }
+    }
+
+    #[derive(Debug)]
+    struct CodexImageAuth;
+
+    impl xai_grok_tools::types::ApiKeyProvider for CodexImageAuth {
+        fn current_api_key(&self) -> Option<String> {
+            Some("codex-image-key".to_owned())
+        }
+
+        fn request_auth_provider_id(&self) -> Option<&str> {
+            Some(xai_grok_tools::types::OPENAI_CODEX_PROVIDER_ID)
+        }
+    }
+
+    #[tokio::test]
+    async fn image_resource_and_definitions_follow_provider_switches() {
+        use xai_grok_tools::implementations::grok_build::{
+            IMAGE_EDIT_TOOL_NAME, IMAGE_GEN_TOOL_NAME,
+        };
+
+        async fn image_definition_names(bridge: &crate::tools::bridge::ToolBridge) -> Vec<String> {
+            bridge
+                .tool_definitions()
+                .await
+                .into_iter()
+                .filter(|definition| {
+                    matches!(
+                        definition.function.name.as_str(),
+                        IMAGE_GEN_TOOL_NAME | IMAGE_EDIT_TOOL_NAME
+                    )
+                })
+                .map(|definition| definition.function.name)
+                .collect()
+        }
+
+        let agent = super::super::support::test_agent_with_tools(vec![]).await;
+        let bridge = agent.tool_bridge().clone();
+
+        refresh_image_gen_resource(&bridge, Some(enabled_image_config()), None, None).await;
+        assert!(bridge.read_resource::<ImageGenClient>().await.is_some());
+        assert_eq!(image_definition_names(&bridge).await.len(), 2);
+
+        // Custom providers own neither the xAI client nor its advertised tools.
+        refresh_image_gen_resource(&bridge, None, None, None).await;
+        assert!(bridge.read_resource::<ImageGenClient>().await.is_none());
+        assert!(image_definition_names(&bridge).await.is_empty());
+
+        // Codex keeps its provider-owned image path and advertises only live gates.
+        let codex_config = ImageGenConfig::OpenAiCodex {
+            base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
+            image_gen_enabled: true,
+            image_edit_enabled: false,
+        };
+        let codex_auth: xai_grok_tools::types::SharedApiKeyProvider =
+            std::sync::Arc::new(CodexImageAuth);
+        refresh_image_gen_resource(&bridge, Some(codex_config), Some(codex_auth), None).await;
+        assert!(bridge.read_resource::<ImageGenClient>().await.is_some());
+        assert_eq!(
+            image_definition_names(&bridge).await,
+            vec![IMAGE_GEN_TOOL_NAME.to_owned()]
+        );
+
+        refresh_image_gen_resource(&bridge, None, None, None).await;
+        refresh_image_gen_resource(&bridge, Some(enabled_image_config()), None, None).await;
+        assert!(bridge.read_resource::<ImageGenClient>().await.is_some());
+        assert_eq!(image_definition_names(&bridge).await.len(), 2);
     }
 
     fn enabled_video_config() -> VideoGenConfig {

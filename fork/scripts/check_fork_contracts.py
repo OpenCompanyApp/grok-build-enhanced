@@ -74,7 +74,9 @@ def check_provider_isolation_sentinels() -> None:
         "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs":
             "codex_auth_resolution_rejects_generic_static_key_fallback",
         "crates/codegen/xai-grok-tools/src/implementations/grok_build/video_gen/mod.rs":
-            "authorization_header_values_are_always_sensitive",
+            "extra_authorization_header_cannot_disable_redaction",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs":
+            "image_resource_and_definitions_follow_provider_switches",
         "crates/codegen/xai-grok-shell/src/agent/config.rs":
             "custom_credentials_never_inherit_xai_session_or_global_keys",
         "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs":
