@@ -546,6 +546,24 @@
       ]
     },
     {
+      "id": "fork-ci-contracts",
+      "description": "Credential-free CI checks for provider isolation, Warp provenance, Enhanced identity, updater routing, generated workspace discipline, ownership, and secret-file hygiene.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        ".github/workflows/fork-contracts.yml",
+        "fork/scripts/check_fork_contracts.py"
+      ],
+      "integration_paths": [
+        ".github/workflows/fork-contracts.yml",
+        "fork/scripts/check_fork_contracts.py"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "fork-release-pipeline",
       "description": "Fork-owned native macOS/Linux GitHub Release packaging, provenance, ownership checks, and local contract tests.",
       "source_ids": [

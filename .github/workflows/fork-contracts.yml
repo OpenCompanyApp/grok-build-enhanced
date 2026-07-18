@@ -1,0 +1,83 @@
+name: Fork contracts
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-contracts:
+    name: Static fork contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out complete history without persisted credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate ownership, provenance, release, and hygiene contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONDONTWRITEBYTECODE=1
+          python3 -I -B -m unittest discover -s fork/scripts/tests -v
+          python3 -I -B fork/scripts/check_manifest.py --strict-coverage
+          python3 -I -B fork/scripts/check_fork_contracts.py
+          python3 -I -B scripts/release/tests/test_release_pipeline.py
+          git diff --check
+
+  rust-contracts:
+    name: Focused Rust contracts
+    needs: static-contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/fork-contracts
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Exercise provider credential isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p xai-grok-sampler --lib \
+            'client::tests::codex_rejects_static_or_generic_header_credentials' -- --exact
+          cargo test --locked -p xai-grok-tools --lib \
+            'types::api_key_provider::tests::codex_auth_resolution_rejects_generic_static_key_fallback' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'session::acp_session::media_gen_auth_retry_tests::provider_owned_codex_401_never_falls_through_to_xai_auth_manager' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'agent::models::tests::provider_scoped_fallback_never_crosses_from_codex_to_xai' -- --exact
+
+      - name: Exercise Enhanced identity and fork updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p xai-grok-version
+          cargo test --locked -p xai-grok-update --lib \
+            'version::tests::enhanced_release_selection_requires_the_exact_native_asset' -- --exact
+          cargo test --locked -p xai-grok-update --lib \
+            'version::tests::github_release_lookup_uses_public_api_metadata' -- --exact
+          cargo test --locked -p xai-grok-update --test test_fork_release_routing
+          cargo test --locked -p xai-grok-pager --lib \
+            'app::cli::tests::upgrade_alias_uses_the_enhanced_update_command' -- --exact
+          cargo test --locked -p xai-grok-pager --lib 'views::welcome::tests'
+
+      - name: Check the composed Enhanced binary
+        shell: bash
+        run: cargo check --locked -p xai-grok-pager-bin
