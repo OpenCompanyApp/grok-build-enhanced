@@ -51,6 +51,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install DotSlash for the pinned protoc wrapper
+        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
       - name: Exercise provider credential isolation
         shell: bash
         run: |

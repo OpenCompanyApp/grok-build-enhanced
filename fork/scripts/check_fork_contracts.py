@@ -18,6 +18,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "fork/manifest.json"
 WARP_REVISION = "b385044250f1ed3c9379ab34a8fe82f02fdffaa4"
+DOTSLASH_ACTION = (
+    "facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a"
+)
 ACTION_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -175,6 +178,18 @@ def check_workflow_pins() -> None:
                 raise ContractError(
                     f"{workflow.relative_to(ROOT)} action {action} is not pinned to a full SHA"
                 )
+
+    dotslash_requirements = {
+        ".github/workflows/fork-contracts.yml": 1,
+        ".github/workflows/release.yml": 2,
+    }
+    for relative, minimum_count in dotslash_requirements.items():
+        actual_count = read(relative).count(DOTSLASH_ACTION)
+        if actual_count < minimum_count:
+            raise ContractError(
+                f"{relative} installs pinned DotSlash {actual_count} time(s); "
+                f"expected at least {minimum_count} for every Rust job using bin/protoc"
+            )
 
 
 def check_tracked_secret_files() -> None:
