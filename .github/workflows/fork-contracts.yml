@@ -59,6 +59,16 @@ jobs:
             'client::tests::codex_rejects_static_or_generic_header_credentials' -- --exact
           cargo test --locked -p xai-grok-tools --lib \
             'types::api_key_provider::tests::codex_auth_resolution_rejects_generic_static_key_fallback' -- --exact
+          cargo test --locked -p xai-grok-tools --lib \
+            'implementations::grok_build::video_gen::tests::authorization_header_values_are_always_sensitive' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'agent::config::tests::custom_credentials_never_inherit_xai_session_or_global_keys' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'session::provider::openai_codex::tests::custom_runtime_drops_xai_credentials_and_generic_tool_auth' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'session::acp_session::auth_error_no_retry_tests::reconstruct_full_config_drops_cross_provider_custom_credential' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'session::acp_session::session_setup::tests::idle_model_metadata_refresh_requires_xai_provider_identity' -- --exact
           cargo test --locked -p xai-grok-shell --lib \
             'session::acp_session::media_gen_auth_retry_tests::provider_owned_codex_401_never_falls_through_to_xai_auth_manager' -- --exact
           cargo test --locked -p xai-grok-shell --lib \

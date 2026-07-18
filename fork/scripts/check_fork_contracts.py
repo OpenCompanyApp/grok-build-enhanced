@@ -53,6 +53,18 @@ def check_branding_and_charter() -> None:
         "crates/codegen/xai-grok-version/src/lib.rs",
         'pub const ENHANCED_PRODUCT_NAME: &str = "Grok Build Enhanced";',
     )
+    require_fragment(
+        "crates/codegen/xai-grok-version/src/lib.rs",
+        'pub const UPSTREAM_BASE_VERSION: &str = env!("CARGO_PKG_VERSION");',
+    )
+    require_fragment(
+        "crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md",
+        "OpenCompanyApp/grok-build-enhanced",
+    )
+    require_fragment(
+        "crates/codegen/xai-grok-pager/npm/grok/README.md",
+        "**not** a Grok Build Enhanced distribution route",
+    )
 
 
 def check_provider_isolation_sentinels() -> None:
@@ -61,6 +73,18 @@ def check_provider_isolation_sentinels() -> None:
             "codex_rejects_static_or_generic_header_credentials",
         "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs":
             "codex_auth_resolution_rejects_generic_static_key_fallback",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/video_gen/mod.rs":
+            "authorization_header_values_are_always_sensitive",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs":
+            "custom_credentials_never_inherit_xai_session_or_global_keys",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs":
+            "custom_runtime_drops_xai_credentials_and_generic_tool_auth",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/auth_error_no_retry_tests.rs":
+            "reconstruct_full_config_drops_cross_provider_custom_credential",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/session_setup.rs":
+            "idle_model_metadata_refresh_requires_xai_provider_identity",
+        "crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md":
+            'provider = "custom"',
         "crates/codegen/xai-grok-shell/src/session/acp_session_tests/media_gen_auth_retry_tests.rs":
             "provider_owned_codex_401_never_falls_through_to_xai_auth_manager",
         "crates/codegen/xai-grok-shell/src/agent/models.rs":
