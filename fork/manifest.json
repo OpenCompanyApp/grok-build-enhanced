@@ -631,7 +631,7 @@
     },
     {
       "id": "fork-update-routing",
-      "description": "Fork-owned GitHub Releases discovery, exact native asset installation, Homebrew ownership, and no-fallback update routing.",
+      "description": "Fork-owned GitHub Releases discovery, exact native asset installation, Homebrew Formula ownership with legacy Cask compatibility, and no-fallback update routing.",
       "source_ids": [
         "grok-build-upstream"
       ],

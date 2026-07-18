@@ -27,7 +27,7 @@ responsive Grok braille symbol remain compatible.
 | Bundled Warp themes and theme UX | Implemented |
 | Kimi Code managed provider | Researched/planned only; no Kimi runtime provider or login is shipped |
 | Z.AI GLM Coding Plan provider | Researched/planned only; no GLM runtime provider or login is shipped |
-| Enhanced release artifacts | Fork-owned stable `v0.2.1` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
+| Enhanced release artifacts | Fork-owned stable `v0.2.2` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
 | Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
 
 ## Fork-owned terminal preview
@@ -54,27 +54,34 @@ The fork source and release assets are hosted only under
 [`OpenCompanyApp/grok-build-enhanced`](https://github.com/OpenCompanyApp/grok-build-enhanced).
 The official xAI installer does **not** install Enhanced features.
 
-### Homebrew Cask (macOS)
+### Homebrew Formula (macOS)
 
 Install the latest stable Enhanced release from the fork-owned tap:
 
 ```sh
-brew install --cask OpenCompanyApp/tap/grok-build-enhanced
+brew install --formula OpenCompanyApp/tap/grok-build-enhanced
 ```
 
-This fully qualified command taps only the requested cask. Homebrew owns the
-Caskroom binary and its `grok` and `agent` links; Enhanced detects that ownership
-and does not run its direct-download updater in the background. Upgrade or
-remove the cask with:
+This fully qualified command trusts only the requested Formula. Homebrew owns
+the Cellar binary and its `grok` and `agent` links; Enhanced detects that
+ownership, suppresses direct-download background updates, and delegates an
+explicit `grok update` to `brew upgrade --formula`. Upgrade or remove it with:
 
 ```sh
-brew upgrade --cask OpenCompanyApp/tap/grok-build-enhanced
-brew uninstall --cask OpenCompanyApp/tap/grok-build-enhanced
+brew upgrade --formula OpenCompanyApp/tap/grok-build-enhanced
+brew uninstall --formula OpenCompanyApp/tap/grok-build-enhanced
 ```
 
-An explicit `grok update` from a Homebrew installation delegates to the same
-Homebrew cask. Exact version pinning remains available through the curl
-installer.
+The CLI-only Formula is used instead of a Cask so Homebrew does not place an
+unnotarized release binary behind Cask quarantine. If you installed the
+short-lived `v0.2.1` Cask, migrate once with:
+
+```sh
+brew uninstall --cask OpenCompanyApp/tap/grok-build-enhanced
+brew install --formula OpenCompanyApp/tap/grok-build-enhanced
+```
+
+Exact version pinning remains available through the curl installer.
 
 ### Curl installer
 
@@ -111,7 +118,7 @@ Pin an exact stable or prerelease version with strict SemVer:
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://raw.githubusercontent.com/OpenCompanyApp/grok-build-enhanced/main/install.sh \
-  | sh -s -- --version 0.2.1
+  | sh -s -- --version 0.2.2
 ```
 
 Useful installer options are:
@@ -149,7 +156,7 @@ auto_update = false
 GitHub CLI users can additionally verify the attestation for a retained binary:
 
 ```sh
-gh attestation verify "$HOME/.grok/downloads/grok-0.2.1-macos-aarch64" \
+gh attestation verify "$HOME/.grok/downloads/grok-0.2.2-macos-aarch64" \
   --repo OpenCompanyApp/grok-build-enhanced
 ```
 
