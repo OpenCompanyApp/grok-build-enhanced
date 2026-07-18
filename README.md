@@ -142,9 +142,10 @@ Use `--device-auth` for headless login and
 the xAI login. The authenticated account supplies the model, service-tier, and
 reasoning-effort catalog; the fork does not hardcode entitlement claims.
 Supported Codex sessions expose provider-scoped fast mode, usage state,
-standalone web search/navigation, local protected `web_fetch`, catalog-gated
-image input, and feature-gated image generation/editing. Availability remains
-dependent on account metadata and server-side feature gates.
+standalone web search/navigation, local protected `web_fetch`, image input with
+catalog metadata that is currently descriptive rather than enforced, and
+feature-gated image generation/editing. Availability remains dependent on
+account metadata and server-side feature gates.
 
 Read the implemented
 [OpenAI Codex subscription provider reference](docs/providers/openai-codex-subscription-provider-reference.md)
