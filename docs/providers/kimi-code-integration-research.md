@@ -1,8 +1,10 @@
 # Kimi Code plan integration research
 
 > Status: research and implementation design only. Kimi Code support described
-> here is not yet implemented. Findings were verified on 2026-07-17 against
-> current Moonshot AI documentation and the source revisions listed below.
+> here is not yet implemented. The source revisions below are prior research
+> already recorded in [`UPSTREAM_VERSIONS.md`](../../UPSTREAM_VERSIONS.md); this
+> reconciliation did not fetch or re-review them and leaves the upstream ledger
+> unchanged.
 >
 > This repository is an unofficial Grok Build fork. Any future Kimi Code
 > integration must identify itself truthfully and must not imply endorsement by
@@ -11,9 +13,12 @@
 ## Executive conclusion
 
 Kimi Code could fit this fork as a possible future provider alongside xAI and
-OpenAI Codex. The recommended future integration path is:
+OpenAI Codex. Every identifier and command in this document is proposed design
+notation only: the checked-in provider and CLI enums contain no Kimi variant,
+and no runtime path can select or load Kimi credentials. The recommended future
+integration path is:
 
-- Provider ID: `kimi_code`.
+- Proposed provider ID: `kimi_code`.
 - Credential source: a Kimi Code subscription API key created in the Kimi Code
   Console.
 - Protocol: OpenAI-compatible Chat Completions.

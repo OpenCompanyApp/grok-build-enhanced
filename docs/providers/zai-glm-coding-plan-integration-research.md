@@ -1,9 +1,10 @@
 # Z.AI GLM Coding Plan integration research
 
 > Status: research and implementation design only. Z.AI Coding Plan support
-> described here is not yet implemented. Findings were verified on 2026-07-17
-> against current Z.AI documentation, live unauthenticated endpoint behavior,
-> and the source revisions listed below.
+> described here is not yet implemented. The source revisions and endpoint
+> observations below are prior research; this reconciliation did not fetch,
+> re-review, or re-probe them and leaves
+> [`UPSTREAM_VERSIONS.md`](../../UPSTREAM_VERSIONS.md) unchanged.
 >
 > The project owner reports written confirmation from Z.AI that Grok Build is
 > approved and will be added to the supported-tool list. That private
@@ -16,12 +17,14 @@
 
 Z.AI GLM Coding Plan could fit this fork as a future first-class subscription
 provider alongside the currently implemented xAI and experimental OpenAI Codex
-providers. Kimi Code is a separate, unimplemented research proposal. The
-recommended future architecture is:
+providers. Kimi Code is a separate, unimplemented research proposal. Every
+identifier and command in this document is proposed design notation only: the
+checked-in provider and CLI enums contain no Z.AI variant, and no runtime path
+can select or load Z.AI credentials. The recommended future architecture is:
 
-- Provider ID: `zai_coding_plan`.
-- Credential source: a Z.AI Coding Plan API key.
-- Credential scope: `zai::coding-plan::global`.
+- Proposed provider ID: `zai_coding_plan`.
+- Proposed credential source: a Z.AI Coding Plan API key.
+- Proposed credential scope: `zai::coding-plan::global`.
 - Protocol: OpenAI-compatible Chat Completions.
 - Base URL: `https://api.z.ai/api/coding/paas/v4`.
 - Dynamic model discovery from authenticated `GET /models`.
@@ -50,8 +53,11 @@ This research reviewed the following gitignored `inspiration/` checkouts:
   `0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254`.
 - [zai-org/GLM-5][glm-5-github] at
   `436efa09bc868a6922e307624189e7018406beb9`.
-- [anomalyco/opencode][opencode-github] at
-  `453b61e27b2f6c2752a60dd7d8412bdcf4e0aa3d`.
+- [anomalyco/opencode][opencode-github] only as an interoperability reference.
+  The canonical ledger records
+  `1d2a7b4c860f6a29eb90bdda07757b2adf34ab61` as last reviewed and
+  `efb6cc2d4bf6332eb156709795d2b3a649198b65` as latest fetched; this
+  reconciliation inspected neither and does not promote the latter.
 - [steipete/CodexBar][codexbar-github] at
   `e6b2ea490cec47d122ba14e32bfc41e53d98422c`.
 - [nniicckk6/zai-extention][zai-usage-helper] at
@@ -234,9 +240,10 @@ A GLM request should explicitly contain the selected behavior, for example:
 }
 ```
 
-OpenCode currently applies the same `thinking.type=enabled` and
-`clear_thinking=false` behavior for its Z.AI-compatible providers. See its
-current [`transform.ts` implementation][opencode-transform].
+OpenCode was consulted only as transport research for this proposed request
+shape. It is not a runtime provider in this fork, and its behavior must be
+re-verified at a ledger-recorded revision before any implementation is based on
+it.
 
 ## Preserved and interleaved reasoning
 
@@ -812,7 +819,6 @@ reasoning, or sensitive tool results.
 [zai-coding-plugins]: https://github.com/zai-org/zai-coding-plugins
 [glm-5-github]: https://github.com/zai-org/GLM-5
 [opencode-github]: https://github.com/anomalyco/opencode
-[opencode-transform]: https://github.com/anomalyco/opencode/blob/453b61e27b2f6c2752a60dd7d8412bdcf4e0aa3d/packages/opencode/src/provider/transform.ts#L1127-L1142
 [codexbar-github]: https://github.com/steipete/CodexBar
 [codexbar-zai]: https://github.com/steipete/CodexBar/blob/e6b2ea490cec47d122ba14e32bfc41e53d98422c/docs/zai.md
 [zai-usage-helper]: https://github.com/nniicckk6/zai-extention

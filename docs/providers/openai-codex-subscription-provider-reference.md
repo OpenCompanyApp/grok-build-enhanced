@@ -1,11 +1,12 @@
 # OpenAI Codex subscription provider reference
 
-> Status: implemented, experimental provider reference. Verified on
-> 2026-07-17 against this fork, the official Codex documentation, and the
-> source revisions recorded in [`UPSTREAM_VERSIONS.md`][upstream-versions].
+> Status: implemented, experimental provider reference. Reconciled on
+> 2026-07-17 against the checked-in fork implementation and tests.
+> [`UPSTREAM_VERSIONS.md`][upstream-versions] separately records external
+> revisions; this reconciliation did not fetch or promote an upstream revision.
 >
 > This is an unofficial Grok Build fork. Direct use of the ChatGPT Codex
-> backend follows current public `openai/codex` client behavior; it is not a
+> backend follows the compatibility contract implemented here; it is not a
 > stable, general-purpose OpenAI API contract and does not imply OpenAI or xAI
 > endorsement.
 
@@ -31,20 +32,23 @@ For “what this fork does,” the checked-in Rust code and tests are authoritat
 For the external service contract, use official OpenAI documentation and the
 public `openai/codex` source, then verify with an entitled-account smoke test.
 
-At this document's verification date, `UPSTREAM_VERSIONS.md` records:
+At this document's reconciliation date, `UPSTREAM_VERSIONS.md` records:
 
-- `openai/codex` reviewed baseline
-  `18110b810f0a328147f6cd85e6f1ab6414927366` and latest fetched
-  `315195492c80fdade38e917c18f9584efd599304`;
-- OpenCode reviewed baseline
-  `1d2a7b4c860f6a29eb90bdda07757b2adf34ab61` and latest fetched
-  `efb6cc2d4bf6332eb156709795d2b3a649198b65`; and
+- `openai/codex` last reviewed at
+  `18110b810f0a328147f6cd85e6f1ab6414927366`, with
+  `315195492c80fdade38e917c18f9584efd599304` only the latest fetched revision;
+- OpenCode last reviewed at
+  `1d2a7b4c860f6a29eb90bdda07757b2adf34ab61`, with
+  `efb6cc2d4bf6332eb156709795d2b3a649198b65` only the latest fetched revision;
+  and
 - fork compatibility version `0.144.0`.
 
-The GPT-5.6 table below was directly inspected at the latest fetched Codex
-revision. That does not mark the entire upstream diff reviewed. Keep the
-tracker's reviewed/latest distinction until every relevant contract change has
-been audited and tested.
+OpenCode is an interoperability and provenance reference, not a runtime
+provider identity. This documentation reconciliation did not inspect either
+latest-fetched revision, so it leaves the upstream ledger unchanged and does
+not promote either revision to reviewed. The dated GPT-5.6 table below retains
+its exact source-revision label as a compatibility snapshot, not as evidence
+that the complete upstream diff was reviewed.
 
 The shortest operational sequence is:
 
@@ -90,11 +94,15 @@ target/debug/xai-grok-pager logout --provider openai-codex
 | Current client compatibility version | `0.144.0` |
 
 The provider and credential source are explicit Rust types in
-[`xai-grok-sampling-types/src/provider.rs`][provider-types]. A caller-selected
-base URL cannot turn another provider into Codex or cause Codex credentials to
-be sent elsewhere. Production inference, catalog, search, usage, and image
-clients allow only their canonical ChatGPT destinations; narrow loopback seams
-exist only in test builds.
+[`xai-grok-sampling-types/src/provider.rs`][provider-types]. The auth/model CLI
+accepts only `xai` and `openai-codex`; Kimi, Z.AI, and OpenCode are not CLI or
+runtime provider identities. The generic `custom` runtime variant is distinct
+and cannot acquire Codex subscription credentials.
+
+A caller-selected base URL cannot turn another provider into Codex or cause
+Codex credentials to be sent elsewhere. Production inference, catalog, search,
+usage, and image clients allow only their canonical ChatGPT destinations;
+narrow loopback seams exist only under tests or explicit test-support builds.
 
 ## Ownership boundaries
 
@@ -130,7 +138,9 @@ S256 and a cryptographically random state value. The client:
 7. Extracts and validates ChatGPT identity/workspace claims before storage.
 
 The callback expires after ten minutes. A stray callback with the wrong state
-does not consume the legitimate pending login.
+does not consume the legitimate pending login. Callback responses send
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer` so the local result
+page is not cached or used as referrer state.
 
 ### Device authorization
 
@@ -225,22 +235,56 @@ X-OpenAI-Fedramp: true                 # only for FedRAMP credentials
 
 Product/compatibility clients additionally send the current `User-Agent`,
 `originator: grok_build_codex`, and `version: 0.144.0`. Responses Lite requests
-carry `x-openai-internal-codex-responses-lite: true`.
+carry `x-openai-internal-codex-responses-lite: true`. Responses inference also
+uses sensitive `session-id`, `thread-id`, and `x-client-request-id` values plus
+an optional sensitive `x-codex-turn-state`; standalone search instead uses a
+separate sensitive `x-codex-turn-metadata` header.
 
-All credential headers are marked sensitive. The following must never appear
-in logs, errors, hooks, trace uploads, cache keys, or diagnostics:
+All credential and private request-identity headers are marked sensitive.
+Arbitrary Codex response bodies are withheld from diagnostics; only bounded,
+non-secret classifications such as status, usage limit, or encrypted-content
+may surface. The following must never appear in logs, errors, hooks, trace
+uploads, cache keys, or diagnostics:
 
 - bearer, refresh, or ID tokens, including prefixes;
 - ChatGPT account or user IDs;
 - email addresses derived from identity tokens;
 - FedRAMP state;
-- `x-codex-turn-state`; or
+- session, thread, client-request, turn-state, or search turn-metadata values;
+- raw authenticated response bodies; or
 - raw credential-bearing header maps.
 
 User `extra_headers` cannot override authorization, account, FedRAMP,
 originator/version, Responses Lite, or Codex turn-state headers. Codex traffic
 must not contain xAI-only `x-api-key`, `x-userid`, `x-email`, `x-grok-*`, or
 `x-xai-*` headers.
+
+## Endpoint allowlists, redirects, and response limits
+
+Provider identity, destination, and credential binding are checked together.
+Production clients are sealed to the OAuth paths on `auth.openai.com`, the
+listed Codex paths under `https://chatgpt.com/backend-api/codex`, and the exact
+`https://chatgpt.com/backend-api/wham/usage` usage URL. Loopback origins are
+accepted only by scoped test/test-support seams. Every Codex client disables
+redirect following so bearer/account/FedRAMP headers are never replayed to a
+redirect target.
+
+The checked-in application limits are not uniform:
+
+| Operation | Timeout / size behavior |
+| --- | --- |
+| Responses inference and compaction | No provider-specific total response-body cap. Interactive SSE is guarded by the sampler's configurable idle timeout (300 seconds by default), not a total-byte limit. |
+| Model catalog | 5-second request timeout; 8 MiB network body; 16 MiB on-disk cache envelope. |
+| Subscription usage | 15-second request timeout; no provider-specific application body-size cap. |
+| Standalone search | 60-second request timeout; 10 MiB response body, then bounded JSON depth/nodes/references/citations. |
+| Image generation/edit response | 300-second total and 240-second read timeouts; 48 MiB response body, 32 MiB decoded image, 40 million pixels, and 8192-pixel maximum dimension. |
+
+Input limits are separate from response limits. Structured search accepts a
+16 KiB query or 64 KiB command object with bounded depth/nodes/domains; its
+visible-history limits are listed below. Image editing accepts at most five
+references, at most 24 MiB raw per reference and 48 MiB aggregate for Codex,
+with an aggregate pixel cap of 178,956,970. Do not describe the uncapped
+Responses or usage paths as if the catalog/search/image caps covered them.
 
 ## Model catalog and entitlements
 
@@ -254,6 +298,12 @@ It parses model visibility, priority, context and compaction limits, input
 modalities, reasoning presets, default reasoning, service tiers, Responses Lite
 support, tool mode, search capability, and multi-agent metadata. Only models
 whose service metadata says they are visible in the picker are presented.
+
+The catalog adapter stores `supports_image_input`, but the current attachment
+pipeline does **not** consult that flag before adding user images to a Codex
+turn. It is descriptive metadata today, not a client-side entitlement gate;
+provider rejection remains possible for a selected model that cannot accept an
+image.
 
 There is no hardcoded entitlement fallback. A successful empty catalog is
 authoritative. Network or authentication failure is distinct from “this
@@ -291,8 +341,10 @@ always wins.
 | `gpt-5.6-luna` | 372K | `medium` | `low`, `medium`, `high`, `xhigh`, `max` | Yes | `priority` | v1 |
 
 All three were marked `use_responses_lite: true` and `tool_mode:
-code_mode_only` in that source snapshot. Do not compile this table into model
-selection logic. Use it only for regression testing and upstream-diff review.
+code_mode_only` in that source snapshot. The “Images” column records catalog
+metadata; it does not imply that this fork currently enforces that metadata
+before forwarding attachments. Do not compile this table into model selection
+logic. Use it only for regression testing and upstream-diff review.
 
 ## Responses transport
 
@@ -306,20 +358,23 @@ Normal Codex defaults include:
 - `stream: true` for interactive turns;
 - `store: false`;
 - encrypted reasoning content in the requested include set;
+- removal of `temperature` from every Codex Responses request;
 - a stable `prompt_cache_key` derived from conversation ID, falling back to
   session ID; and
 - provider-specific reasoning/service-tier normalization at the final JSON
   boundary.
 
-The prompt cache key is stable across OAuth refresh, 401 recovery, request IDs,
-and ordinary turns in the same conversation. It intentionally changes with a
-new conversation/session rather than including token or account material.
+Temperature removal and prompt-cache-key insertion happen for Codex Responses
+whether or not the selected model uses Responses Lite. The prompt cache key is
+stable across OAuth refresh, 401 recovery, request IDs, and ordinary turns in
+the same conversation. It intentionally changes with a new
+conversation/session rather than including token or account material.
 
 ### Responses Lite shaping
 
-When the selected catalog model advertises Responses Lite, the sampler:
+When the selected catalog model advertises Responses Lite, the sampler
+additionally:
 
-- removes `temperature`;
 - changes system-role input to developer-role input;
 - strips unsupported image `detail` fields;
 - moves Grok function schemas into a developer `additional_tools` input item;
@@ -334,9 +389,9 @@ Auxiliary tool-free requests retain an empty `additional_tools` item but omit
 without a callable tool is rejected by the current backend.
 
 The transformer is in
-[`xai-grok-sampler/src/client.rs`][sampler-client]. It changes only the wire
-contract; Grok's conversation store, registry, tool execution, permissions, and
-loop remain authoritative.
+[`provider/openai_codex/responses.rs`][codex-responses]. It changes only the
+wire contract; Grok's conversation store, registry, tool execution,
+permissions, and loop remain authoritative.
 
 ### Turn state
 
@@ -410,11 +465,12 @@ but omitted from the request. Unknown tiers are omitted rather than forwarded.
 Fast is available only when the authenticated model catalog advertises the
 tier; it never affects xAI or custom-provider traffic.
 
-As of the verification date, [official Fast mode documentation][openai-speed]
-says supported models run about 1.5x faster and consume more ChatGPT credits:
-GPT-5.6 and GPT-5.5 at 2.5x Standard credits, GPT-5.4 at 2x. These are dated
-product rules, not request constants. OpenAI API Priority pricing is a separate
-billing contract.
+The pre-existing 2026-07-17 product snapshot cites [official Fast mode
+documentation][openai-speed] for about 1.5x speed and higher ChatGPT-credit
+consumption: GPT-5.6 and GPT-5.5 at 2.5x Standard credits, GPT-5.4 at 2x. This
+reconciliation did not re-check those multipliers. They are dated product
+rules, not request constants; OpenAI API Priority pricing is a separate billing
+contract.
 
 ## Web tools
 
@@ -439,18 +495,21 @@ URLs and are therefore an explicit data boundary.
 
 Search receives only a bounded visible-history projection:
 
-- one or two recent user text messages;
-- assistant text between those user messages;
-- no system or synthetic reminders;
+- at most eight messages and 32 KiB total;
+- one or two recent user text messages, each at most 16 KiB;
+- at most 4 KiB of assistant text between those user messages;
+- no system or synthetic reminders; and
 - no reasoning, tool traffic, credentials, images, or hidden state.
 
-`x-codex-turn-metadata` contains only bounded session, thread, turn, model, and
-reasoning identifiers. It is separate from the sensitive provider-private
-`x-codex-turn-state`.
+`x-codex-turn-metadata` is separately bounded to 4 KiB and contains only
+session, thread, turn, model, and reasoning identifiers. It is marked sensitive
+and is distinct from the provider-private `x-codex-turn-state`, which search
+does not receive.
 
-Search refuses redirects, validates response size/depth, resolves auth for each
-attempt, and owns its one 401 recovery. See
-[`xai-grok-tools/src/implementations/web_search/client.rs`][codex-search].
+Search refuses redirects, caps the response at 10 MiB, bounds result projection
+to 32 references, 64 citations, 4096 nodes, and depth 16, resolves auth for
+each attempt, and owns its exact-binding one-shot 401 recovery. See
+[`web_search/backends/openai_codex.rs`][codex-search].
 
 ### Local web fetch
 
@@ -473,10 +532,14 @@ GROK_WEB_FETCH=1       # explicitly enable local fetch
 
 Image input and image creation are separate capabilities:
 
-- A coding model can read attached/local images only when its authenticated
-  catalog metadata includes the `image` input modality.
-- `image_gen` and `image_edit` use the separately pinned `gpt-image-2` backend
-  and their own feature gates.
+- The authenticated catalog records whether a coding model advertises `image`
+  input, but the current attachment pipeline does not enforce that flag before
+  forwarding user images. Treat it as descriptive metadata and verify selected
+  models live; unsupported input can still reach and be rejected by the
+  provider.
+- `image_gen` and `image_edit` are independent, separately feature-gated tools
+  using the pinned `gpt-image-2` backend. Their availability does not follow
+  the selected coding model's image-input metadata.
 
 Codex image generation sends JSON to `/images/generations`. Editing sends one
 or more bounded references to `/images/edits`. PNG, JPEG, and WebP edit inputs
@@ -490,11 +553,11 @@ auth/account/FedRAMP headers, refuse alternate production origins and
 redirects, and recover one provider-scoped 401. They never treat an access
 token as a static `api_key`.
 
-The current ChatGPT Codex subscription contract does not expose video
-generation to this adapter. xAI video tools are unavailable while a Codex model
-is selected and return when the session switches back to xAI. Official Codex
-documentation currently identifies `gpt-image-2` and notes that image usage is
-plan-dependent; see [Image generation][openai-images].
+The implemented ChatGPT Codex adapter exposes no video generation. xAI video
+tools are unavailable while a Codex model is selected and return when the
+session switches back to xAI. The existing dated product research cites
+[Image generation][openai-images] for `gpt-image-2` and plan-dependent image
+usage; re-check that external contract before changing the adapter.
 
 ## Usage and informational API-equivalent cost
 
@@ -518,7 +581,9 @@ current account state:
 - the available count of banked rate-limit resets, when present.
 
 Window lengths are displayed from the response. The client does not assume
-that they will always be five-hour and weekly windows.
+that they will always be five-hour and weekly windows. It does not derive a
+ChatGPT invoice, dollar spend, or Fast-credit multiplier from these fields, and
+it does not purchase or mutate plan credits.
 
 Usage has a one-minute same-credential cache. Background failures back off from
 one minute to at most fifteen minutes and may reuse only a snapshot belonging
@@ -579,6 +644,11 @@ retries cannot fix an exhausted subscription window and can create confusing
 UI loops if a partial stream is replayed.
 
 ## Failure and retry matrix
+
+“Once” below means one provider-owned recovery budget bound to the exact
+rejected credential record and generation. A retry is accepted only with the
+same provider/source/record and a strictly newer generation; generic transport
+retries do not create a second auth-recovery budget.
 
 | Operation | Auth resolution | 401 policy | Redirect policy | Important terminal cases |
 | --- | --- | --- | --- | --- |
@@ -642,14 +712,14 @@ SSRF policy than the hosted subscription search service.
 
 | Area | Primary files |
 | --- | --- |
-| Provider types/constants | [`xai-grok-sampling-types/src/provider.rs`][provider-types], [`xai-grok-version/src/lib.rs`][version-file] |
-| OAuth, credentials, storage, manager | [`xai-grok-shell/src/auth/codex/`][codex-auth-dir] |
+| Provider types/constants | [`xai-grok-sampling-types/src/provider.rs`][provider-types], [`xai-grok-sampling-types/src/openai_codex.rs`][provider-constants], [`xai-grok-version/src/lib.rs`][version-file] |
+| OAuth, credentials, storage, manager, usage | [`xai-grok-shell/src/auth/codex/`][codex-auth-dir] |
 | Model catalog | [`xai-grok-shell/src/remote/openai_codex_catalog.rs`][codex-catalog] |
-| Sampler configuration/Responses transport | [`xai-grok-sampler/src/config.rs`][sampler-config], [`xai-grok-sampler/src/client.rs`][sampler-client] |
-| Search | [`xai-grok-tools/src/implementations/web_search/client.rs`][codex-search] |
+| Sampler configuration/Responses transport | [`xai-grok-sampler/src/config.rs`][sampler-config], [`xai-grok-sampler/src/client.rs`][sampler-client], [`provider/openai_codex/`][codex-sampler-dir] |
+| Search | [`web_search/backends/openai_codex.rs`][codex-search] |
 | Local fetch | [`xai-grok-tools/src/implementations/grok_build/web_fetch/`][web-fetch-dir] |
 | Images | [`image_gen/mod.rs`][image-gen], [`image_edit/mod.rs`][image-edit] |
-| Session wiring and provider switching | [`xai-grok-shell/src/session/agent_rebuild.rs`][agent-rebuild] |
+| Session wiring and provider switching | [`session/provider/openai_codex.rs`][codex-session-provider], [`session/agent_rebuild.rs`][agent-rebuild] |
 | Compaction | [`xai-grok-shell/src/session/helpers/session_compact.rs`][session-compact] |
 | `/fast`, `/usage`, `/cost` | [`xai-grok-pager/src/slash/commands/`][slash-commands] |
 | User-facing auth guide | [`02-authentication.md`][auth-guide] |
@@ -662,17 +732,24 @@ SSRF policy than the hosted subscription search service.
 Run focused tests before the broader binary check:
 
 ```sh
-cargo test -p xai-grok-shell auth::codex
-cargo test -p xai-grok-shell remote::openai_codex_catalog
-cargo test -p xai-grok-shell codex_responses_compaction_tests
-cargo test -p xai-grok-sampler codex
-cargo test -p xai-grok-tools codex
-cargo test -p xai-grok-tools web_search
-cargo test -p xai-grok-pager usage
+PYTHONDONTWRITEBYTECODE=1 python3 -I -B fork/scripts/check_manifest.py --strict-coverage
+cargo test -p xai-grok-pager --lib openai_codex_provider_parses_for_auth_and_models
+cargo test -p xai-grok-shell --lib auth::codex
+cargo test -p xai-grok-shell --lib remote::openai_codex_catalog
+cargo test -p xai-grok-shell --lib session::provider::openai_codex
+cargo test -p xai-grok-shell --lib codex_responses_compaction_tests
+cargo test -p xai-grok-shell --test codex_auth_integration
+cargo test -p xai-grok-sampler --lib codex
+cargo test -p xai-grok-tools --lib codex
+cargo test -p xai-grok-tools --lib web_search
+cargo test -p xai-grok-pager --lib usage
 cargo check -p xai-grok-pager-bin
 ```
 
-The suite should cover at least:
+The manifest command is read-only and validates committed `HEAD`, not
+uncommitted worktree content. The Rust tests use synthetic credential records
+and loopback servers; they must not read a real auth file or call the production
+ChatGPT backend. The suite should cover at least:
 
 - PKCE/state validation and device flow;
 - token persistence, expiry, refresh rotation, and concurrent refresh;
@@ -760,15 +837,19 @@ Primary sources:
 - [OpenAI Codex model guidance][openai-models]
 - [OpenAI Codex image generation][openai-images]
 - [OpenAI API pricing][openai-api-pricing]
-- [`openai/codex` login at the recorded source snapshot][upstream-login]
-- [`openai/codex` model catalog at the recorded source snapshot][upstream-models]
-- [`openai/codex` model-provider crates][upstream-provider]
-- [`openai/codex` client transport][upstream-client]
-- [`openai/codex` app-server README][upstream-app-server]
+- [`openai/codex` login at the ledger's latest-fetched snapshot][upstream-login]
+- [`openai/codex` model catalog at that latest-fetched snapshot][upstream-models]
+- [`openai/codex` model-provider crates at that snapshot][upstream-provider]
+- [`openai/codex` client transport at that snapshot][upstream-client]
+- [`openai/codex` app-server README at that snapshot][upstream-app-server]
 
-Secondary interoperability reference:
+These links are pinned review inputs. Their latest-fetched commit is not the
+ledger's last-reviewed commit.
 
-- [OpenCode's Codex plugin at its tracked revision][opencode-codex-plugin]
+Secondary interoperability pointer (latest fetched, not promoted to reviewed):
+
+- [OpenCode's Codex plugin at the ledger's latest-fetched revision][opencode-codex-plugin].
+  OpenCode remains research/provenance input only, never a runtime provider.
 
 The local `inspiration/` clones are research material only and must remain
 gitignored. Never copy auth files or credentials out of them or the user's home
@@ -780,7 +861,10 @@ directory.
 [codex-catalog]: ../../crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs
 [codex-oauth]: ../../crates/codegen/xai-grok-shell/src/auth/codex/oauth.rs
 [codex-pricing]: ../../crates/codegen/xai-grok-shell/src/auth/codex/pricing.rs
-[codex-search]: ../../crates/codegen/xai-grok-tools/src/implementations/web_search/client.rs
+[codex-responses]: ../../crates/codegen/xai-grok-sampler/src/provider/openai_codex/responses.rs
+[codex-sampler-dir]: ../../crates/codegen/xai-grok-sampler/src/provider/openai_codex/
+[codex-search]: ../../crates/codegen/xai-grok-tools/src/implementations/web_search/backends/openai_codex.rs
+[codex-session-provider]: ../../crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs
 [image-edit]: ../../crates/codegen/xai-grok-tools/src/implementations/grok_build/image_edit/mod.rs
 [image-gen]: ../../crates/codegen/xai-grok-tools/src/implementations/grok_build/image_gen/mod.rs
 [openai-api-pricing]: https://developers.openai.com/api/docs/pricing
@@ -789,6 +873,7 @@ directory.
 [openai-models]: https://learn.chatgpt.com/docs/models
 [openai-speed]: https://learn.chatgpt.com/docs/agent-configuration/speed
 [opencode-codex-plugin]: https://github.com/anomalyco/opencode/blob/efb6cc2d4bf6332eb156709795d2b3a649198b65/packages/opencode/src/plugin/openai/codex.ts
+[provider-constants]: ../../crates/codegen/xai-grok-sampling-types/src/openai_codex.rs
 [provider-types]: ../../crates/codegen/xai-grok-sampling-types/src/provider.rs
 [sampler-client]: ../../crates/codegen/xai-grok-sampler/src/client.rs
 [sampler-config]: ../../crates/codegen/xai-grok-sampler/src/config.rs
