@@ -439,11 +439,11 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
     Err(last_err.unwrap())
 }
 
-/// Fetch the latest version without writing the cache. Production update
-/// routing accepts only the fork-owned GitHub Releases backend; legacy npm and
+/// Fetch the latest version without writing the cache. Direct and Homebrew
+/// installations both read fork-owned GitHub Releases metadata; legacy npm and
 /// official artifact sources remain testable helpers but are never fallbacks.
 pub async fn fetch_latest_version(installer: &str, config: &UpdateConfig) -> Result<String> {
-    if installer != "gh-release" {
+    if !matches!(installer, "gh-release" | "homebrew") {
         anyhow::bail!("unsupported Enhanced update installer '{installer}'");
     }
     fetch_gh_release_version(&config.channel).await
@@ -488,9 +488,9 @@ pub async fn write_version_cache(version: &str, stable_version: Option<&str>) {
 
 /// Fetch the latest Enhanced version and cache it.
 ///
-/// Production accepts only `"gh-release"`, which reads public REST metadata
-/// from the fork repository and requires an exact native asset. Legacy npm and
-/// official artifact helpers are never selected or used as fallbacks.
+/// Production accepts `"gh-release"` and `"homebrew"`; both read public REST
+/// metadata from the fork repository and require an exact native asset. Legacy
+/// npm and official artifact helpers are never selected or used as fallbacks.
 pub async fn get_latest_version(installer: &str, config: &UpdateConfig) -> Result<String> {
     let version = fetch_latest_version(installer, config).await?;
     let stable_ptr = try_fetch_stable_pointer().await;

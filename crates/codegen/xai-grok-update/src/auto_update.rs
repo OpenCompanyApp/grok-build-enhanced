@@ -28,6 +28,9 @@ pub enum UpdateRunMode {
 const PROMPT_UPDATE_NOW: &str = "Update now? [Y/n/d]";
 const MSG_AUTO_UPDATE_BACKGROUND: &str = "Auto-update running in background.";
 const MSG_RUN_UPDATE_MANUAL: &str = "Run `grok update` to get the latest version.";
+const HOMEBREW_INSTALLER: &str = "homebrew";
+const HOMEBREW_CASK_TOKEN: &str = "grok-build-enhanced";
+const HOMEBREW_CASK: &str = "OpenCompanyApp/tap/grok-build-enhanced";
 /// Build a reinstall hint that stays inside the fork-owned release channel.
 fn reinstall_hint(_installer: &str) -> String {
     format!("Download the matching Grok Build Enhanced asset from:\n  {GH_RELEASES_URL}")
@@ -166,6 +169,9 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
 /// downgraded — the decision depends on the installer, never the caller.
 pub async fn auto_update_target(update_config: &UpdateConfig) -> Option<(&'static str, String)> {
     let installer = get_installer().await?;
+    if installer == HOMEBREW_INSTALLER {
+        return None;
+    }
     let current = get_installed_grok_version();
     let latest = fetch_latest_version(installer, update_config).await.ok()?;
     needs_update(
@@ -214,6 +220,9 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
     let Some(installer) = get_installer().await else {
         return Ok(outcome);
     };
+    if installer == HOMEBREW_INSTALLER {
+        return Ok(outcome);
+    }
     let allow_downgrade = installer_allows_downgrade(installer);
     let latest = fetch_latest_version(installer, update_config).await?;
 
@@ -262,12 +271,30 @@ fn disk_version_for_installer(installer: &str) -> Option<String> {
     }
 }
 
+fn homebrew_install_path(path: &std::path::Path) -> bool {
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    components
+        .windows(2)
+        .any(|pair| matches!(pair[0], "Caskroom" | "Cellar") && pair[1] == "grok-build-enhanced")
+}
+
+fn running_from_homebrew() -> bool {
+    std::env::current_exe().is_ok_and(|path| homebrew_install_path(&path))
+}
+
 fn env_installer() -> Option<&'static str> {
     if let Ok(v) = std::env::var("GROK_INSTALLER") {
         return match v.to_ascii_lowercase().as_str() {
             "npm" => Some("npm"),
             "internal" => Some("internal"),
             "gh-release" | "gh" => Some("gh-release"),
+            "homebrew" | "brew" => Some(HOMEBREW_INSTALLER),
             _ => None,
         };
     }
@@ -284,8 +311,13 @@ fn env_installer() -> Option<&'static str> {
 }
 
 pub async fn get_installer() -> Option<&'static str> {
-    let legacy = if let Some(installer) = env_installer() {
-        Some(installer)
+    let environment_installer = env_installer();
+    if environment_installer == Some(HOMEBREW_INSTALLER) || running_from_homebrew() {
+        return Some(HOMEBREW_INSTALLER);
+    }
+
+    let legacy = if environment_installer.is_some() {
+        environment_installer
     } else {
         let cfg = config::load_config().await;
         cfg.cli
@@ -393,6 +425,9 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     let Some(installer) = get_installer().await else {
         return BackgroundUpdateCheck::none();
     };
+    if installer == HOMEBREW_INSTALLER {
+        return BackgroundUpdateCheck::none();
+    }
 
     if is_version_cache_fresh().await {
         return BackgroundUpdateCheck::none();
@@ -471,8 +506,8 @@ pub async fn run_update_if_available(
     update_config: &UpdateConfig,
 ) -> Result<bool> {
     let installer = get_installer().await;
-    if installer.is_none() {
-        // Skip update check if no known installer.
+    if installer.is_none() || installer == Some(HOMEBREW_INSTALLER) {
+        // Homebrew owns its Caskroom and performs upgrades explicitly through brew.
         return Ok(false);
     }
 
@@ -687,17 +722,67 @@ pub fn restart_grok() -> Result<()> {
     }
 }
 
+fn parse_homebrew_cask_version(stdout: &str) -> Result<String> {
+    let mut fields = stdout.split_whitespace();
+    if fields.next() != Some(HOMEBREW_CASK_TOKEN) {
+        anyhow::bail!("Homebrew did not report the {HOMEBREW_CASK_TOKEN} cask");
+    }
+    let version = fields
+        .next()
+        .map(str::to_owned)
+        .context("Homebrew did not report an installed cask version")?;
+    if fields.next().is_some() {
+        anyhow::bail!("Homebrew reported multiple installed cask versions");
+    }
+    Ok(version)
+}
+
+fn homebrew_cask_version() -> Result<String> {
+    let output = Command::new("brew")
+        .args(["list", "--cask", "--versions", HOMEBREW_CASK_TOKEN])
+        .output()
+        .context("failed to query the installed Homebrew cask version")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "`brew list --cask --versions {HOMEBREW_CASK_TOKEN}` failed with {}",
+            output.status
+        );
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .context("Homebrew returned a non-UTF-8 installed version")?;
+    parse_homebrew_cask_version(&stdout)
+}
+
+fn run_homebrew_cask_command(action: &str) -> Result<String> {
+    let status = Command::new("brew")
+        .args([action, "--cask", HOMEBREW_CASK])
+        .status()
+        .with_context(|| format!("failed to run `brew {action} --cask {HOMEBREW_CASK}`"))?;
+    if !status.success() {
+        anyhow::bail!("`brew {action} --cask {HOMEBREW_CASK}` failed with {status}");
+    }
+    homebrew_cask_version()
+}
+
 pub async fn run_install_script(
     installer: &str,
     target: Option<&str>,
     _update_config: &UpdateConfig,
 ) -> Result<()> {
-    let result = if installer == "gh-release" {
-        install_gh_release(target).await
-    } else {
-        Err(anyhow::anyhow!(
+    let result = match installer {
+        "gh-release" => install_gh_release(target).await,
+        HOMEBREW_INSTALLER => run_homebrew_cask_command("upgrade").and_then(|installed| {
+            if target.is_some_and(|expected| expected != installed) {
+                anyhow::bail!(
+                    "Homebrew installed version {installed}, which does not satisfy the required target {}",
+                    target.unwrap_or_default()
+                );
+            }
+            Ok(())
+        }),
+        _ => Err(anyhow::anyhow!(
             "unsupported Enhanced update installer '{installer}'"
-        ))
+        )),
     };
     if result.is_ok() {
         remove_stale_models_cache().await;
@@ -2147,6 +2232,47 @@ pub async fn apply_channel_switch(channel_switch: Option<&str>, update_config: &
     }
 }
 
+async fn run_homebrew_update(
+    force: bool,
+    pinned_version: Option<&str>,
+    update_config: &UpdateConfig,
+) -> Result<Option<String>> {
+    if pinned_version.is_some() {
+        anyhow::bail!(
+            "Homebrew installs do not support pinned updates. Use the curl installer for an exact version."
+        );
+    }
+    if update_config.channel != "stable" {
+        anyhow::bail!(
+            "The Homebrew cask follows the stable channel. Switch back with `grok update --stable`."
+        );
+    }
+
+    let current = get_installed_grok_version();
+    let latest = fetch_latest_version(HOMEBREW_INSTALLER, update_config).await?;
+    if !force && !needs_update(&current, &latest, &update_config.channel, false).unwrap_or(false) {
+        eprintln!("Already up to date ({}).", current);
+        return Ok(None);
+    }
+
+    let action = if force { "reinstall" } else { "upgrade" };
+    eprintln!("Updating Grok Build Enhanced through Homebrew...");
+    let installed = run_homebrew_cask_command(action)?;
+    if installed != latest {
+        anyhow::bail!(
+            "Homebrew installed version {installed}, but the fork's latest release is {latest}. Run `brew update` and retry."
+        );
+    }
+    remove_stale_models_cache().await;
+    write_version_cache(&installed, Some(&installed)).await;
+    eprintln!("Homebrew installed Grok Build Enhanced {installed}.");
+    eprintln!("Please restart Grok Build Enhanced.");
+
+    // Homebrew owns the executable outside ~/.grok. Do not signal leaders to
+    // relaunch through the updater-managed ~/.grok/bin path.
+    Ok(None)
+}
+
 /// Run the `grok update` command. Returns `Ok(Some(version))` when the target
 /// version is present on disk afterwards — either installed by this call or
 /// found already installed (e.g. by a concurrent background download); returns
@@ -2180,6 +2306,9 @@ pub async fn run_update(
     }
 
     let current_version = get_installed_grok_version();
+    if installer == HOMEBREW_INSTALLER {
+        return run_homebrew_update(force, pinned_version, update_config).await;
+    }
 
     // When --version is given, skip the latest-version check and install directly
     if let Some(version) = pinned_version {
@@ -2358,6 +2487,40 @@ async fn refresh_deployment_config() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn homebrew_install_paths_require_the_enhanced_cask_or_formula_token() {
+        for path in [
+            "/opt/homebrew/Caskroom/grok-build-enhanced/0.2.0/grok-0.2.0-macos-aarch64",
+            "/usr/local/Caskroom/grok-build-enhanced/0.2.0/grok-0.2.0-macos-x86_64",
+            "/home/linuxbrew/.linuxbrew/Cellar/grok-build-enhanced/0.2.0/bin/grok",
+        ] {
+            assert!(homebrew_install_path(std::path::Path::new(path)), "{path}");
+        }
+        for path in [
+            "/opt/homebrew/Caskroom/other-grok/0.2.0/grok",
+            "/tmp/grok-build-enhanced/0.2.0/grok",
+            "/home/user/.grok/downloads/grok-0.2.0-macos-aarch64",
+        ] {
+            assert!(!homebrew_install_path(std::path::Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn homebrew_cask_version_parser_requires_one_exact_token_and_version() {
+        assert_eq!(
+            parse_homebrew_cask_version("grok-build-enhanced 0.2.0\n").unwrap(),
+            "0.2.0"
+        );
+        for output in [
+            "",
+            "other-grok 0.2.0\n",
+            "grok-build-enhanced\n",
+            "grok-build-enhanced 0.2.0 0.2.1\n",
+        ] {
+            assert!(parse_homebrew_cask_version(output).is_err(), "{output:?}");
+        }
+    }
 
     #[test]
     fn test_tmp_download_path_is_unique_per_version_and_per_attempt() {
@@ -4043,20 +4206,26 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn test_env_installer_explicit_unknown_value_returns_none() {
-        // CRITICAL: when the explicit env var is set to something we don't
-        // recognize, we early-return None. This means we do NOT fall through
-        // to the other env vars or to config. So `GROK_INSTALLER=brew`
-        // disables the env-installer detection entirely.
+    fn test_env_installer_explicit_homebrew_aliases() {
         let _g = InstallerEnvGuard::isolate();
-        unsafe { std::env::set_var("GROK_INSTALLER", "brew") };
-        // Even if MANAGED_BY_NPM is also set, the explicit var wins (and rejects).
         unsafe { std::env::set_var("GROK_MANAGED_BY_NPM", "1") };
-        assert_eq!(
-            env_installer(),
-            None,
-            "explicit GROK_INSTALLER=brew must early-return None, not fall through"
-        );
+        for value in ["brew", "homebrew", "Homebrew"] {
+            unsafe { std::env::set_var("GROK_INSTALLER", value) };
+            assert_eq!(
+                env_installer(),
+                Some(HOMEBREW_INSTALLER),
+                "explicit Homebrew ownership must win over legacy installer hints"
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_env_installer_explicit_unknown_value_returns_none() {
+        let _g = InstallerEnvGuard::isolate();
+        unsafe { std::env::set_var("GROK_INSTALLER", "unknown-package-manager") };
+        unsafe { std::env::set_var("GROK_MANAGED_BY_NPM", "1") };
+        assert_eq!(env_installer(), None);
     }
 
     #[test]

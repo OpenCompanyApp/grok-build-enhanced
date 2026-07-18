@@ -48,23 +48,135 @@ existing braille artwork appears when the terminal supports it and space allows.
 Minimal mode: Grok Build Enhanced · <runtime provider/model/capabilities>
 ```
 
-## Build and install Grok Build Enhanced
+## Install Grok Build Enhanced
 
-The fork source is hosted at
-[github.com/OpenCompanyApp/grok-build-enhanced](https://github.com/OpenCompanyApp/grok-build-enhanced).
-Build this repository before considering the official upstream installer; the
-x.ai installer does **not** install Enhanced features.
+The fork source and release assets are hosted only under
+[`OpenCompanyApp/grok-build-enhanced`](https://github.com/OpenCompanyApp/grok-build-enhanced).
+The official xAI installer does **not** install Enhanced features.
 
-Requirements:
+### Homebrew Cask (macOS)
 
-- **Rust** — pinned by [`rust-toolchain.toml`](rust-toolchain.toml); `rustup`
-  installs it automatically on first build.
-- **protoc** — resolved through [`bin/protoc`](bin/protoc), or from
-  `PATH` / `$PROTOC` as a fallback.
-- macOS and Linux are supported build hosts. Windows builds are best-effort and
-  are not currently tested from this tree.
+Install the latest stable Enhanced release from the fork-owned tap:
 
-Clone the fork and run it directly from the checkout:
+```sh
+brew install --cask OpenCompanyApp/tap/grok-build-enhanced
+```
+
+This fully qualified command taps only the requested cask. Homebrew owns the
+Caskroom binary and its `grok` and `agent` links; Enhanced detects that ownership
+and does not run its direct-download updater in the background. Upgrade or
+remove the cask with:
+
+```sh
+brew upgrade --cask OpenCompanyApp/tap/grok-build-enhanced
+brew uninstall --cask OpenCompanyApp/tap/grok-build-enhanced
+```
+
+An explicit `grok update` from a Homebrew installation delegates to the same
+Homebrew cask. Exact version pinning remains available through the curl
+installer.
+
+### Curl installer
+
+Install the latest stable Enhanced release on macOS or glibc-based Linux:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/OpenCompanyApp/grok-build-enhanced/main/install.sh | sh
+```
+
+The installer supports Arm64 and x86-64, requires no `sudo`, and preserves
+existing `~/.grok` configuration and sessions. It:
+
+- resolves the latest stable release from fork-owned GitHub metadata;
+- validates the Enhanced distribution, repository, release tag, and native
+  asset name;
+- verifies both release provenance and the binary against `SHA256SUMS`;
+- smoke-tests the downloaded binary for the expected Enhanced identity/version;
+- installs versioned binaries under `~/.grok/downloads` and atomically points
+  `~/.grok/bin/grok` (plus the compatible `agent` alias) at the selected version;
+- generates bash, zsh, and fish completions when supported; and
+- adds an idempotent, clearly marked `~/.grok/bin` block to a recognized shell
+  profile when that directory is not already on `PATH`.
+
+Restart the shell if prompted, then verify which executable is active:
+
+```sh
+grok version                 # must begin with: Grok Build Enhanced
+type -a grok                 # inspect PATH order if another grok is installed
+```
+
+Pin an exact stable or prerelease version with strict SemVer:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/OpenCompanyApp/grok-build-enhanced/main/install.sh \
+  | sh -s -- --version 0.2.0
+```
+
+Useful installer options are:
+
+```text
+--version VERSION   Install an exact release instead of the latest stable one
+--bin-dir PATH      Also link grok and agent into an absolute directory
+--no-modify-path    Do not edit a shell startup file
+--force             Replace conflicting files (directories are never replaced)
+```
+
+Pass options after `sh -s --`, or use `GROK_INSTALL_VERSION`,
+`GROK_INSTALL_BIN_DIR`, `GROK_INSTALL_NO_MODIFY_PATH=1`, and
+`GROK_INSTALL_FORCE=1`. To review the installer before running it, download
+[`install.sh`](install.sh), inspect it, and invoke `sh install.sh --help`.
+
+### Update, verify, or remove the curl installation
+
+Use the updater-compatible managed layout after installation:
+
+```sh
+grok update
+```
+
+You can also rerun the curl installer; installation and shell-profile changes
+are idempotent. Fork update checks are labeled **Enhanced** and use only
+fork-owned release metadata and matching artifacts. Persistent automatic update
+checks can be disabled in `~/.grok/config.toml`:
+
+```toml
+[cli]
+auto_update = false
+```
+
+GitHub CLI users can additionally verify the attestation for a retained binary:
+
+```sh
+gh attestation verify "$HOME/.grok/downloads/grok-0.2.0-macos-aarch64" \
+  --repo OpenCompanyApp/grok-build-enhanced
+```
+
+To remove installer-managed binaries and completions while preserving
+configuration, credentials, and sessions in `~/.grok`, run:
+
+```sh
+rm -f "$HOME/.grok/bin/grok" "$HOME/.grok/bin/agent"
+rm -f "$HOME/.grok/downloads"/grok-*-macos-* \
+      "$HOME/.grok/downloads"/grok-*-linux-*
+rm -f "$HOME/.grok/completions/bash/grok.bash" \
+      "$HOME/.grok/completions/zsh/_grok" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/grok.fish"
+```
+
+Also remove the block between the
+`grok build enhanced installer` markers in `.zshrc`, `.bashrc`,
+`.bash_profile`, or `.config/fish/config.fish` if the installer added it. If you
+used `--bin-dir`, remove its `grok` and `agent` links as well. Do not delete all
+of `~/.grok` unless you intentionally want to remove saved configuration,
+credentials, and sessions.
+
+### Build from source
+
+Source builds require Rust (pinned by [`rust-toolchain.toml`](rust-toolchain.toml))
+and `protoc` (resolved through [`bin/protoc`](bin/protoc), `PATH`, or `$PROTOC`).
+Clone the fork and run it directly:
 
 ```sh
 git clone https://github.com/OpenCompanyApp/grok-build-enhanced.git
@@ -72,8 +184,7 @@ cd grok-build-enhanced
 cargo run -p xai-grok-pager-bin
 ```
 
-Or build a release artifact and install it as the compatible `grok` executable
-on macOS/Linux:
+Or install a local release build as the compatible `grok` executable:
 
 ```sh
 cargo build -p xai-grok-pager-bin --release
@@ -82,74 +193,11 @@ install -m 0755 target/release/xai-grok-pager "$HOME/.local/bin/grok"
 "$HOME/.local/bin/grok" version
 ```
 
-The Cargo artifact is named `xai-grok-pager`; distribution installs expose it
-as `grok`. If `CARGO_TARGET_DIR` is set, copy from that target directory instead.
-For Windows, build the same package and copy `target\release\xai-grok-pager.exe`
-to a directory on `PATH` as `grok.exe`.
-
-### Unofficial fork releases
-
-Fork release assets are hosted only under
-[`OpenCompanyApp/grok-build-enhanced`](https://github.com/OpenCompanyApp/grok-build-enhanced/releases).
-The fork-owned pipeline builds native macOS and Linux binaries for Arm64 and
-x86-64, names the installed executable `grok`, and attaches SHA-256 checksums
-and GitHub provenance attestations. The first stable Enhanced release is
-[`v0.2.0`](https://github.com/OpenCompanyApp/grok-build-enhanced/releases/tag/v0.2.0).
-
-Install that release on macOS or Linux without replacing `~/.grok` data:
-
-```sh
-VERSION=0.2.0
-case "$(uname -s)" in
-  Darwin) OS=macos ;;
-  Linux)  OS=linux ;;
-  *) echo "Unsupported OS" >&2; exit 1 ;;
-esac
-case "$(uname -m)" in
-  arm64|aarch64) ARCH=aarch64 ;;
-  x86_64|amd64) ARCH=x86_64 ;;
-  *) echo "Unsupported architecture" >&2; exit 1 ;;
-esac
-
-ASSET="grok-${VERSION}-${OS}-${ARCH}"
-BASE="https://github.com/OpenCompanyApp/grok-build-enhanced/releases/download/v${VERSION}"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
-curl -fL "$BASE/$ASSET" -o "$TMP_DIR/$ASSET"
-curl -fL "$BASE/SHA256SUMS" -o "$TMP_DIR/SHA256SUMS"
-EXPECTED="$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "$TMP_DIR/SHA256SUMS")"
-if command -v sha256sum >/dev/null 2>&1; then
-  ACTUAL="$(sha256sum "$TMP_DIR/$ASSET" | awk '{ print $1 }')"
-else
-  ACTUAL="$(shasum -a 256 "$TMP_DIR/$ASSET" | awk '{ print $1 }')"
-fi
-[ -n "$EXPECTED" ] && [ "$ACTUAL" = "$EXPECTED" ] || {
-  echo "Checksum verification failed" >&2; exit 1;
-}
-mkdir -p "$HOME/.local/bin"
-install -m 0755 "$TMP_DIR/$ASSET" "$HOME/.local/bin/grok"
-"$HOME/.local/bin/grok" version
-```
-
-Add `$HOME/.local/bin` to `PATH` if needed. GitHub CLI users can additionally
-verify a retained download's build provenance:
-
-```sh
-gh attestation verify PATH/TO/DOWNLOADED_ASSET \
-  --repo OpenCompanyApp/grok-build-enhanced
-```
-
-Fork update checks and channels are labeled **Enhanced** and must not fall back
-to official xAI release endpoints. An update is installable only when fork
-release metadata and a matching artifact actually exist. Inherited
-announcements and remote release notes are separate and explicitly labeled
-**official xAI/upstream**. Persistent automatic update checks can be disabled in
-`~/.grok/config.toml`:
-
-```toml
-[cli]
-auto_update = false
-```
+The Cargo artifact remains `xai-grok-pager`; distributions expose it as `grok`.
+If `CARGO_TARGET_DIR` is set, copy from that target directory instead. Windows
+builds are best-effort and are not currently published by the fork release
+pipeline; build the same package and place `xai-grok-pager.exe` on `PATH` as
+`grok.exe`.
 
 ## Official upstream installer
 

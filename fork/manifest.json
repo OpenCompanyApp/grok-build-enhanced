@@ -566,19 +566,22 @@
     },
     {
       "id": "fork-release-pipeline",
-      "description": "Fork-owned native macOS/Linux GitHub Release packaging, provenance, ownership checks, and local contract tests.",
+      "description": "Fork-owned native macOS/Linux GitHub Release packaging, provenance, curl installation, ownership checks, and local contract tests.",
       "source_ids": [
         "grok-build-upstream"
       ],
       "paths": [
         ".github/workflows/release.yml",
         "README.md",
+        "install.sh",
         "scripts/release/package_asset.sh",
         "scripts/release/release_contract.py",
+        "scripts/release/tests/test_install_script.py",
         "scripts/release/tests/test_release_pipeline.py"
       ],
       "integration_paths": [
         ".github/workflows/release.yml",
+        "install.sh",
         "scripts/release/package_asset.sh",
         "scripts/release/release_contract.py"
       ],
@@ -589,7 +592,7 @@
     },
     {
       "id": "fork-update-routing",
-      "description": "Fork-owned GitHub Releases discovery, exact native asset installation, and no-fallback update routing.",
+      "description": "Fork-owned GitHub Releases discovery, exact native asset installation, Homebrew ownership, and no-fallback update routing.",
       "source_ids": [
         "grok-build-upstream"
       ],

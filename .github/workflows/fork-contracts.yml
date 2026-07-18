@@ -35,6 +35,7 @@ jobs:
           python3 -I -B fork/scripts/check_manifest.py --strict-coverage
           python3 -I -B fork/scripts/check_fork_contracts.py
           python3 -I -B scripts/release/tests/test_release_pipeline.py
+          python3 -I -B scripts/release/tests/test_install_script.py
           git diff --check
 
   rust-contracts:

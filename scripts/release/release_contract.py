@@ -456,14 +456,15 @@ def validate_updater_contract(root: Path) -> None:
         '"https://api.github.com/repos/OpenCompanyApp/grok-build-enhanced/releases?per_page=100"',
         '"https://github.com/OpenCompanyApp/grok-build-enhanced/releases/download"',
         'format!("grok-{version}-{os}-{arch}")',
-        'if installer != "gh-release"',
+        'matches!(installer, "gh-release" | "homebrew")',
         'fetch_gh_release_version(&config.channel).await',
         'fetch_gh_release_version("stable")',
     )
     install_fragments = (
         'Some("gh-release")',
-        'if installer == "gh-release"',
-        'install_gh_release(target).await',
+        'const HOMEBREW_CASK: &str = "OpenCompanyApp/tap/grok-build-enhanced";',
+        '"gh-release" => install_gh_release(target).await',
+        'HOMEBREW_INSTALLER => run_homebrew_cask_command("upgrade")',
         'ensure_release_asset_exists(&version, release_api_url, os, arch).await?',
         'release_asset_name(&version, os, arch)',
         'gh_release_download(&download_url, &binary_path).await?',

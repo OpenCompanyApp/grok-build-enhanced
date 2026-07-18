@@ -130,15 +130,16 @@ def check_updater_routes() -> None:
         'pub const GH_RELEASE_REPO: &str = "OpenCompanyApp/grok-build-enhanced";',
         "OpenCompanyApp/grok-build-enhanced/releases?per_page=100",
         "OpenCompanyApp/grok-build-enhanced/releases/download",
-        'if installer != "gh-release"',
+        'matches!(installer, "gh-release" | "homebrew")',
         "fetch_gh_release_version(&config.channel).await",
     ):
         if fragment not in version:
             raise ContractError(f"fork updater discovery is missing {fragment!r}")
     for fragment in (
         'Some("gh-release")',
-        'if installer == "gh-release"',
-        "install_gh_release(target).await",
+        'const HOMEBREW_CASK: &str = "OpenCompanyApp/tap/grok-build-enhanced";',
+        '"gh-release" => install_gh_release(target).await',
+        'HOMEBREW_INSTALLER => run_homebrew_cask_command("upgrade")',
         "ensure_release_asset_exists(&version, release_api_url, os, arch).await?",
         "gh_release_download(&download_url, &binary_path).await?",
     ):

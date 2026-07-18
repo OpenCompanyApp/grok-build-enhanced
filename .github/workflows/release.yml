@@ -80,6 +80,7 @@ jobs:
           python3 -I -B fork/scripts/check_manifest.py --strict-coverage
           python3 -I -B fork/scripts/check_fork_contracts.py
           python3 -I -B scripts/release/tests/test_release_pipeline.py
+          python3 -I -B scripts/release/tests/test_install_script.py
           git diff --check "$THEMATIC_CHECKPOINT..$source_commit"
           python3 -I -B scripts/release/release_contract.py contract \
             --version "$version" \

@@ -18,22 +18,48 @@ integrate it into editors through the Agent Client Protocol (ACP).
 
 The fork source and reviewed release assets live only at
 [`OpenCompanyApp/grok-build-enhanced`](https://github.com/OpenCompanyApp/grok-build-enhanced).
-Until a matching reviewed release asset exists for your platform, build from
-source:
+On macOS, install the fork-owned Homebrew cask:
 
 ```bash
-git clone https://github.com/OpenCompanyApp/grok-build-enhanced.git
-cd grok-build-enhanced
-cargo build --locked --release -p xai-grok-pager-bin
-mkdir -p "$HOME/.local/bin"
-install -m 0755 target/release/xai-grok-pager "$HOME/.local/bin/grok"
+brew install --cask OpenCompanyApp/tap/grok-build-enhanced
 ```
 
-Verify both the Enhanced release and audited upstream-base labels:
+Homebrew owns cask upgrades. Enhanced detects the Caskroom installation,
+disables direct-download background updates, and delegates an explicit
+`grok update` to `brew`. Use `brew upgrade --cask OpenCompanyApp/tap/grok-build-enhanced`
+or `brew uninstall --cask OpenCompanyApp/tap/grok-build-enhanced` directly when
+preferred.
+
+The curl installer supports macOS and glibc-based Linux on Arm64 and x86-64:
 
 ```bash
-grok version
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/OpenCompanyApp/grok-build-enhanced/main/install.sh | sh
 ```
+
+It requires no `sudo`. The installer validates fork-owned release provenance,
+verifies SHA-256 checksums, smoke-tests the Enhanced identity and version, and
+publishes the selected binary atomically under `~/.grok`. Existing
+configuration, credentials, and sessions are preserved. Restart your shell if
+prompted, then verify the active executable:
+
+```bash
+grok version                 # must begin with: Grok Build Enhanced
+type -a grok                 # inspect PATH order if another grok is installed
+```
+
+To pin an exact release, pass a strict SemVer after `sh -s --`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/OpenCompanyApp/grok-build-enhanced/main/install.sh \
+  | sh -s -- --version 0.2.0
+```
+
+Other options include `--bin-dir PATH`, `--no-modify-path`, and `--force`.
+Download and inspect the repository's [`install.sh`](../../../../../install.sh)
+before running it if preferred; `sh install.sh --help` prints the complete
+interface.
 
 Update or check for updates through the fork-owned GitHub Release route:
 
@@ -42,9 +68,34 @@ grok update
 grok upgrade --check
 ```
 
-Enhanced updates require an exact `grok-<version>-<os>-<arch>` asset from the
-fork repository and never fall back to xAI installers, npm, or official artifact
-buckets.
+Rerunning the curl installer is also safe and idempotent. Enhanced updates
+require an exact `grok-<version>-<os>-<arch>` asset from the fork repository and
+never fall back to xAI installers, npm, or official artifact buckets.
+
+To uninstall the managed executables and completions without deleting saved
+configuration, credentials, or sessions:
+
+```bash
+rm -f "$HOME/.grok/bin/grok" "$HOME/.grok/bin/agent"
+rm -f "$HOME/.grok/downloads"/grok-*-macos-* \
+      "$HOME/.grok/downloads"/grok-*-linux-*
+rm -f "$HOME/.grok/completions/bash/grok.bash" \
+      "$HOME/.grok/completions/zsh/_grok" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/grok.fish"
+```
+
+Remove the clearly marked `grok build enhanced installer` block from your shell
+profile if it was added. Do not remove all of `~/.grok` unless you intentionally
+want to delete user data. If no reviewed release asset matches the platform,
+build from source instead:
+
+```bash
+git clone https://github.com/OpenCompanyApp/grok-build-enhanced.git
+cd grok-build-enhanced
+cargo build --locked --release -p xai-grok-pager-bin
+mkdir -p "$HOME/.local/bin"
+install -m 0755 target/release/xai-grok-pager "$HOME/.local/bin/grok"
+```
 
 ### Official upstream distribution (not Enhanced)
 
