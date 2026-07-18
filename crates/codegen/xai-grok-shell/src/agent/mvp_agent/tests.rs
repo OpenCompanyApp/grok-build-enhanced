@@ -2577,6 +2577,17 @@ async fn prepare_image_gen_config_uses_explicit_session_sampling_config() {
     };
     assert!(image_gen_enabled);
     assert!(image_edit_enabled);
+
+    session_sampling.provider = ProviderId::Custom;
+    session_sampling.api_key = Some("custom-provider-key".to_owned());
+    assert!(matches!(
+        agent.prepare_image_gen_config_for_sampling_config(&session_sampling),
+        ImageGenConfig::Disabled
+    ));
+    assert!(matches!(
+        agent.prepare_video_gen_config_for_sampling_config(&session_sampling),
+        xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig::Disabled
+    ));
 }
 #[tokio::test]
 async fn data_collection_enabled_for_normal_user() {

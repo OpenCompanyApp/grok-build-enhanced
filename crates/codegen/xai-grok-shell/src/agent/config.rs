@@ -3442,12 +3442,13 @@ pub struct ModelEntryConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
     /// The API key for this model's provider.
-    /// If not set, falls back to env_key, then XAI_API_KEY.
+    /// Custom providers use only this field or `env_key`; they never inherit
+    /// xAI session/global credentials. xAI entries retain their compatibility
+    /// fallback to the signed-in session and then `XAI_API_KEY`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     /// Environment variable name(s) that hold the provider API key.
     /// Accepts a string or an array (first set, non-empty value wins).
-    /// If not set, falls back to XAI_API_KEY.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_key: Option<EnvKeys>,
     /// Which API backend to use for this model.
@@ -3605,9 +3606,17 @@ impl ConfigModelOverride {
         base: Option<ModelEntry>,
         endpoints: &EndpointsConfig,
     ) -> ModelEntry {
+        // An override of a known catalog entry inherits that entry's provider.
+        // A brand-new user model is custom by construction, even when written
+        // before the provider field existed. This is a source-aware migration,
+        // not URL-based auth inference: explicit `provider = "xai"` remains
+        // available for intentionally first-party entries.
+        let is_new_entry = base.is_none();
         let mut entry = base.unwrap_or_else(|| ModelEntry::fallback(key, endpoints));
         if let Some(provider) = self.provider {
             entry.info.provider = provider;
+        } else if is_new_entry {
+            entry.info.provider = ProviderId::Custom;
         }
         if let Some(ref v) = self.model {
             entry.info.model = v.clone();
@@ -4318,6 +4327,8 @@ pub struct Features {
 }
 /// Resolved credentials for a model session.
 pub struct ResolvedCredentials {
+    /// Provider allowed to consume this credential snapshot.
+    pub provider: ProviderId,
     pub api_key: Option<String>,
     pub base_url: String,
     pub auth_type: xai_chat_state::AuthType,
@@ -4336,9 +4347,12 @@ pub(crate) fn first_own_credential(
         .or_else(|| env_key.and_then(EnvKeys::resolve_value))
 }
 /// Resolve credentials for a model.
-/// Priority: model api_key/env_key > session token > XAI_API_KEY.
 ///
-/// When `env_key` lists multiple names, the first set non-empty value is used.
+/// xAI compatibility priority is model `api_key`/`env_key`, then the signed-in
+/// session token, then `XAI_API_KEY`. Custom providers accept only their own
+/// explicit `api_key`/`env_key`; Codex authentication is attached later by its
+/// provider binder. When `env_key` lists multiple names, the first set,
+/// non-empty value is used.
 pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> ResolvedCredentials {
     let info = model.info();
     if info.provider == ProviderId::OpenAiCodex {
@@ -4346,10 +4360,32 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
         // headers. They must never fall through to the model's static key,
         // xAI session token, or XAI_API_KEY.
         return ResolvedCredentials {
+            provider: ProviderId::OpenAiCodex,
             api_key: None,
             base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
             auth_type: xai_chat_state::AuthType::SessionToken,
             auth_scheme: AuthScheme::Bearer,
+        };
+    }
+    if info.provider == ProviderId::Custom {
+        let api_key = model.own_credential();
+        if api_key.is_none()
+            && let Some(ref env_keys) = model.env_key
+            && !env_keys.is_empty()
+        {
+            tracing::warn!(
+                model = %info.model,
+                env_key = %env_keys,
+                "custom model has env_key configured but none of its variables are set — \
+                 requests will have no API key",
+            );
+        }
+        return ResolvedCredentials {
+            provider: ProviderId::Custom,
+            api_key,
+            base_url: info.base_url.clone(),
+            auth_type: xai_chat_state::AuthType::ApiKey,
+            auth_scheme: info.auth_scheme,
         };
     }
     let (api_key, base_url, auth_type) = if let Some(key) = model.own_credential() {
@@ -4391,6 +4427,7 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
         model = % info.model, auth_type = ? auth_type, "resolved credentials"
     );
     ResolvedCredentials {
+        provider: ProviderId::Xai,
         api_key,
         base_url,
         auth_type,
@@ -4398,14 +4435,16 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
     }
 }
 /// `disable_api_key_auth` at the credential seam: swap a first-party xAI API
-/// key for the IdP session (absent => request fails => forces login). BYOK
-/// (non-xAI `base_url`) is untouched; no-op when the switch is off.
+/// key for the IdP session (absent => request fails => forces login). Custom and
+/// Codex credentials are provider-owned and are never rewritten; no-op when the
+/// switch is off.
 pub fn enforce_disable_api_key_auth(
     creds: &mut ResolvedCredentials,
     disable_api_key_auth: bool,
     session_key: Option<&str>,
 ) {
     if disable_api_key_auth
+        && creds.provider == ProviderId::Xai
         && creds.auth_type == xai_chat_state::AuthType::ApiKey
         && crate::util::is_first_party_xai_url(&creds.base_url)
     {
@@ -4690,17 +4729,43 @@ pub fn sampling_config_for_model(
     let max_completion_tokens = info.max_completion_tokens;
     let temperature = info.temperature;
     let top_p = info.top_p;
-    let mut extra_headers = info.extra_headers.clone();
-    inject_url_derived_headers(
-        &mut extra_headers,
-        alpha_test_key.as_deref(),
-        &credentials.base_url,
-    );
-    let api_backend = info.api_backend.clone();
-    let credential_source = if info.provider == ProviderId::OpenAiCodex {
-        xai_grok_sampling_types::CredentialSourceId::OpenAiCodexSubscription
+    let credentials_match_provider = credentials.provider == info.provider;
+    if !credentials_match_provider {
+        tracing::error!(
+            model = %info.model,
+            model_provider = %info.provider,
+            credential_provider = %credentials.provider,
+            "credential snapshot provider does not match model provider; dropping credentials"
+        );
+    }
+    let (resolved_api_key, resolved_base_url, resolved_auth_scheme) = if credentials_match_provider
+    {
+        (
+            credentials.api_key,
+            credentials.base_url,
+            credentials.auth_scheme,
+        )
     } else {
-        match credentials.auth_type {
+        (None, info.base_url.clone(), info.auth_scheme)
+    };
+    let mut extra_headers = info.extra_headers.clone();
+    if info.provider == ProviderId::Xai {
+        inject_url_derived_headers(
+            &mut extra_headers,
+            alpha_test_key.as_deref(),
+            &resolved_base_url,
+        );
+    }
+    let api_backend = info.api_backend.clone();
+    let credential_source = match info.provider {
+        ProviderId::OpenAiCodex => {
+            xai_grok_sampling_types::CredentialSourceId::OpenAiCodexSubscription
+        }
+        ProviderId::Custom if model.has_own_credentials() => {
+            xai_grok_sampling_types::CredentialSourceId::StaticApiKey
+        }
+        ProviderId::Custom => xai_grok_sampling_types::CredentialSourceId::Unspecified,
+        ProviderId::Xai => match credentials.auth_type {
             xai_chat_state::AuthType::SessionToken => {
                 xai_grok_sampling_types::CredentialSourceId::XaiSession
             }
@@ -4710,20 +4775,20 @@ pub fn sampling_config_for_model(
             xai_chat_state::AuthType::ApiKey => {
                 xai_grok_sampling_types::CredentialSourceId::XaiApiKey
             }
-        }
+        },
     };
     SamplerConfig {
         provider: info.provider,
         credential_source,
         credential_binding: None,
-        api_key: credentials.api_key,
+        api_key: resolved_api_key,
         model: model_name,
-        base_url: credentials.base_url,
+        base_url: resolved_base_url,
         max_completion_tokens,
         temperature,
         top_p,
         api_backend,
-        auth_scheme: credentials.auth_scheme,
+        auth_scheme: resolved_auth_scheme,
         extra_headers,
         context_window: info.context_window.get(),
         client_version,
@@ -4734,8 +4799,12 @@ pub fn sampling_config_for_model(
         stream_tool_calls: info.stream_tool_calls.unwrap_or(false),
         idle_timeout_secs: None,
         client_identifier: None,
-        deployment_id,
-        user_id,
+        deployment_id: (info.provider == ProviderId::Xai)
+            .then_some(deployment_id)
+            .flatten(),
+        user_id: (info.provider == ProviderId::Xai)
+            .then_some(user_id)
+            .flatten(),
         origin_client: None,
         attribution_callback: None,
         bearer_resolver: None,
@@ -5458,6 +5527,7 @@ reasoning_effort = "low"
         let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
         let resolved = resolve_model_list(&cfg, None);
         let model = resolved.get("my-custom-model").expect("model should exist");
+        assert_eq!(model.info.provider, ProviderId::Custom);
         assert_eq!(model.info.model, "grok-4.5");
         assert_eq!(model.info.base_url, "https://api.example.com/v1");
         assert_eq!(model.api_key, Some("sk-test-key-12345".to_string()));
@@ -5567,6 +5637,7 @@ reasoning_effort = "low"
         let sampling_config = sampling_config_for_model(
             &model,
             ResolvedCredentials {
+                provider: ProviderId::Xai,
                 api_key: Some("fallback-key".to_string()),
                 base_url: model.info().base_url.clone(),
                 auth_type: xai_chat_state::AuthType::ApiKey,
@@ -5593,6 +5664,7 @@ reasoning_effort = "low"
                 "{model_id}: SessionToken must route to cli-chat-proxy"
             );
             let api_key_creds = ResolvedCredentials {
+                provider: ProviderId::Xai,
                 api_key: Some("key".into()),
                 base_url: entry
                     .api_base_url
@@ -5798,6 +5870,92 @@ reasoning_effort = "low"
         );
     }
     #[test]
+    #[serial]
+    fn custom_credentials_never_inherit_xai_session_or_global_keys() {
+        use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
+        use xai_chat_state::AuthType;
+        use xai_grok_test_support::EnvGuard;
+
+        let _global = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-global-sentinel");
+        let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+        let mut model = test_model_entry(
+            "custom-model",
+            "https://custom.example/v1",
+            None,
+            None,
+            None,
+        );
+        model.info.provider = ProviderId::Custom;
+
+        let credentials = resolve_credentials(&model, Some("xai-session-sentinel"));
+        assert_eq!(credentials.provider, ProviderId::Custom);
+        assert_eq!(credentials.auth_type, AuthType::ApiKey);
+        assert!(credentials.api_key.is_none());
+        assert_eq!(credentials.base_url, "https://custom.example/v1");
+
+        model.api_key = Some("custom-key".to_owned());
+        let credentials = resolve_credentials(&model, Some("xai-session-sentinel"));
+        assert_eq!(credentials.api_key.as_deref(), Some("custom-key"));
+    }
+
+    #[test]
+    fn custom_key_on_a_first_party_url_is_not_rewritten_to_xai_session_auth() {
+        use xai_chat_state::AuthType;
+
+        let mut model = test_model_entry(
+            "custom-model",
+            "https://api.x.ai/v1",
+            Some("custom-key"),
+            None,
+            None,
+        );
+        model.info.provider = ProviderId::Custom;
+        let mut credentials = resolve_credentials(&model, Some("xai-session-sentinel"));
+
+        enforce_disable_api_key_auth(&mut credentials, true, Some("xai-session-sentinel"));
+
+        assert_eq!(credentials.provider, ProviderId::Custom);
+        assert_eq!(credentials.auth_type, AuthType::ApiKey);
+        assert_eq!(credentials.api_key.as_deref(), Some("custom-key"));
+    }
+
+    #[test]
+    fn sampling_config_drops_a_cross_provider_credential_snapshot() {
+        let mut model = test_model_entry(
+            "custom-model",
+            "https://custom.example/v1",
+            None,
+            None,
+            None,
+        );
+        model.info.provider = ProviderId::Custom;
+        let config = sampling_config_for_model(
+            &model,
+            ResolvedCredentials {
+                provider: ProviderId::Xai,
+                api_key: Some("xai-credential-sentinel".to_owned()),
+                base_url: "https://api.x.ai/v1".to_owned(),
+                auth_type: xai_chat_state::AuthType::SessionToken,
+                auth_scheme: AuthScheme::Bearer,
+            },
+            None,
+            None,
+            Some("xai-deployment-sentinel".to_owned()),
+            Some("xai-user-sentinel".to_owned()),
+        );
+
+        assert_eq!(config.provider, ProviderId::Custom);
+        assert_eq!(
+            config.credential_source,
+            xai_grok_sampling_types::CredentialSourceId::Unspecified
+        );
+        assert!(config.api_key.is_none());
+        assert_eq!(config.base_url, "https://custom.example/v1");
+        assert!(config.deployment_id.is_none());
+        assert!(config.user_id.is_none());
+    }
+
+    #[test]
     fn resolve_credentials_sets_auth_type() {
         use xai_chat_state::AuthType;
         let model = test_model_entry("m", "https://example.com/v1", None, None, None);
@@ -5881,6 +6039,7 @@ reasoning_effort = "low"
     }
     fn api_key_creds(base_url: &str) -> ResolvedCredentials {
         ResolvedCredentials {
+            provider: ProviderId::Xai,
             api_key: Some("xai-secret".to_string()),
             base_url: base_url.to_string(),
             auth_type: xai_chat_state::AuthType::ApiKey,

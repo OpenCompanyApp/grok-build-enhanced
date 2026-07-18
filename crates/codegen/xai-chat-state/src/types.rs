@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
-use xai_grok_sampling_types::{ConversationItem, SamplingConfig};
+use xai_grok_sampling_types::{ConversationItem, ProviderId, SamplingConfig};
 
 use crate::usage::UsageLedger;
 
@@ -122,6 +122,10 @@ pub enum AuthType {
 /// The actor just stores and returns them — it never interprets them.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Credentials {
+    /// Provider allowed to consume this credential snapshot. `None` is kept
+    /// only for sessions written before provider ownership was persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderId>,
     /// API key for authentication.
     pub api_key: Option<String>,
     /// Whether this is a session token (refreshable) or user-provided api key.

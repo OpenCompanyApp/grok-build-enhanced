@@ -324,12 +324,14 @@ pub(super) async fn run_session(
             context_window && session.compaction.context_window_override.is_none() { cfg
             .context_window = cw; } session.chat_state_handle
             .update_sampling_config(cfg); let existing = session.chat_state_handle
-            .get_credentials(). await; if let Some(r) = crate
-            ::agent::config::try_resolve_model_credentials(model_name.as_str(), existing
-            .api_key.as_deref()) { session.chat_state_handle
-            .update_credentials(xai_chat_state::Credentials { api_key : r.api_key,
-            auth_type : r.auth_type, alpha_test_key : existing.alpha_test_key,
-            client_version : existing.client_version, }); } session.model_auth_facts
+            .get_credentials(). await; let session_key = matches!(existing.provider, None |
+            Some(xai_grok_sampling_types::ProviderId::Xai)).then(|| existing.api_key
+            .as_deref()).flatten(); if let Some(r) = crate
+            ::agent::config::try_resolve_model_credentials(model_name.as_str(), session_key)
+            { session.chat_state_handle.update_credentials(xai_chat_state::Credentials {
+            provider : Some(r.provider), api_key : r.api_key, auth_type : r.auth_type,
+            alpha_test_key : existing.alpha_test_key, client_version : existing
+            .client_version, }); } session.model_auth_facts
             .replace(None); } } SessionCommand::GetCurrentModel { responds_to } => { let
             model = session.chat_state_handle.get_sampling_config(). await .map(| c | c
             .model).unwrap_or_default(); let _ = responds_to.send(model); }

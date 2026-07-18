@@ -54,6 +54,14 @@ const VALID_IMAGINE_VIDEO_ASPECT_RATIOS: &[&str] = &["1:1", "16:9", "9:16", "3:2
 const VALID_VIDEO_RESOLUTIONS: &[&str] = &["480p", "720p"];
 const IMAGINE_VIDEO_DURATIONS_SECS: &[u32] = &[6, 10];
 
+fn sensitive_bearer_header(api_key: &str) -> Result<HeaderValue, xai_tool_runtime::ToolError> {
+    let mut value = HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|_| {
+        xai_tool_runtime::ToolError::invalid_arguments("Invalid API key for Authorization header")
+    })?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
 pub use xai_grok_tools_api::slash_commands::{
     IMAGE_TO_VIDEO_TOOL_NAME, IMAGINE_VIDEO_COMMAND_NAME, imagine_video_instruction,
     imagine_video_usage_message,
@@ -176,14 +184,7 @@ impl VideoGenClient {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         // Always bake the static api_key as the default Authorization header.
         // The dynamic provider overrides per-request; this is the fallback.
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
-                    "Invalid API key for header: {e}"
-                ))
-            })?,
-        );
+        headers.insert(AUTHORIZATION, sensitive_bearer_header(api_key)?);
 
         extra_headers.into_iter().try_for_each(|(key, value)| {
             let header_name =
@@ -299,7 +300,7 @@ impl VideoGenClient {
             .timeout(std::time::Duration::from_secs(VIDEO_START_TIMEOUT_SECS))
             .json(&payload);
         if let Some(ref key) = sent_bearer {
-            req = req.header(AUTHORIZATION, format!("Bearer {key}"));
+            req = req.header(AUTHORIZATION, sensitive_bearer_header(key)?);
         }
 
         let response = req.send().await.map_err(|e| {
@@ -369,7 +370,7 @@ impl VideoGenClient {
             let poll_sent_bearer = self.current_bearer().await;
             let mut poll_req = self.http.get(&poll_url).timeout(poll_timeout);
             if let Some(ref key) = poll_sent_bearer {
-                poll_req = poll_req.header(AUTHORIZATION, format!("Bearer {key}"));
+                poll_req = poll_req.header(AUTHORIZATION, sensitive_bearer_header(key)?);
             }
 
             let poll_response = poll_req.send().await.map_err(|e| {
@@ -1199,6 +1200,14 @@ impl xai_tool_runtime::Tool for ReferenceToVideoTool {
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx_with_call_id;
+
+    #[test]
+    fn authorization_header_values_are_always_sensitive() {
+        let header = sensitive_bearer_header("credential-sentinel").unwrap();
+        assert!(header.is_sensitive());
+        assert_eq!(header.as_bytes(), b"Bearer credential-sentinel");
+        assert!(!format!("{header:?}").contains("credential-sentinel"));
+    }
 
     #[test]
     fn image_to_video_name_and_description() {

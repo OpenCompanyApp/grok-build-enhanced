@@ -946,6 +946,7 @@ pub(crate) async fn handle_subagent_request(
         .is_some_and(|entry| entry.has_own_credentials());
     let inherited_auth_type = subagent_auth_type(model_entry, &ctx.auth_method_id);
     let credentials = xai_chat_state::Credentials {
+        provider: Some(effective_sampling_config.provider),
         api_key: effective_sampling_config.api_key.clone(),
         auth_type: inherited_auth_type,
         alpha_test_key: ctx.alpha_test_key.clone(),

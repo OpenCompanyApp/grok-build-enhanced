@@ -2,6 +2,15 @@
 //! readiness, skills reload and reminders, session info, and model-metadata
 //! refresh.
 use super::*;
+
+fn is_xai_model_metadata_refresh_route(
+    provider: xai_grok_sampling_types::ProviderId,
+    base_url: &str,
+) -> bool {
+    provider == xai_grok_sampling_types::ProviderId::Xai
+        && crate::util::is_cli_chat_proxy_url(base_url)
+}
+
 impl SessionActor {
     /// `true` for session-based ACP auth methods.
     fn is_session_based_auth(&self) -> bool {
@@ -347,7 +356,9 @@ impl SessionActor {
         };
         let current_model = &current_config.model;
         let base_url = &current_config.base_url;
-        if !crate::util::is_cli_chat_proxy_url(base_url) {
+        // URL shape never grants a custom or Codex session access to the xAI
+        // AuthManager, even when a custom endpoint uses an xAI host.
+        if !is_xai_model_metadata_refresh_route(current_config.provider, base_url) {
             return;
         }
         tracing::info!(
@@ -635,5 +646,28 @@ impl SessionActor {
             ));
         }
         rows
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_xai_model_metadata_refresh_route;
+    use xai_grok_sampling_types::ProviderId;
+
+    #[test]
+    fn idle_model_metadata_refresh_requires_xai_provider_identity() {
+        let xai_proxy = crate::env::PROD_CLI_CHAT_PROXY_BASE_URL;
+        assert!(is_xai_model_metadata_refresh_route(
+            ProviderId::Xai,
+            xai_proxy
+        ));
+        assert!(!is_xai_model_metadata_refresh_route(
+            ProviderId::Custom,
+            xai_proxy
+        ));
+        assert!(!is_xai_model_metadata_refresh_route(
+            ProviderId::OpenAiCodex,
+            xai_proxy
+        ));
     }
 }

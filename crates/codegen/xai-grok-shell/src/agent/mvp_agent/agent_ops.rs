@@ -1165,7 +1165,8 @@ impl MvpAgent {
             model,
             session.as_ref().map(|a| a.key.as_str()),
         );
-        if matches!(preferred, Some(crate ::auth::PreferredAuthMethod::Oidc))
+        if model.info().provider == xai_grok_sampling_types::ProviderId::Xai
+            && matches!(preferred, Some(crate ::auth::PreferredAuthMethod::Oidc))
             && !model.has_own_credentials()
             && credentials.auth_type == xai_chat_state::AuthType::ApiKey
         {
@@ -1177,8 +1178,11 @@ impl MvpAgent {
             self.cfg.borrow().grok_com_config.api_key_auth_disabled(),
             session.as_ref().map(|a| a.key.as_str()),
         );
-        if !has_session_key && credentials.auth_type == xai_chat_state::AuthType::ApiKey
-            && !model.has_own_credentials() && self.is_session_based_auth()
+        if model.info().provider == xai_grok_sampling_types::ProviderId::Xai
+            && !has_session_key
+            && credentials.auth_type == xai_chat_state::AuthType::ApiKey
+            && !model.has_own_credentials()
+            && self.is_session_based_auth()
         {
             tracing::info!(
                 model = model.info().model.as_str(),
@@ -1191,7 +1195,10 @@ impl MvpAgent {
             );
             credentials.auth_type = xai_chat_state::AuthType::SessionToken;
         }
-        if !has_session_key && !model.has_own_credentials() {
+        if model.info().provider == xai_grok_sampling_types::ProviderId::Xai
+            && !has_session_key
+            && !model.has_own_credentials()
+        {
             tracing::warn!(
                 model = model.info().model.as_str(), is_expired = self.auth_manager
                 .is_expired(), auth_type = ? credentials.auth_type,
@@ -1346,6 +1353,11 @@ impl MvpAgent {
                 image_edit_enabled,
             };
         }
+        if sampling_config.provider != xai_grok_sampling_types::ProviderId::Xai {
+            // Custom endpoints own arbitrary media semantics. Never pair their
+            // key with the xAI image service merely because image tools are on.
+            return ImageGenConfig::Disabled;
+        }
         let Some(ref api_key) = sampling_config.api_key else {
             return ImageGenConfig::Unavailable {
                 image_gen_enabled,
@@ -1398,6 +1410,11 @@ impl MvpAgent {
         sampling_config: &SamplingConfig,
     ) -> xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig {
         use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
+        if sampling_config.provider == xai_grok_sampling_types::ProviderId::Custom {
+            // Video generation is xAI-owned. A custom inference credential must
+            // never be repurposed as an xAI media credential.
+            return VideoGenConfig::Disabled;
+        }
         let tier_restricted = self.is_tier_restricted_capability();
         let cfg = self.cfg.borrow();
         let zdr_video_output_s3 = cfg
@@ -3601,6 +3618,7 @@ impl MvpAgent {
             let _timer = crate::instrumentation_timer!("session.spawn_actor_call");
             let session_key = self.auth_manager.current_or_expired().map(|a| a.key);
             let credentials = xai_chat_state::Credentials {
+                provider: Some(sampling_config.provider),
                 api_key: sampling_config.api_key.clone(),
                 auth_type: crate::agent::config::resolve_chat_state_auth_type(
                     sampling_config.model.as_str(),

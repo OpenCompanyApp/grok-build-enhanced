@@ -110,6 +110,7 @@ async fn make_actor_with_method_and_credentials(
     actor
         .chat_state_handle
         .update_credentials(xai_chat_state::Credentials {
+            provider: Some(xai_grok_sampling_types::ProviderId::Xai),
             api_key: Some(api_key),
             auth_type,
             ..Default::default()
@@ -915,6 +916,55 @@ async fn model_auth_facts_memo_serves_cached_status_and_keys_on_model() {
 
             // Different model re-resolves rather than serving the stale `Byok`.
             assert_ne!(actor.model_auth_facts("model-b").byok, ModelByok::Byok);
+        })
+        .await;
+}
+
+/// A restored custom session must not reinterpret an xAI-owned credential as
+/// the custom model's own BYOK key merely because the model is configured BYOK.
+#[tokio::test(flavor = "current_thread")]
+async fn reconstruct_full_config_drops_cross_provider_custom_credential() {
+    use crate::agent::auth_method::ModelByok;
+    use crate::agent::config::ModelAuthFacts;
+    use xai_grok_sampling_types::{CredentialSourceId, ProviderId};
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = make_actor_with_method_and_credentials(
+                None,
+                "xai.api_key",
+                xai_chat_state::AuthType::ApiKey,
+                "xai-credential-sentinel".to_string(),
+            )
+            .await;
+
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor has sampling config");
+            sampling.provider = ProviderId::Custom;
+            sampling.model = "custom-model".to_owned();
+            sampling.base_url = "https://custom.example/v1".to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+            actor.model_auth_facts.replace(Some((
+                "custom-model".to_owned(),
+                ModelAuthFacts {
+                    byok: ModelByok::Byok,
+                    auth_scheme: Default::default(),
+                },
+            )));
+
+            let cfg = actor
+                .reconstruct_full_config()
+                .await
+                .expect("custom provider binding should succeed");
+
+            assert_eq!(cfg.provider, ProviderId::Custom);
+            assert_eq!(cfg.credential_source, CredentialSourceId::Unspecified);
+            assert!(cfg.api_key.is_none());
+            assert!(cfg.bearer_resolver.is_none());
         })
         .await;
 }

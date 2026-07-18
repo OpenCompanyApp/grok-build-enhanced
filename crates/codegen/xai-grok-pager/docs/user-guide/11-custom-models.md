@@ -71,7 +71,7 @@ Grok supports three API backends. Set `api_backend` in your `[model.*]` config t
 
 When you omit `api_backend`, Grok uses `chat_completions`.
 
-To send provider-specific authentication or version headers -- for example, Anthropic's `x-api-key` -- use the `extra_headers` field described below. Grok sends those headers with every request to that custom endpoint. Credential-bearing headers such as `Authorization`, `Cookie`, and `ChatGPT-Account-ID` are protected for managed providers and cannot be overridden through custom headers.
+Configure authentication with `api_key`/`env_key` and `auth_scheme`: `"bearer"` (the default) sends `Authorization: Bearer`, while `"x_api_key"` sends Anthropic-style `x-api-key`. Reserve `extra_headers` for non-secret versioning and routing values. Credential-bearing headers such as `Authorization`, `Cookie`, and `ChatGPT-Account-ID` are protected for managed providers and cannot be overridden through custom headers.
 
 ---
 
@@ -81,28 +81,39 @@ Add custom model endpoints in `~/.grok/config.toml` under `[model.<name>]` secti
 
 ```toml
 [model.my-model]
+provider = "custom"                       # Required explicit credential boundary
 model = "model-id"                        # Model identifier sent to the API
 base_url = "https://api.example.com/v1"   # OpenAI-compatible endpoint
 name = "Display Name"                     # Shown in the model picker
 description = "Model description"          # Optional description
-api_key = "sk-..."                        # API key for this provider (optional)
-env_key = "XAI_API_KEY"                   # Env var holding the API key (optional; string or array)
+env_key = "MY_MODEL_API_KEY"              # Preferred; string or fallback array
+# api_key = "sk-..."                      # Inline alternative to env_key
 api_backend = "chat_completions"          # "chat_completions", "responses", or "messages"
+auth_scheme = "bearer"                    # "bearer" or "x_api_key"
 temperature = 0.7                         # Sampling temperature
 top_p = 0.95                              # Nucleus sampling parameter
 max_completion_tokens = 8192              # Maximum tokens per response
 context_window = 128000                   # Total context window in tokens
-extra_headers = { "x-api-key" = "sk-..." } # Extra request headers, sent verbatim (optional)
+extra_headers = { "X-Request-Tags" = "team=example" } # Non-secret headers (optional)
 ```
 
-### Credential Resolution
+### Provider and Credential Resolution
 
-Grok resolves the API key in this order:
+Set `provider = "custom"` on third-party and self-hosted entries. A new
+`[model.<id>]` that does not override a known catalog model is also classified
+as custom for compatibility with older config files, but the explicit field
+keeps the boundary reviewable.
 
-1. The `api_key` field in the model config
-2. The environment variable(s) named by `env_key` — a single string or an array of names. The first set, non-empty value wins (for example `env_key = ["ANTHROPIC_AUTH_TOKEN", "LC_ANTHROPIC_AUTH_TOKEN"]` for SSH `LC_*` forwarding)
-3. Your signed-in session token (from `grok login`), for a model with no `api_key`/`env_key` of its own
-4. The `XAI_API_KEY` environment variable (global fallback; Grok also accepts `GROK_CODE_XAI_API_KEY` for backward compatibility)
+Custom models resolve credentials in this order:
+
+1. The model's `api_key` field.
+2. The first set, non-empty environment variable named by `env_key` (for example, `env_key = ["ANTHROPIC_AUTH_TOKEN", "LC_ANTHROPIC_AUTH_TOKEN"]` for SSH `LC_*` forwarding).
+3. No credential. This supports unauthenticated local endpoints such as Ollama.
+
+A custom model **never** inherits the token from `grok login`, `XAI_API_KEY`, or
+`GROK_CODE_XAI_API_KEY`. xAI credentials remain available only to entries whose
+provider is `xai`; an override of a known built-in model inherits that provider
+unless you explicitly change it.
 
 ### Context Window
 
@@ -172,20 +183,26 @@ Use Claude models directly via the Anthropic Messages API:
 
 ```toml
 [model.claude-opus]
+provider = "custom"
 model = "claude-opus-4-6"
 base_url = "https://api.anthropic.com/v1"
 name = "Claude Opus 4.6"
 api_backend = "messages"
+auth_scheme = "x_api_key"
+env_key = "ANTHROPIC_API_KEY"
 context_window = 200000
-extra_headers = { "x-api-key" = "sk-ant-...", "anthropic-version" = "2023-06-01" }
+extra_headers = { "anthropic-version" = "2023-06-01" }
 ```
 
-The `messages` backend uses the Anthropic Messages protocol. Anthropic authenticates with an `x-api-key` header rather than `Authorization: Bearer`, so pass your key through `extra_headers`, which Grok sends verbatim.
+The `messages` backend uses the Anthropic Messages protocol. `auth_scheme =
+"x_api_key"` puts the model's explicit `api_key`/`env_key` credential in the
+`x-api-key` header; do not duplicate the secret in `extra_headers`.
 
 ### OpenAI (Chat Completions)
 
 ```toml
 [model.gpt-4o]
+provider = "custom"
 model = "gpt-4o"
 base_url = "https://api.openai.com/v1"
 name = "GPT-4o"
@@ -200,6 +217,7 @@ If your provider supports the newer Responses API:
 
 ```toml
 [model.gpt-4o-responses]
+provider = "custom"
 model = "gpt-4o"
 base_url = "https://api.openai.com/v1"
 name = "GPT-4o (Responses)"
@@ -213,6 +231,7 @@ Run models locally with [Ollama](https://ollama.ai):
 
 ```toml
 [model.ollama-codellama]
+provider = "custom"
 model = "codellama"
 base_url = "http://localhost:11434/v1"
 name = "CodeLlama (Ollama)"
@@ -224,6 +243,7 @@ Make sure Ollama is running (`ollama serve`) and the model is pulled (`ollama pu
 
 ```toml
 [model.together-mixtral]
+provider = "custom"
 model = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 base_url = "https://api.together.xyz/v1"
 name = "Mixtral 8x7B"
@@ -236,6 +256,7 @@ Any server that implements the OpenAI Chat Completions or Responses API:
 
 ```toml
 [model.local-llama]
+provider = "custom"
 model = "llama-3.1-70b"
 base_url = "http://localhost:8080/v1"
 name = "Local Llama"
@@ -247,6 +268,11 @@ temperature = 0.8
 ## Custom Models Endpoint
 
 Point Grok at a custom OpenAI-compatible `/v1/models` endpoint instead of the default. Use this when your models sit behind a corporate gateway or a self-hosted inference service.
+
+> **Credential boundary:** this legacy catalog-wide override preserves the xAI
+> provider contract and its `XAI_API_KEY` compatibility fallback. For an
+> independently authenticated third-party endpoint, prefer explicit
+> `provider = "custom"` per-model entries; those never inherit xAI credentials.
 
 ### Environment Variables
 
@@ -305,7 +331,10 @@ If you point web search at a custom model, you also need a `[model.*]` entry so 
 web_search = "my-custom-model"
 
 [model.my-custom-model]
+provider = "custom"
 model = "my-custom-model"
+base_url = "https://search-model.example.com/v1"
+env_key = "SEARCH_MODEL_API_KEY"
 supports_backend_search = true
 ```
 
@@ -338,18 +367,16 @@ A complete config for an enterprise deployment with custom models:
 [cli]
 auto_update = false
 
-[auth]
-auth_provider_command = "/usr/local/bin/my-company-auth-provider"
-auth_provider_label = "Acme Corp"
-auth_token_ttl = 3600
-
+# Export ACME_GROK_API_KEY through your enterprise secret manager before launch.
 [models]
 default = "company-grok"
 
 [model.company-grok]
+provider = "custom"
 model = "grok-build"
 base_url = "https://grok-proxy.acme.com/"
 name = "Grok Build Latest (Proxy)"
+env_key = "ACME_GROK_API_KEY"
 context_window = 128000
 
 [features]

@@ -300,23 +300,41 @@ impl SessionActor {
             });
         let creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());
+        let is_xai = cfg.provider == xai_grok_sampling_types::ProviderId::Xai;
+        let stored_credentials_match_provider = match cfg.provider {
+            xai_grok_sampling_types::ProviderId::OpenAiCodex => true,
+            xai_grok_sampling_types::ProviderId::Custom => {
+                creds.provider == Some(xai_grok_sampling_types::ProviderId::Custom)
+            }
+            xai_grok_sampling_types::ProviderId::Xai => matches!(
+                creds.provider,
+                None | Some(xai_grok_sampling_types::ProviderId::Xai)
+            ),
+        };
+        if !stored_credentials_match_provider {
+            tracing::error!(
+                request_provider = %cfg.provider,
+                credential_provider = ?creds.provider,
+                "stored credentials do not belong to the request provider; dropping them"
+            );
+        }
         let auth_method = self.auth_method_id.load();
         let gate =
             SessionTokenAuthGate::new(auth_method.as_deref(), model_facts.byok, &cfg.base_url);
-        let use_bearer_resolver = gate.active();
+        let use_bearer_resolver = is_xai && gate.active();
         self.log_auth_gate_unknown("reconstruct_full_config", gate, &cfg.base_url);
         let auth_scheme = model_facts.auth_scheme;
         let mut extra_headers = cfg.extra_headers.clone();
-        crate::agent::config::inject_url_derived_headers(
-            &mut extra_headers,
-            creds.alpha_test_key.as_deref(),
-            &cfg.base_url,
-        );
+        if is_xai {
+            crate::agent::config::inject_url_derived_headers(
+                &mut extra_headers,
+                creds.alpha_test_key.as_deref(),
+                &cfg.base_url,
+            );
+        }
         let compaction_at_tokens = self.compaction_at_tokens.get();
         let compactions_remaining = self.compactions_remaining.get();
-        if cfg.provider != xai_grok_sampling_types::ProviderId::OpenAiCodex
-            && (compactions_remaining.is_some() || compaction_at_tokens.is_some())
-        {
+        if is_xai && (compactions_remaining.is_some() || compaction_at_tokens.is_some()) {
             let has_compaction_summary = self
                 .chat_state_handle
                 .get_last_compaction_prompt_index()
@@ -398,18 +416,51 @@ impl SessionActor {
         } else {
             None
         };
+        let custom_owns_key = cfg.provider == xai_grok_sampling_types::ProviderId::Custom
+            && stored_credentials_match_provider
+            && model_facts.byok == crate::agent::auth_method::ModelByok::Byok
+            && creds.auth_type == xai_chat_state::AuthType::ApiKey;
+        let credential_source = match cfg.provider {
+            xai_grok_sampling_types::ProviderId::OpenAiCodex => {
+                xai_grok_sampling_types::CredentialSourceId::OpenAiCodexSubscription
+            }
+            xai_grok_sampling_types::ProviderId::Custom if custom_owns_key => {
+                xai_grok_sampling_types::CredentialSourceId::StaticApiKey
+            }
+            xai_grok_sampling_types::ProviderId::Custom => {
+                xai_grok_sampling_types::CredentialSourceId::Unspecified
+            }
+            xai_grok_sampling_types::ProviderId::Xai if use_bearer_resolver => {
+                xai_grok_sampling_types::CredentialSourceId::XaiSession
+            }
+            xai_grok_sampling_types::ProviderId::Xai
+                if stored_credentials_match_provider
+                    && creds.auth_type == xai_chat_state::AuthType::SessionToken =>
+            {
+                xai_grok_sampling_types::CredentialSourceId::XaiSession
+            }
+            xai_grok_sampling_types::ProviderId::Xai if stored_credentials_match_provider => {
+                xai_grok_sampling_types::CredentialSourceId::XaiApiKey
+            }
+            xai_grok_sampling_types::ProviderId::Xai => {
+                xai_grok_sampling_types::CredentialSourceId::Unspecified
+            }
+        };
+        let request_api_key = match cfg.provider {
+            xai_grok_sampling_types::ProviderId::OpenAiCodex => None,
+            xai_grok_sampling_types::ProviderId::Custom if custom_owns_key => creds.api_key.clone(),
+            xai_grok_sampling_types::ProviderId::Custom => None,
+            xai_grok_sampling_types::ProviderId::Xai if stored_credentials_match_provider => {
+                creds.api_key.clone()
+            }
+            xai_grok_sampling_types::ProviderId::Xai => None,
+        };
         let mut state_cfg = cfg.clone();
         let full_config = SamplingConfig {
             provider: cfg.provider,
-            credential_source: if is_codex {
-                xai_grok_sampling_types::CredentialSourceId::OpenAiCodexSubscription
-            } else if creds.auth_type == xai_chat_state::AuthType::SessionToken {
-                xai_grok_sampling_types::CredentialSourceId::XaiSession
-            } else {
-                xai_grok_sampling_types::CredentialSourceId::XaiApiKey
-            },
+            credential_source,
             credential_binding,
-            api_key: if is_codex { None } else { creds.api_key },
+            api_key: request_api_key,
             base_url: cfg.base_url,
             model: cfg.model,
             max_completion_tokens: cfg.max_completion_tokens,
@@ -427,29 +478,25 @@ impl SessionActor {
             stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
             idle_timeout_secs: None,
             client_identifier: self.client_identifier.clone(),
-            deployment_id: (!is_codex)
+            deployment_id: is_xai
                 .then(|| {
                     crate::managed_config::resolve_deployment_id(
                         crate::managed_config::resolve_deployment_key().as_deref(),
                     )
                 })
                 .flatten(),
-            user_id: if is_codex {
-                None
-            } else {
-                self.auth_manager
-                    .as_ref()
-                    .and_then(|am| am.current_or_expired())
-                    .filter(|a| a.is_xai_auth())
-                    .map(|a| a.user_id)
-            },
+            user_id: is_xai
+                .then(|| {
+                    self.auth_manager
+                        .as_ref()
+                        .and_then(|am| am.current_or_expired())
+                        .filter(|a| a.is_xai_auth())
+                        .map(|a| a.user_id)
+                })
+                .flatten(),
             origin_client: self.origin_client.clone(),
-            attribution_callback: if is_codex {
-                None
-            } else {
-                self.attribution_callback.clone()
-            },
-            bearer_resolver: if !is_codex && use_bearer_resolver {
+            attribution_callback: is_xai.then(|| self.attribution_callback.clone()).flatten(),
+            bearer_resolver: if use_bearer_resolver {
                 self.auth_manager
                     .as_ref()
                     .map(|am| -> xai_grok_sampler::SharedBearerResolver {
@@ -460,12 +507,8 @@ impl SessionActor {
             },
             request_auth,
             supports_backend_search: self.supports_backend_search.get(),
-            compactions_remaining: (!is_codex)
-                .then(|| self.compactions_remaining.get())
-                .flatten(),
-            compaction_at_tokens: (!is_codex)
-                .then(|| self.compaction_at_tokens.get())
-                .flatten(),
+            compactions_remaining: is_xai.then(|| self.compactions_remaining.get()).flatten(),
+            compaction_at_tokens: is_xai.then(|| self.compaction_at_tokens.get()).flatten(),
             doom_loop_recovery: (!is_codex).then_some(self.doom_loop_recovery).flatten(),
             header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
         };
@@ -1250,8 +1293,11 @@ impl SessionActor {
                 if self.auth_gate(&current_model_id, &base_url).active()
                     && let Ok(key) = am.get_valid_token().await
                 {
-                    if creds.api_key.as_deref() != Some(&key) {
+                    if creds.api_key.as_deref() != Some(&key)
+                        || creds.provider != Some(xai_grok_sampling_types::ProviderId::Xai)
+                    {
                         let mut creds = creds;
+                        creds.provider = Some(xai_grok_sampling_types::ProviderId::Xai);
                         creds.api_key = Some(key);
                         self.chat_state_handle.update_credentials(creds);
                     }
@@ -1309,6 +1355,7 @@ impl SessionActor {
             "Refreshed API token from config.toml"
         );
         let mut creds = self.chat_state_handle.get_credentials().await;
+        creds.provider = Some(provider);
         creds.api_key = Some(new_key);
         self.chat_state_handle.update_credentials(creds);
     }

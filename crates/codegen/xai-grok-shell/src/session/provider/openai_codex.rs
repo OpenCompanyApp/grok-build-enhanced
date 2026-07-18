@@ -68,7 +68,7 @@ pub(crate) enum ProviderBindingError {
 /// binding, or generation rollback is rejected before a sampling client/actor
 /// or provider-authenticated tool client can be constructed.
 pub(crate) async fn bind_provider_runtime(
-    sampler_config: SamplerConfig,
+    mut sampler_config: SamplerConfig,
     generic_api_key_provider: Option<SharedApiKeyProvider>,
 ) -> Result<BoundProviderRuntime, ProviderBindingError> {
     if !sampler_config.provider.is_openai_codex() {
@@ -82,6 +82,28 @@ pub(crate) async fn bind_provider_runtime(
         let api_key_provider = (sampler_config.provider == ProviderId::Xai)
             .then_some(generic_api_key_provider)
             .flatten();
+        if sampler_config.provider == ProviderId::Custom {
+            let owns_static_credential = matches!(
+                sampler_config.credential_source,
+                CredentialSourceId::StaticApiKey | CredentialSourceId::External
+            );
+            if !owns_static_credential {
+                sampler_config.api_key = None;
+                sampler_config.credential_source = CredentialSourceId::Unspecified;
+            }
+            sampler_config.credential_binding = None;
+            sampler_config.bearer_resolver = None;
+            sampler_config.request_auth = None;
+            sampler_config.attribution_callback = None;
+            sampler_config.deployment_id = None;
+            sampler_config.user_id = None;
+            sampler_config.compactions_remaining = None;
+            sampler_config.compaction_at_tokens = None;
+            sampler_config.extra_headers.retain(|name, _| {
+                !name.eq_ignore_ascii_case("x-xai-token-auth")
+                    && !name.eq_ignore_ascii_case("x-authenticateresponse")
+            });
+        }
         return Ok(BoundProviderRuntime {
             sampler_config,
             api_key_provider,
@@ -376,24 +398,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn custom_runtime_drops_generic_tool_auth() {
+    async fn custom_runtime_drops_xai_credentials_and_generic_tool_auth() {
         let dir = TempDir::new().unwrap();
         let credentials =
             credentials_for_test("account-a", "refresh-a", Utc::now() + Duration::hours(2));
         let (manager, _) = manager_with_credentials(&dir, credentials, 1).await;
         let config = SamplerConfig {
             provider: ProviderId::Custom,
+            credential_source: CredentialSourceId::XaiSession,
+            api_key: Some("xai-session-sentinel".to_owned()),
             base_url: "https://custom.invalid/v1".to_owned(),
             model: "custom-model".to_owned(),
+            bearer_resolver: Some(Arc::new(TestBearerResolver)),
+            deployment_id: Some("xai-deployment-sentinel".to_owned()),
+            user_id: Some("xai-user-sentinel".to_owned()),
+            extra_headers: indexmap::indexmap! {
+                "X-XAI-Token-Auth".to_owned() => "xai-grok-cli".to_owned(),
+                "x-authenticateresponse".to_owned() => "authenticate-response".to_owned(),
+                "x-custom-route".to_owned() => "blue".to_owned(),
+            },
             ..SamplerConfig::default()
         };
 
         let runtime = bind_provider_runtime(config, Some(shared_api_key_provider(manager)))
             .await
-            .expect("custom runtime binds without provider-owned tool auth");
+            .expect("custom runtime binds without provider-owned auth");
 
         assert_eq!(runtime.route.provider, ProviderId::Custom);
         assert!(runtime.api_key_provider.is_none());
+        assert!(runtime.sampler_config.api_key.is_none());
+        assert_eq!(
+            runtime.sampler_config.credential_source,
+            CredentialSourceId::Unspecified
+        );
+        assert!(runtime.sampler_config.bearer_resolver.is_none());
+        assert!(runtime.sampler_config.deployment_id.is_none());
+        assert!(runtime.sampler_config.user_id.is_none());
+        assert_eq!(
+            runtime
+                .sampler_config
+                .extra_headers
+                .get("x-custom-route")
+                .map(String::as_str),
+            Some("blue")
+        );
+        assert_eq!(runtime.sampler_config.extra_headers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn custom_runtime_retains_only_explicit_custom_static_key() {
+        let config = SamplerConfig {
+            provider: ProviderId::Custom,
+            credential_source: CredentialSourceId::StaticApiKey,
+            api_key: Some("custom-static-key".to_owned()),
+            base_url: "https://custom.invalid/v1".to_owned(),
+            model: "custom-model".to_owned(),
+            ..SamplerConfig::default()
+        };
+
+        let runtime = bind_provider_runtime(config, None)
+            .await
+            .expect("explicit custom credential binds");
+
+        assert_eq!(
+            runtime.sampler_config.api_key.as_deref(),
+            Some("custom-static-key")
+        );
+        assert_eq!(
+            runtime.sampler_config.credential_source,
+            CredentialSourceId::StaticApiKey
+        );
     }
 
     #[tokio::test]

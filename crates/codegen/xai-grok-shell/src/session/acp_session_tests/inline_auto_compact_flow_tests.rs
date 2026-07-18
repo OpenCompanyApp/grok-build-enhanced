@@ -1367,6 +1367,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 tokio_util::sync::CancellationToken::new(),
             );
             chat_state_handle.update_credentials(xai_chat_state::types::Credentials {
+                provider: Some(xai_grok_sampling_types::ProviderId::Xai),
                 api_key: Some("test-key".to_string()),
                 auth_type: Default::default(),
                 alpha_test_key: None,

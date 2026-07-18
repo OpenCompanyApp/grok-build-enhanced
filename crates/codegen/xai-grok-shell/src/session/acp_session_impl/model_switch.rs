@@ -40,7 +40,9 @@ fn video_gen_config_for_provider(
 ) -> xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig {
     use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
 
-    if provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
+    if provider != xai_grok_sampling_types::ProviderId::Xai {
+        // Video generation is an xAI-owned resource. Codex and custom model
+        // credentials must never be sent to that service.
         return VideoGenConfig::Disabled;
     }
 
@@ -478,6 +480,7 @@ impl SessionActor {
             .and_then(|am| am.current_or_expired().map(|a| a.key));
         self.chat_state_handle
             .update_credentials(xai_chat_state::Credentials {
+                provider: Some(sampling_config.provider),
                 api_key: sampling_config.api_key.clone(),
                 auth_type: crate::agent::config::resolve_chat_state_auth_type(
                     sampling_config.model.as_str(),
@@ -704,6 +707,22 @@ impl SessionActor {
             } else {
                 bridge.remove_resource::<ImageGenClient>().await;
             }
+            refresh_video_gen_resource(
+                &bridge,
+                sampling_config.provider,
+                &self.rebuild_spec.video_gen_config,
+                sampling_config.api_key.as_deref(),
+                &endpoints.xai_api_base_url,
+                None,
+                None,
+            )
+            .await;
+            return;
+        }
+        if sampling_config.provider == xai_grok_sampling_types::ProviderId::Custom {
+            // Custom inference providers do not implicitly own xAI media
+            // resources. Remove both clients instead of reusing their key.
+            bridge.remove_resource::<ImageGenClient>().await;
             refresh_video_gen_resource(
                 &bridge,
                 sampling_config.provider,
@@ -1258,17 +1277,22 @@ mod provider_media_switch_tests {
     }
 
     #[test]
-    fn provider_video_config_disables_codex_and_restores_xai_settings() {
+    fn provider_video_config_disables_non_xai_and_restores_xai_settings() {
         let configured = enabled_video_config();
-        assert!(matches!(
-            video_gen_config_for_provider(
-                xai_grok_sampling_types::ProviderId::OpenAiCodex,
-                &configured,
-                None,
-                "https://api.x.ai/v1",
-            ),
-            VideoGenConfig::Disabled
-        ));
+        for provider in [
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            xai_grok_sampling_types::ProviderId::Custom,
+        ] {
+            assert!(matches!(
+                video_gen_config_for_provider(
+                    provider,
+                    &configured,
+                    Some("must-not-cross-provider-boundary"),
+                    "https://api.x.ai/v1",
+                ),
+                VideoGenConfig::Disabled
+            ));
+        }
 
         let restored = video_gen_config_for_provider(
             xai_grok_sampling_types::ProviderId::Xai,
