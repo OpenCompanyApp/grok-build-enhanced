@@ -498,6 +498,50 @@ def validate_updater_contract(root: Path) -> None:
         )
 
 
+def validate_protoc_contract(root: Path) -> None:
+    wrapper = (root / "bin/protoc").read_text(encoding="utf-8")
+    object_start = wrapper.find("{")
+    if object_start < 0:
+        raise ValueError("bin/protoc is missing its DotSlash JSON object")
+    try:
+        document = json.loads(wrapper[object_start:])
+    except json.JSONDecodeError as error:
+        raise ValueError(f"bin/protoc contains invalid DotSlash JSON: {error}") from error
+
+    platforms = document.get("platforms")
+    if not isinstance(platforms, dict):
+        raise ValueError("bin/protoc is missing its DotSlash platforms object")
+    expected_platforms = {f"{target.os}-{target.arch}" for target in TARGETS}
+    if set(platforms) != expected_platforms:
+        raise ValueError(
+            "bin/protoc platform set differs from the native release matrix; "
+            f"expected={sorted(expected_platforms)}, actual={sorted(platforms)}"
+        )
+
+    for platform in sorted(expected_platforms):
+        record = platforms[platform]
+        if not isinstance(record, dict):
+            raise ValueError(f"bin/protoc platform {platform} is not an object")
+        digest = record.get("digest")
+        providers = record.get("providers")
+        if (
+            record.get("hash") != "sha256"
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or not isinstance(record.get("size"), int)
+            or record["size"] <= 0
+            or record.get("format") != "zip"
+            or record.get("path") != "bin/protoc"
+            or not isinstance(providers, list)
+            or len(providers) != 1
+            or not isinstance(providers[0], dict)
+            or not str(providers[0].get("url", "")).startswith(
+                "https://github.com/protocolbuffers/protobuf/releases/download/v29.3/"
+            )
+        ):
+            raise ValueError(f"bin/protoc platform {platform} is not fully pinned")
+
+
 def workflow_job_block(workflow: str, job_name: str) -> str:
     match = re.search(
         rf"^  {re.escape(job_name)}:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)",
@@ -600,6 +644,7 @@ def validate_contract(args: argparse.Namespace) -> None:
     validate_repository(args.repository)
     root = repository_root()
     validate_updater_contract(root)
+    validate_protoc_contract(root)
     validate_workflow_contract(root)
     names = sorted(asset_name(args.version, target.os, target.arch) for target in TARGETS)
     print(

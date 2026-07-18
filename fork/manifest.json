@@ -573,6 +573,7 @@
       "paths": [
         ".github/workflows/release.yml",
         "README.md",
+        "bin/protoc",
         "install.sh",
         "scripts/release/package_asset.sh",
         "scripts/release/release_contract.py",
@@ -581,6 +582,7 @@
       ],
       "integration_paths": [
         ".github/workflows/release.yml",
+        "bin/protoc",
         "install.sh",
         "scripts/release/package_asset.sh",
         "scripts/release/release_contract.py"

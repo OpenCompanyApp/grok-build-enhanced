@@ -42,6 +42,9 @@ class ReleaseContractTests(unittest.TestCase):
         )
         self.assertNotIn("windows", contract.matrix_json().lower())
 
+    def test_pinned_protoc_supports_every_native_release_runner(self) -> None:
+        contract.validate_protoc_contract(contract.repository_root())
+
     def test_package_and_assembly_are_byte_deterministic(self) -> None:
         version = "2.3.4-alpha.5"
         source_commit = "a" * 40
