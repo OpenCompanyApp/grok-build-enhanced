@@ -541,17 +541,39 @@ def validate_workflow_contract(root: Path) -> None:
         raise ValueError(
             "release workflow must not reference an official upstream release channel"
         )
-    if workflow.count(f"github.repository == '{RELEASE_REPOSITORY}'") != 4:
+    if workflow.count(f"github.repository == '{RELEASE_REPOSITORY}'") != 5:
         raise ValueError("every release workflow job must have an exact fork-ownership guard")
 
     prepare = workflow_job_block(workflow, "prepare")
+    validate = workflow_job_block(workflow, "validate")
     build = workflow_job_block(workflow, "build")
     attest = workflow_job_block(workflow, "attest")
     release = workflow_job_block(workflow, "release")
-    if any("contents: write" in block for block in (prepare, build, attest)):
+    if any("contents: write" in block for block in (prepare, validate, build, attest)):
         raise ValueError("only the final non-building release job may write contents")
     if workflow.count("contents: write") != 1:
         raise ValueError("release workflow must grant contents: write exactly once")
+    for fragment in (
+        "fetch-depth: 0",
+        'git merge-base --is-ancestor "$THEMATIC_CHECKPOINT" "$source_commit"',
+        'git merge-base --is-ancestor "$source_commit" refs/remotes/origin/main',
+        "fork/scripts/check_manifest.py --strict-coverage",
+        "fork/scripts/check_fork_contracts.py",
+        "scripts/release/tests/test_release_pipeline.py",
+    ):
+        if fragment not in prepare:
+            raise ValueError(f"release prepare job is missing candidate guard {fragment!r}")
+    for fragment in (
+        "needs: prepare",
+        "ref: ${{ needs.prepare.outputs.source_commit }}",
+        "custom_credentials_never_inherit_xai_session_or_global_keys",
+        "codex_rejects_static_or_generic_header_credentials",
+        "cargo check --locked -p xai-grok-pager-bin",
+    ):
+        if fragment not in validate:
+            raise ValueError(f"release validation job is missing exact-SHA check {fragment!r}")
+    if "needs: [prepare, validate]" not in build:
+        raise ValueError("release builds must wait for exact-candidate validation")
     if "id-token: write" not in attest or "attestations: write" not in attest:
         raise ValueError("only the attestation job must receive provenance permissions")
     if "id-token: write" in release or "attestations: write" in release:
@@ -562,8 +584,8 @@ def validate_workflow_contract(root: Path) -> None:
         or 'gh "${create_args[@]}"' not in release
     ):
         raise ValueError("only the release job may publish GitHub Release assets")
-    if any("gh release upload" in block for block in (prepare, build, attest)):
-        raise ValueError("a build or attestation job may not publish release assets")
+    if any("gh release upload" in block for block in (prepare, validate, build, attest)):
+        raise ValueError("a validation, build, or attestation job may not publish release assets")
 
     uses = re.findall(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", workflow, re.M)
     if not uses:

@@ -26,6 +26,7 @@ concurrency:
 
 env:
   RELEASE_REPOSITORY: OpenCompanyApp/grok-build-enhanced
+  THEMATIC_CHECKPOINT: 7ed3320c797852ed5894f1fc2fca7cee6827768f
 
 jobs:
   prepare:
@@ -43,7 +44,7 @@ jobs:
       - name: Check out the requested immutable tag
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
 
@@ -65,7 +66,22 @@ jobs:
             echo "checked-out commit does not match requested tag" >&2
             exit 1
           fi
-          python3 scripts/release/release_contract.py contract \
+          if ! git merge-base --is-ancestor "$THEMATIC_CHECKPOINT" "$source_commit"; then
+            echo "release candidate does not descend from the reviewed thematic checkpoint" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$source_commit" refs/remotes/origin/main; then
+            echo "release candidate is not contained in origin/main" >&2
+            exit 1
+          fi
+
+          export PYTHONDONTWRITEBYTECODE=1
+          python3 -I -B -m unittest discover -s fork/scripts/tests -v
+          python3 -I -B fork/scripts/check_manifest.py --strict-coverage
+          python3 -I -B fork/scripts/check_fork_contracts.py
+          python3 -I -B scripts/release/tests/test_release_pipeline.py
+          git diff --check "$THEMATIC_CHECKPOINT..$source_commit"
+          python3 -I -B scripts/release/release_contract.py contract \
             --version "$version" \
             --repository "$RELEASE_REPOSITORY"
           matrix=$(python3 scripts/release/release_contract.py matrix)
@@ -76,11 +92,65 @@ jobs:
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
 
-  build:
+  validate:
     if: >-
       github.repository == 'OpenCompanyApp/grok-build-enhanced' &&
       (github.event_name == 'push' || inputs.confirm_release == true)
     needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/release-validation
+    steps:
+      - name: Check out the exact release candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_commit }}
+
+      - name: Exercise provider and credential boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p xai-grok-sampler --lib \
+            'client::tests::codex_rejects_static_or_generic_header_credentials' -- --exact
+          cargo test --locked -p xai-grok-tools --lib \
+            'types::api_key_provider::tests::codex_auth_resolution_rejects_generic_static_key_fallback' -- --exact
+          cargo test --locked -p xai-grok-tools --lib \
+            'implementations::grok_build::video_gen::tests::authorization_header_values_are_always_sensitive' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'agent::config::tests::custom_credentials_never_inherit_xai_session_or_global_keys' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'session::provider::openai_codex::tests::custom_runtime_drops_xai_credentials_and_generic_tool_auth' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'session::acp_session::auth_error_no_retry_tests::reconstruct_full_config_drops_cross_provider_custom_credential' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'session::acp_session::session_setup::tests::idle_model_metadata_refresh_requires_xai_provider_identity' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'session::acp_session::media_gen_auth_retry_tests::provider_owned_codex_401_never_falls_through_to_xai_auth_manager' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'agent::models::tests::provider_scoped_fallback_never_crosses_from_codex_to_xai' -- --exact
+
+      - name: Exercise Enhanced identity and fork updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p xai-grok-version
+          cargo test --locked -p xai-grok-update --lib \
+            'version::tests::enhanced_release_selection_requires_the_exact_native_asset' -- --exact
+          cargo test --locked -p xai-grok-update --test test_fork_release_routing
+          cargo test --locked -p xai-grok-pager --lib \
+            'app::cli::tests::upgrade_alias_uses_the_enhanced_update_command' -- --exact
+          cargo test --locked -p xai-grok-pager --lib 'views::welcome::tests'
+          cargo check --locked -p xai-grok-pager-bin
+
+  build:
+    if: >-
+      github.repository == 'OpenCompanyApp/grok-build-enhanced' &&
+      (github.event_name == 'push' || inputs.confirm_release == true)
+    needs: [prepare, validate]
     strategy:
       fail-fast: true
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
