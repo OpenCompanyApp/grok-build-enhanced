@@ -27,7 +27,7 @@ responsive Grok braille symbol remain compatible.
 | Bundled Warp themes and theme UX | Implemented |
 | Kimi Code managed provider | Researched/planned only; no Kimi runtime provider or login is shipped |
 | Z.AI GLM Coding Plan provider | Researched/planned only; no GLM runtime provider or login is shipped |
-| Enhanced release artifacts | Fork-owned macOS/Linux packaging pipeline implemented; no reviewed public release is currently claimed |
+| Enhanced release artifacts | Fork-owned stable `v0.2.0` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
 | Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
 
 ## Fork-owned terminal preview
@@ -89,13 +89,55 @@ to a directory on `PATH` as `grok.exe`.
 
 ### Unofficial fork releases
 
-Fork release assets, when published, are hosted only under
+Fork release assets are hosted only under
 [`OpenCompanyApp/grok-build-enhanced`](https://github.com/OpenCompanyApp/grok-build-enhanced/releases).
 The fork-owned pipeline builds native macOS and Linux binaries for Arm64 and
 x86-64, names the installed executable `grok`, and attaches SHA-256 checksums
-and GitHub provenance attestations. Adding the workflow does not itself publish
-a release; a version tag or an explicitly confirmed manual run is required.
-Until a reviewed fork release exists, build this repository from source.
+and GitHub provenance attestations. The first stable Enhanced release is
+[`v0.2.0`](https://github.com/OpenCompanyApp/grok-build-enhanced/releases/tag/v0.2.0).
+
+Install that release on macOS or Linux without replacing `~/.grok` data:
+
+```sh
+VERSION=0.2.0
+case "$(uname -s)" in
+  Darwin) OS=macos ;;
+  Linux)  OS=linux ;;
+  *) echo "Unsupported OS" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+  arm64|aarch64) ARCH=aarch64 ;;
+  x86_64|amd64) ARCH=x86_64 ;;
+  *) echo "Unsupported architecture" >&2; exit 1 ;;
+esac
+
+ASSET="grok-${VERSION}-${OS}-${ARCH}"
+BASE="https://github.com/OpenCompanyApp/grok-build-enhanced/releases/download/v${VERSION}"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+curl -fL "$BASE/$ASSET" -o "$TMP_DIR/$ASSET"
+curl -fL "$BASE/SHA256SUMS" -o "$TMP_DIR/SHA256SUMS"
+EXPECTED="$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "$TMP_DIR/SHA256SUMS")"
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL="$(sha256sum "$TMP_DIR/$ASSET" | awk '{ print $1 }')"
+else
+  ACTUAL="$(shasum -a 256 "$TMP_DIR/$ASSET" | awk '{ print $1 }')"
+fi
+[ -n "$EXPECTED" ] && [ "$ACTUAL" = "$EXPECTED" ] || {
+  echo "Checksum verification failed" >&2; exit 1;
+}
+mkdir -p "$HOME/.local/bin"
+install -m 0755 "$TMP_DIR/$ASSET" "$HOME/.local/bin/grok"
+"$HOME/.local/bin/grok" version
+```
+
+Add `$HOME/.local/bin` to `PATH` if needed. GitHub CLI users can additionally
+verify a retained download's build provenance:
+
+```sh
+gh attestation verify PATH/TO/DOWNLOADED_ASSET \
+  --repo OpenCompanyApp/grok-build-enhanced
+```
 
 Fork update checks and channels are labeled **Enhanced** and must not fall back
 to official xAI release endpoints. An update is installable only when fork
