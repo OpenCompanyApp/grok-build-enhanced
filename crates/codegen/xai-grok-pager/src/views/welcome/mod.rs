@@ -123,9 +123,13 @@ use hero_box::HERO_BOX_MIN_WIDTH;
 const PROMPT_HEIGHT: u16 = 3;
 /// Gap between prompt and version line.
 const VERSION_GAP: u16 = 1;
+/// Branded title + subtitle rows in the stacked (narrow) layout.
+const STACKED_BRAND_ROWS: u16 = 2;
 
 /// Computed areas for the welcome screen vertical layout.
 pub(super) struct WelcomeLayout {
+    /// Fork identity shown independently of the responsive braille logo.
+    pub(super) brand: Rect,
     pub(super) logo: Rect,
     pub(super) error: Rect,
     pub(super) menu: Rect,
@@ -233,11 +237,12 @@ impl WelcomeLayout {
             has_upgrade_cta,
         } = input;
         let zero = Rect::default();
-        // Pick hero vs stacked first, independent of the announcement's height:
-        // the changelog isn't clamped so it must fit as-is, but an announcement
-        // clamps to fit, so with one present the box only needs to fit empty.
+        // Pick hero vs stacked first. Changelog height is fixed; announcements
+        // may clamp, but the hero must reserve at least one source-content row
+        // in addition to the always-visible Enhanced subtitle. Otherwise a
+        // tight hero could silently drop the official announcement entirely.
         let gate_info = if announcement.is_some() {
-            0
+            1
         } else {
             changelog_height
         };
@@ -291,10 +296,16 @@ impl WelcomeLayout {
             logo_line_count(content_area.height)
         };
 
-        let gap_after_logo = if error_height > 0 { 1 } else { 0 };
+        // Text identity is independent of the responsive logo, including compact
+        // login/trust layouts where the artwork is intentionally suppressed.
+        let brand_rows = STACKED_BRAND_ROWS;
+        let logo_gap = u16::from(logo_rows > 0 && brand_rows > 0);
+        let brand_gap = u16::from(brand_rows > 0);
+        let gap_after_brand = if error_height > 0 { 1 } else { 0 };
         let tip_gap = if tip_height > 0 { 1u16 } else { 0 };
         let fixed_below = Self::fixed_below(tip_height);
-        let fixed_above = logo_rows + 1 + gap_after_logo + error_height; // +1 for gap after logo
+        let fixed_above =
+            logo_rows + logo_gap + brand_rows + brand_gap + gap_after_brand + error_height;
         // The stacked info slot below the menu holds whichever block is shown
         // (announcement or changelog), matching the hero box's single-slot rule.
         let (eff_changelog_height, _) = if !compact {
@@ -322,11 +333,12 @@ impl WelcomeLayout {
                 .saturating_sub(fixed_below)
                 / 3
         };
-        let logo_gap = 1u16;
         let flex_gap = 1u16;
         let [
             _,
             logo,
+            _,
+            brand,
             _,
             _,
             error,
@@ -342,8 +354,10 @@ impl WelcomeLayout {
         ] = Layout::vertical([
             Constraint::Length(top_pad),
             Constraint::Length(logo_rows),
-            Constraint::Length(logo_gap), // gap after logo
-            Constraint::Length(gap_after_logo),
+            Constraint::Length(logo_gap),
+            Constraint::Length(brand_rows),
+            Constraint::Length(brand_gap),
+            Constraint::Length(gap_after_brand),
             Constraint::Length(error_height),
             Constraint::Length(menu_height),
             Constraint::Length(eff_changelog_gap),
@@ -357,6 +371,7 @@ impl WelcomeLayout {
         ])
         .areas(content_area);
         Self {
+            brand,
             logo,
             error,
             menu,
@@ -374,13 +389,63 @@ impl WelcomeLayout {
     }
 }
 
+/// Compiled fork checkout identity, omitted when a source archive or build host
+/// could not provide one. This is display metadata only.
+fn compiled_fork_revision() -> Option<&'static str> {
+    xai_grok_version::fork_revision(env!("GROK_ENHANCED_REVISION"))
+}
+
+/// Render fork identity independently from the responsive braille artwork.
+///
+/// Keeping this in its own layout slot means short terminals and legacy
+/// consoles can suppress the logo without suppressing the Enhanced name.
+fn render_stacked_brand(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let title = Line::from(Span::styled(
+        xai_grok_version::ENHANCED_PRODUCT_NAME,
+        Style::default()
+            .fg(theme.text_primary)
+            .add_modifier(Modifier::BOLD),
+    ))
+    .alignment(Alignment::Center);
+    let subtitle = Line::from(Span::styled(
+        xai_grok_version::ENHANCED_SUBTITLE,
+        Style::default().fg(theme.gray),
+    ))
+    .alignment(Alignment::Center);
+    Paragraph::new(vec![title, subtitle]).render(area, buf);
+}
+
+/// Render identity above the session picker, whose compact layout intentionally
+/// suppresses the braille logo. Returns the remaining picker area.
+fn render_brand_above_picker(area: Rect, buf: &mut Buffer, theme: &Theme) -> Rect {
+    let brand_height = STACKED_BRAND_ROWS.min(area.height);
+    let gap = u16::from(area.height > brand_height);
+    render_stacked_brand(
+        Rect {
+            height: brand_height,
+            ..area
+        },
+        buf,
+        theme,
+    );
+    let consumed = brand_height.saturating_add(gap).min(area.height);
+    Rect {
+        y: area.y.saturating_add(consumed),
+        height: area.height.saturating_sub(consumed),
+        ..area
+    }
+}
+
 /// Controls what the version badge renders.
 pub(super) enum VersionBadgeMode<'a> {
-    /// Full badge: team | tier | api_key | **Grok Build** VERSION+channel **Beta** (right-aligned).
+    /// Full badge: team | tier | api_key | upstream base + fork/update metadata.
     Full { subscription_tier: Option<&'a str> },
-    /// Hero footer: team | api_key | Grok Build Beta [channel] (right-aligned, gray).
+    /// Hero footer: fork revision + Enhanced update channel (right-aligned).
     HeroFooter,
-    /// Hero inline: **Grok Build Beta**  VERSION (left-aligned).
+    /// Hero inline: Enhanced identity + upstream base (left-aligned).
     HeroInline,
 }
 
@@ -433,46 +498,44 @@ pub(super) fn render_version_badge(
     }
 
     let channel = xai_grok_update::channel_label();
+    let title_style = Style::default()
+        .fg(theme.text_primary)
+        .add_modifier(Modifier::BOLD);
+    let metadata_style = Style::default().fg(theme.gray);
+    let update_channel = if channel.is_empty() {
+        "channel unavailable"
+    } else {
+        channel.trim()
+    };
     match &mode {
         VersionBadgeMode::Full { .. } => {
             spans.push(Span::styled(
-                "Grok Build  ",
-                Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD),
+                format!("upstream base {}", xai_grok_version::VERSION),
+                metadata_style,
             ));
+            if let Some(revision) = compiled_fork_revision() {
+                spans.push(Span::styled(format!(" · fork {revision}"), metadata_style));
+            }
             spans.push(Span::styled(
-                format!("{}{}", xai_grok_version::VERSION, channel),
-                Style::default().fg(theme.gray),
-            ));
-            spans.push(Span::styled(
-                " Beta",
-                Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD),
+                format!(" · Enhanced updates {update_channel}"),
+                metadata_style,
             ));
         }
         VersionBadgeMode::HeroFooter => {
-            let channel_display = if channel.is_empty() {
-                "Beta"
-            } else {
-                channel.trim()
+            let text = match compiled_fork_revision() {
+                Some(revision) => format!("fork {revision} · Enhanced updates {update_channel}"),
+                None => format!("Enhanced updates {update_channel}"),
             };
-            spans.push(Span::styled(
-                channel_display,
-                Style::default().fg(theme.gray),
-            ));
+            spans.push(Span::styled(text, metadata_style));
         }
         VersionBadgeMode::HeroInline => {
             spans.push(Span::styled(
-                "Grok Build Beta  ",
-                Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD),
+                xai_grok_version::ENHANCED_PRODUCT_NAME,
+                title_style,
             ));
             spans.push(Span::styled(
-                xai_grok_version::VERSION,
-                Style::default().fg(theme.gray),
+                format!("  upstream {}", xai_grok_version::VERSION),
+                metadata_style,
             ));
         }
     }
@@ -866,6 +929,7 @@ fn render_welcome_blocked(
         ..Default::default()
     });
 
+    render_stacked_brand(layout.brand, buf, &theme);
     render_logo(layout.logo, buf, &theme, content_area.height);
 
     if let Some((text, color)) = message {
@@ -971,6 +1035,7 @@ fn render_welcome_trust(
         ..Default::default()
     });
 
+    render_stacked_brand(layout.brand, buf, theme);
     render_logo(layout.logo, buf, theme, content_area.height);
     Paragraph::new(lines).render(layout.error, buf);
 
@@ -1541,7 +1606,7 @@ fn render_changelog_section(
             .fg(theme.gray_bright)
             .add_modifier(Modifier::DIM),
     );
-    let title = "Changelog";
+    let title = "Official upstream notes";
     buf.set_span(
         centered.x,
         centered.y,
@@ -1593,8 +1658,11 @@ fn stacked_info_budget(
         return 0;
     }
     let logo_rows = logo_line_count(content_area.height);
-    let gap_after_logo = if error_height > 0 { 1u16 } else { 0 };
-    let fixed_above = logo_rows + 1 + gap_after_logo + error_height;
+    let logo_gap = u16::from(logo_rows > 0);
+    let brand_gap = 1u16;
+    let gap_after_brand = if error_height > 0 { 1u16 } else { 0 };
+    let fixed_above =
+        logo_rows + logo_gap + STACKED_BRAND_ROWS + brand_gap + gap_after_brand + error_height;
     let fixed_below = WelcomeLayout::fixed_below(tip_height);
     // +1 info-slot gap, +1 min flex gap above the tip.
     content_area
@@ -1728,9 +1796,9 @@ fn render_welcome_done(
         }
         items.push((key_w, "New worktree"));
         items.push((key_s, "Resume session"));
-        // "Changelog" above Quit; no shortcut — opened by click (row or block).
+        // Official upstream notes above Quit; no shortcut — opened by click.
         if show_changelog_action {
-            items.push(("", "Changelog"));
+            items.push(("", "Official upstream notes"));
         }
         items.push((key_q, "Quit"));
         owned_menu = items;
@@ -1780,14 +1848,9 @@ fn render_welcome_done(
     let mut upgrade_cta_rect: Option<Rect> = None;
 
     let (menu_rects, picker_close_button) = if show_picker {
-        // Use the full area since logo/menu are hidden and shortcuts
-        // are now rendered inside the picker content area.
-        let picker_area = Rect {
-            x: content_area.x,
-            y: content_area.y,
-            width: content_area.width,
-            height: content_area.height,
-        };
+        // The compact picker suppresses the responsive logo, but keeps the
+        // textual distribution identity in a dedicated header.
+        let picker_area = render_brand_above_picker(content_area, buf, theme);
         let hit_areas = render_session_picker(
             picker_area,
             buf,
@@ -1833,6 +1896,7 @@ fn render_welcome_done(
         // Narrow layout: stacked logo above, menu below. Inset the menu the
         // same as the input bar (`prompt_inset`) so it keeps side spacing
         // instead of touching the window edge on narrow terminals.
+        render_stacked_brand(layout.brand, buf, theme);
         render_logo(layout.logo, buf, theme, content_area.height);
         let menu_area = inset_horizontal(layout.menu, prompt::prompt_inset(p.compact));
         (
@@ -2020,13 +2084,13 @@ fn render_welcome_done(
             let key_name = "ctrl+u";
             let line = Line::from(vec![
                 Span::styled(
-                    "Update: ",
+                    "Enhanced update: ",
                     Style::default()
                         .fg(theme.accent_user)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("v{ver} available \u{2014} press {key_name} to restart"),
+                    format!("v{ver} ready \u{2014} {key_name} to restart"),
                     Style::default().fg(theme.accent_user),
                 ),
             ]);
@@ -2624,8 +2688,78 @@ mod tests {
         params.pending_update_version = Some("9.9.9");
 
         let text = render_done_text(&params);
-        assert!(text.contains("v9.9.9 available"), "{text}");
+        assert!(text.contains("Enhanced update:"), "{text}");
+        assert!(text.contains("v9.9.9 ready"), "{text}");
+        assert!(text.contains("ctrl+u to restart"), "{text}");
         assert!(!text.contains("Coming from Cursor?"), "{text}");
+    }
+
+    #[test]
+    fn wide_and_narrow_welcome_keep_enhanced_text_identity() {
+        let auth = AuthState::Done;
+        let trust = TrustState::Done;
+        let params = render_params(&auth, &trust, None);
+
+        for area in [Rect::new(0, 0, 100, 40), Rect::new(0, 0, 70, 40)] {
+            let mut buf = Buffer::empty(area);
+            let mut prompt = PromptWidget::new();
+            let mut picker = PickerState::default();
+            render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
+            let text = buffer_text(&buf);
+            assert!(
+                text.contains("Grok Build Enhanced"),
+                "area={area:?}\n{text}"
+            );
+            assert!(
+                text.contains(xai_grok_version::ENHANCED_SUBTITLE),
+                "area={area:?}\n{text}"
+            );
+            assert!(
+                text.contains(xai_grok_version::VERSION),
+                "area={area:?}\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn logo_suppressed_by_height_keeps_enhanced_identity() {
+        let auth = AuthState::Done;
+        let trust = TrustState::Done;
+        let params = render_params(&auth, &trust, None);
+        let area = Rect::new(0, 0, 70, 20);
+        assert_eq!(logo_line_count(area.height), 0, "fixture must hide logo");
+
+        let mut buf = Buffer::empty(area);
+        let mut prompt = PromptWidget::new();
+        let mut picker = PickerState::default();
+        render_welcome(area, &mut buf, &params, &mut prompt, &mut picker);
+        let text = buffer_text(&buf);
+        assert!(text.contains("Grok Build Enhanced"), "{text}");
+        assert!(
+            text.contains("The unofficial daily-driver fork of Grok Build."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn compact_picker_keeps_identity_when_logo_is_suppressed() {
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+        let picker_area = render_brand_above_picker(area, &mut buf, &Theme::current());
+        let text = buffer_text(&buf);
+        assert!(text.contains("Grok Build Enhanced"), "{text}");
+        assert!(text.contains(xai_grok_version::ENHANCED_SUBTITLE), "{text}");
+        assert_eq!(picker_area.y, area.y + STACKED_BRAND_ROWS + 1);
+        assert_eq!(picker_area.height, area.height - STACKED_BRAND_ROWS - 1);
+    }
+
+    #[test]
+    fn wide_welcome_uses_distribution_subtitle() {
+        let auth = AuthState::Done;
+        let trust = TrustState::Done;
+        let params = render_params(&auth, &trust, None);
+        let text = render_done_text(&params);
+        assert!(text.contains(xai_grok_version::ENHANCED_SUBTITLE), "{text}");
     }
 
     fn png() -> [u8; 8] {
@@ -3038,11 +3172,11 @@ mod tests {
 
     #[test]
     fn changelog_boundary_exact_fit() {
-        // No logo at h < 22. fixed_above = 0 + 1 + 0 + 0 = 1.
+        // No logo at h < 22. fixed_above = 2 (brand) + 1 (gap) = 3.
         // fixed_below = 0 (tip) + 0 (tip_gap) + 3 (prompt) + 1 (ver_gap) + 1 (ver) = 5.
-        // min_without_changelog = 1 + 4 (menu) + 1 (flex) + 5 = 11.
-        // changelog slot = 1 (gap) + 5 (height) = 6. Threshold = 11 + 6 = 17.
-        let just_fits = Rect::new(0, 0, 80, 17);
+        // min_without_changelog = 3 + 4 (menu) + 1 (flex) + 5 = 13.
+        // changelog slot = 1 (gap) + 5 (height) = 6. Threshold = 13 + 6 = 19.
+        let just_fits = Rect::new(0, 0, 80, 19);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: just_fits,
             menu_height: 4,
@@ -3051,7 +3185,7 @@ mod tests {
         });
         assert_eq!(layout.changelog.height, 5);
 
-        let too_short = Rect::new(0, 0, 80, 16);
+        let too_short = Rect::new(0, 0, 80, 18);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: too_short,
             menu_height: 4,
@@ -3064,8 +3198,8 @@ mod tests {
     #[test]
     fn changelog_hidden_when_tip_steals_space() {
         // Use narrow width to avoid hero box path, keeping stacked layout.
-        // With tip_height=2: fixed_below(2) = 8. min = 1 + 4 + 1 + 8 = 14.
-        // Threshold = 14 + 6 = 20. At h=19 the tip pushes changelog out.
+        // With tip_height=2: fixed_below(2) = 8. min = 3 + 4 + 1 + 8 = 16.
+        // Threshold = 16 + 6 = 22. At h=19 the tip pushes changelog out.
         let with_tip = Rect::new(0, 0, 60, 19);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: with_tip,
@@ -3076,7 +3210,7 @@ mod tests {
         });
         assert_eq!(layout.changelog.height, 0);
 
-        // Same size without tip: threshold = 17 <= 19, changelog fits.
+        // Same size without tip: threshold = 19, so the changelog exactly fits.
         let without_tip = Rect::new(0, 0, 60, 19);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: without_tip,
@@ -3165,6 +3299,8 @@ mod tests {
             "hero box should be inactive in compact mode"
         );
         assert_eq!(layout.hero_box.width, 0);
+        assert_eq!(layout.logo.height, 0);
+        assert_eq!(layout.brand.height, STACKED_BRAND_ROWS);
     }
 
     #[test]
@@ -3310,8 +3446,8 @@ mod tests {
         assert!(layout.has_hero_box());
         assert_eq!(layout.changelog.height, 0);
         assert_eq!(layout.hero_info.height, 5);
-        // The subtitle is hidden when the info slot is shown.
-        assert_eq!(layout.hero_subtitle.height, 0);
+        // Fork identity stays visible alongside official upstream notes.
+        assert_eq!(layout.hero_subtitle.height, 1);
         assert!(layout.hero_info.y > layout.hero_version.y);
     }
 
@@ -3328,8 +3464,8 @@ mod tests {
         assert!(layout.has_hero_box());
         // Collapsed: title (1) + 2 wrapped message lines.
         assert_eq!(layout.hero_info.height, 3);
-        // The subtitle is hidden when the info slot is shown.
-        assert_eq!(layout.hero_subtitle.height, 0);
+        // Fork identity stays visible alongside official upstream notes.
+        assert_eq!(layout.hero_subtitle.height, 1);
         assert!(layout.hero_info.y > layout.hero_version.y);
         // The menu sits one blank row below the info block — no divider line.
         assert_eq!(
@@ -3357,40 +3493,49 @@ mod tests {
     }
 
     #[test]
-    fn hero_box_announcement_clamped_when_tight() {
-        // A real announcement can't disable the hero box: the slot is clamped to
-        // whatever still fits (the renderer trails a `…`), so the box stays
-        // active rather than falling back to the stacked layout.
-        let area = Rect::new(0, 0, 100, 17);
+    fn hero_box_announcement_never_disappears_when_tight() {
         let a = long_ann();
+
+        // The empty hero fits at 17 rows, but an announcement would have no
+        // source-content row after reserving the persistent Enhanced subtitle.
+        // Fall back to stacked rather than silently dropping the announcement.
+        let tight = Rect::new(0, 0, 100, 17);
         let without = WelcomeLayout::compute(WelcomeLayoutInput {
-            content_area: area,
+            content_area: tight,
             menu_height: 3,
             ..Default::default()
         });
         assert!(without.has_hero_box());
-        let with_ann = WelcomeLayout::compute(WelcomeLayoutInput {
-            content_area: area,
+        let stacked = WelcomeLayout::compute(WelcomeLayoutInput {
+            content_area: tight,
             menu_height: 3,
             announcement: Some(&a),
             ..Default::default()
         });
+        assert!(!stacked.has_hero_box());
+        assert!(stacked.changelog.height > 0);
+
+        // One more row lets the hero keep both the subtitle and a clamped
+        // announcement row.
+        let fits = Rect::new(0, 0, 100, 18);
+        let hero = WelcomeLayout::compute(WelcomeLayoutInput {
+            content_area: fits,
+            menu_height: 3,
+            announcement: Some(&a),
+            ..Default::default()
+        });
+        assert!(hero.has_hero_box());
+        assert!(hero.hero_info.height > 0);
         assert!(
-            with_ann.has_hero_box(),
-            "announcement clamps to fit instead of disabling the box"
-        );
-        assert!(with_ann.hero_info.height > 0);
-        assert!(
-            hero_box::min_content_height(0, 3, 0, with_ann.hero_info.height) <= area.height,
+            hero_box::min_content_height(0, 3, 0, hero.hero_info.height) <= fits.height,
             "clamped slot must keep the box within the area"
         );
     }
 
     #[test]
     fn hero_box_keeps_one_bottom_pad_below_actions() {
-        // With a changelog/announcement the subtitle is hidden, but there's
-        // still exactly one padding row between the actions and the bottom
-        // border. (menu=4 + info=3 fills the inner, so the menu reaches the pad.)
+        // With a changelog/announcement the subtitle stays visible and there's
+        // still exactly one padding row between the actions and bottom border.
         let area = Rect::new(0, 0, 100, 50);
         let a = long_ann();
         let no_info = WelcomeLayout::compute(WelcomeLayoutInput {
@@ -3405,7 +3550,7 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(no_info.hero_subtitle.height, 1);
-        assert_eq!(with_info.hero_subtitle.height, 0);
+        assert_eq!(with_info.hero_subtitle.height, 1);
         let menu_bottom = with_info.hero_menu.y + with_info.hero_menu.height;
         let border_bottom = with_info.hero_box.y + with_info.hero_box.height - 1;
         assert_eq!(

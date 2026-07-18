@@ -3300,7 +3300,8 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     && let Some(md) = ctx.changelog_markdown.as_deref()
                 {
                     return InputOutcome::Action(Action::ShowReleaseNotes {
-                        title: "Release Notes".to_string(),
+                        title: crate::slash::commands::release_notes::OFFICIAL_RELEASE_NOTES_TITLE
+                            .to_string(),
                         content: md.trim().to_string(),
                     });
                 }
@@ -3499,7 +3500,8 @@ fn dispatch_menu_action(
     if Some(index) == changelog_idx {
         if let Some(md) = changelog_md {
             return InputOutcome::Action(Action::ShowReleaseNotes {
-                title: "Release Notes".to_string(),
+                title: crate::slash::commands::release_notes::OFFICIAL_RELEASE_NOTES_TITLE
+                    .to_string(),
                 content: md.trim().to_string(),
             });
         }
@@ -8788,7 +8790,7 @@ pub(crate) mod tests {
         let mut app = test_app();
         app.active_view = ActiveView::Welcome;
         app.welcome_doc_viewer = Some(crate::views::modal::ActiveModal::DocViewer {
-            title: "Release Notes".into(),
+            title: crate::slash::commands::release_notes::OFFICIAL_RELEASE_NOTES_TITLE.into(),
             content: "line\n".repeat(80),
             scroll: 0,
             window: crate::views::modal_window::ModalWindowState::new(),

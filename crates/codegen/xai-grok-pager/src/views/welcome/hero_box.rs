@@ -28,17 +28,19 @@ const LOGO_H_PAD: u16 = 3;
 /// message never paints over the button.
 const UPGRADE_CTA_ROWS: u16 = 2;
 
-const HERO_SUBTITLE: &str = "Thanks for trying Grok Build, give feedback with /feedback!";
+const HERO_SUBTITLE: &str = xai_grok_version::ENHANCED_SUBTITLE;
 
 use super::{PROMPT_HEIGHT, VERSION_GAP};
 
-/// Rows the "thanks" subtitle occupies. Hidden when the in-box info slot
-/// (changelog / announcement) is shown, to keep the box compact.
-fn subtitle_rows(info_height: u16) -> u16 {
-    if info_height > 0 { 0 } else { 1 }
+/// Rows occupied by the distribution subtitle.
+///
+/// The identity stays visible even when release notes or an announcement use
+/// the in-box info slot.
+fn subtitle_rows(_info_height: u16) -> u16 {
+    1
 }
 
-/// Height of the hero box's right column: version + optional subtitle +
+/// Height of the hero box's right column: version + distribution subtitle +
 /// optional info block + the gap before the menu + the menu itself.
 fn right_col_height(menu_height: u16, info_height: u16) -> u16 {
     let info_gap = if info_height > 0 { 1u16 } else { 0 };
@@ -225,7 +227,7 @@ pub(super) fn compute_hero_box(
         height: 1,
     };
 
-    // Subtitle line below version — hidden when the info slot is shown.
+    // Distribution subtitle below the version; never displaced by info content.
     let hero_subtitle = if subtitle_rows(info_height) > 0 {
         Rect {
             x: right_x,
@@ -262,6 +264,7 @@ pub(super) fn compute_hero_box(
     };
 
     WelcomeLayout {
+        brand: zero,
         logo: zero,
         error,
         menu: zero,
@@ -523,7 +526,7 @@ fn render_hero_changelog(
             .fg(theme.gray_bright)
             .add_modifier(Modifier::DIM),
     );
-    let title = "Changelog";
+    let title = "Official upstream notes";
     buf.set_span(
         area.x,
         area.y,

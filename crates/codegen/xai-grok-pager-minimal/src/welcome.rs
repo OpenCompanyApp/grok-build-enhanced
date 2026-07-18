@@ -68,17 +68,22 @@ pub fn maybe_commit_welcome(app: &mut AppView, terminal: &mut PagerTerminal) {
         _ => (app.cwd.display().to_string(), None),
     };
 
-    // Info lines below the logo: title + version, cwd, optional model, hint.
+    // Keep the fork identity visible even when the responsive logo is omitted.
     let mut info: Vec<Line<'static>> = Vec::new();
-    info.push(Line::from(vec![
-        Span::styled(
-            "Grok Build",
-            Style::default()
-                .fg(theme.accent_user)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("  v{version}"), theme.muted()),
-    ]));
+    info.push(Line::from(Span::styled(
+        xai_grok_version::ENHANCED_PRODUCT_NAME,
+        Style::default()
+            .fg(theme.accent_user)
+            .add_modifier(Modifier::BOLD),
+    )));
+    info.push(Line::from(Span::styled(
+        xai_grok_version::ENHANCED_SUBTITLE,
+        theme.muted(),
+    )));
+    info.push(Line::from(Span::styled(
+        format!("Upstream base · {version}"),
+        theme.muted(),
+    )));
     if !cwd.is_empty() {
         info.push(Line::from(Span::styled(cwd, theme.muted())));
     }

@@ -1703,7 +1703,7 @@ mod tests {
         assert_eq!(
             first_5,
             vec![
-                "Grok Build TUI",
+                "Grok Build Enhanced TUI — The unofficial daily-driver fork of Grok Build.",
                 "",
                 "Usage: grok [OPTIONS] [PROMPT] [COMMAND]",
                 "",

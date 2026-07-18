@@ -14,7 +14,7 @@ const HIDE_CTA: &str = "hide: /announcements hide";
 /// Clickable hide button, right-aligned on the banner title row.
 const HIDE_BUTTON: &str = "[hide]";
 /// Slash-command description from `AnnouncementsCommand`.
-const SLASH_DESC: &str = "Show or hide announcements";
+const SLASH_DESC: &str = "Show or hide official xAI announcements";
 /// Distinctive tokens for the 1-line promo row.
 const PROMO_MSG: &str = "ZZANNPROMOMSG";
 const PROMO_LABEL: &str = "ZZPROMOCTA";

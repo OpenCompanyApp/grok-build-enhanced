@@ -4,6 +4,16 @@ use semver::Version;
 
 pub const TEST_VERSION_ENV: &str = "GROK_TEST_VERSION";
 
+/// User-facing fork identity. Protocol, executable, and storage identities stay
+/// `grok`; this constant is only for distribution branding.
+pub const ENHANCED_PRODUCT_NAME: &str = "Grok Build Enhanced";
+
+/// Distribution subtitle used on branded startup and about surfaces.
+pub const ENHANCED_SUBTITLE: &str = "The unofficial daily-driver fork of Grok Build.";
+
+/// User-facing name for the source distribution this fork tracks.
+pub const UPSTREAM_PRODUCT_NAME: &str = "Grok Build";
+
 /// Minimum client compatibility version required by the Sol, Terra, and Luna
 /// entries in the public OpenAI Codex model catalog audited at upstream commit
 /// `f737605606c14e3aa59a4c17be80d338f164dff5`. Review that source again before
@@ -46,6 +56,42 @@ pub fn display_version_with_commit(version_with_commit: &str, channel_label: &st
     format!("{}{}", version_with_commit, channel_label)
 }
 
+/// Return a compiled fork revision when one is available.
+///
+/// Build scripts use `"unknown"` when the checkout identity cannot be read.
+/// Treating that sentinel (and blank values) as absent keeps user-facing
+/// surfaces from presenting fabricated metadata.
+pub fn fork_revision(revision: &str) -> Option<&str> {
+    let revision = revision.trim();
+    (!revision.is_empty() && !revision.eq_ignore_ascii_case("unknown")).then_some(revision)
+}
+
+/// Format the additive one-line identity used by `grok --version`.
+///
+/// The Enhanced name and Codex compatibility version are labels only and never
+/// flow into protocol headers. The upstream package version and fork checkout
+/// revision are deliberately separate inputs: the checkout revision is not an
+/// upstream source revision.
+pub fn enhanced_cli_version(
+    upstream_version: &str,
+    fork_revision: Option<&str>,
+    channel_label: &str,
+) -> String {
+    let mut identity = format!("{ENHANCED_PRODUCT_NAME} · upstream {upstream_version}");
+    let channel_label = channel_label.trim();
+    if !channel_label.is_empty() {
+        identity.push_str(" · Enhanced updates ");
+        identity.push_str(channel_label);
+    }
+    if let Some(revision) = fork_revision.and_then(self::fork_revision) {
+        identity.push_str(" · fork ");
+        identity.push_str(revision);
+    }
+    identity.push_str(" · Codex compat ");
+    identity.push_str(OPENAI_CODEX_COMPATIBILITY_VERSION);
+    identity
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +123,38 @@ mod tests {
         // display_version uses compiled VERSION — just verify the label appends
         assert_eq!(display_version(""), VERSION);
         assert!(display_version(" [stable]").ends_with("[stable]"));
+    }
+
+    #[test]
+    fn distribution_copy_is_stable() {
+        assert_eq!(ENHANCED_PRODUCT_NAME, "Grok Build Enhanced");
+        assert_eq!(
+            ENHANCED_SUBTITLE,
+            "The unofficial daily-driver fork of Grok Build."
+        );
+        assert_eq!(UPSTREAM_PRODUCT_NAME, "Grok Build");
+    }
+
+    #[test]
+    fn fork_revision_omits_unavailable_metadata() {
+        assert_eq!(fork_revision("abc1234"), Some("abc1234"));
+        assert_eq!(fork_revision(" abc1234 \n"), Some("abc1234"));
+        assert_eq!(fork_revision(""), None);
+        assert_eq!(fork_revision("unknown"), None);
+        assert_eq!(fork_revision("UNKNOWN"), None);
+    }
+
+    #[test]
+    fn enhanced_cli_version_labels_each_compatibility_layer() {
+        let rendered = enhanced_cli_version("0.2.5", Some("fork123"), " [stable]");
+        assert_eq!(
+            rendered,
+            "Grok Build Enhanced · upstream 0.2.5 · Enhanced updates [stable] · fork fork123 · Codex compat 0.144.0"
+        );
+
+        let without_revision = enhanced_cli_version("0.2.5", Some("unknown"), "");
+        assert!(!without_revision.contains(" · fork "));
+        assert!(!without_revision.contains("Enhanced updates"));
+        assert!(without_revision.contains("Grok Build Enhanced · upstream 0.2.5"));
     }
 }

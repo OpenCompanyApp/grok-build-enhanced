@@ -88,7 +88,7 @@ fn resolve_agent_profile_path(path: &std::path::Path) -> std::path::PathBuf {
 /// Print startup information for the serve command.
 fn print_serve_startup_info(bind_addr: SocketAddr, secret: &str) {
     eprintln!();
-    eprintln!("   Grok agent server starting...");
+    eprintln!("   Grok Build Enhanced agent server starting...");
     eprintln!();
     eprintln!("   Address:  {}:{}", bind_addr.ip(), bind_addr.port());
     eprintln!("   Secret:   {}", secret);
@@ -878,9 +878,10 @@ async fn run_agent_command(
     let is_leader = matches!(agent_args.mode, Some(AgentCmd::Leader(_)));
     if !is_stdio && !is_leader {
         eprintln!(
-            "Grok Build (pager) - v{}",
-            xai_grok_version::display_version_with_commit(
-                env!("VERSION_WITH_COMMIT"),
+            "{}",
+            xai_grok_version::enhanced_cli_version(
+                xai_grok_version::VERSION,
+                xai_grok_version::fork_revision(env!("GROK_ENHANCED_REVISION")),
                 xai_grok_update::channel_label(),
             )
         );
@@ -1527,6 +1528,40 @@ fn main() {
         std::process::exit(1);
     }
 }
+fn version_json_payload(fork_revision: Option<&str>, channel: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        // Keep the historical fields so existing consumers do not lose compatibility.
+        "currentVersion": env!("VERSION_WITH_COMMIT"),
+        "channel": channel.unwrap_or("unknown"),
+        "product": xai_grok_version::ENHANCED_PRODUCT_NAME,
+        "upstreamBaseVersion": xai_grok_version::VERSION,
+        "forkRevision": fork_revision,
+        "codexCompatibilityVersion": xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION,
+        "updateSource": "enhanced-fork",
+    })
+}
+
+fn version_report_lines(fork_revision: Option<&str>, channel_label: &str) -> Vec<String> {
+    let mut lines = vec![
+        xai_grok_version::ENHANCED_PRODUCT_NAME.to_string(),
+        format!("  Upstream base: {}", xai_grok_version::VERSION),
+    ];
+    if let Some(revision) = fork_revision {
+        lines.push(format!("  Fork revision: {revision}"));
+    }
+    lines.push(format!(
+        "  Codex compatibility: {}",
+        xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION
+    ));
+    let update_channel = channel_label.trim();
+    lines.push(if update_channel.is_empty() {
+        "  Enhanced update channel: unavailable (matching artifact required)".to_string()
+    } else {
+        format!("  Enhanced update channel: {update_channel} (matching artifact required)")
+    });
+    lines
+}
+
 async fn async_main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut args = PagerArgs::parse_and_apply_cwd()?;
@@ -1597,20 +1632,17 @@ async fn async_main() -> Result<()> {
     if let Some(command) = args.command.take() {
         match command {
             Command::Version { json } => {
+                let fork_revision = xai_grok_version::fork_revision(env!("GROK_ENHANCED_REVISION"));
                 if json {
-                    let payload = serde_json::json!(
-                        { "currentVersion" : env!("VERSION_WITH_COMMIT"), "channel" :
-                        xai_grok_update::channel_name().unwrap_or("unknown"), }
-                    );
+                    let payload =
+                        version_json_payload(fork_revision, xai_grok_update::channel_name());
                     println!("{}", serde_json::to_string(&payload)?);
                 } else {
-                    println!(
-                        "grok {}",
-                        xai_grok_version::display_version_with_commit(
-                            env!("VERSION_WITH_COMMIT"),
-                            xai_grok_update::channel_label(),
-                        )
-                    );
+                    for line in
+                        version_report_lines(fork_revision, xai_grok_update::channel_label())
+                    {
+                        println!("{line}");
+                    }
                 }
                 return Ok(());
             }
@@ -2141,6 +2173,41 @@ async fn signal_leaders_to_relaunch(installed_version: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_reports_distinguish_fork_upstream_and_codex_layers() {
+        let lines = version_report_lines(Some("fork123"), " [stable]");
+        assert_eq!(lines[0], "Grok Build Enhanced");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Upstream base:") && !line.contains("[stable]"))
+        );
+        assert!(lines.iter().any(|line| {
+            line.contains("Enhanced update channel:") && line.contains("[stable]")
+        }));
+        assert!(lines.iter().any(|line| line == "  Fork revision: fork123"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Codex compatibility:"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("matching artifact required"))
+        );
+
+        let payload = version_json_payload(Some("fork123"), Some("stable"));
+        assert_eq!(payload["product"], "Grok Build Enhanced");
+        assert_eq!(payload["upstreamBaseVersion"], xai_grok_version::VERSION);
+        assert_eq!(payload["forkRevision"], "fork123");
+        assert_eq!(payload["updateSource"], "enhanced-fork");
+        assert_eq!(
+            payload["codexCompatibilityVersion"],
+            xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION
+        );
+    }
     #[cfg(all(feature = "jemalloc", unix))]
     struct TempHeapDump(std::path::PathBuf);
     #[cfg(all(feature = "jemalloc", unix))]

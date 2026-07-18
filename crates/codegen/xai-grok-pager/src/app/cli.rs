@@ -95,9 +95,9 @@ See ~/.grok/README.md for more information.
     Export(crate::export_cmd::ExportArgs),
     /// Export or upload session trace data
     Trace(crate::trace_cmd::TraceArgs),
-    /// Check for updates or install a specific version
+    /// Check for or install a Grok Build Enhanced update
     Update {
-        /// Check for updates without installing.
+        /// Check the Enhanced update channel without installing.
         #[arg(long)]
         check: bool,
         /// Emit machine-readable JSON output (for --check).
@@ -402,14 +402,18 @@ fn version_with_channel() -> &'static str {
     static V: OnceLock<String> = OnceLock::new();
     V.get_or_init(|| {
         let label = xai_grok_update::channel_label();
-        xai_grok_version::display_version_with_commit(env!("VERSION_WITH_COMMIT"), label)
+        xai_grok_version::enhanced_cli_version(
+            xai_grok_version::VERSION,
+            xai_grok_version::fork_revision(env!("GROK_ENHANCED_REVISION")),
+            label,
+        )
     })
 }
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "grok",
     version = version_with_channel(),
-    about = "Grok Build TUI",
+    about = "Grok Build Enhanced TUI — The unofficial daily-driver fork of Grok Build.",
     disable_version_flag = true,
     next_display_order = None,
     help_template = "\
@@ -914,6 +918,10 @@ mod tests {
             "--version must exit 0; got {}",
             err.exit_code()
         );
+        let output = err.to_string();
+        assert!(output.contains("Grok Build Enhanced"), "{output}");
+        assert!(output.contains("upstream"), "{output}");
+        assert!(output.contains("Codex compat"), "{output}");
     }
     #[test]
     fn version_short_flag_exits_zero() {
@@ -923,6 +931,17 @@ mod tests {
             err.exit_code() == 0,
             "-v must exit 0; got {}",
             err.exit_code()
+        );
+    }
+    #[test]
+    fn help_uses_enhanced_about_copy() {
+        let err = PagerArgs::try_parse_from(["grok", "--help"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        let output = err.to_string();
+        assert!(output.contains("Grok Build Enhanced TUI"), "{output}");
+        assert!(
+            output.contains("The unofficial daily-driver fork of Grok Build."),
+            "{output}"
         );
     }
     #[test]

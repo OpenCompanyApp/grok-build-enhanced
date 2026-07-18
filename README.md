@@ -1,62 +1,91 @@
+# Grok Build Enhanced
+
+**The unofficial daily-driver fork of Grok Build.**
+
+Grok Build Enhanced is an unofficial daily-driver fork of Grok Build. It keeps
+Grok Build's terminal agent and compatibility surfaces while integrating
+carefully scoped provider, theme, tool, and user-experience enhancements.
+
 > [!IMPORTANT]
-> This is an unofficial OpenCompanyApp fork of Grok Build. It is not affiliated
-> with, endorsed by, or supported by OpenAI, xAI, or SpaceXAI. Native ChatGPT
-> Codex subscription support in this fork follows current public open-source
-> Codex client behavior and uses an experimental backend contract that may
-> change without notice. The x.ai installer below installs the official upstream
-> build, not this fork; build this repository from source to use fork features.
+> **Unofficial and independent.** Grok Build Enhanced is an unofficial
+> daily-driver fork maintained independently by OpenCompanyApp. It is not
+> affiliated with, endorsed by, or supported by xAI, SpaceXAI, OpenAI, or their
+> affiliates. ChatGPT Codex subscription support follows current public
+> open-source Codex client behavior and uses an experimental backend contract
+> that may change without notice.
 
-<div align="center">
+The executable remains `grok`. Existing `~/.grok` configuration, sessions,
+model IDs, environment variables, Agent Client Protocol (ACP) identity, and the
+responsive Grok braille symbol remain compatible.
 
-<h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://media.x.ai/v1/website/spacexai-symbol-white-transparent-0c31957f.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://media.x.ai/v1/website/spacexai-symbol-black-transparent-6435cf42.png">
-    <img alt="SpaceXAI logo" src="https://media.x.ai/v1/website/spacexai-symbol-black-transparent-6435cf42.png" width="96">
-  </picture>
-  <br>
-  Grok Build (<code>grok</code>)
-</h1>
+| Area | Status in Enhanced |
+| --- | --- |
+| Grok Build TUI, agent loop, sessions, permissions, tools, headless mode, and ACP | Implemented; kept compatible with the upstream base |
+| xAI login and models | Implemented upstream behavior; provider identity remains explicit |
+| ChatGPT Codex subscription login, catalog, usage, fast mode, web/image tools | Implemented, experimental, and isolated from xAI credentials |
+| Custom OpenAI-compatible endpoint path | Existing upstream-compatible path retained |
+| Bundled Warp themes and theme UX | Implemented |
+| Kimi Code managed provider | Researched/planned only; no Kimi runtime provider or login is shipped |
+| Z.AI GLM Coding Plan provider | Researched/planned only; no GLM runtime provider or login is shipped |
+| Enhanced release artifacts | Fork-owned macOS/Linux packaging pipeline implemented; no reviewed public release is currently claimed |
+| Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
 
-**Grok Build** is SpaceXAI's terminal-based AI coding agent. It runs as a
-full-screen TUI that understands your codebase, edits files, executes shell
-commands, searches the web, and manages long-running tasks — interactively,
-headlessly for scripting/CI, or embedded in editors via the Agent Client
-Protocol (ACP).
+## Fork-owned terminal preview
 
-[Installing the released binary](#installing-the-released-binary) ·
-[Building from source](#building-from-source) ·
-[Documentation](#documentation) ·
-[Repository layout](#repository-layout) ·
-[Development](#development) ·
-[Contributing](#contributing) ·
-[License](#license)
+This text preview represents the responsive welcome copy; runtime values are
+shown as placeholders rather than fabricated release or account data. The
+existing braille artwork appears when the terminal supports it and space allows.
 
-![Grok Build TUI](https://media.x.ai/v1/website/universe-tui-screenshot-6f7a0837.png)
+```text
+╭──────────────────────────────────────────────────────────────────────╮
+│  [responsive Grok braille symbol]   Grok Build Enhanced              │
+│                                     upstream <base> · fork <revision>│
+│  The unofficial daily-driver fork of Grok Build.                    │
+│                                     New worktree                     │
+│                                     Resume session                   │
+╰──────────────────────────────────────────────────────────────────────╯
 
-**Learn more about Grok Build at [x.ai/cli](https://x.ai/cli)**
-
-This repository contains the Rust source for the `grok` CLI/TUI and its agent
-runtime. It is synced periodically from the SpaceXAI monorepo.
-
-</div>
-
----
-
-## Installing the released binary
-
-Prebuilt binaries are published for macOS, Linux, and Windows:
-
-```sh
-curl -fsSL https://x.ai/cli/install.sh | bash   # macOS / Linux / Git Bash
-irm https://x.ai/cli/install.ps1 | iex          # Windows PowerShell
-grok --version
+Minimal mode: Grok Build Enhanced · <runtime provider/model/capabilities>
 ```
 
-See the [changelog](https://x.ai/build/changelog) for the latest fixes,
-features, and improvements in each release. Those installers, packages, and
-release notes are official upstream channels and do not install Grok Build
-Enhanced.
+## Build and install Grok Build Enhanced
+
+The fork source is hosted at
+[github.com/OpenCompanyApp/grok-build-enhanced](https://github.com/OpenCompanyApp/grok-build-enhanced).
+Build this repository before considering the official upstream installer; the
+x.ai installer does **not** install Enhanced features.
+
+Requirements:
+
+- **Rust** — pinned by [`rust-toolchain.toml`](rust-toolchain.toml); `rustup`
+  installs it automatically on first build.
+- **protoc** — resolved through [`bin/protoc`](bin/protoc), or from
+  `PATH` / `$PROTOC` as a fallback.
+- macOS and Linux are supported build hosts. Windows builds are best-effort and
+  are not currently tested from this tree.
+
+Clone the fork and run it directly from the checkout:
+
+```sh
+git clone https://github.com/OpenCompanyApp/grok-build-enhanced.git
+cd grok-build-enhanced
+cargo run -p xai-grok-pager-bin
+```
+
+Or build a release artifact and install it as the compatible `grok` executable
+on macOS/Linux:
+
+```sh
+cargo build -p xai-grok-pager-bin --release
+mkdir -p "$HOME/.local/bin"
+install -m 0755 target/release/xai-grok-pager "$HOME/.local/bin/grok"
+"$HOME/.local/bin/grok" version
+```
+
+The Cargo artifact is named `xai-grok-pager`; distribution installs expose it
+as `grok`. If `CARGO_TARGET_DIR` is set, copy from that target directory instead.
+For Windows, build the same package and copy `target\release\xai-grok-pager.exe`
+to a directory on `PATH` as `grok.exe`.
 
 ### Unofficial fork releases
 
@@ -68,32 +97,39 @@ and GitHub provenance attestations. Adding the workflow does not itself publish
 a release; a version tag or an explicitly confirmed manual run is required.
 Until a reviewed fork release exists, build this repository from source.
 
-## Building from source
+Fork update checks and channels are labeled **Enhanced** and must not fall back
+to official xAI release endpoints. An update is installable only when fork
+release metadata and a matching artifact actually exist. Inherited
+announcements and remote release notes are separate and explicitly labeled
+**official xAI/upstream**. Persistent automatic update checks can be disabled in
+`~/.grok/config.toml`:
 
-Requirements:
-
-- **Rust** — the toolchain is pinned by [`rust-toolchain.toml`](rust-toolchain.toml);
-  `rustup` installs it automatically on first build.
-- **protoc** — proto codegen resolves [`bin/protoc`](bin/protoc) (a
-  [dotslash](https://dotslash-cli.com) launcher) or falls back to a `protoc` on
-  `PATH` / `$PROTOC`.
-- macOS and Linux are supported build hosts; Windows builds are best-effort
-  and not currently tested from this tree.
-
-```sh
-cargo run -p xai-grok-pager-bin              # build + launch the TUI
-cargo build -p xai-grok-pager-bin --release  # release binary: target/release/xai-grok-pager
-cargo check -p xai-grok-pager-bin            # fast validation
+```toml
+[cli]
+auto_update = false
 ```
 
-The binary artifact is named `xai-grok-pager`; official installs ship it as
-`grok`. On first launch it opens your browser to authenticate — see the
-[authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
+## Official upstream installer
 
-### ChatGPT Codex subscription (unofficial fork)
+Use this only when you intentionally want the official xAI/SpaceXAI Grok Build
+distribution rather than this fork:
 
-This fork keeps Grok Build's TUI, sessions, agent loop, permissions, and tools
-while allowing an eligible ChatGPT account to supply entitled Codex models:
+```sh
+curl -fsSL https://x.ai/cli/install.sh | bash   # macOS / Linux / Git Bash
+irm https://x.ai/cli/install.ps1 | iex          # Windows PowerShell
+```
+
+Official upstream announcements, release notes, binaries, and changelog are
+owned by xAI/SpaceXAI and are not Enhanced fork releases. See the
+[official changelog](https://x.ai/build/changelog) and
+[official Grok Build site](https://x.ai/cli).
+
+## Enhanced additions
+
+### ChatGPT Codex subscription provider (experimental)
+
+An eligible ChatGPT account can supply its entitled Codex models without
+reusing xAI authentication or static API keys:
 
 ```sh
 grok login --provider openai-codex
@@ -101,88 +137,105 @@ grok models --provider openai-codex
 grok -m openai-codex/<entitled-model-slug>
 ```
 
-Use `--device-auth` on the login command in a headless environment, and run
+Use `--device-auth` for headless login and
 `grok logout --provider openai-codex` to disconnect ChatGPT without changing
-the xAI login. In an active supported Codex session, use `/fast` to toggle or
-`/fast on`, `/fast off`, and `/fast status` explicitly; the preference is
-persisted for later sessions and never affects xAI or custom-provider requests. Fast is roughly 1.5x Standard
-speed and currently consumes subscription credits at a higher rate (2.5x for
-GPT-5.6/5.5 and 2x for GPT-5.4). Models, service tiers, and effort menus are
-discovered from the authenticated account rather than hardcoded. Current
-catalogs may advertise GPT-5.6 Sol and Terra through Ultra, and Luna through
-Max. Catalog image-input capability
-controls reading attachments; the separately authenticated `gpt-image-2`
-generation/editing tools are exposed whenever their feature gates are enabled.
-Codex sessions also expose provider-scoped standalone web search and navigation
-(`search_query`, `image_query`, `open`, `click`, `find`, PDF screenshots, and
-the current utility lookups) without `XAI_API_KEY`. Local `web_fetch` defaults
-on for Codex while retaining its SSRF and fixed-domain protections; use search
-`open`/`click` for result domains that are not locally allowlisted.
-See the authentication guide for the experimental-contract and code-mode
-compatibility limitations.
+the xAI login. The authenticated account supplies the model, service-tier, and
+reasoning-effort catalog; the fork does not hardcode entitlement claims.
+Supported Codex sessions expose provider-scoped fast mode, usage state,
+standalone web search/navigation, local protected `web_fetch`, catalog-gated
+image input, and feature-gated image generation/editing. Availability remains
+dependent on account metadata and server-side feature gates.
+
+Read the implemented
+[OpenAI Codex subscription provider reference](docs/providers/openai-codex-subscription-provider-reference.md)
+and the
+[authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)
+for experimental-contract and code-mode limitations.
+
+### Themes, tools, and UX
+
+Enhanced includes the packaged Warp theme corpus, provider-scoped Codex web and
+image integrations, and focused terminal UX additions while preserving Grok
+Build's existing tool names, permission model, sessions, and responsive braille
+symbol. Third-party attribution is recorded in
+[`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) and crate-local notices.
+
+### Candidate providers: research, not implementation
+
+Kimi and GLM documents are integration research only. They do not register
+provider IDs, add login commands, store credentials, or claim working managed
+service support:
+
+- [Kimi Code integration research — researched/planned, not implemented](docs/providers/kimi-code-integration-research.md)
+- [Z.AI GLM Coding Plan integration research — researched/planned, not implemented](docs/providers/zai-glm-coding-plan-integration-research.md)
+- [Provider documentation index](docs/providers/README.md)
+- [Reviewed upstream revisions](UPSTREAM_VERSIONS.md)
+
+## Upstream compatibility
+
+Enhanced is an adapter-style fork, not a replacement application. It preserves:
+
+- executable name `grok` and the `~/.grok` home/configuration layout;
+- stored sessions and model IDs;
+- existing `GROK_*` environment variables;
+- ACP protocol and client identity;
+- xAI authentication behavior, isolated from Codex authentication;
+- the Grok agent loop, tools, permissions, headless mode, and TUI interaction;
+- wide/narrow responsive layouts and the existing Grok braille symbol.
+
+Fork metadata is additive and user-facing: Enhanced identity, upstream base
+version, fork revision, and Codex compatibility version are shown only when
+that metadata is compiled in. No wire protocol or provider identity is renamed.
 
 ## Documentation
 
-Full online documentation is available at
-[docs.x.ai/build/overview](https://docs.x.ai/build/overview).
-
-The user guide ships with the pager crate:
+The upstream-compatible user guide ships with the pager crate:
 [`crates/codegen/xai-grok-pager/docs/user-guide/`](crates/codegen/xai-grok-pager/docs/user-guide/)
 — getting started, keyboard shortcuts, slash commands, configuration, theming,
 MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
 
-Fork-specific provider references and candidate-integration research live under
-[`docs/providers/`](docs/providers/). Each document declares whether it covers
-implemented experimental behavior or research for an unimplemented provider.
-The candidate documents do not add runtime provider identities: those remain
-xAI, experimental OpenAI Codex, and the existing generic custom-provider path.
+Fork provider documentation lives in [`docs/providers/`](docs/providers/).
+Official upstream documentation is at
+[docs.x.ai/build/overview](https://docs.x.ai/build/overview).
 
 ## Repository layout
 
 | Path | Contents |
-|------|----------|
-| `crates/codegen/xai-grok-pager-bin` | Composition-root package; builds the `xai-grok-pager` binary |
-| `crates/codegen/xai-grok-pager` | The TUI: scrollback, prompt, modals, rendering |
-| `crates/codegen/xai-grok-shell` | Agent runtime + leader/stdio/headless entry points |
-| `crates/codegen/xai-grok-tools` | Tool implementations (terminal, file edit, search, ...) |
-| `crates/codegen/xai-grok-workspace` | Host filesystem, VCS, execution, checkpoints |
-| `crates/codegen/...` | The rest of the CLI crate closure (config, MCP, markdown, sandbox, ...) |
-| `crates/common/`, `crates/build/`, `prod/mc/` | Small shared leaf crates pulled in by the closure |
-| `third_party/` | Vendored upstream source (Mermaid diagram stack) — see below |
+| --- | --- |
+| `crates/codegen/xai-grok-pager-bin` | Composition root; builds the `xai-grok-pager` artifact |
+| `crates/codegen/xai-grok-pager` | Full TUI, scrollback, prompt, modals, and welcome UI |
+| `crates/codegen/xai-grok-pager-minimal` | Native-scrollback minimal mode |
+| `crates/codegen/xai-grok-shell` | Agent runtime, leader, stdio, and headless entry points |
+| `crates/codegen/xai-grok-tools` | Terminal, file, search, and other tool implementations |
+| `crates/codegen/xai-grok-workspace` | Filesystem, VCS, execution, and checkpoints |
+| `docs/providers` | Implemented provider reference plus clearly marked candidate research |
+| `third_party` | Vendored upstream source/data; see notices |
 
 > [!IMPORTANT]
-> The root `Cargo.toml` (workspace members, dependency versions, lints,
-> profiles) is **generated** — treat it as read-only. Prefer editing per-crate
-> `Cargo.toml` files.
+> The root `Cargo.toml` is generated. Treat it as read-only and edit per-crate
+> manifests instead.
 
 ## Development
 
 ```sh
-cargo check -p <crate>        # always target specific crates; full-workspace builds are slow
-cargo test -p xai-grok-config # per-crate tests
-cargo clippy -p <crate>       # lint config: clippy.toml at the repo root
-cargo fmt --all               # rustfmt.toml at the repo root
+cargo check -p xai-grok-pager-bin
+cargo test -p xai-grok-pager
+cargo test -p xai-grok-config
+cargo clippy -p <crate>
+cargo fmt --all
 ```
+
+Previously grok-build-codex; renamed to reflect the broader Enhanced scope.
 
 ## Contributing
 
-> [!NOTE]
-> External contributions are not accepted. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+External contributions are not accepted. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
-First-party code in this repository is licensed under the **Apache License,
-Version 2.0** — see [`LICENSE`](LICENSE).
-
-Third-party and vendored code remains under its original licenses. See:
-
-- [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) — crates.io / git dependencies,
-  bundled UI themes, and **in-tree source ports** (including openai/codex and
-  sst/opencode tool implementations)
-- [`crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md`](crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md)
-  — crate-local notice for the codex and opencode ports (license texts +
-  Apache §4(b) change notice)
-- [`crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md`](crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md)
-  — crate-local notice for the packaged Warp theme corpus
-- [`third_party/NOTICE`](third_party/NOTICE) — vendored source/data index,
-  including the crate-local Warp theme corpus
+First-party code is licensed under the **Apache License, Version 2.0** — see
+[`LICENSE`](LICENSE). Third-party and vendored code remains under its original
+licenses. See [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES),
+[`crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md`](crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md),
+[`crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md`](crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md),
+and [`third_party/NOTICE`](third_party/NOTICE).

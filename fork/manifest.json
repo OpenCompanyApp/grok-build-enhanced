@@ -865,6 +865,41 @@
       ]
     },
     {
+      "id": "fork-enhanced-branding",
+      "description": "Grok Build Enhanced identity across documentation, version output, startup, full-screen, minimal, and upstream-content labels.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "README.md",
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-pager-bin/build.rs",
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-pager-minimal/src/welcome.rs",
+        "crates/codegen/xai-grok-pager/build.rs",
+        "crates/codegen/xai-grok-pager/src/app/app_view.rs",
+        "crates/codegen/xai-grok-pager/src/app/cli.rs",
+        "crates/codegen/xai-grok-pager/src/app/mod.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/announcements.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/release_notes.rs",
+        "crates/codegen/xai-grok-pager/src/views/welcome/hero_box.rs",
+        "crates/codegen/xai-grok-pager/src/views/welcome/mod.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/critical_announcement_session_banner_pty.rs",
+        "crates/codegen/xai-grok-version/src/lib.rs"
+      ],
+      "integration_paths": [
+        "README.md",
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-pager-minimal/src/welcome.rs",
+        "crates/codegen/xai-grok-pager/src/app/cli.rs",
+        "crates/codegen/xai-grok-pager/src/views/welcome/mod.rs",
+        "crates/codegen/xai-grok-version/src/lib.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "native-resolved-themes",
       "description": "Terminal-native, resolved palette, ANSI syntax, and system-appearance behavior.",
       "source_ids": [

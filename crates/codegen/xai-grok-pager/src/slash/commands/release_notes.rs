@@ -1,9 +1,15 @@
-//! `/release-notes` -- view release notes for the current version.
+//! `/release-notes` -- view official upstream release notes for the base version.
 
 use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
 
-/// Show release notes for the current pager version.
+pub const OFFICIAL_RELEASE_NOTES_TITLE: &str = "Official xAI / Upstream Release Notes";
+const OFFICIAL_RELEASE_NOTES_DESCRIPTION: &str =
+    "View official xAI/upstream notes for the base version";
+const OFFICIAL_RELEASE_NOTES_OFFLINE: &str =
+    "No official xAI/upstream release notes available (offline).";
+
+/// Show xAI's official upstream notes for the compiled base version.
 pub struct ReleaseNotesCommand;
 
 impl SlashCommand for ReleaseNotesCommand {
@@ -16,7 +22,7 @@ impl SlashCommand for ReleaseNotesCommand {
     }
 
     fn description(&self) -> &str {
-        "View release notes for the current version"
+        OFFICIAL_RELEASE_NOTES_DESCRIPTION
     }
 
     fn usage(&self) -> &str {
@@ -27,10 +33,10 @@ impl SlashCommand for ReleaseNotesCommand {
         let changelog = xai_grok_shell::util::changelog::ChangelogManager::new().fetch();
         match changelog.markdown {
             Some(content) => CommandResult::Action(Action::ShowReleaseNotes {
-                title: "Release Notes".to_string(),
+                title: OFFICIAL_RELEASE_NOTES_TITLE.to_string(),
                 content: content.trim().to_string(),
             }),
-            None => CommandResult::Error("No release notes available (offline).".to_string()),
+            None => CommandResult::Error(OFFICIAL_RELEASE_NOTES_OFFLINE.to_string()),
         }
     }
 }
@@ -56,5 +62,17 @@ mod tests {
             matches!(result, CommandResult::Action(_) | CommandResult::Error(_)),
             "expected Action or Error, got {result:?}"
         );
+    }
+
+    #[test]
+    fn release_notes_surfaces_identify_official_upstream_ownership() {
+        let command = ReleaseNotesCommand;
+        assert!(command.description().contains("official xAI/upstream"));
+        assert_eq!(
+            OFFICIAL_RELEASE_NOTES_TITLE,
+            "Official xAI / Upstream Release Notes"
+        );
+        assert!(OFFICIAL_RELEASE_NOTES_OFFLINE.contains("official xAI/upstream"));
+        assert!(!OFFICIAL_RELEASE_NOTES_TITLE.contains("Enhanced"));
     }
 }

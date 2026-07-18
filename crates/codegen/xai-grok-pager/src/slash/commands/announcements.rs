@@ -14,7 +14,7 @@ impl SlashCommand for AnnouncementsCommand {
     }
 
     fn description(&self) -> &str {
-        "Show or hide announcements"
+        "Show or hide official xAI announcements"
     }
 
     fn usage(&self) -> &str {
@@ -153,6 +153,8 @@ mod tests {
     fn metadata() {
         let cmd = AnnouncementsCommand;
         assert_eq!(cmd.name(), "announcements");
+        assert_eq!(cmd.description(), "Show or hide official xAI announcements");
+        assert!(!cmd.description().contains("Enhanced"));
         assert!(cmd.takes_args());
         assert!(cmd.args_required());
         assert_eq!(cmd.arg_placeholder(), Some("hide|show"));

@@ -3,6 +3,17 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-env-changed=GROK_VERSION");
+    if let Some(head_path) = Command::new("git")
+        .args(["rev-parse", "--git-path", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        println!("cargo:rerun-if-changed={head_path}");
+    }
 
     let commit = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -21,4 +32,5 @@ fn main() {
         "cargo:rustc-env=VERSION_WITH_COMMIT={} ({})",
         version, commit
     );
+    println!("cargo:rustc-env=GROK_ENHANCED_REVISION={commit}");
 }
