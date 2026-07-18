@@ -154,6 +154,7 @@ def check_updater_routes() -> None:
         'Some("gh-release")',
         'const HOMEBREW_PACKAGE: &str = "OpenCompanyApp/tap/grok-build-enhanced";',
         '"Cellar" => Some(HOMEBREW_FORMULA_INSTALLER)',
+        "std::fs::canonicalize(path)",
         'HOMEBREW_FORMULA_INSTALLER => Ok(("formula", "--formula"))',
         'run_homebrew_command(installer, action)?',
         '"gh-release" => install_gh_release(target).await',

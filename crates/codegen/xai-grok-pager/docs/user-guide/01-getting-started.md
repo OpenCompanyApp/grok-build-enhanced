@@ -18,7 +18,7 @@ integrate it into editors through the Agent Client Protocol (ACP).
 
 The fork source and reviewed release assets live only at
 [`OpenCompanyApp/grok-build-enhanced`](https://github.com/OpenCompanyApp/grok-build-enhanced).
-On macOS, install the fork-owned Homebrew Formula:
+On macOS or Linux, install the fork-owned Homebrew Formula:
 
 ```bash
 brew install --formula OpenCompanyApp/tap/grok-build-enhanced
@@ -29,9 +29,9 @@ disables direct-download background updates, and delegates an explicit
 `grok update` to `brew upgrade --formula`. Use
 `brew upgrade --formula OpenCompanyApp/tap/grok-build-enhanced` or
 `brew uninstall --formula OpenCompanyApp/tap/grok-build-enhanced` directly when
-preferred. The Formula avoids Cask quarantine for the unnotarized CLI binary.
-If `v0.2.1` was installed as a Cask, uninstall that Cask before installing the
-Formula.
+preferred. On macOS, the Formula avoids Cask quarantine for the unnotarized
+CLI binary. If `v0.2.1` was installed as a Cask, uninstall that Cask before
+installing the Formula.
 
 The curl installer supports macOS and glibc-based Linux on Arm64 and x86-64:
 
@@ -56,7 +56,7 @@ To pin an exact release, pass a strict SemVer after `sh -s --`:
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://raw.githubusercontent.com/OpenCompanyApp/grok-build-enhanced/main/install.sh \
-  | sh -s -- --version 0.2.2
+  | sh -s -- --version 0.2.3
 ```
 
 Other options include `--bin-dir PATH`, `--no-modify-path`, and `--force`.

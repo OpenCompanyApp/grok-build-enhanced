@@ -299,10 +299,18 @@ fn homebrew_installer_for_path(path: &std::path::Path) -> Option<&'static str> {
     })
 }
 
+fn homebrew_installer_for_executable(path: &std::path::Path) -> Option<&'static str> {
+    homebrew_installer_for_path(path).or_else(|| {
+        std::fs::canonicalize(path)
+            .ok()
+            .and_then(|resolved| homebrew_installer_for_path(&resolved))
+    })
+}
+
 fn running_from_homebrew() -> Option<&'static str> {
     std::env::current_exe()
         .ok()
-        .and_then(|path| homebrew_installer_for_path(&path))
+        .and_then(|path| homebrew_installer_for_executable(&path))
 }
 
 fn env_installer() -> Option<&'static str> {
@@ -2564,6 +2572,41 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn homebrew_link_resolves_to_cellar_formula_ownership() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cellar_binary = dir
+            .path()
+            .join("Cellar")
+            .join(HOMEBREW_PACKAGE_TOKEN)
+            .join("0.2.2/bin/grok");
+        std::fs::create_dir_all(cellar_binary.parent().unwrap()).unwrap();
+        std::fs::write(&cellar_binary, b"test binary").unwrap();
+
+        let bin_dir = dir.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let linked_binary = bin_dir.join("grok");
+        symlink(
+            format!("../Cellar/{HOMEBREW_PACKAGE_TOKEN}/0.2.2/bin/grok"),
+            &linked_binary,
+        )
+        .unwrap();
+
+        assert_eq!(
+            homebrew_installer_for_path(&linked_binary),
+            None,
+            "the launch path itself does not claim Homebrew ownership"
+        );
+        assert_eq!(
+            homebrew_installer_for_executable(&linked_binary),
+            Some(HOMEBREW_FORMULA_INSTALLER),
+            "the resolved Homebrew bin link must retain Cellar ownership"
+        );
     }
 
     #[test]

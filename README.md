@@ -27,7 +27,7 @@ responsive Grok braille symbol remain compatible.
 | Bundled Warp themes and theme UX | Implemented |
 | Kimi Code managed provider | Researched/planned only; no Kimi runtime provider or login is shipped |
 | Z.AI GLM Coding Plan provider | Researched/planned only; no GLM runtime provider or login is shipped |
-| Enhanced release artifacts | Fork-owned stable `v0.2.2` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
+| Enhanced release artifacts | Fork-owned stable `v0.2.3` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
 | Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
 
 ## Fork-owned terminal preview
@@ -54,7 +54,7 @@ The fork source and release assets are hosted only under
 [`OpenCompanyApp/grok-build-enhanced`](https://github.com/OpenCompanyApp/grok-build-enhanced).
 The official xAI installer does **not** install Enhanced features.
 
-### Homebrew Formula (macOS)
+### Homebrew Formula (macOS and Linux)
 
 Install the latest stable Enhanced release from the fork-owned tap:
 
@@ -72,9 +72,9 @@ brew upgrade --formula OpenCompanyApp/tap/grok-build-enhanced
 brew uninstall --formula OpenCompanyApp/tap/grok-build-enhanced
 ```
 
-The CLI-only Formula is used instead of a Cask so Homebrew does not place an
-unnotarized release binary behind Cask quarantine. If you installed the
-short-lived `v0.2.1` Cask, migrate once with:
+On macOS, the CLI-only Formula is used instead of a Cask so Homebrew does not
+place an unnotarized release binary behind Cask quarantine. If you installed
+the short-lived `v0.2.1` Cask, migrate once with:
 
 ```sh
 brew uninstall --cask OpenCompanyApp/tap/grok-build-enhanced
@@ -118,7 +118,7 @@ Pin an exact stable or prerelease version with strict SemVer:
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://raw.githubusercontent.com/OpenCompanyApp/grok-build-enhanced/main/install.sh \
-  | sh -s -- --version 0.2.2
+  | sh -s -- --version 0.2.3
 ```
 
 Useful installer options are:
@@ -156,7 +156,7 @@ auto_update = false
 GitHub CLI users can additionally verify the attestation for a retained binary:
 
 ```sh
-gh attestation verify "$HOME/.grok/downloads/grok-0.2.2-macos-aarch64" \
+gh attestation verify "$HOME/.grok/downloads/grok-0.2.3-macos-aarch64" \
   --repo OpenCompanyApp/grok-build-enhanced
 ```
 
