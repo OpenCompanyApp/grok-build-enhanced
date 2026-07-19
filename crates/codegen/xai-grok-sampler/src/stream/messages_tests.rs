@@ -150,12 +150,44 @@ async fn text_block_assembles_into_completed_response() {
 }
 
 #[tokio::test]
+async fn text_in_a_block_start_is_emitted_as_a_stream_token() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::Text {
+                text: "initial text".into(),
+                cache_control: None,
+            },
+        }),
+        Ok(block_stop(0)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    let text_tokens: Vec<_> = evs
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::ChannelToken {
+                channel: SamplingChannel::Text,
+                text,
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text_tokens, ["initial text"]);
+}
+
+#[tokio::test]
 async fn thinking_block_emits_reasoning_channel_and_preserved_in_response() {
     let thinking_start = MessageStreamEvent::ContentBlockStart {
         index: 0,
         content_block: ContentBlock::Thinking {
             thinking: String::new(),
-            signature: String::new(),
+            signature: None,
         },
     };
     let thinking_delta = MessageStreamEvent::ContentBlockDelta {
@@ -203,6 +235,118 @@ async fn thinking_block_emits_reasoning_channel_and_preserved_in_response() {
             let rs::SummaryPart::SummaryText(t) = &r.summary[0];
             assert_eq!(t.text, "let me think...");
             assert_eq!(r.encrypted_content.as_deref(), Some("abc123"));
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn thinking_in_a_block_start_is_emitted_as_a_reasoning_token() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::Thinking {
+                thinking: "initial thought".into(),
+                signature: None,
+            },
+        }),
+        Ok(block_stop(0)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    let reasoning_tokens: Vec<_> = evs
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::ChannelToken {
+                channel: SamplingChannel::Reasoning,
+                text,
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasoning_tokens, ["initial thought"]);
+}
+
+#[tokio::test]
+async fn empty_unsigned_thinking_block_is_preserved_in_completed_response() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::Thinking {
+                thinking: String::new(),
+                signature: None,
+            },
+        }),
+        Ok(block_stop(0)),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 1,
+            content_block: ContentBlock::ToolUse {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({}),
+            },
+        }),
+        Ok(block_stop(1)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let reasoning = response
+                .reasoning_items()
+                .next()
+                .expect("empty thinking block must remain represented");
+            assert!(reasoning.summary.is_empty());
+            assert_eq!(reasoning.encrypted_content, None);
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn multiple_thinking_blocks_are_preserved_in_the_completed_response() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::Thinking {
+                thinking: "first".into(),
+                signature: None,
+            },
+        }),
+        Ok(block_stop(0)),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 1,
+            content_block: ContentBlock::Thinking {
+                thinking: "second".into(),
+                signature: None,
+            },
+        }),
+        Ok(block_stop(1)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let summaries: Vec<_> = response
+                .reasoning_items()
+                .map(|reasoning| match &reasoning.summary[0] {
+                    rs::SummaryPart::SummaryText(text) => text.text.as_str(),
+                })
+                .collect();
+            assert_eq!(summaries, ["first", "second"]);
         }
         other => panic!("expected Completed, got {other:?}"),
     }
@@ -445,6 +589,83 @@ async fn refusal_after_tool_use_blocks_keeps_tool_calls_stop_reason() {
             );
         }
         other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn kimi_refusal_explanation_is_canonicalized_before_it_reaches_diagnostics() {
+    let private_explanation = "blocked because the private prompt contained a sentinel";
+    let events = vec![
+        Ok(message_start()),
+        Ok(message_delta_refusal_with_explanation(private_explanation)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+
+    let evs = collect(stream_messages_for_provider(
+        raw,
+        None,
+        rid(),
+        Duration::from_secs(60),
+        ProviderId::KimiCode,
+    ))
+    .await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            assert_eq!(
+                response.stop_message.as_deref(),
+                Some("Kimi Code declined to continue this response")
+            );
+            assert!(
+                !response
+                    .stop_message
+                    .as_deref()
+                    .unwrap()
+                    .contains("private")
+            );
+            assert!(
+                !response
+                    .stop_message
+                    .as_deref()
+                    .unwrap()
+                    .contains("sentinel")
+            );
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn kimi_stream_error_is_classified_without_reflecting_provider_text() {
+    let err_event = MessageStreamEvent::Error {
+        error: StreamError {
+            r#type: "overloaded_error".into(),
+            message: "engine is currently overloaded after private prompt sentinel".into(),
+        },
+    };
+    let raw = stream::iter(vec![Ok(message_start()), Ok(err_event)]).boxed();
+
+    let evs = collect(stream_messages_for_provider(
+        raw,
+        None,
+        rid(),
+        Duration::from_secs(60),
+        ProviderId::KimiCode,
+    ))
+    .await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Failed { error, .. } => {
+            assert_eq!(error.kind, crate::events::SamplingErrorKind::Api);
+            assert_eq!(error.status_code, Some(529));
+            assert!(error.is_retryable);
+            assert_eq!(
+                error.message,
+                "API error (status 529 <unknown status code>): Kimi Code is temporarily overloaded or at its concurrency limit"
+            );
+        }
+        other => panic!("expected Failed, got {other:?}"),
     }
 }
 

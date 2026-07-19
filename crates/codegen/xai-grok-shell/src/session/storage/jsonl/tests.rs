@@ -861,6 +861,94 @@ async fn copy_session_keeps_binding_only_for_codex_routes() {
 }
 
 #[tokio::test]
+async fn copy_session_preserves_kimi_binding_for_kimi_route() {
+    use xai_grok_sampling_types::CredentialBinding;
+
+    let temp_dir = TempDir::new().unwrap();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    let source = Info {
+        id: acp::SessionId::new("source-kimi-binding"),
+        cwd: "/source".to_owned(),
+    };
+    adapter
+        .init_session(&source, acp::ModelId::new("kimi-code/kimi-k2"))
+        .await
+        .unwrap();
+    let mut binding = CredentialBinding::kimi_code(Some("local-kimi-record".to_owned()));
+    binding.generation = 3;
+    adapter
+        .update_credential_binding(&source, Some(binding.clone()))
+        .await
+        .unwrap();
+    let target = Info {
+        id: acp::SessionId::new("fork-kimi-binding"),
+        cwd: "/target/kimi".to_owned(),
+    };
+
+    adapter
+        .copy_session_data(&source, &target, CopySessionOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        adapter
+            .read_summary_sync(&target)
+            .unwrap()
+            .credential_binding,
+        Some(binding),
+    );
+}
+
+#[tokio::test]
+async fn copy_session_clears_kimi_binding_for_a_non_kimi_route() {
+    use xai_grok_sampling_types::CredentialBinding;
+
+    let temp_dir = TempDir::new().unwrap();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    let source = Info {
+        id: acp::SessionId::new("source-kimi-switch"),
+        cwd: "/source".to_owned(),
+    };
+    adapter
+        .init_session(&source, acp::ModelId::new("kimi-code/kimi-k2"))
+        .await
+        .unwrap();
+    adapter
+        .update_credential_binding(
+            &source,
+            Some(CredentialBinding::kimi_code(Some(
+                "local-kimi-record".to_owned(),
+            ))),
+        )
+        .await
+        .unwrap();
+    let target = Info {
+        id: acp::SessionId::new("fork-kimi-to-xai"),
+        cwd: "/target".to_owned(),
+    };
+
+    adapter
+        .copy_session_data(
+            &source,
+            &target,
+            CopySessionOptions {
+                new_model_id: Some("grok-4".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        adapter
+            .read_summary_sync(&target)
+            .unwrap()
+            .credential_binding
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn test_load_prompts_only() {
     let temp_dir = TempDir::new().unwrap();
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());

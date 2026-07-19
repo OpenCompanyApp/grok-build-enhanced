@@ -11,8 +11,8 @@ use futures_util::stream::{BoxStream, Stream};
 
 use xai_grok_sampling_types::messages::{self, MessageStreamEvent};
 use xai_grok_sampling_types::{
-    AssistantItem, ConversationItem, ConversationResponse, ResponseModelMetadata, SamplingError,
-    StopReason, TokenUsage, ToolCall, rs,
+    AssistantItem, ConversationItem, ConversationResponse, ProviderId, ResponseModelMetadata,
+    SamplingError, StopReason, TokenUsage, ToolCall, rs,
 };
 
 use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
@@ -23,7 +23,7 @@ use crate::types::RequestId;
 /// rather than a liveness-only heartbeat (Ping).
 pub(crate) fn messages_event_has_meaningful_content(event: &MessageStreamEvent) -> bool {
     match event {
-        MessageStreamEvent::Ping => false,
+        MessageStreamEvent::Ping | MessageStreamEvent::Unknown => false,
         MessageStreamEvent::MessageStart { .. }
         | MessageStreamEvent::MessageDelta { .. }
         | MessageStreamEvent::MessageStop
@@ -45,7 +45,7 @@ struct BlockState {
     tool_id: String,
     args_acc: String,
     thinking_acc: String,
-    signature: String,
+    signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,14 +59,29 @@ enum BlockType {
 /// [`SamplingEvent`]s.
 ///
 /// Yields exactly one terminal event ([`SamplingEvent::Completed`] or
-/// [`SamplingEvent::Failed`]) per request. Server-side `Error` events
-/// translate to `SamplingError::Api { status: 500, .. }` so the actor's
-/// retry loop treats them as retryable transport-level errors.
+/// [`SamplingEvent::Failed`]) per request. Server-side `Error` events use
+/// provider-specific classification when one is available.
 pub fn stream_messages<'a>(
     raw_stream: BoxStream<'a, Result<MessageStreamEvent, SamplingError>>,
     model_metadata: Option<ResponseModelMetadata>,
     request_id: RequestId,
     idle_timeout: Duration,
+) -> impl Stream<Item = SamplingEvent> + Send + 'a {
+    stream_messages_for_provider(
+        raw_stream,
+        model_metadata,
+        request_id,
+        idle_timeout,
+        ProviderId::Xai,
+    )
+}
+
+pub(crate) fn stream_messages_for_provider<'a>(
+    raw_stream: BoxStream<'a, Result<MessageStreamEvent, SamplingError>>,
+    model_metadata: Option<ResponseModelMetadata>,
+    request_id: RequestId,
+    idle_timeout: Duration,
+    provider: ProviderId,
 ) -> impl Stream<Item = SamplingEvent> + Send + 'a {
     async_stream::stream! {
         use messages::{ContentBlock, StreamDelta};
@@ -106,7 +121,7 @@ pub fn stream_messages<'a>(
         // `ConversationItem::Reasoning` before the trailing Assistant.
         let mut assistant_text = String::new();
         let mut assistant_tool_calls: Vec<ToolCall> = Vec::new();
-        let mut assistant_reasoning: Option<rs::ReasoningItem> = None;
+        let mut assistant_reasoning: Vec<rs::ReasoningItem> = Vec::new();
 
         // Index counters
         let mut chunk_index: u64 = 0;
@@ -184,6 +199,35 @@ pub fn stream_messages<'a>(
                                 request_id: request_id.clone(),
                             };
                         }
+                        if !thinking.is_empty() {
+                            chunk_index += 1;
+                            yield SamplingEvent::ChannelToken {
+                                request_id: request_id.clone(),
+                                channel: SamplingChannel::Reasoning,
+                                text: thinking,
+                                chunk_index,
+                            };
+                        }
+                    }
+                    ContentBlock::RedactedThinking { data } => {
+                        blocks.insert(
+                            index,
+                            BlockState {
+                                block_type: BlockType::Thinking,
+                                text_acc: String::new(),
+                                tool_name: String::new(),
+                                tool_id: String::new(),
+                                args_acc: String::new(),
+                                thinking_acc: String::new(),
+                                signature: Some(data),
+                            },
+                        );
+                        if !first_token_emitted {
+                            first_token_emitted = true;
+                            yield SamplingEvent::FirstToken {
+                                request_id: request_id.clone(),
+                            };
+                        }
                     }
                     ContentBlock::Text { text, .. } => {
                         blocks.insert(
@@ -195,13 +239,24 @@ pub fn stream_messages<'a>(
                                 tool_id: String::new(),
                                 args_acc: String::new(),
                                 thinking_acc: String::new(),
-                                signature: String::new(),
+                                signature: None,
                             },
                         );
                         if !first_token_emitted {
                             first_token_emitted = true;
                             yield SamplingEvent::FirstToken {
                                 request_id: request_id.clone(),
+                            };
+                        }
+                        if !text.is_empty() {
+                            chunk_timestamps.push(Instant::now());
+                            chunk_index += 1;
+                            message_chunk_count += 1;
+                            yield SamplingEvent::ChannelToken {
+                                request_id: request_id.clone(),
+                                channel: SamplingChannel::Text,
+                                text,
+                                chunk_index,
                             };
                         }
                     }
@@ -227,7 +282,7 @@ pub fn stream_messages<'a>(
                                 // produce invalid JSON.
                                 args_acc: String::new(),
                                 thinking_acc: String::new(),
-                                signature: String::new(),
+                                signature: None,
                             },
                         );
 
@@ -266,7 +321,7 @@ pub fn stream_messages<'a>(
                                 }
                             }
                             StreamDelta::SignatureDelta { signature } => {
-                                state.signature = signature;
+                                state.signature = Some(signature);
                             }
                             StreamDelta::TextDelta { text } => {
                                 if !text.is_empty() {
@@ -300,6 +355,7 @@ pub fn stream_messages<'a>(
                                     };
                                 }
                             }
+                            StreamDelta::Unknown => {}
                         }
                     }
                 }
@@ -316,35 +372,26 @@ pub fn stream_messages<'a>(
                                 }
                             }
                             BlockType::Thinking => {
-                                if !state.thinking_acc.is_empty() || !state.signature.is_empty() {
-                                    // Anthropic Messages API `Thinking` blocks uniquely
-                                    // carry an encrypted `signature` distinct
-                                    // from the text; either field may be
-                                    // empty. Build directly rather than via
-                                    // `synthesized_reasoning_item` since the
-                                    // helper assumes a non-empty summary.
-                                    let summary = if state.thinking_acc.is_empty() {
-                                        vec![]
-                                    } else {
-                                        vec![rs::SummaryPart::SummaryText(
-                                            rs::SummaryTextContent {
-                                                text: state.thinking_acc,
-                                            },
-                                        )]
-                                    };
-                                    let encrypted_content = if state.signature.is_empty() {
-                                        None
-                                    } else {
-                                        Some(state.signature)
-                                    };
-                                    assistant_reasoning = Some(rs::ReasoningItem {
-                                        id: String::new(),
-                                        summary,
-                                        content: None,
-                                        encrypted_content,
-                                        status: None,
-                                    });
-                                }
+                                // The block's presence is itself significant.
+                                // Kimi can emit an empty unsigned thinking block
+                                // before a tool call and requires that exact
+                                // shape to survive history replay.
+                                let summary = if state.thinking_acc.is_empty() {
+                                    vec![]
+                                } else {
+                                    vec![rs::SummaryPart::SummaryText(
+                                        rs::SummaryTextContent {
+                                            text: state.thinking_acc,
+                                        },
+                                    )]
+                                };
+                                assistant_reasoning.push(rs::ReasoningItem {
+                                    id: String::new(),
+                                    summary,
+                                    content: None,
+                                    encrypted_content: state.signature,
+                                    status: None,
+                                });
                             }
                             BlockType::ToolUse => {
                                 assistant_tool_calls.push(ToolCall {
@@ -361,7 +408,13 @@ pub fn stream_messages<'a>(
                     // Normalize the provider's stop detail to a plain message;
                     // the shell logs it when it surfaces a refusal.
                     if let Some(details) = delta.stop_details {
-                        final_stop_message = details.explanation;
+                        final_stop_message = if provider.is_kimi_code()
+                            && details.explanation.is_some()
+                        {
+                            Some("Kimi Code declined to continue this response".to_owned())
+                        } else {
+                            details.explanation
+                        };
                     }
                     final_stop_reason = delta.stop_reason.map(|sr| match sr {
                         messages::StopReason::EndTurn => StopReason::Stop,
@@ -392,10 +445,16 @@ pub fn stream_messages<'a>(
                             StopReason::Length
                         }
                         messages::StopReason::Unknown(wire) => {
-                            tracing::warn!(
-                                wire_stop_reason = %wire,
-                                "unrecognized stop_reason in messages stream; treating as stop"
-                            );
+                            if provider.is_kimi_code() {
+                                tracing::warn!(
+                                    "unrecognized Kimi Code stop_reason; treating as stop"
+                                );
+                            } else {
+                                tracing::warn!(
+                                    wire_stop_reason = %wire,
+                                    "unrecognized stop_reason in messages stream; treating as stop"
+                                );
+                            }
                             StopReason::Stop
                         }
                     });
@@ -417,19 +476,25 @@ pub fn stream_messages<'a>(
                     // when the underlying stream ends.
                 }
 
-                MessageStreamEvent::Ping => {
-                    // Liveness only, no action; the inner timeout was
-                    // already reset above by the successful `next()`.
+                MessageStreamEvent::Ping | MessageStreamEvent::Unknown => {
+                    // Liveness or an unknown extension event carries no
+                    // projectable response content.
                 }
 
                 MessageStreamEvent::Error { error } => {
-                    let error_message = format!("{}: {}", error.r#type, error.message);
-                    let err = SamplingError::Api {
-                        status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-                        message: error_message,
-                        model_metadata: None,
-                        retry_after_secs: None,
-                        should_retry: None,
+                    let err = if provider.is_kimi_code() {
+                        crate::provider::kimi_code::messages_stream_error(
+                            &error.r#type,
+                            &error.message,
+                        )
+                    } else {
+                        SamplingError::Api {
+                            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                            message: format!("{}: {}", error.r#type, error.message),
+                            model_metadata: None,
+                            retry_after_secs: None,
+                            should_retry: None,
+                        }
                     };
                     yield SamplingEvent::Failed {
                         request_id: request_id.clone(),
@@ -497,10 +562,10 @@ pub fn stream_messages<'a>(
             external_content: None,
         });
 
-        let mut items: Vec<ConversationItem> = Vec::new();
-        if let Some(r) = assistant_reasoning {
-            items.push(ConversationItem::Reasoning(r));
-        }
+        let mut items: Vec<ConversationItem> = assistant_reasoning
+            .into_iter()
+            .map(ConversationItem::Reasoning)
+            .collect();
         items.push(assistant_item);
 
         let stream_end = Instant::now();

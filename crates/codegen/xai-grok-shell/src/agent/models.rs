@@ -3047,9 +3047,9 @@ fn model_info_offers_reasoning_effort(info: &config::ModelInfo, effort: Reasonin
     resolve_model_reasoning_effort(info, effort).is_some()
 }
 
-/// Return the effective effort accepted by `info`. Codex owns distinct Max
-/// and Ultra tiers. Everywhere else, the historical Grok Build `max` alias
-/// remains exactly equivalent to Xhigh, including custom providers.
+/// Return the effective effort accepted by `info`. Codex and Kimi Code own
+/// distinct extended effort contracts. For xAI/custom providers, the
+/// historical Grok Build `max` alias remains equivalent to Xhigh.
 fn resolve_model_reasoning_effort(
     info: &config::ModelInfo,
     effort: ReasoningEffort,
@@ -3057,7 +3057,9 @@ fn resolve_model_reasoning_effort(
     if !info.supports_reasoning_effort {
         return None;
     }
-    let effective = if info.provider != ProviderId::OpenAiCodex && effort == ReasoningEffort::Max {
+    let effective = if matches!(info.provider, ProviderId::Xai | ProviderId::Custom)
+        && effort == ReasoningEffort::Max
+    {
         ReasoningEffort::Xhigh
     } else {
         effort

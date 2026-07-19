@@ -9,11 +9,13 @@
 pub mod conversation;
 pub mod doom_loop;
 pub mod error;
+pub mod kimi_code;
 pub mod messages;
 pub mod openai_codex;
 pub mod provider;
 pub mod serde_helpers;
 pub mod types;
+pub mod zai_coding_plan;
 
 pub use self::conversation::*;
 pub use self::doom_loop::{
@@ -24,6 +26,13 @@ pub use self::error::{
     EmptyReason, EmptyResponseContext, ResponseModelMetadata, Result, SamplingError,
     is_context_length_error,
 };
+pub use self::kimi_code::{
+    KIMI_CODE_ANTHROPIC_BETA, KIMI_CODE_ANTHROPIC_VERSION, KIMI_CODE_API_KEY_ENV,
+    KIMI_CODE_AUTH_SCOPE, KIMI_CODE_BASE_URL, KIMI_CODE_CHAT_COMPLETIONS_URL, KIMI_CODE_FETCH_URL,
+    KIMI_CODE_FILES_URL, KIMI_CODE_MAX_REQUEST_BYTES, KIMI_CODE_MESSAGES_URL,
+    KIMI_CODE_MODEL_NAMESPACE, KIMI_CODE_MODELS_URL, KIMI_CODE_PROVIDER_NAME, KIMI_CODE_SEARCH_URL,
+    KIMI_CODE_USAGE_URL,
+};
 pub use self::openai_codex::{
     OPENAI_CODEX_BASE_URL, OPENAI_CODEX_COMPATIBILITY_VERSION,
     OPENAI_CODEX_EXTENDED_REASONING_EFFORT_METADATA_KEY, OPENAI_CODEX_FAST_SERVICE_TIER,
@@ -32,6 +41,7 @@ pub use self::openai_codex::{
 };
 pub use self::provider::{CredentialBinding, CredentialSourceId, ProviderId};
 pub use self::types::*;
+pub use self::zai_coding_plan::*;
 
 // Re-export async-openai crate Responses API types under `rs` namespace
 pub use async_openai::types::responses as rs;

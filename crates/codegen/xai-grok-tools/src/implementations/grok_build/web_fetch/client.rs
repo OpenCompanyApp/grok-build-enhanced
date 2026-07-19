@@ -11,6 +11,7 @@ use url::Url;
 use super::cache::{FetchCache, FetchCacheLookup};
 use super::config::{MAX_REDIRECTS, MAX_URL_LENGTH, USER_AGENT_STRING, WebFetchParams};
 use super::error::{WebFetchError, safe_url_origin};
+use super::hosted_kimi::{HostedFetchResult, KimiHostedFetch};
 use super::http::HttpClient;
 use super::overflow::{OverflowHandler, RecoveryTools, inline_budget};
 use super::ssrf;
@@ -77,6 +78,7 @@ pub struct WebFetchClient {
     cache_counters: Arc<WebFetchCacheCounters>,
     converter: Arc<htmd::HtmlToMarkdown>,
     params: WebFetchParams,
+    kimi_hosted: Option<KimiHostedFetch>,
     download_writer: SessionFileWriter,
     image_writer: SessionFileWriter,
     video_writer: SessionFileWriter,
@@ -119,11 +121,27 @@ impl WebFetchClient {
             cache_counters: Arc::new(WebFetchCacheCounters::default()),
             converter,
             params: params.clone(),
+            kimi_hosted: None,
             download_writer: SessionFileWriter::new(DEFAULT_DOWNLOAD_DIR, "pdf"),
             image_writer: SessionFileWriter::new("images", "jpg"),
             video_writer: SessionFileWriter::new("videos", "mp4"),
             overflow: OverflowHandler::new(),
         })
+    }
+
+    /// Prefer Kimi Code's provider-hosted extraction service while retaining
+    /// this client's SSRF-safe local implementation as the transport/service
+    /// fallback. Auth and quota failures remain explicit.
+    pub fn with_kimi_hosted_fetch(
+        mut self,
+        auth_provider: crate::types::SharedApiKeyProvider,
+    ) -> Result<Self, WebFetchError> {
+        self.kimi_hosted = Some(KimiHostedFetch::new(
+            super::hosted_kimi::KIMI_CODE_BASE_URL,
+            auth_provider,
+            self.params.max_content_length(),
+        )?);
+        Ok(self)
     }
 
     /// Aggregate cache counters. No key, URL, host, or response data is retained
@@ -136,8 +154,7 @@ impl WebFetchClient {
     ///
     /// Handles: validation, HTTPS upgrade, SSRF check, HTTP fetch with
     /// same-host redirects, HTML-to-markdown conversion, truncation, and
-    /// caching. On transport errors, the HTTP client is invalidated so
-    /// the next call gets a fresh connection pool (see [`HttpClient`]).
+    /// caching. Direct network hops use fresh DNS-pinned clients.
     pub async fn fetch(
         &self,
         raw_url: &str,
@@ -159,23 +176,57 @@ impl WebFetchClient {
             FetchCacheLookup::Miss | FetchCacheLookup::Stale => {}
         }
 
-        // Make request and build output.
-        let http = self.http.get_or_rebuild()?;
-        let result = match fetch_url(
-            &http,
+        if let Some(hosted) = self.kimi_hosted.as_ref() {
+            // Do not turn Kimi's hosted extractor into a route to local,
+            // private, link-local, or metadata destinations. The existing
+            // local-development loopback opt-in remains the only exception.
+            ssrf::check_ssrf(&url, self.params.allow_loopback()).await?;
+            match hosted.fetch(&url).await? {
+                HostedFetchResult::Content(content) => {
+                    let source_bytes = content.len();
+                    let processed = self
+                        .process_text_content(
+                            content.as_bytes(),
+                            "text/markdown; charset=utf-8",
+                            session_folder,
+                            RecoveryTools {
+                                read: read_tool_name,
+                                execute: execute_tool_name,
+                            },
+                        )
+                        .await;
+                    let was_truncated = processed.was_truncated;
+                    let output = WebFetchOutput::Content(WebFetchContent {
+                        url: url_str.clone(),
+                        content: processed.content,
+                        content_type: processed.content_type,
+                        status_code: 200,
+                        bytes: source_bytes,
+                        source_artifact: processed
+                            .artifact_path
+                            .map(|path| WebFetchSourceArtifact { path }),
+                        inline_fallback: processed.inline_fallback,
+                        output_location: None,
+                    });
+                    self.cache
+                        .write()
+                        .insert_text(url_str, output.clone(), was_truncated);
+                    return Ok(output);
+                }
+                HostedFetchResult::Fallback => {}
+            }
+        }
+
+        // Make request and build output. Every direct network hop gets a
+        // one-shot client pinned to the exact DNS answers that passed SSRF
+        // validation, preventing validation/connection rebinding.
+        let result = fetch_url(
+            &self.http,
             &url,
             self.params.max_content_length(),
             self.params.allow_loopback(),
         )
-        .await
-        {
-            Ok(result) => result,
-            Err(e @ WebFetchError::HttpRequest { .. }) => {
-                self.http.invalidate();
-                return Err(e);
-            }
-            Err(e) => return Err(e),
-        };
+        .await?;
 
         let (body, content_type, final_url, status_code) = match result {
             FetchResult::Content {
@@ -402,19 +453,60 @@ enum FetchResult {
 }
 
 #[async_trait::async_trait]
-trait SsrfValidator: Send + Sync {
-    async fn validate(&self, url: &Url) -> Result<(), WebFetchError>;
+trait HopRequester: Send + Sync {
+    async fn get(&self, url: &Url) -> Result<reqwest::Response, WebFetchError>;
 }
 
-struct ProductionSsrfValidator {
+struct PinnedHopRequester<'a> {
+    http: &'a HttpClient,
     allow_loopback: bool,
 }
 
 #[async_trait::async_trait]
-impl SsrfValidator for ProductionSsrfValidator {
-    async fn validate(&self, url: &Url) -> Result<(), WebFetchError> {
-        ssrf::check_ssrf(url, self.allow_loopback).await
+impl HopRequester for PinnedHopRequester<'_> {
+    async fn get(&self, url: &Url) -> Result<reqwest::Response, WebFetchError> {
+        let target = ssrf::check_ssrf(url, self.allow_loopback).await?;
+        let client = self.http.build_for_target(&target)?;
+        send_web_fetch_request(&client, url).await
     }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+trait SsrfValidator: Send + Sync {
+    async fn validate(&self, url: &Url) -> Result<(), WebFetchError>;
+}
+
+#[cfg(test)]
+struct ValidatingTestHopRequester<'a> {
+    client: &'a reqwest::Client,
+    validator: &'a dyn SsrfValidator,
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl HopRequester for ValidatingTestHopRequester<'_> {
+    async fn get(&self, url: &Url) -> Result<reqwest::Response, WebFetchError> {
+        self.validator.validate(url).await?;
+        send_web_fetch_request(self.client, url).await
+    }
+}
+
+async fn send_web_fetch_request(
+    client: &reqwest::Client,
+    url: &Url,
+) -> Result<reqwest::Response, WebFetchError> {
+    client
+        .get(url.as_str())
+        .header(USER_AGENT, USER_AGENT_STRING)
+        .header(
+            ACCEPT,
+            "text/markdown,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header(ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+        .send()
+        .await
+        .map_err(|error| WebFetchError::http_request(error, url.as_str()))
 }
 
 async fn read_web_fetch_response_with_limit(
@@ -446,49 +538,54 @@ async fn read_web_fetch_response_with_limit(
     Ok(body)
 }
 
-/// Fetch a URL with manual same-host redirect handling.
+/// Fetch a URL with manual same-host redirect handling. Each production hop
+/// resolves, validates, and pins its own destination before connecting.
 async fn fetch_url(
-    client: &reqwest::Client,
+    http: &HttpClient,
     url: &Url,
     max_content_length: usize,
     allow_loopback: bool,
 ) -> Result<FetchResult, WebFetchError> {
-    fetch_url_with_ssrf_validator(
-        client,
+    fetch_url_with_requester(
+        &PinnedHopRequester {
+            http,
+            allow_loopback,
+        },
         url,
         max_content_length,
-        &ProductionSsrfValidator { allow_loopback },
     )
     .await
 }
 
+#[cfg(test)]
 async fn fetch_url_with_ssrf_validator(
     client: &reqwest::Client,
     url: &Url,
     max_content_length: usize,
     ssrf_validator: &dyn SsrfValidator,
 ) -> Result<FetchResult, WebFetchError> {
+    fetch_url_with_requester(
+        &ValidatingTestHopRequester {
+            client,
+            validator: ssrf_validator,
+        },
+        url,
+        max_content_length,
+    )
+    .await
+}
+
+async fn fetch_url_with_requester(
+    requester: &dyn HopRequester,
+    url: &Url,
+    max_content_length: usize,
+) -> Result<FetchResult, WebFetchError> {
     let mut current_url = url.clone();
     let mut hops = 0;
 
     // Loop to follow redirects under the same host.
     loop {
-        // Validate immediately before every network hop. Rechecking followed
-        // same-host redirects closes DNS-rebinding and redirect-to-private-IP
-        // gaps; cross-host redirects are still returned for explicit approval.
-        ssrf_validator.validate(&current_url).await?;
-        let resp = client
-            .get(current_url.as_str())
-            .header(USER_AGENT, USER_AGENT_STRING)
-            .header(
-                ACCEPT,
-                "text/markdown,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            )
-            .header(ACCEPT_LANGUAGE, "en-US,en;q=0.9")
-            .send()
-            .await
-            .map_err(|error| WebFetchError::http_request(error, current_url.as_str()))?;
-
+        let resp = requester.get(&current_url).await?;
         let status = resp.status();
 
         if status.is_redirection() {
@@ -504,6 +601,9 @@ async fn fetch_url_with_ssrf_validator(
                     .join(location_str)
                     .map_err(|_| WebFetchError::InvalidRedirect)?;
                 let next_url = validate_url(next_url.as_str())?;
+                if current_url.scheme() == "https" && next_url.scheme() == "http" {
+                    return Err(WebFetchError::InvalidRedirect);
+                }
                 if is_same_host(&current_url, &next_url) {
                     current_url = next_url;
                     continue;

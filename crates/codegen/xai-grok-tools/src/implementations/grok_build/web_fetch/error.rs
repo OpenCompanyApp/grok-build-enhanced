@@ -44,6 +44,18 @@ pub enum WebFetchError {
     #[error("failed to build HTTP client")]
     ClientBuildError,
 
+    #[error("Kimi Code hosted fetch authentication was rejected")]
+    HostedAuthentication,
+
+    #[error("Kimi Code hosted fetch is not included in this membership")]
+    HostedMembership,
+
+    #[error("Kimi Code hosted fetch rejected the validated request (HTTP {status})")]
+    HostedRequestRejected { status: u16 },
+
+    #[error("Kimi Code hosted fetch quota or concurrency limit was reached")]
+    HostedQuota,
+
     #[error("HTTP request to {origin} failed ({kind})")]
     HttpRequest { origin: String, kind: &'static str },
 
@@ -92,6 +104,10 @@ impl WebFetchError {
             Self::DnsResolution { .. }
             | Self::DnsEmpty(_)
             | Self::ClientBuildError
+            | Self::HostedAuthentication
+            | Self::HostedMembership
+            | Self::HostedRequestRejected { .. }
+            | Self::HostedQuota
             | Self::HttpRequest { .. }
             | Self::ProxyConfigError
             | Self::IoError(_) => WebToolErrorCode::ProviderUnavailable,
@@ -100,21 +116,64 @@ impl WebFetchError {
 
     pub fn into_tool_error(self) -> xai_tool_runtime::ToolError {
         use crate::types::output::{WebToolErrorCode, WebToolFailure};
-        let code = self.failure_code();
-        let failure = WebToolFailure::for_code(code);
-        let kind = match code {
-            WebToolErrorCode::Timeout => xai_tool_runtime::ToolErrorKind::Timeout,
-            WebToolErrorCode::ProviderUnavailable => xai_tool_runtime::ToolErrorKind::NetworkError,
-            WebToolErrorCode::DomainRejected
-            | WebToolErrorCode::SsrfBlocked
-            | WebToolErrorCode::CrossHostRedirect
-            | WebToolErrorCode::UnsupportedContent
-            | WebToolErrorCode::ResponseTooLarge => xai_tool_runtime::ToolErrorKind::Execution,
-            _ => xai_tool_runtime::ToolErrorKind::Execution,
-        };
-        xai_tool_runtime::ToolError::new(kind, failure.prompt_text()).with_details(
-            serde_json::to_value(failure).expect("web failure envelope is JSON-serializable"),
-        )
+        match self {
+            Self::HostedAuthentication => xai_tool_runtime::ToolError::unauthorized(
+                "Kimi Code hosted fetch API key was rejected".to_owned(),
+            )
+            .with_details(serde_json::json!({
+                "tool_id": "web_fetch",
+                "status": 401,
+                "auth_recovery_provider": crate::types::KIMI_CODE_PROVIDER_ID,
+                "auth_recovery_exhausted": true,
+            })),
+            Self::HostedMembership => xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Execution,
+                "Kimi Code hosted fetch is not included in this membership".to_owned(),
+            )
+            .with_details(serde_json::json!({
+                "tool_id": "web_fetch",
+                "code": "membership_unavailable",
+            })),
+            Self::HostedRequestRejected { status } => xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Execution,
+                "Kimi Code hosted fetch rejected the validated request".to_owned(),
+            )
+            .with_details(serde_json::json!({
+                "tool_id": "web_fetch",
+                "code": "hosted_request_rejected",
+                "status": status,
+            })),
+            Self::HostedQuota => xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Execution,
+                "Kimi Code hosted fetch quota or concurrency limit was reached".to_owned(),
+            )
+            .with_details(serde_json::json!({
+                "tool_id": "web_fetch",
+                "code": "quota_exhausted",
+            })),
+            error => {
+                let code = error.failure_code();
+                let failure = WebToolFailure::for_code(code);
+                let kind = match code {
+                    WebToolErrorCode::Timeout => xai_tool_runtime::ToolErrorKind::Timeout,
+                    WebToolErrorCode::ProviderUnavailable => {
+                        xai_tool_runtime::ToolErrorKind::NetworkError
+                    }
+                    WebToolErrorCode::DomainRejected
+                    | WebToolErrorCode::SsrfBlocked
+                    | WebToolErrorCode::CrossHostRedirect
+                    | WebToolErrorCode::UnsupportedContent
+                    | WebToolErrorCode::ResponseTooLarge => {
+                        xai_tool_runtime::ToolErrorKind::Execution
+                    }
+                    _ => xai_tool_runtime::ToolErrorKind::Execution,
+                };
+                xai_tool_runtime::ToolError::new(kind, failure.prompt_text()).with_details(
+                    serde_json::to_value(failure)
+                        .expect("web failure envelope is JSON-serializable"),
+                )
+            }
+        }
     }
 
     /// Convert a reqwest failure into a bounded, URL-safe diagnostic. The

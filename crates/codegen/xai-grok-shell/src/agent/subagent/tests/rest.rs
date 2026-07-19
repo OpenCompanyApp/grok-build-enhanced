@@ -1926,6 +1926,63 @@ fn reconcile_orphan_persists_subagent_finished_via_cmd_tx() {
     );
 }
 #[test]
+fn resumed_kimi_child_uses_the_binding_from_its_source_summary() {
+    let source = ResumeSourceData {
+        subagent_id: "sub-kimi".into(),
+        child_session_id: "child-kimi".into(),
+        child_cwd: "/workspace".into(),
+        worktree_path: None,
+        snapshot_ref: None,
+        subagent_type: "general-purpose".into(),
+        persona: None,
+        model_id: Some("kimi-code/k3".into()),
+    };
+    let mut source_binding = xai_grok_sampling_types::CredentialBinding::kimi_code(Some(
+        "source-kimi-record".to_owned(),
+    ));
+    source_binding.generation = 4;
+
+    let binding = super::super::handle_request::validate_local_resume_credential_binding(
+        &source,
+        xai_grok_sampling_types::ProviderId::KimiCode,
+        "child-kimi",
+        Some(source_binding.clone()),
+    )
+    .unwrap();
+
+    assert_eq!(binding, Some(source_binding));
+}
+
+#[test]
+fn resumed_kimi_child_rejects_a_foreign_source_binding() {
+    let source = ResumeSourceData {
+        subagent_id: "sub-kimi".into(),
+        child_session_id: "child-kimi".into(),
+        child_cwd: "/workspace".into(),
+        worktree_path: None,
+        snapshot_ref: None,
+        subagent_type: "general-purpose".into(),
+        persona: None,
+        model_id: Some("kimi-code/k3".into()),
+    };
+    let foreign = xai_grok_sampling_types::CredentialBinding::openai_codex(Some(
+        "codex-record".to_owned(),
+    ));
+
+    let result = super::super::handle_request::validate_local_resume_credential_binding(
+        &source,
+        xai_grok_sampling_types::ProviderId::KimiCode,
+        "child-kimi",
+        Some(foreign),
+    );
+
+    assert!(matches!(
+        result,
+        Err("source child credential binding belongs to another provider")
+    ));
+}
+
+#[test]
 fn resume_rejects_conflicting_subagent_type() {
     let source = ResumeSourceData {
         subagent_id: "sub-gp".into(),

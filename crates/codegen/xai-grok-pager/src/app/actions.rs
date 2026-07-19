@@ -2617,6 +2617,8 @@ pub enum TaskResult {
         /// Authoritative ChatGPT Codex subscription limits, separate from xAI
         /// billing and from the hypothetical API-equivalent estimate below.
         codex_usage: Option<xai_grok_shell::auth::codex::CodexUsageSnapshot>,
+        /// Authoritative Kimi Code plan limits, separate from xAI billing.
+        kimi_usage: Option<xai_grok_shell::auth::kimi_code::KimiCodeUsageSnapshot>,
         codex_api_equivalent_cost:
             Option<xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
         /// When true, update `credit_balance` silently (no scrollback message).

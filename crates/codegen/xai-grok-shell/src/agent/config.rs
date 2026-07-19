@@ -3182,6 +3182,14 @@ pub fn resolve_model_list(
         }
         resolved = prefetched;
     }
+    // Kimi Code discovery is authenticated and provider-local. Merge only the
+    // cache bound to the currently stored opaque credential ID; explicit
+    // `[model.*]` entries below remain the highest-priority override.
+    let kimi_models = crate::auth::kimi_code::load_cached_model_entries();
+    if !kimi_models.is_empty() {
+        tracing::debug!(count = kimi_models.len(), "loaded Kimi Code model catalog");
+        resolved.extend(kimi_models);
+    }
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
         let base = resolved.shift_remove(key);
@@ -4391,6 +4399,17 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
             auth_scheme: AuthScheme::Bearer,
         };
     }
+    if info.provider == ProviderId::KimiCode {
+        // Kimi Code API keys are attached by the provider request-auth binder.
+        // Never adopt xAI, Codex, or generic model credentials here.
+        return ResolvedCredentials {
+            provider: ProviderId::KimiCode,
+            api_key: None,
+            base_url: xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned(),
+            auth_type: xai_chat_state::AuthType::ApiKey,
+            auth_scheme: info.auth_scheme,
+        };
+    }
     if info.provider == ProviderId::Custom {
         let api_key = model.own_credential();
         if api_key.is_none()
@@ -4602,11 +4621,14 @@ pub fn resolve_aux_model_sampling_config(
             None,
             None,
         );
-        if entry.info.provider == ProviderId::OpenAiCodex {
+        if matches!(
+            entry.info.provider,
+            ProviderId::OpenAiCodex | ProviderId::KimiCode
+        ) {
             // Return provider/model routing only. The fallible session binder
             // attests the restored record and attaches sampler + tool auth at
             // the construction seam; resolving a catalog entry must not adopt
-            // the process-current account on its own.
+            // a process-current account/key or fall through to xAI auth.
             return Some(sampler);
         }
         if sampler.api_key.is_some() {
@@ -4785,6 +4807,7 @@ pub fn sampling_config_for_model(
         ProviderId::OpenAiCodex => {
             xai_grok_sampling_types::CredentialSourceId::OpenAiCodexSubscription
         }
+        ProviderId::KimiCode => xai_grok_sampling_types::CredentialSourceId::KimiCodeApiKey,
         ProviderId::Custom if model.has_own_credentials() => {
             xai_grok_sampling_types::CredentialSourceId::StaticApiKey
         }
@@ -5508,6 +5531,41 @@ reasoning_effort = "low"
         assert_eq!(resolved.base_url, "https://vendor.example/v1");
         assert_eq!(resolved.api_key.as_deref(), Some("vendor-key"));
     }
+
+    #[test]
+    fn kimi_aux_model_keeps_its_provider_route_without_adopting_an_xai_session() {
+        let endpoints = EndpointsConfig::default();
+        let mut entry = test_model_entry(
+            "k3",
+            xai_grok_sampling_types::KIMI_CODE_BASE_URL,
+            None,
+            None,
+            None,
+        );
+        entry.info.provider = ProviderId::KimiCode;
+        entry.info.api_backend = ApiBackend::Messages;
+        entry.info.auth_scheme = AuthScheme::XApiKey;
+        let catalog = IndexMap::from([("kimi-code/k3".to_owned(), entry)]);
+
+        let resolved = resolve_aux_model_sampling_config(
+            "kimi-code/k3",
+            &catalog,
+            &endpoints,
+            Some("sentinel-xai-session"),
+            false,
+            None,
+            None,
+        )
+        .expect("Kimi route must be returned for provider binding");
+
+        assert_eq!(resolved.provider, ProviderId::KimiCode);
+        assert_eq!(
+            resolved.base_url,
+            xai_grok_sampling_types::KIMI_CODE_BASE_URL
+        );
+        assert!(resolved.api_key.is_none());
+    }
+
     #[test]
     fn web_search_disable_api_key_auth_swaps_first_party_key_for_session() {
         let endpoints = EndpointsConfig::default();

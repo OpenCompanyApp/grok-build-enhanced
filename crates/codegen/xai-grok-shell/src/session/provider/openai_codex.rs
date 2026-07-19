@@ -9,13 +9,17 @@ use std::sync::Arc;
 
 use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
-    ApiBackend, CredentialBinding, CredentialSourceId, OPENAI_CODEX_BASE_URL,
+    ApiBackend, CredentialBinding, CredentialSourceId, KIMI_CODE_BASE_URL, OPENAI_CODEX_BASE_URL,
     OPENAI_CODEX_RESPONSES_LITE_HEADER, ProviderId,
 };
 use xai_grok_tools::types::SharedApiKeyProvider;
 
 use crate::auth::codex::{
     CodexAuthError, CodexAuthManager, shared_api_key_provider, shared_sampler_request_auth,
+};
+use crate::auth::kimi_code::{
+    KimiCodeAuthError, KimiCodeCredentialStore, shared_sampler_request_auth as kimi_sampler_auth,
+    shared_tool_auth_provider as kimi_tool_auth,
 };
 
 /// Provider-qualified model identity carried alongside every bound auxiliary
@@ -53,8 +57,14 @@ impl std::fmt::Debug for BoundProviderRuntime {
 pub(crate) enum ProviderBindingError {
     #[error(transparent)]
     CodexAuth(#[from] CodexAuthError),
+    #[error(transparent)]
+    KimiCodeAuth(#[from] KimiCodeAuthError),
     #[error("restored OpenAI Codex credential binding is invalid")]
     InvalidRestoredBinding,
+    #[error("restored Kimi Code credential binding is invalid")]
+    InvalidKimiRestoredBinding,
+    #[error("the restored Kimi Code API-key record changed; rebuild the provider session")]
+    KimiCredentialChanged,
     #[error("the restored OpenAI Codex account changed; rebuild the provider session")]
     AccountChanged,
     #[error("the restored OpenAI Codex credential generation moved backwards")]
@@ -71,6 +81,9 @@ pub(crate) async fn bind_provider_runtime(
     mut sampler_config: SamplerConfig,
     generic_api_key_provider: Option<SharedApiKeyProvider>,
 ) -> Result<BoundProviderRuntime, ProviderBindingError> {
+    if sampler_config.provider.is_kimi_code() {
+        return bind_kimi_code(sampler_config);
+    }
     if !sampler_config.provider.is_openai_codex() {
         let route = ProviderModelRoute {
             provider: sampler_config.provider,
@@ -113,6 +126,80 @@ pub(crate) async fn bind_provider_runtime(
 
     let manager = Arc::new(CodexAuthManager::new(&crate::util::grok_home::grok_home())?);
     bind_openai_codex_with_manager(sampler_config, manager).await
+}
+
+fn bind_kimi_code(
+    mut sampler_config: SamplerConfig,
+) -> Result<BoundProviderRuntime, ProviderBindingError> {
+    let grok_home = crate::util::grok_home::grok_home();
+    let store = KimiCodeCredentialStore::new(&grok_home);
+    let (credentials, current) =
+        crate::auth::kimi_code::current_credentials_and_binding(&grok_home)?;
+    if let Some(expected) = restored_kimi_binding(sampler_config.credential_binding.as_ref())?
+        && (!expected.same_record(&current) || current.generation < expected.generation)
+    {
+        return Err(ProviderBindingError::KimiCredentialChanged);
+    }
+
+    let backend = sampler_config.api_backend.clone();
+    if !matches!(backend, ApiBackend::ChatCompletions | ApiBackend::Messages) {
+        return Err(ProviderBindingError::InvalidKimiRestoredBinding);
+    }
+    sampler_config.provider = ProviderId::KimiCode;
+    sampler_config.credential_source = CredentialSourceId::KimiCodeApiKey;
+    sampler_config.credential_binding = Some(current.clone());
+    sampler_config.api_key = None;
+    sampler_config.base_url = KIMI_CODE_BASE_URL.to_owned();
+    sampler_config.auth_scheme = if backend == ApiBackend::Messages {
+        AuthScheme::XApiKey
+    } else {
+        AuthScheme::Bearer
+    };
+    sampler_config.extra_headers.clear();
+    sampler_config.attribution_callback = None;
+    sampler_config.bearer_resolver = None;
+    sampler_config.request_auth = Some(kimi_sampler_auth(
+        store.clone(),
+        credentials.clone(),
+        backend,
+        current.clone(),
+    ));
+    sampler_config.deployment_id = None;
+    sampler_config.user_id = None;
+    sampler_config.compactions_remaining = None;
+    sampler_config.compaction_at_tokens = None;
+
+    let route = ProviderModelRoute {
+        provider: ProviderId::KimiCode,
+        model: sampler_config.model.clone(),
+    };
+    Ok(BoundProviderRuntime {
+        sampler_config,
+        api_key_provider: Some(kimi_tool_auth(store, credentials, current)),
+        route,
+    })
+}
+
+fn restored_kimi_binding(
+    binding: Option<&CredentialBinding>,
+) -> Result<Option<&CredentialBinding>, ProviderBindingError> {
+    let Some(binding) = binding else {
+        return Ok(None);
+    };
+    let correct_owner = binding.provider == ProviderId::KimiCode
+        && binding.source == CredentialSourceId::KimiCodeApiKey;
+    if correct_owner && binding.record_id.is_none() && binding.generation == 0 {
+        return Ok(None);
+    }
+    let complete = correct_owner
+        && binding.generation > 0
+        && binding
+            .record_id
+            .as_deref()
+            .is_some_and(|record_id| !record_id.trim().is_empty());
+    complete
+        .then_some(Some(binding))
+        .ok_or(ProviderBindingError::InvalidKimiRestoredBinding)
 }
 
 async fn bind_openai_codex_with_manager(
@@ -168,15 +255,18 @@ async fn bind_openai_codex_with_manager(
     })
 }
 
-/// Pin a Codex model/auxiliary candidate to the active session record.
-/// Non-Codex transitions are intentional fresh provider selections and remain
-/// untouched.
-pub(crate) fn pin_codex_candidate_to_active_record(
+/// Pin a subscription-provider model/auxiliary candidate to the active session
+/// record. Cross-provider transitions are intentional fresh selections and
+/// remain untouched.
+pub(crate) fn pin_provider_candidate_to_active_record(
     candidate: &mut SamplerConfig,
     active_provider: ProviderId,
     active_binding: Option<&CredentialBinding>,
 ) {
-    if candidate.provider.is_openai_codex() && active_provider.is_openai_codex() {
+    let same_pinned_provider = (candidate.provider.is_openai_codex()
+        && active_provider.is_openai_codex())
+        || (candidate.provider.is_kimi_code() && active_provider.is_kimi_code());
+    if same_pinned_provider {
         candidate.credential_binding = active_binding.cloned();
     }
 }
@@ -386,7 +476,7 @@ mod tests {
             "process-current-other-record".to_owned(),
         )));
 
-        pin_codex_candidate_to_active_record(
+        pin_provider_candidate_to_active_record(
             &mut candidate,
             ProviderId::OpenAiCodex,
             Some(&active),
@@ -394,6 +484,26 @@ mod tests {
 
         assert_eq!(candidate.provider, ProviderId::OpenAiCodex);
         assert_eq!(candidate.model, "gpt-5.6-luna");
+        assert_eq!(candidate.credential_binding, Some(active));
+    }
+
+    #[test]
+    fn kimi_aux_candidates_keep_the_active_api_key_record() {
+        let mut active = CredentialBinding::kimi_code(Some("record-a".to_owned()));
+        active.generation = 4;
+        let mut candidate = SamplerConfig::kimi_code("k3", ApiBackend::Messages);
+        candidate.credential_binding = Some(CredentialBinding::kimi_code(Some(
+            "process-current-other-record".to_owned(),
+        )));
+
+        pin_provider_candidate_to_active_record(
+            &mut candidate,
+            ProviderId::KimiCode,
+            Some(&active),
+        );
+
+        assert_eq!(candidate.provider, ProviderId::KimiCode);
+        assert_eq!(candidate.model, "k3");
         assert_eq!(candidate.credential_binding, Some(active));
     }
 

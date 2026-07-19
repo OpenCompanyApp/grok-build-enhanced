@@ -1717,6 +1717,16 @@ async fn async_main() -> Result<()> {
                     AuthProviderArg::OpenAiCodex => {
                         xai_grok_pager::models::list_available_codex_models().await
                     }
+                    AuthProviderArg::KimiCode => {
+                        xai_grok_shell::auth::kimi_code::run_kimi_code_cli_models()
+                            .await
+                            .map_err(anyhow::Error::from)
+                    }
+                    AuthProviderArg::ZaiCodingPlan => {
+                        xai_grok_shell::auth::zai_coding_plan::run_zai_coding_plan_cli_models()
+                            .await
+                            .map_err(anyhow::Error::from)
+                    }
                 };
             }
             Command::Worktree(worktree_args) => {
@@ -1811,6 +1821,23 @@ async fn async_main() -> Result<()> {
                         xai_grok_shell::auth::codex::run_codex_cli_login(device_auth).await?;
                         println!("Logged in to ChatGPT Codex.");
                     }
+                    AuthProviderArg::KimiCode => {
+                        if oauth || device_auth || devbox {
+                            return Err(anyhow::anyhow!(
+                                "Kimi Code uses an API key; OAuth/device/devbox login flags are not supported"
+                            ));
+                        }
+                        xai_grok_shell::auth::kimi_code::run_kimi_code_cli_login().await?;
+                    }
+                    AuthProviderArg::ZaiCodingPlan => {
+                        if oauth || device_auth || devbox {
+                            return Err(anyhow::anyhow!(
+                                "Z.AI Coding Plan uses an API key; OAuth/device/devbox login flags are not supported"
+                            ));
+                        }
+                        xai_grok_shell::auth::zai_coding_plan::run_zai_coding_plan_cli_login()
+                            .await?;
+                    }
                 }
                 println!();
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
@@ -1836,6 +1863,13 @@ async fn async_main() -> Result<()> {
                                 "Removed the local ChatGPT Codex login; remote revocation was unavailable."
                             );
                         }
+                    }
+                    AuthProviderArg::KimiCode => {
+                        xai_grok_shell::auth::kimi_code::run_kimi_code_cli_logout().await?;
+                    }
+                    AuthProviderArg::ZaiCodingPlan => {
+                        xai_grok_shell::auth::zai_coding_plan::run_zai_coding_plan_cli_logout()
+                            .await?;
                     }
                 }
                 xai_grok_shell::instrumentation::finalize_and_exit(0);

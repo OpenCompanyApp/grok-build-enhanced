@@ -479,6 +479,17 @@ mod tests {
         models.current = Some(id);
         models
     }
+
+    fn kimi_models() -> ModelState {
+        let mut models = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("kimi-code/k3"));
+        models.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "Kimi K3".to_string()),
+        );
+        models.current = Some(id);
+        models
+    }
     #[test]
     fn usage_no_args_returns_show_usage() {
         assert!(matches!(
@@ -514,6 +525,18 @@ mod tests {
             other => panic!("expected Action(OpenUrl), got {other:?}"),
         }
     }
+    #[test]
+    fn usage_manage_opens_kimi_console_for_kimi_model() {
+        let models = kimi_models();
+        let mut ctx = make_ctx(&models);
+        match usage::UsageCommand.run(&mut ctx, "manage") {
+            CommandResult::Action(Action::OpenUrl(url)) => {
+                assert_eq!(url, "https://www.kimi.com/code/console");
+            }
+            other => panic!("expected Action(OpenUrl), got {other:?}"),
+        }
+    }
+
     #[test]
     fn usage_invalid_arg_returns_error() {
         match run_usage("delete") {

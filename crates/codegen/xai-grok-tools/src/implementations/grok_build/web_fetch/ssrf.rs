@@ -5,7 +5,7 @@
 //!
 //! Reference: [IANA IPv4 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv4-special-registry/)
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use url::Url;
 
@@ -53,8 +53,9 @@ fn is_blocked_ip_with_loopback(ip: &IpAddr, allow_loopback: bool) -> bool {
             if octets[0] == 100 && (64..=127).contains(&octets[1]) {
                 return true;
             }
-            // 0.0.0.0 — unspecified address.
-            if v4.is_unspecified() {
+            // RFC 1122 / IANA "this network": block the full 0.0.0.0/8,
+            // not only the single unspecified address 0.0.0.0.
+            if octets[0] == 0 {
                 return true;
             }
             false
@@ -86,9 +87,21 @@ fn is_blocked_ip_with_loopback(ip: &IpAddr, allow_loopback: bool) -> bool {
     }
 }
 
+/// DNS result approved by the SSRF policy. The exact addresses must be pinned
+/// into the connection for the corresponding network hop so a second DNS
+/// lookup cannot rebind the hostname to a private destination.
+#[derive(Debug, Clone)]
+pub(crate) struct ValidatedTarget {
+    pub(crate) host: String,
+    pub(crate) addrs: Vec<SocketAddr>,
+}
+
 /// Resolve hostname via DNS and verify none of the resolved addresses are
 /// in blocked private/link-local ranges.
-pub(crate) async fn check_ssrf(url: &Url, allow_loopback: bool) -> Result<(), WebFetchError> {
+pub(crate) async fn check_ssrf(
+    url: &Url,
+    allow_loopback: bool,
+) -> Result<ValidatedTarget, WebFetchError> {
     let host = url
         .host_str()
         .ok_or_else(|| WebFetchError::SingleLabelHost {
@@ -103,7 +116,11 @@ pub(crate) async fn check_ssrf(url: &Url, allow_loopback: bool) -> Result<(), We
                 ip,
             });
         }
-        return Ok(());
+        let port = url.port_or_known_default().unwrap_or(443);
+        return Ok(ValidatedTarget {
+            host: host.to_owned(),
+            addrs: vec![SocketAddr::new(ip, port)],
+        });
     }
 
     // DNS resolution.
@@ -121,15 +138,20 @@ pub(crate) async fn check_ssrf(url: &Url, allow_loopback: bool) -> Result<(), We
         return Err(WebFetchError::DnsEmpty(host.to_string()));
     }
 
-    addrs
+    if let Some(addr) = addrs
         .iter()
         .find(|addr| is_blocked_ip_with_loopback(&addr.ip(), allow_loopback))
-        .map_or(Ok(()), |addr| {
-            Err(WebFetchError::SsrfBlocked {
-                host: host.to_string(),
-                ip: addr.ip(),
-            })
-        })
+    {
+        return Err(WebFetchError::SsrfBlocked {
+            host: host.to_string(),
+            ip: addr.ip(),
+        });
+    }
+
+    Ok(ValidatedTarget {
+        host: host.to_owned(),
+        addrs,
+    })
 }
 
 #[cfg(test)]
@@ -173,8 +195,10 @@ mod tests {
     }
 
     #[test]
-    fn blocks_unspecified() {
-        assert!(is_blocked_ip(&"0.0.0.0".parse().unwrap()));
+    fn blocks_this_network_ipv4_range_and_mapped_ipv6() {
+        for ip in ["0.0.0.0", "0.0.0.1", "0.1.2.3", "::ffff:0.1.2.3"] {
+            assert!(is_blocked_ip(&ip.parse().unwrap()), "must block {ip}");
+        }
         assert!(is_blocked_ip(&"::".parse().unwrap()));
     }
 

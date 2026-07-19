@@ -59,9 +59,11 @@ impl MvpAgent {
             // slug onto a Codex endpoint (or vice versa) is never valid.
             None => primary.clone(),
         };
-        if config.provider.is_openai_codex() && primary.provider.is_openai_codex() {
-            config.credential_binding = primary.credential_binding.clone();
-        }
+        crate::session::provider::pin_provider_candidate_to_active_record(
+            &mut config,
+            primary.provider,
+            primary.credential_binding.as_ref(),
+        );
         let bound_runtime = crate::session::provider::bind_provider_runtime(config, None)
             .await
             .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
@@ -85,14 +87,14 @@ impl MvpAgent {
     /// every running xAI session's per-turn refresh gate observes it on its
     /// next turn.
     ///
-    /// ChatGPT Codex authentication is provider-scoped and travels through
-    /// `SamplingConfig::request_auth`; it must never replace this xAI method.
-    /// Keeping that boundary here protects already-running xAI sessions when a
-    /// client authenticates or switches to a Codex model.
+    /// ChatGPT Codex and Kimi Code authentication are provider-scoped and
+    /// travel through `SamplingConfig::request_auth`; neither may replace this
+    /// xAI method. Keeping that boundary here protects already-running xAI
+    /// sessions when a client authenticates or switches providers.
     pub(super) fn set_auth_method(&self, id: acp::AuthMethodId) {
-        if crate::agent::auth_method::AuthMethodKind::from_id(&id).is_openai_codex() {
+        if crate::agent::auth_method::AuthMethodKind::from_id(&id).is_provider_scoped() {
             tracing::warn!(
-                "ignoring provider-scoped Codex auth method for the global xAI auth handle"
+                "ignoring provider-scoped auth method for the global xAI auth handle"
             );
             return;
         }
@@ -100,34 +102,47 @@ impl MvpAgent {
     }
 
     /// Fail before spawning or mutating a session when its provider has no
-    /// usable credentials. xAI keeps its existing ACP flow; Codex gets a
-    /// provider-specific refresh/login gate that does not touch xAI auth.
+    /// usable credentials. xAI keeps its existing ACP flow; subscription-plan
+    /// providers get isolated credential gates that never touch xAI auth.
     pub(crate) async fn ensure_provider_authenticated(
         &self,
         provider: xai_grok_sampling_types::ProviderId,
     ) -> Result<(), acp::Error> {
-        if provider != xai_grok_sampling_types::ProviderId::OpenAiCodex {
-            return Ok(());
+        match provider {
+            xai_grok_sampling_types::ProviderId::OpenAiCodex => {
+                let manager = crate::auth::codex::CodexAuthManager::new(
+                    &crate::util::grok_home::grok_home(),
+                )
+                .map_err(|_| {
+                    acp::Error::auth_required().data(
+                        "Could not load ChatGPT Codex credentials. Run `grok login --provider openai-codex`.",
+                    )
+                })?;
+                manager.ensure_fresh().await.map(|_| ()).map_err(|error| {
+                    let message = if matches!(
+                        error,
+                        crate::auth::codex::CodexAuthError::NotLoggedIn
+                    ) {
+                        "ChatGPT Codex login required. Run `grok login --provider openai-codex`."
+                    } else {
+                        "ChatGPT Codex credentials could not be refreshed. Run `grok login --provider openai-codex` to re-authenticate."
+                    };
+                    acp::Error::auth_required().data(message)
+                })
+            }
+            xai_grok_sampling_types::ProviderId::KimiCode => {
+                crate::auth::kimi_code::current_credentials_and_binding(
+                    &crate::util::grok_home::grok_home(),
+                )
+                .map(|_| ())
+                .map_err(|error| {
+                    acp::Error::auth_required().data(format!(
+                        "Kimi Code authentication failed: {error}. Run `grok login --provider kimi-code` to configure an API key."
+                    ))
+                })
+            }
+            _ => Ok(()),
         }
-        let manager = crate::auth::codex::CodexAuthManager::new(
-            &crate::util::grok_home::grok_home(),
-        )
-        .map_err(|_| {
-            acp::Error::auth_required().data(
-                "Could not load ChatGPT Codex credentials. Run `grok login --provider openai-codex`.",
-            )
-        })?;
-        manager.ensure_fresh().await.map(|_| ()).map_err(|error| {
-            let message = if matches!(
-                error,
-                crate::auth::codex::CodexAuthError::NotLoggedIn
-            ) {
-                "ChatGPT Codex login required. Run `grok login --provider openai-codex`."
-            } else {
-                "ChatGPT Codex credentials could not be refreshed. Run `grok login --provider openai-codex` to re-authenticate."
-            };
-            acp::Error::auth_required().data(message)
-        })
     }
     /// Return auth for sync config construction.
     pub(super) fn current_or_buffered_auth(&self) -> Option<crate::auth::GrokAuth> {
@@ -1138,7 +1153,11 @@ impl MvpAgent {
         model: &ModelEntry,
         origin_client: Option<crate::http::OriginClientInfo>,
     ) -> SamplingConfig {
-        if model.info().provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
+        if matches!(
+            model.info().provider,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex
+                | xai_grok_sampling_types::ProviderId::KimiCode
+        ) {
             let cfg = self.cfg.borrow();
             let mut sampling = crate::agent::config::sampling_config_for_model(
                 model,
@@ -1410,9 +1429,13 @@ impl MvpAgent {
         sampling_config: &SamplingConfig,
     ) -> xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig {
         use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
-        if sampling_config.provider == xai_grok_sampling_types::ProviderId::Custom {
-            // Video generation is xAI-owned. A custom inference credential must
-            // never be repurposed as an xAI media credential.
+        if !matches!(
+            sampling_config.provider,
+            xai_grok_sampling_types::ProviderId::Xai
+                | xai_grok_sampling_types::ProviderId::OpenAiCodex
+        ) {
+            // Video generation is xAI-owned. Kimi and custom inference routes
+            // must neither advertise it nor retain an xAI media recipe.
             return VideoGenConfig::Disabled;
         }
         let tier_restricted = self.is_tier_restricted_capability();
@@ -3277,8 +3300,8 @@ impl MvpAgent {
         let sampling_config = self
             .resolve_sampling_config_for_model(&session_model_id, origin_client.clone());
         if self.auth_method_id.load().is_none()
-            && sampling_config.provider
-                != xai_grok_sampling_types::ProviderId::OpenAiCodex
+            && !sampling_config.provider.is_openai_codex()
+            && !sampling_config.provider.is_kimi_code()
         {
             return Err(acp::Error::auth_required().data("no auth method id provided"));
         }
@@ -3364,29 +3387,37 @@ impl MvpAgent {
             xai_grok_agent::config::ModelOverride::Override(id) => {
                 let mid = acp::ModelId::new(Arc::from(id.as_str()));
                 let codex_slug = id.strip_prefix("openai-codex/");
+                let kimi_slug = id.strip_prefix("kimi-code/");
                 let strict_codex = codex_slug.is_some();
+                let strict_kimi = kimi_slug.is_some();
                 if codex_slug.is_some_and(|slug| slug.trim().is_empty()) {
                     return Err(acp::Error::invalid_params()
                         .data("agent profile Codex model id must include a model slug"));
                 }
-                if strict_codex {
+                if kimi_slug.is_some_and(|slug| slug.trim().is_empty()) {
+                    return Err(acp::Error::invalid_params()
+                        .data("agent profile Kimi model id must include a model slug"));
+                }
+                if strict_codex || strict_kimi {
                     // A provider-qualified profile pin is an explicit routing
-                    // request. Authenticate and give its account-scoped
-                    // catalog one synchronous refresh before resolution; it
-                    // must never silently fall back to the xAI session model.
-                    self.ensure_provider_authenticated(
-                        xai_grok_sampling_types::ProviderId::OpenAiCodex,
-                    )
-                    .await?;
-                    if self.resolve_model_id(&mid).is_err() {
+                    // request. Authenticate provider-locally and never fall
+                    // back to the process-wide xAI session model.
+                    let provider = if strict_kimi {
+                        xai_grok_sampling_types::ProviderId::KimiCode
+                    } else {
+                        xai_grok_sampling_types::ProviderId::OpenAiCodex
+                    };
+                    self.ensure_provider_authenticated(provider).await?;
+                    if strict_codex && self.resolve_model_id(&mid).is_err() {
                         self.models_manager.refresh_openai_codex_models().await;
                     }
                 }
                 match self.resolve_model_id(&mid) {
                     Ok(entry) => Some((mid, entry)),
-                    Err(_) if strict_codex => {
+                    Err(_) if strict_codex || strict_kimi => {
+                        let provider = if strict_kimi { "Kimi" } else { "Codex" };
                         return Err(acp::Error::invalid_params().data(format!(
-                            "agent profile Codex model `{id}` is not available to the authenticated account"
+                            "agent profile {provider} model `{id}` is not available to the authenticated account"
                         )));
                     }
                     Err(_) => {
@@ -3418,7 +3449,8 @@ impl MvpAgent {
                 sampling_config,
                 origin_client.clone(),
             );
-        if sampling_config.provider.is_openai_codex()
+        if (sampling_config.provider.is_openai_codex()
+            || sampling_config.provider.is_kimi_code())
             && let Some(binding) = restored_credential_binding
         {
             sampling_config.credential_binding = Some(binding);

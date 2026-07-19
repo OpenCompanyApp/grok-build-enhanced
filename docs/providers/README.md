@@ -16,7 +16,7 @@ identity:
 | xAI | Implemented upstream provider | Runtime `xai`; remains the default CLI auth provider. |
 | [OpenAI Codex subscription](openai-codex-subscription-provider-reference.md) | **Implemented, experimental** | Runtime `openai_codex` with the isolated `openai_codex_subscription` credential source and `openai::codex` auth scope. |
 | Generic custom transport | Implemented transport path, not a product-specific account integration | Runtime `custom`; it is not inferred to be Codex and receives neither Codex subscription credentials nor generic xAI tool credentials. |
-| [Kimi Code](kimi-code-integration-research.md) | **Unimplemented research/design** | `kimi_code` and its example CLI spelling are proposals only; neither is a runtime or CLI provider identity. |
+| [Kimi Code](kimi-code-integration-research.md) | **Implemented, experimental; initial live matrix qualified 2026-07-19** | Runtime `kimi_code` with isolated `kimi_code_api_key` credentials under `kimi::code`, authenticated dynamic models, Chat/Messages inference, and enabled hosted search/fetch integration. Current Chat/K3, usage, search, and fetch paths are live-qualified; broader Messages/session/cache/quota/media cases remain. |
 | [Z.AI GLM Coding Plan](zai-glm-coding-plan-integration-research.md) | **Unimplemented research/design** | `zai_coding_plan` and its example CLI spelling are proposals only; neither is a runtime or CLI provider identity. |
 | OpenCode | **Not a provider candidate implemented by this fork** | Upstream interoperability/provenance research only; there is no `opencode` runtime identity, login, catalog, session, or credential scope. |
 

@@ -10,7 +10,8 @@ use crate::auth::PreferredAuthMethod;
 /// new xAI method that every running xAI session's per-turn auth gate observes
 /// on its next turn -- no re-spawn. `None` until the first xAI
 /// `authenticate`. ChatGPT Codex credentials use a separate provider-scoped
-/// manager and must never be written here.
+/// manager and must never be written here. Kimi Code API keys likewise use
+/// their provider-scoped credential store and request-auth adapter.
 pub(crate) type SharedAuthMethodId = std::sync::Arc<arc_swap::ArcSwapOption<acp::AuthMethodId>>;
 
 /// Construct a [`SharedAuthMethodId`]. `None` is the pre-`authenticate` state.
@@ -167,6 +168,33 @@ pub fn build_auth_methods(inputs: AuthMethodsBuildInputs<'_>) -> BuiltAuthMethod
     }
 }
 
+/// Advertise provider-scoped authentication without changing the independently
+/// tracked xAI auth method. The selected provider leads the list and owns the
+/// ACP default; unselected providers remain discoverable at the end.
+pub fn add_provider_scoped_auth_methods(
+    built: &mut BuiltAuthMethods,
+    selected_provider: xai_grok_sampling_types::ProviderId,
+    codex_configured: bool,
+) {
+    if selected_provider.is_openai_codex() {
+        built.methods.insert(0, openai_codex_auth_method());
+        built.default_auth_method_id =
+            codex_configured.then(|| acp::AuthMethodId::new(OPENAI_CODEX_METHOD_ID));
+    } else {
+        built.methods.push(openai_codex_auth_method());
+    }
+
+    if selected_provider.is_kimi_code() {
+        built.methods.insert(0, kimi_code_auth_method());
+        // Always select the Kimi ACP gate, including when its key is missing.
+        // That branch returns provider-specific setup guidance and prevents a
+        // cached xAI method from satisfying a Kimi-selected startup.
+        built.default_auth_method_id = Some(acp::AuthMethodId::new(KIMI_CODE_METHOD_ID));
+    } else {
+        built.methods.push(kimi_code_auth_method());
+    }
+}
+
 fn build_pinned_api_key(has_external_api_key: bool) -> BuiltAuthMethods {
     if !has_external_api_key {
         xai_grok_telemetry::unified_log::warn(
@@ -292,6 +320,7 @@ pub enum AuthMethodKind {
     GrokCom,
     Oidc,
     OpenAiCodex,
+    KimiCode,
     Unknown,
 }
 
@@ -303,6 +332,7 @@ impl AuthMethodKind {
             GROK_COM_METHOD_ID => Self::GrokCom,
             OIDC_METHOD_ID => Self::Oidc,
             OPENAI_CODEX_METHOD_ID => Self::OpenAiCodex,
+            KIMI_CODE_METHOD_ID => Self::KimiCode,
             _ => Self::Unknown,
         }
     }
@@ -324,6 +354,14 @@ impl AuthMethodKind {
 
     pub fn is_openai_codex(self) -> bool {
         matches!(self, Self::OpenAiCodex)
+    }
+
+    pub fn is_kimi_code(self) -> bool {
+        matches!(self, Self::KimiCode)
+    }
+
+    pub fn is_provider_scoped(self) -> bool {
+        self.is_openai_codex() || self.is_kimi_code()
     }
 
     pub fn auth_error_message(self) -> &'static str {
@@ -499,6 +537,20 @@ pub fn openai_codex_auth_method() -> acp::AuthMethod {
     )
 }
 
+pub const KIMI_CODE_METHOD_ID: &str = "kimi-code";
+
+pub fn kimi_code_auth_method() -> acp::AuthMethod {
+    acp::AuthMethod::Agent(
+        acp::AuthMethodAgent::new(
+            acp::AuthMethodId::new(KIMI_CODE_METHOD_ID),
+            "Kimi Code".to_owned(),
+        )
+        .description(Some(
+            "Use the API key saved by `grok login --provider kimi-code`".to_owned(),
+        )),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +619,14 @@ mod tests {
         assert!(!api_kind.is_session_based());
         assert!(api_kind.is_api_key());
         assert!(!is_session_based_method(&api_id));
+
+        let kimi_id = acp::AuthMethodId::new(KIMI_CODE_METHOD_ID);
+        let kimi_kind = AuthMethodKind::from_id(&kimi_id);
+        assert!(kimi_kind.is_kimi_code());
+        assert!(kimi_kind.is_provider_scoped());
+        assert!(!kimi_kind.is_api_key());
+        assert!(!kimi_kind.is_session_based());
+
         assert!(!is_session_based_method(&acp::AuthMethodId::new(
             "unknown-method"
         )));
@@ -604,6 +664,57 @@ mod tests {
 
     fn first_kind(methods: &[acp::AuthMethod]) -> Option<AuthMethodKind> {
         methods.first().map(|m| AuthMethodKind::from_id(m.id()))
+    }
+
+    /// A selected Kimi provider must own eager ACP authentication even if an
+    /// unrelated cached xAI session is also available.
+    #[test]
+    fn selected_kimi_owns_auth_default_when_xai_token_is_cached() {
+        let mut built = build_auth_methods(AuthMethodsBuildInputs {
+            has_cached_token: true,
+            ..default_inputs()
+        });
+
+        add_provider_scoped_auth_methods(
+            &mut built,
+            xai_grok_sampling_types::ProviderId::KimiCode,
+            false,
+        );
+
+        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::KimiCode));
+        assert_eq!(default_id(&built), Some(KIMI_CODE_METHOD_ID));
+        assert!(
+            built.methods.iter().any(|method| {
+                AuthMethodKind::from_id(method.id()) == AuthMethodKind::CachedToken
+            })
+        );
+    }
+
+    /// Kimi remains discoverable without taking over an xAI-selected startup.
+    #[test]
+    fn unselected_kimi_preserves_xai_auth_default() {
+        let mut built = build_auth_methods(AuthMethodsBuildInputs {
+            has_cached_token: true,
+            ..default_inputs()
+        });
+
+        add_provider_scoped_auth_methods(
+            &mut built,
+            xai_grok_sampling_types::ProviderId::Xai,
+            false,
+        );
+
+        assert_eq!(default_id(&built), Some(CACHED_TOKEN_AUTH_METHOD_ID));
+        assert_eq!(
+            first_kind(&built.methods),
+            Some(AuthMethodKind::CachedToken)
+        );
+        assert!(
+            built
+                .methods
+                .iter()
+                .any(|method| { AuthMethodKind::from_id(method.id()) == AuthMethodKind::KimiCode })
+        );
     }
 
     // build_auth_methods regression: pin production call-site ordering.

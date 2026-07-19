@@ -30,6 +30,7 @@ use xai_grok_sampling_types::{
 };
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
+use crate::provider::kimi_code;
 pub(crate) use crate::provider::openai_codex::turn_state::CodexTurnStateStore;
 use crate::provider::openai_codex::{
     endpoint as codex_endpoint, errors as codex_errors, headers as codex_headers,
@@ -54,13 +55,13 @@ fn normalize_reasoning_effort_for_provider(
     provider: ProviderId,
     effort: ReasoningEffort,
 ) -> Result<ReasoningEffort> {
-    if provider.is_openai_codex() {
+    if provider.is_openai_codex() || provider.is_kimi_code() {
         return Ok(effort);
     }
     match effort {
         ReasoningEffort::Max => Ok(ReasoningEffort::Xhigh),
         ReasoningEffort::Ultra => Err(SamplingError::InvalidConfiguration(
-            "ultra reasoning effort requires the OpenAI Codex provider",
+            "ultra reasoning effort requires a provider with an explicit extended-effort contract",
         )),
         effort => Ok(effort),
     }
@@ -562,6 +563,31 @@ impl SamplingClient {
                 ));
             }
         }
+        if config.provider.is_kimi_code() {
+            kimi_code::validate_config(
+                config.provider,
+                &config.base_url,
+                config.api_backend.clone(),
+            )?;
+            if config.api_key.is_some()
+                || config.bearer_resolver.is_some()
+                || config.request_auth.is_none()
+            {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Kimi Code requires provider-scoped request authentication",
+                ));
+            }
+            let expected_scheme = if matches!(config.api_backend, ApiBackend::Messages) {
+                AuthScheme::XApiKey
+            } else {
+                AuthScheme::Bearer
+            };
+            if config.auth_scheme != expected_scheme {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Kimi Code authentication scheme does not match the catalog protocol",
+                ));
+            }
+        }
 
         let mut headers = HeaderMap::new();
         let mut responses_lite = false;
@@ -627,6 +653,11 @@ impl SamplingClient {
                     "OpenAI Codex protected/provider headers cannot be set via extra_headers",
                 ));
             }
+            if config.provider.is_kimi_code() && kimi_code::is_protected_header(&header_name) {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Kimi Code protected/provider headers cannot be set via extra_headers",
+                ));
+            }
             let mut header_value = HeaderValue::from_str(value)
                 .map_err(|_| SamplingError::InvalidConfiguration("Invalid extra header value"))?;
             if Self::is_sensitive_header(header_name.as_str()) {
@@ -635,44 +666,60 @@ impl SamplingClient {
             headers.insert(header_name, header_value);
         }
 
-        if !config.provider.is_openai_codex() {
-            // Add x-grok-client-version header for version gating at the proxy.
-            if let Some(client_version) = config.client_version.as_ref()
-                && let Ok(header_value) = HeaderValue::from_str(client_version)
-            {
-                headers.insert(
-                    HeaderName::from_static("x-grok-client-version"),
-                    header_value,
-                );
-            }
+        match config.provider {
+            ProviderId::Xai | ProviderId::Custom => {
+                // Grok/xAI compatibility identity stays restricted to its
+                // legacy first-party and explicitly custom request paths.
+                if let Some(client_version) = config.client_version.as_ref()
+                    && let Ok(header_value) = HeaderValue::from_str(client_version)
+                {
+                    headers.insert(
+                        HeaderName::from_static("x-grok-client-version"),
+                        header_value,
+                    );
+                }
 
-            if let Some(deployment_id) = config.deployment_id.as_ref()
-                && let Ok(header_value) = HeaderValue::from_str(deployment_id)
-            {
-                headers.insert(
-                    HeaderName::from_static("x-grok-deployment-id"),
-                    header_value,
-                );
-            }
+                if let Some(deployment_id) = config.deployment_id.as_ref()
+                    && let Ok(header_value) = HeaderValue::from_str(deployment_id)
+                {
+                    headers.insert(
+                        HeaderName::from_static("x-grok-deployment-id"),
+                        header_value,
+                    );
+                }
 
-            if let Some(user_id) = config.user_id.as_ref()
-                && let Ok(header_value) = HeaderValue::from_str(user_id)
-            {
-                headers.insert(HeaderName::from_static("x-grok-user-id"), header_value);
-            }
+                if let Some(user_id) = config.user_id.as_ref()
+                    && let Ok(header_value) = HeaderValue::from_str(user_id)
+                {
+                    headers.insert(HeaderName::from_static("x-grok-user-id"), header_value);
+                }
 
-            let client_id = config
-                .client_identifier
-                .clone()
-                .unwrap_or_else(|| DEFAULT_CLIENT_IDENTIFIER.to_string());
-            if let Ok(header_value) = HeaderValue::from_str(&client_id) {
-                headers.insert(
-                    HeaderName::from_static("x-grok-client-identifier"),
-                    header_value,
-                );
+                let client_id = config
+                    .client_identifier
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_CLIENT_IDENTIFIER.to_string());
+                if let Ok(header_value) = HeaderValue::from_str(&client_id) {
+                    headers.insert(
+                        HeaderName::from_static("x-grok-client-identifier"),
+                        header_value,
+                    );
+                }
             }
-        } else {
-            codex_headers::insert_provider_identity(&mut headers);
+            ProviderId::OpenAiCodex => codex_headers::insert_provider_identity(&mut headers),
+            ProviderId::KimiCode => {
+                if matches!(config.api_backend, ApiBackend::Messages) {
+                    headers.insert(
+                        HeaderName::from_static("anthropic-version"),
+                        HeaderValue::from_static(
+                            xai_grok_sampling_types::KIMI_CODE_ANTHROPIC_VERSION,
+                        ),
+                    );
+                    headers.insert(
+                        HeaderName::from_static("anthropic-beta"),
+                        HeaderValue::from_static(xai_grok_sampling_types::KIMI_CODE_ANTHROPIC_BETA),
+                    );
+                }
+            }
         }
 
         // Always set User-Agent: per-session origin if available, else fallback.
@@ -692,6 +739,8 @@ impl SamplingClient {
 
         let http = if config.provider.is_openai_codex() {
             codex_endpoint::http_client()?
+        } else if config.provider.is_kimi_code() {
+            kimi_code::http_client(config.force_http1)?
         } else if config.force_http1 {
             tracing::info!("Using HTTP/1.1 for sampling client (force_http1=true)");
             crate::shared_http::client_http1().map_err(SamplingError::Http)?
@@ -809,6 +858,13 @@ impl SamplingClient {
         if self.defaults.provider.is_openai_codex() {
             codex_headers::seal_after_request_auth(&mut headers, credential_binding.as_ref())?;
         }
+        if self.defaults.provider.is_kimi_code() {
+            kimi_code::seal_headers(
+                &headers,
+                self.defaults.api_backend.clone(),
+                credential_binding.as_ref(),
+            )?;
+        }
         if let Some(rejected) = rejected
             && !credential_binding
                 .as_ref()
@@ -899,6 +955,10 @@ impl SamplingClient {
                 self.defaults.responses_lite,
             )?;
             Ok(self.codex_turn_state.apply(builder, grok_headers.req_id))
+        } else if self.defaults.provider.is_kimi_code() {
+            // Kimi receives only its protocol authentication plus the truthful
+            // process User-Agent. Grok/xAI conversation identity is local.
+            Ok(builder)
         } else {
             Ok(grok_headers.apply(builder))
         }
@@ -972,6 +1032,7 @@ impl SamplingClient {
         let has_auth = self.has_auth();
         let auth_type = match (self.defaults.provider, self.defaults.auth_scheme, has_auth) {
             (ProviderId::OpenAiCodex, _, true) => "openai-codex-subscription",
+            (ProviderId::KimiCode, _, true) => "kimi-code-api-key",
             (_, AuthScheme::XApiKey, true) => "x-api-key",
             (_, AuthScheme::Bearer, true) => "bearer",
             (_, _, false) => "none",
@@ -1052,6 +1113,9 @@ impl SamplingClient {
         if provider.is_openai_codex() {
             return codex_errors::response_header_diagnostics(headers);
         }
+        if provider.is_kimi_code() {
+            return kimi_code::response_header_diagnostics(headers);
+        }
 
         headers
             .iter()
@@ -1105,9 +1169,11 @@ impl SamplingClient {
     /// Convert an error body into a diagnostic message without allowing the
     /// experimental ChatGPT backend to reflect credential or account material
     /// into logs and user-visible errors.
-    fn provider_error_message(&self, body: &[u8]) -> String {
+    fn provider_error_message(&self, status: reqwest::StatusCode, body: &[u8]) -> String {
         if self.defaults.provider.is_openai_codex() {
             codex_errors::response_message(body)
+        } else if self.defaults.provider.is_kimi_code() {
+            kimi_code::response_message(status, body)
         } else {
             parse_error_bytes(body)
         }
@@ -1164,12 +1230,17 @@ impl SamplingClient {
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 self.record_401_attribution(crate::attribution::SamplingConsumer::ChatCompletions);
-                let server_message = parse_error_bytes(bytes.as_ref());
+                let server_message = self.provider_error_message(status, bytes.as_ref());
                 return Err(SamplingError::Auth(format!(
                     "Unauthorized (401): {server_message}"
                 )));
             }
-            let message = parse_error_bytes(bytes.as_ref());
+            let message = self.provider_error_message(status, bytes.as_ref());
+            let should_retry = if self.defaults.provider.is_kimi_code() {
+                kimi_code::should_retry(status, bytes.as_ref(), should_retry)
+            } else {
+                should_retry
+            };
             return Err(SamplingError::Api {
                 status,
                 message,
@@ -1179,15 +1250,40 @@ impl SamplingClient {
             });
         }
 
-        let completion = serde_json::from_slice::<ChatCompletionResponse>(&bytes).map_err(|e| {
-            let raw_body = String::from_utf8_lossy(&bytes);
-            tracing::error!(
-                error = %e,
-                raw_body = %raw_body,
-                "Failed to deserialize ChatCompletionResponse"
-            );
-            SamplingError::Serialization(e)
-        })?;
+        let completion = if self.defaults.provider.is_kimi_code() {
+            kimi_code::deserialize_chat_response(&bytes).map_err(|error| {
+                tracing::error!(
+                    error_kind = %error,
+                    provider = %self.defaults.provider,
+                    body_len = bytes.len(),
+                    "Failed to deserialize provider ChatCompletionResponse; body omitted"
+                );
+                error
+            })?
+        } else {
+            serde_json::from_slice::<ChatCompletionResponse>(&bytes).map_err(|error| {
+                if self
+                    .defaults
+                    .provider
+                    .requires_redacted_provider_diagnostics()
+                {
+                    tracing::error!(
+                        error = %error,
+                        provider = %self.defaults.provider,
+                        body_len = bytes.len(),
+                        "Failed to deserialize provider ChatCompletionResponse; body omitted"
+                    );
+                } else {
+                    let raw_body = String::from_utf8_lossy(&bytes);
+                    tracing::error!(
+                        error = %error,
+                        raw_body = %raw_body,
+                        "Failed to deserialize ChatCompletionResponse"
+                    );
+                }
+                SamplingError::Serialization(error)
+            })?
+        };
         Ok(completion)
     }
 
@@ -1220,11 +1316,20 @@ impl SamplingClient {
             deployment_id: payload.x_grok_deployment_id.as_deref(),
             user_id: payload.x_grok_user_id.as_deref(),
         };
-        let prepared = self.post(self.endpoint("chat/completions"))?;
+        let endpoint = if self.defaults.provider.is_kimi_code() {
+            kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
+        } else {
+            self.endpoint("chat/completions")
+        };
+        let prepared = self.post(endpoint)?;
         let request_credential = prepared.credential_binding;
-        let http_request = self
-            .apply_provider_request_headers(prepared.builder, &grok_headers)?
-            .json(&payload);
+        let request_builder =
+            self.apply_provider_request_headers(prepared.builder, &grok_headers)?;
+        let http_request = if self.defaults.provider.is_kimi_code() {
+            request_builder.json(&kimi_code::chat_body(&payload, false)?)
+        } else {
+            request_builder.json(&payload)
+        };
 
         let response = http_request.send().await.map_err(|e| {
             // Log at debug level; errors are surfaced to the caller.
@@ -1280,12 +1385,21 @@ impl SamplingClient {
             deployment_id: payload.x_grok_deployment_id.as_deref(),
             user_id: payload.x_grok_user_id.as_deref(),
         };
-        let prepared = self.post(self.endpoint("chat/completions"))?;
+        let endpoint = if self.defaults.provider.is_kimi_code() {
+            kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
+        } else {
+            self.endpoint("chat/completions")
+        };
+        let prepared = self.post(endpoint)?;
         let request_credential = prepared.credential_binding;
-        let http_request = self
+        let request_builder = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
-            .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
-            .json(&streaming_request);
+            .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        let http_request = if self.defaults.provider.is_kimi_code() {
+            request_builder.json(&kimi_code::chat_body(&payload, true)?)
+        } else {
+            request_builder.json(&streaming_request)
+        };
 
         let built_request = http_request.build().map_err(|e| {
             tracing::error!("Failed to build HTTP request: {}", e);
@@ -1322,8 +1436,13 @@ impl SamplingClient {
                 self.record_401_attribution(
                     crate::attribution::SamplingConsumer::ChatCompletionsStream,
                 );
-                let endpoint = self.endpoint("chat/completions");
-                let server_message = response.text().await.unwrap_or_default();
+                let endpoint = if self.defaults.provider.is_kimi_code() {
+                    kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
+                } else {
+                    self.endpoint("chat/completions")
+                };
+                let bytes = response.bytes().await.unwrap_or_default();
+                let server_message = self.provider_error_message(status, bytes.as_ref());
                 return Err(SamplingError::Auth(format!(
                     "Unauthorized (401) from {endpoint}: {server_message}"
                 )));
@@ -1333,7 +1452,12 @@ impl SamplingClient {
             let resp_headers =
                 Self::format_response_headers(response.headers(), self.defaults.provider);
             let bytes = response.bytes().await?;
-            let server_message = parse_error_bytes(bytes.as_ref());
+            let should_retry = if self.defaults.provider.is_kimi_code() {
+                kimi_code::should_retry(status, bytes.as_ref(), should_retry)
+            } else {
+                should_retry
+            };
+            let server_message = self.provider_error_message(status, bytes.as_ref());
 
             let message = self.build_api_error_message(
                 status,
@@ -1382,8 +1506,9 @@ impl SamplingClient {
         // stream (`None`). The first transport error is emitted to the consumer,
         // then subsequent polls return `None` -- preventing an infinite busy-loop
         // when the HTTP/2 connection drops and h2 keeps producing errors.
+        let stream_provider = self.defaults.provider;
         let chunks = event_stream
-            .scan(false, |had_transport_error, event_res| {
+            .scan(false, move |had_transport_error, event_res| {
                 if *had_transport_error {
                     return std::future::ready(None);
                 }
@@ -1394,23 +1519,63 @@ impl SamplingClient {
                             return std::future::ready(None);
                         }
 
-                        tracing::info!(
-                            target: crate::sampling_log::TARGET,
-                            event = "sse_chunk",
-                            backend = "chat_completions",
-                            data = %data,
-                        );
+                        if stream_provider.requires_redacted_provider_diagnostics() {
+                            tracing::info!(
+                                target: crate::sampling_log::TARGET,
+                                event = "sse_chunk",
+                                backend = "chat_completions",
+                                provider = %stream_provider,
+                                data_len = data.len(),
+                                "provider SSE payload omitted"
+                            );
+                        } else {
+                            tracing::info!(
+                                target: crate::sampling_log::TARGET,
+                                event = "sse_chunk",
+                                backend = "chat_completions",
+                                data = %data,
+                            );
+                        }
 
-                        if let Some(stream_error) = try_parse_stream_error(data) {
+                        if stream_provider.is_kimi_code()
+                            && let Some(stream_error) = kimi_code::stream_error(data)
+                        {
                             Some(Err(stream_error))
+                        } else if let Some(stream_error) = try_parse_stream_error(data) {
+                            if stream_provider.requires_redacted_provider_diagnostics() {
+                                Some(Err(SamplingError::EventStreamError(format!(
+                                    "{stream_provider} event stream failed"
+                                ))))
+                            } else {
+                                Some(Err(stream_error))
+                            }
+                        } else if stream_provider.is_kimi_code() {
+                            Some(kimi_code::deserialize_chat_chunk(data).map_err(|error| {
+                                tracing::error!(
+                                    error_kind = %error,
+                                    provider = %stream_provider,
+                                    data_len = data.len(),
+                                    "Failed to deserialize provider ChatCompletionChunk; payload omitted"
+                                );
+                                error
+                            }))
                         } else {
                             Some(
                                 serde_json::from_str::<ChatCompletionChunk>(data).map_err(|e| {
-                                    tracing::error!(
-                                        error = %e,
-                                        raw_data = %data,
-                                        "Failed to deserialize ChatCompletionChunk from stream"
-                                    );
+                                    if stream_provider.requires_redacted_provider_diagnostics() {
+                                        tracing::error!(
+                                            error = %e,
+                                            provider = %stream_provider,
+                                            data_len = data.len(),
+                                            "Failed to deserialize provider ChatCompletionChunk; payload omitted"
+                                        );
+                                    } else {
+                                        tracing::error!(
+                                            error = %e,
+                                            raw_data = %data,
+                                            "Failed to deserialize ChatCompletionChunk from stream"
+                                        );
+                                    }
                                     SamplingError::Serialization(e)
                                 }),
                             )
@@ -1418,7 +1583,12 @@ impl SamplingClient {
                     }
                     Err(e) => {
                         *had_transport_error = true;
-                        Some(Err(SamplingError::EventStreamError(e.to_string())))
+                        let message = if stream_provider.requires_redacted_provider_diagnostics() {
+                            format!("{stream_provider} event stream transport failed")
+                        } else {
+                            e.to_string()
+                        };
+                        Some(Err(SamplingError::EventStreamError(message)))
                     }
                 };
                 std::future::ready(item)
@@ -1587,7 +1757,7 @@ impl SamplingClient {
             }
 
             let req_headers = self.request_header_diagnostics(false);
-            let server_message = self.provider_error_message(bytes.as_ref());
+            let server_message = self.provider_error_message(status, bytes.as_ref());
 
             let message = self.build_api_error_message(
                 status,
@@ -1802,7 +1972,7 @@ impl SamplingClient {
                 bytes.as_ref(),
                 should_retry,
             );
-            let server_message = self.provider_error_message(bytes.as_ref());
+            let server_message = self.provider_error_message(status, bytes.as_ref());
 
             let message = self.build_api_error_message(
                 status,
@@ -2003,11 +2173,33 @@ impl SamplingClient {
             deployment_id: request.x_grok_deployment_id.as_deref(),
             user_id: request.x_grok_user_id.as_deref(),
         };
-        let prepared = self.post(self.endpoint("messages"))?;
+        let endpoint = if self.defaults.provider.is_kimi_code() {
+            kimi_code::endpoint(&self.base_url, ApiBackend::Messages)?
+        } else {
+            self.endpoint("messages")
+        };
+        let prepared = self.post(endpoint.clone())?;
         let request_credential = prepared.credential_binding;
-        let http_request = self
-            .apply_provider_request_headers(prepared.builder, &grok_headers)?
-            .json(&request.inner);
+        let request_builder =
+            self.apply_provider_request_headers(prepared.builder, &grok_headers)?;
+        let http_request = if self.defaults.provider.is_kimi_code() {
+            let mut body =
+                serde_json::to_value(&request.inner).map_err(SamplingError::Serialization)?;
+            let cache_affinity = kimi_code::messages_cache_affinity(
+                Some(x_grok_conv_id),
+                request.x_grok_session_id.as_deref(),
+                &model_id,
+                request.wire_reasoning_effort,
+            );
+            kimi_code::shape_messages_body(
+                &mut body,
+                request.wire_reasoning_effort,
+                cache_affinity.as_deref(),
+            )?;
+            request_builder.json(&body)
+        } else {
+            request_builder.json(&request.inner)
+        };
 
         let response = http_request.send().await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
@@ -2027,20 +2219,24 @@ impl SamplingClient {
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 self.record_401_attribution(crate::attribution::SamplingConsumer::Messages);
-                let endpoint = self.endpoint("messages");
-                let server_message = parse_error_bytes(bytes.as_ref());
+                let server_message = self.provider_error_message(status, bytes.as_ref());
                 return Err(SamplingError::Auth(format!(
                     "Unauthorized (401) from {endpoint}: {server_message}"
                 )));
             }
 
             let req_headers = self.request_header_diagnostics(false);
-            let server_message = parse_error_bytes(bytes.as_ref());
+            let should_retry = if self.defaults.provider.is_kimi_code() {
+                kimi_code::should_retry(status, bytes.as_ref(), should_retry)
+            } else {
+                should_retry
+            };
+            let server_message = self.provider_error_message(status, bytes.as_ref());
 
             let message = self.build_api_error_message(
                 status,
                 &server_message,
-                &self.endpoint("messages"),
+                &endpoint,
                 &req_headers,
                 None,
             );
@@ -2061,12 +2257,25 @@ impl SamplingClient {
 
         let response_obj =
             serde_json::from_slice::<messages::MessagesResponse>(&bytes).map_err(|e| {
-                let raw_body = String::from_utf8_lossy(&bytes);
-                tracing::error!(
-                    error = %e,
-                    raw_body = %raw_body,
-                    "Failed to deserialize MessagesResponse"
-                );
+                if self
+                    .defaults
+                    .provider
+                    .requires_redacted_provider_diagnostics()
+                {
+                    tracing::error!(
+                        error = %e,
+                        provider = %self.defaults.provider,
+                        body_len = bytes.len(),
+                        "Failed to deserialize provider MessagesResponse; body omitted"
+                    );
+                } else {
+                    let raw_body = String::from_utf8_lossy(&bytes);
+                    tracing::error!(
+                        error = %e,
+                        raw_body = %raw_body,
+                        "Failed to deserialize MessagesResponse"
+                    );
+                }
                 SamplingError::Serialization(e)
             })?;
         Ok(response_obj)
@@ -2124,12 +2333,34 @@ impl SamplingClient {
             deployment_id: request.x_grok_deployment_id.as_deref(),
             user_id: request.x_grok_user_id.as_deref(),
         };
-        let prepared = self.post(self.endpoint("messages"))?;
+        let endpoint = if self.defaults.provider.is_kimi_code() {
+            kimi_code::endpoint(&self.base_url, ApiBackend::Messages)?
+        } else {
+            self.endpoint("messages")
+        };
+        let prepared = self.post(endpoint.clone())?;
         let request_credential = prepared.credential_binding;
-        let http_request = self
+        let request_builder = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
-            .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
-            .json(&request.inner);
+            .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        let http_request = if self.defaults.provider.is_kimi_code() {
+            let mut body =
+                serde_json::to_value(&request.inner).map_err(SamplingError::Serialization)?;
+            let cache_affinity = kimi_code::messages_cache_affinity(
+                Some(x_grok_conv_id),
+                request.x_grok_session_id.as_deref(),
+                &model_id,
+                request.wire_reasoning_effort,
+            );
+            kimi_code::shape_messages_body(
+                &mut body,
+                request.wire_reasoning_effort,
+                cache_affinity.as_deref(),
+            )?;
+            request_builder.json(&body)
+        } else {
+            request_builder.json(&request.inner)
+        };
 
         let built_request = http_request.build().map_err(|e| {
             tracing::error!("Failed to build HTTP request: {}", e);
@@ -2157,8 +2388,8 @@ impl SamplingClient {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 span.record("error", "unauthorized (401)");
                 self.record_401_attribution(crate::attribution::SamplingConsumer::MessagesStream);
-                let endpoint = self.endpoint("messages");
-                let server_message = response.text().await.unwrap_or_default();
+                let bytes = response.bytes().await?;
+                let server_message = self.provider_error_message(status, bytes.as_ref());
                 return Err(SamplingError::Auth(format!(
                     "Unauthorized (401) from {endpoint}: {server_message}"
                 )));
@@ -2174,12 +2405,17 @@ impl SamplingClient {
             let resp_headers =
                 Self::format_response_headers(response.headers(), self.defaults.provider);
             let bytes = response.bytes().await?;
-            let server_message = parse_error_bytes(bytes.as_ref());
+            let should_retry = if self.defaults.provider.is_kimi_code() {
+                kimi_code::should_retry(status, bytes.as_ref(), should_retry)
+            } else {
+                should_retry
+            };
+            let server_message = self.provider_error_message(status, bytes.as_ref());
 
             let message = self.build_api_error_message(
                 status,
                 &server_message,
-                &self.endpoint("messages"),
+                &endpoint,
                 &req_headers,
                 Some(&resp_headers),
             );
@@ -2227,8 +2463,9 @@ impl SamplingClient {
         // Map SSE events into MessageStreamEvent.
         // Uses `scan` so transport errors terminate the stream after the first
         // error (same pattern as `chat_completion_stream`).
+        let stream_provider = self.defaults.provider;
         let events = event_stream
-            .scan(false, |had_transport_error, event_res| {
+            .scan(false, move |had_transport_error, event_res| {
                 if *had_transport_error {
                     return std::future::ready(None);
                 }
@@ -2239,24 +2476,46 @@ impl SamplingClient {
                             return std::future::ready(None);
                         }
 
-                        tracing::info!(
-                            target: crate::sampling_log::TARGET,
-                            event = "sse_chunk",
-                            backend = "messages",
-                            data = %data,
-                        );
+                        if !stream_provider.requires_redacted_provider_diagnostics() {
+                            tracing::info!(
+                                target: crate::sampling_log::TARGET,
+                                event = "sse_chunk",
+                                backend = "messages",
+                                data = %data,
+                            );
+                        }
 
-                        if let Some(stream_error) = try_parse_stream_error(data) {
+                        if stream_provider.is_kimi_code()
+                            && let Some(stream_error) = kimi_code::stream_error(data)
+                        {
                             Some(Err(stream_error))
+                        } else if let Some(stream_error) = try_parse_stream_error(data) {
+                            if stream_provider.requires_redacted_provider_diagnostics() {
+                                Some(Err(SamplingError::EventStreamError(format!(
+                                    "{stream_provider} event stream failed"
+                                ))))
+                            } else {
+                                Some(Err(stream_error))
+                            }
                         } else {
                             Some(
                                 serde_json::from_str::<messages::MessageStreamEvent>(data).map_err(
                                     |e| {
-                                        tracing::error!(
-                                            error = %e,
-                                            raw_data = %data,
-                                            "Failed to deserialize MessageStreamEvent from stream"
-                                        );
+                                        if stream_provider.requires_redacted_provider_diagnostics()
+                                        {
+                                            tracing::error!(
+                                                error = %e,
+                                                provider = %stream_provider,
+                                                data_len = data.len(),
+                                                "Failed to deserialize provider MessageStreamEvent; data omitted"
+                                            );
+                                        } else {
+                                            tracing::error!(
+                                                error = %e,
+                                                raw_data = %data,
+                                                "Failed to deserialize MessageStreamEvent from stream"
+                                            );
+                                        }
                                         SamplingError::Serialization(e)
                                     },
                                 ),
@@ -2265,7 +2524,12 @@ impl SamplingClient {
                     }
                     Err(e) => {
                         *had_transport_error = true;
-                        Some(Err(SamplingError::EventStreamError(e.to_string())))
+                        let message = if stream_provider.requires_redacted_provider_diagnostics() {
+                            format!("{stream_provider} event stream transport failed")
+                        } else {
+                            e.to_string()
+                        };
+                        Some(Err(SamplingError::EventStreamError(message)))
                     }
                 };
                 std::future::ready(item)
@@ -2484,6 +2748,7 @@ impl SamplingClient {
         wrapper.x_grok_session_id = x_grok_session_id;
         wrapper.x_grok_turn_idx = x_grok_turn_idx;
         wrapper.x_grok_agent_id = x_grok_agent_id;
+        wrapper.wire_reasoning_effort = request.reasoning_effort;
 
         if let Some(trace) = trace {
             wrapper.trace = Some(trace);
@@ -2516,6 +2781,7 @@ impl SamplingClient {
         wrapper.x_grok_session_id = x_grok_session_id;
         wrapper.x_grok_turn_idx = x_grok_turn_idx;
         wrapper.x_grok_agent_id = x_grok_agent_id;
+        wrapper.wire_reasoning_effort = request.reasoning_effort;
 
         if let Some(trace) = trace {
             wrapper.trace = Some(trace);
@@ -2552,7 +2818,13 @@ impl SamplingClient {
             }
             ApiBackend::Messages => {
                 let (raw, meta) = self.conversation_stream_messages(request).await?;
-                let events = crate::stream::stream_messages(raw, meta, request_id, idle_timeout);
+                let events = crate::stream::messages::stream_messages_for_provider(
+                    raw,
+                    meta,
+                    request_id,
+                    idle_timeout,
+                    self.provider(),
+                );
                 crate::stream::collect_response(events).await
             }
         };
@@ -3039,6 +3311,42 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct StaticKimiRequestAuth {
+        backend: ApiBackend,
+    }
+
+    impl crate::config::RequestAuth for StaticKimiRequestAuth {
+        fn apply(
+            &self,
+            headers: &mut HeaderMap,
+        ) -> std::result::Result<CredentialBinding, crate::config::RequestAuthError> {
+            let (name, value) = if matches!(self.backend, ApiBackend::Messages) {
+                (
+                    HeaderName::from_static("x-api-key"),
+                    HeaderValue::from_static("opaque-kimi-key"),
+                )
+            } else {
+                (
+                    AUTHORIZATION,
+                    HeaderValue::from_static("Bearer opaque-kimi-key"),
+                )
+            };
+            let mut value = value;
+            value.set_sensitive(true);
+            headers.insert(name, value);
+            let mut binding = CredentialBinding::kimi_code(Some("kimi-record".to_owned()));
+            binding.generation = 1;
+            Ok(binding)
+        }
+    }
+
+    fn kimi_config(backend: ApiBackend) -> SamplerConfig {
+        let mut config = SamplerConfig::kimi_code("k3", backend.clone());
+        config.request_auth = Some(std::sync::Arc::new(StaticKimiRequestAuth { backend }));
+        config
+    }
+
     struct StaticCodexRequestAuth {
         calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -3214,6 +3522,150 @@ mod tests {
             calls: std::sync::Arc::clone(&calls),
         }));
         (config, calls)
+    }
+
+    #[test]
+    fn kimi_chat_request_has_only_sensitive_bearer_and_transport_headers() {
+        let request = SamplingClient::new(kimi_config(ApiBackend::ChatCompletions))
+            .unwrap()
+            .post("http://localhost/test")
+            .unwrap()
+            .builder
+            .build()
+            .unwrap();
+
+        let names: std::collections::BTreeSet<_> =
+            request.headers().keys().map(|name| name.as_str()).collect();
+        assert_eq!(
+            names,
+            std::collections::BTreeSet::from(["authorization", "content-type", "user-agent"])
+        );
+        assert!(request.headers()[AUTHORIZATION].is_sensitive());
+    }
+
+    #[test]
+    fn kimi_messages_request_has_pinned_protocol_and_sensitive_api_key() {
+        let request = SamplingClient::new(kimi_config(ApiBackend::Messages))
+            .unwrap()
+            .post("http://localhost/test")
+            .unwrap()
+            .builder
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            request.headers()["anthropic-version"],
+            xai_grok_sampling_types::KIMI_CODE_ANTHROPIC_VERSION
+        );
+        assert_eq!(
+            request.headers()["anthropic-beta"],
+            xai_grok_sampling_types::KIMI_CODE_ANTHROPIC_BETA
+        );
+        assert!(request.headers()["x-api-key"].is_sensitive());
+        assert!(!request.headers().contains_key(AUTHORIZATION));
+    }
+
+    #[tokio::test]
+    async fn kimi_chat_client_projects_provider_owned_history_at_the_http_boundary() {
+        use axum::extract::State;
+        use axum::http::{HeaderMap as AxumHeaderMap, StatusCode};
+        use axum::routing::post;
+        use axum::{Json, Router};
+
+        type Capture =
+            std::sync::Arc<tokio::sync::Mutex<Option<(AxumHeaderMap, serde_json::Value)>>>;
+        async fn capture_request(
+            State(capture): State<Capture>,
+            headers: AxumHeaderMap,
+            Json(body): Json<serde_json::Value>,
+        ) -> (StatusCode, Json<serde_json::Value>) {
+            *capture.lock().await = Some((headers, body));
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": {"message": "captured"}})),
+            )
+        }
+
+        let capture: Capture = Default::default();
+        let app = Router::new()
+            .route("/chat/completions", post(capture_request))
+            .with_state(std::sync::Arc::clone(&capture));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let mut config = kimi_config(ApiBackend::ChatCompletions);
+        config.base_url = format!("http://{address}");
+        let client = SamplingClient::new(config).unwrap();
+        let mut assistant = ChatRequestMessage::assistant("", "local-model-id", None);
+        assistant.tool_calls = vec![
+            xai_grok_sampling_types::ToolCallRequest::function(
+                "read_file",
+                r#"{"path":"README.md"}"#,
+            )
+            .with_id("call|unsafe"),
+        ];
+        let mut request = ChatCompletionRequest::new("k3", vec![assistant]);
+        request.reasoning_effort = Some(ReasoningEffort::Medium);
+        request.search_parameters = Some(xai_grok_sampling_types::SearchParameters {
+            mode: Some("on".to_owned()),
+            sources: None,
+            from_date: None,
+            to_date: None,
+            return_citations: Some(true),
+            max_search_results: Some(5),
+        });
+
+        let error = client
+            .chat_completion(request)
+            .await
+            .expect_err("capture endpoint deliberately rejects the request");
+        assert!(!error.to_string().contains("captured"));
+        let (headers, body) = capture
+            .lock()
+            .await
+            .take()
+            .expect("request must reach the capture boundary");
+        server.abort();
+
+        assert!(headers.get(AUTHORIZATION).is_some());
+        assert!(headers.keys().all(|name| {
+            !name.as_str().starts_with("x-grok-")
+                && !name.as_str().starts_with("x-xai-")
+                && !name.as_str().starts_with("x-msh-")
+        }));
+        assert_eq!(body["thinking"]["effort"], "medium");
+        assert_eq!(body["thinking"]["keep"], "all");
+        assert_eq!(body["messages"][0]["reasoning_content"], "");
+        assert!(body["messages"][0].get("model_id").is_none());
+        assert!(body["messages"][0].get("content").is_none());
+        assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call_unsafe");
+        assert!(body.get("search_parameters").is_none());
+    }
+
+    #[test]
+    fn kimi_request_rejects_foreign_header_added_by_injector() {
+        #[derive(Debug)]
+        struct ForeignInjector;
+        impl crate::config::HeaderInjector for ForeignInjector {
+            fn inject(&self, headers: &mut HeaderMap) {
+                headers.insert(
+                    HeaderName::from_static("cookie"),
+                    HeaderValue::from_static("foreign-cookie"),
+                );
+            }
+        }
+
+        let mut config = kimi_config(ApiBackend::ChatCompletions);
+        config.header_injector = Some(std::sync::Arc::new(ForeignInjector));
+        let client = SamplingClient::new(config).unwrap();
+
+        let error = client
+            .post("http://localhost/test")
+            .err()
+            .expect("foreign injected header must fail closed");
+        assert!(error.to_string().contains("unapproved headers"));
+        assert!(!error.to_string().contains("foreign-cookie"));
     }
 
     #[test]
@@ -3876,7 +4328,8 @@ mod tests {
 
         let (config, _) = codex_config();
         let client = SamplingClient::new(config).unwrap();
-        let message = client.provider_error_message(REFLECTED_BODY);
+        let message =
+            client.provider_error_message(reqwest::StatusCode::BAD_REQUEST, REFLECTED_BODY);
         if message != "ChatGPT Codex request rejected" {
             panic!("provider error diagnostics exposed unexpected detail");
         }
@@ -3884,13 +4337,14 @@ mod tests {
         assert!(!message.contains(ACCOUNT_MARKER));
 
         let encrypted = br#"{"error":{"code":"encrypted_content"}}"#;
-        if client.provider_error_message(encrypted)
+        if client.provider_error_message(reqwest::StatusCode::BAD_REQUEST, encrypted)
             != "ChatGPT Codex request rejected (encrypted_content)"
         {
             panic!("provider encrypted-content diagnostics exposed unexpected detail");
         }
 
-        let usage_message = client.provider_error_message(USAGE_BODY);
+        let usage_message =
+            client.provider_error_message(reqwest::StatusCode::TOO_MANY_REQUESTS, USAGE_BODY);
         if usage_message != "ChatGPT Codex request rejected (usage limit reached)" {
             panic!("provider usage-limit diagnostics exposed unexpected detail");
         }

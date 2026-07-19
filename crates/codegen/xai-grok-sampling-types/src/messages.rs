@@ -119,8 +119,24 @@ pub enum ContentBlock {
     },
     Thinking {
         thinking: String,
-        signature: String,
+        /// Kimi-compatible Messages streams may omit the signature at block
+        /// start and either deliver it later as a `signature_delta` or never
+        /// deliver one. Preserve that distinction on replay: an unsigned
+        /// thinking block must omit the field rather than send `signature: ""`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
+    /// Anthropic-compatible providers may return encrypted reasoning without
+    /// exposing its plaintext. It is normalized to a reasoning item by the
+    /// stream layer and replayed through a signed `thinking` block.
+    RedactedThinking {
+        data: String,
+    },
+    /// Forward-compatible assistant block that this client does not interpret.
+    /// Unknown blocks are ignored by the stream projection instead of aborting
+    /// an otherwise valid response after content has already been emitted.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,6 +282,9 @@ pub enum MessageStreamEvent {
     Error {
         error: StreamError,
     },
+    /// Forward-compatible liveness event with no known projection.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,10 +324,21 @@ pub struct MessageDeltaUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamDelta {
-    TextDelta { text: String },
-    InputJsonDelta { partial_json: String },
-    ThinkingDelta { thinking: String },
-    SignatureDelta { signature: String },
+    TextDelta {
+        text: String,
+    },
+    InputJsonDelta {
+        partial_json: String,
+    },
+    ThinkingDelta {
+        thinking: String,
+    },
+    SignatureDelta {
+        signature: String,
+    },
+    /// Forward-compatible delta with no known projection.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +351,70 @@ pub struct StreamError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thinking_block_start_without_signature_deserializes_as_unsigned() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+        )
+        .expect("signature-less thinking block must deserialize");
+
+        match event {
+            MessageStreamEvent::ContentBlockStart {
+                content_block:
+                    ContentBlock::Thinking {
+                        thinking,
+                        signature,
+                    },
+                ..
+            } => {
+                assert_eq!(thinking, "");
+                assert_eq!(signature, None);
+            }
+            other => panic!("expected unsigned thinking block start, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_content_block_deserializes_without_aborting_the_stream() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"future_block","private_field":"ignored"}}"#,
+        )
+        .expect("unknown content block must deserialize");
+
+        assert!(matches!(
+            event,
+            MessageStreamEvent::ContentBlockStart {
+                content_block: ContentBlock::Unknown,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn unknown_stream_event_deserializes_without_aborting_the_stream() {
+        let event: MessageStreamEvent =
+            serde_json::from_str(r#"{"type":"future_event","private_field":"ignored"}"#)
+                .expect("unknown stream event must deserialize");
+
+        assert!(matches!(event, MessageStreamEvent::Unknown));
+    }
+
+    #[test]
+    fn unknown_content_delta_deserializes_without_aborting_the_stream() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"future_delta","private_field":"ignored"}}"#,
+        )
+        .expect("unknown content delta must deserialize");
+
+        assert!(matches!(
+            event,
+            MessageStreamEvent::ContentBlockDelta {
+                delta: StreamDelta::Unknown,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn stop_reason_deserializes_all_known_values_and_catches_unknown() {

@@ -997,6 +997,7 @@ impl ToolRegistryBuilder {
             resources.insert(auth_provider);
         }
         let is_codex_subscription = ctx.web_search_config.is_codex_subscription();
+        let is_kimi_code = ctx.web_search_config.is_kimi_code();
         if let Ok(client) = crate::implementations::web_search::client::WebSearchClient::new(
             &ctx.web_search_config,
             ctx.api_key_provider.clone(),
@@ -1037,11 +1038,26 @@ impl ToolRegistryBuilder {
         }
         if let Some(params) = ctx
             .web_fetch_config
-            .params_for_codex_subscription(is_codex_subscription)
+            .params_for_codex_subscription(is_codex_subscription || is_kimi_code)
         {
             match crate::implementations::grok_build::web_fetch::WebFetchClient::new(params) {
                 Ok(client) => {
-                    resources.insert(client);
+                    let client = if is_kimi_code {
+                        match ctx.api_key_provider.clone() {
+                            Some(provider) => client.with_kimi_hosted_fetch(provider),
+                            None => Err(
+                                crate::implementations::grok_build::web_fetch::WebFetchError::HostedAuthentication,
+                            ),
+                        }
+                    } else {
+                        Ok(client)
+                    };
+                    match client {
+                        Ok(client) => resources.insert(client),
+                        Err(error) => {
+                            tracing::warn!("Failed to create provider web-fetch client: {error}");
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("Failed to create WebFetchClient: {e}");

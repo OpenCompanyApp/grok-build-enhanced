@@ -712,11 +712,11 @@ impl SessionActor {
                     context_window,
                 },
             );
-            let is_codex = self
+            let provider = self
                 .chat_state_handle
                 .get_sampling_config()
                 .await
-                .is_some_and(|config| config.provider.is_openai_codex());
+                .map(|config| config.provider);
             let message = match reason {
                 SuppressReason::CreditBlock => {
                     "usage limit reached. Check /usage or wait for the displayed reset, then run /compact."
@@ -724,8 +724,15 @@ impl SessionActor {
                 SuppressReason::RateLimit => {
                     "temporarily rate limited. Automatic compaction will retry in about a minute; /compact retries now."
                 }
-                SuppressReason::Auth if is_codex => {
+                SuppressReason::Auth
+                    if provider.is_some_and(|provider| provider.is_openai_codex()) =>
+                {
                     "Codex authentication failed. Run `grok login --provider openai-codex`, then /compact."
+                }
+                SuppressReason::Auth
+                    if provider.is_some_and(|provider| provider.is_kimi_code()) =>
+                {
+                    "Kimi Code authentication failed. Run `grok login --provider kimi-code`, then /compact."
                 }
                 SuppressReason::Auth => {
                     "authentication failed. Re-authenticate, then run /compact."

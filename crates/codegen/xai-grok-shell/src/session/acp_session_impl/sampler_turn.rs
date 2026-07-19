@@ -302,7 +302,8 @@ impl SessionActor {
         let model_facts = self.model_auth_facts(cfg.model.as_str());
         let is_xai = cfg.provider == xai_grok_sampling_types::ProviderId::Xai;
         let stored_credentials_match_provider = match cfg.provider {
-            xai_grok_sampling_types::ProviderId::OpenAiCodex => true,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex
+            | xai_grok_sampling_types::ProviderId::KimiCode => true,
             xai_grok_sampling_types::ProviderId::Custom => {
                 creds.provider == Some(xai_grok_sampling_types::ProviderId::Custom)
             }
@@ -424,6 +425,9 @@ impl SessionActor {
             xai_grok_sampling_types::ProviderId::OpenAiCodex => {
                 xai_grok_sampling_types::CredentialSourceId::OpenAiCodexSubscription
             }
+            xai_grok_sampling_types::ProviderId::KimiCode => {
+                xai_grok_sampling_types::CredentialSourceId::KimiCodeApiKey
+            }
             xai_grok_sampling_types::ProviderId::Custom if custom_owns_key => {
                 xai_grok_sampling_types::CredentialSourceId::StaticApiKey
             }
@@ -447,7 +451,8 @@ impl SessionActor {
             }
         };
         let request_api_key = match cfg.provider {
-            xai_grok_sampling_types::ProviderId::OpenAiCodex => None,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex
+            | xai_grok_sampling_types::ProviderId::KimiCode => None,
             xai_grok_sampling_types::ProviderId::Custom if custom_owns_key => creds.api_key.clone(),
             xai_grok_sampling_types::ProviderId::Custom => None,
             xai_grok_sampling_types::ProviderId::Xai if stored_credentials_match_provider => {
@@ -515,7 +520,7 @@ impl SessionActor {
         let bound_runtime = crate::session::provider::bind_provider_runtime(full_config, None)
             .await
             .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
-        if is_codex
+        if (is_codex || cfg.provider.is_kimi_code())
             && state_cfg.credential_binding != bound_runtime.sampler_config.credential_binding
         {
             state_cfg.credential_binding = bound_runtime.sampler_config.credential_binding.clone();
@@ -697,10 +702,10 @@ impl SessionActor {
         let Some(mut cfg) = self.resolve_aux_sampler_config(slug).await else {
             return Ok(None);
         };
-        // A Codex auxiliary route inside a Codex session remains pinned to the
+        // A subscription-provider auxiliary route remains pinned to the
         // restored session record. Catalog resolution must not silently adopt
-        // a process-current account.
-        crate::session::provider::pin_codex_candidate_to_active_record(
+        // a process-current account or Kimi API-key record.
+        crate::session::provider::pin_provider_candidate_to_active_record(
             &mut cfg,
             active_session_config.provider,
             active_session_config.credential_binding.as_ref(),
@@ -964,17 +969,17 @@ impl SessionActor {
             .data(detailed_message);
             return Err(acp_err);
         }
-        if matches!(error.kind, SamplingErrorKind::Auth)
-            && request_provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
-        {
+        let has_provider_owned_auth =
+            request_provider.is_openai_codex() || request_provider.is_kimi_code();
+        if matches!(error.kind, SamplingErrorKind::Auth) && has_provider_owned_auth {
             tracing::warn!(
                 session_id = %self.session_info.id.0,
-                provider = "openai_codex",
+                provider = %request_provider,
                 "provider auth recovery exhausted; refusing xAI auth fallback"
             );
         }
         let auth_recovery_eligible = matches!(error.kind, SamplingErrorKind::Auth)
-            && request_provider != xai_grok_sampling_types::ProviderId::OpenAiCodex
+            && !has_provider_owned_auth
             && {
                 let (model_id, base_url) = self
                     .chat_state_handle
@@ -1160,11 +1165,17 @@ impl SessionActor {
                 ));
                 msg.push_str("\n  Switch models with /model or start a new session.");
             }
-            if is_auth_401 && request_provider.is_openai_codex() {
-                msg.push_str(
-                    "\n\n  Re-authenticate: run `grok logout --provider openai-codex` then \
-                     `grok login --provider openai-codex`.",
-                );
+            if is_auth_401 {
+                if request_provider.is_openai_codex() {
+                    msg.push_str(
+                        "\n\n  Re-authenticate: run `grok logout --provider openai-codex` then \
+                         `grok login --provider openai-codex`.",
+                    );
+                } else if request_provider.is_kimi_code() {
+                    msg.push_str(
+                        "\n\n  Re-authenticate: run `grok login --provider kimi-code`.",
+                    );
+                }
             }
             msg
         } else {
@@ -1281,10 +1292,11 @@ impl SessionActor {
                     String::new(),
                 )
             });
-        // Codex refresh belongs exclusively to `CodexAuthManager`, which the
-        // session binder invokes after reconstructing the request config. Do
-        // not even evaluate the global xAI refresh gate for a Codex session.
-        if provider.is_openai_codex() {
+        // Subscription-provider refresh belongs exclusively to the provider
+        // binder, which runs after reconstructing the request config. Do not
+        // evaluate the global xAI or generic static-key refresh paths for a
+        // Codex or Kimi session.
+        if provider.is_openai_codex() || provider.is_kimi_code() {
             return;
         }
         if provider == xai_grok_sampling_types::ProviderId::Xai {

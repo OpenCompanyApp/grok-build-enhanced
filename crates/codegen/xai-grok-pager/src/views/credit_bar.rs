@@ -320,6 +320,65 @@ pub fn format_codex_usage_summary(
     lines.join("\n")
 }
 
+/// Format authoritative Kimi Code plan windows and optional Extra Usage wallet
+/// data. API-equivalent costs remain intentionally absent because Kimi's
+/// hosted-search pricing sources currently conflict.
+pub fn format_kimi_usage_summary(
+    usage: &xai_grok_shell::auth::kimi_code::KimiCodeUsageSnapshot,
+) -> String {
+    fn push_row(lines: &mut Vec<String>, row: &xai_grok_shell::auth::kimi_code::KimiCodeUsageRow) {
+        let amount = if row.limit > 0 {
+            format!(
+                "{} / {} ({:.0}% used)",
+                row.used,
+                row.limit,
+                (row.used.max(0) as f64 / row.limit as f64) * 100.0
+            )
+        } else {
+            format!("{} used", row.used)
+        };
+        let reset = row
+            .reset_hint
+            .as_deref()
+            .map(|hint| format!("; {hint}"))
+            .unwrap_or_default();
+        lines.push(format!("{}: {amount}{reset}", row.label));
+    }
+
+    let mut lines = vec!["Kimi Code plan usage".to_owned()];
+    if let Some(summary) = &usage.summary {
+        push_row(&mut lines, summary);
+    }
+    for limit in &usage.limits {
+        push_row(&mut lines, limit);
+    }
+    if usage.summary.is_none() && usage.limits.is_empty() {
+        lines.push("Plan windows: unavailable".to_owned());
+    }
+    if let Some(extra) = &usage.extra_usage {
+        lines.push(format!(
+            "Extra Usage balance: {} {:.2} / {:.2}",
+            extra.currency,
+            extra.balance_cents as f64 / 100.0,
+            extra.total_cents as f64 / 100.0,
+        ));
+        if extra.monthly_charge_limit_enabled {
+            lines.push(format!(
+                "Extra Usage monthly spend: {} {:.2} / {:.2}",
+                extra.currency,
+                extra.monthly_used_cents as f64 / 100.0,
+                extra.monthly_charge_limit_cents as f64 / 100.0,
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines.push(
+        "API-equivalent cost: unavailable; Kimi plan usage and hosted-tool fees are separate."
+            .to_owned(),
+    );
+    lines.join("\n")
+}
+
 /// Low-balance ($10) and pay-as-you-go critical ($5) warning thresholds, in cents.
 const LOW_BALANCE_CENTS: i64 = 1000;
 const PAY_AS_YOU_GO_CRITICAL_CENTS: i64 = 500;
@@ -549,6 +608,43 @@ mod tests {
         assert!(summary.contains("Standard API comparison: $6.200000"));
         assert!(summary.contains("Pricing basis gpt-5.6-sol"));
         assert!(!summary.contains("Subscription spend: $"));
+    }
+
+    #[test]
+    fn kimi_summary_reports_plan_windows_and_extra_usage_without_cost_guessing() {
+        use xai_grok_shell::auth::kimi_code::{
+            KimiCodeExtraUsage, KimiCodeUsageRow, KimiCodeUsageSnapshot,
+        };
+        let usage = KimiCodeUsageSnapshot {
+            summary: Some(KimiCodeUsageRow {
+                label: "Weekly limit".to_owned(),
+                used: 420,
+                limit: 1000,
+                reset_hint: Some("resets in 3600s".to_owned()),
+            }),
+            limits: vec![KimiCodeUsageRow {
+                label: "5h limit".to_owned(),
+                used: 90,
+                limit: 100,
+                reset_hint: None,
+            }],
+            extra_usage: Some(KimiCodeExtraUsage {
+                balance_cents: 500,
+                total_cents: 1000,
+                monthly_charge_limit_enabled: true,
+                monthly_charge_limit_cents: 5000,
+                monthly_used_cents: 1250,
+                currency: "USD".to_owned(),
+            }),
+        };
+
+        let summary = format_kimi_usage_summary(&usage);
+        assert!(summary.contains("Kimi Code plan usage"));
+        assert!(summary.contains("Weekly limit: 420 / 1000 (42% used); resets in 3600s"));
+        assert!(summary.contains("5h limit: 90 / 100 (90% used)"));
+        assert!(summary.contains("Extra Usage balance: USD 5.00 / 10.00"));
+        assert!(summary.contains("Extra Usage monthly spend: USD 12.50 / 50.00"));
+        assert!(summary.contains("API-equivalent cost: unavailable"));
     }
 
     #[test]
