@@ -127,6 +127,7 @@ impl ChatStateActor {
         // Step 4: Assemble request
         ConversationRequest {
             items,
+            image_input_capability: Default::default(),
             tools: tool_definitions,
             hosted_tools: vec![],
             tool_choice: None,

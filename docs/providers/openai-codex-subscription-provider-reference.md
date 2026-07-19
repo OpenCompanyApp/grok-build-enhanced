@@ -300,11 +300,14 @@ modalities, reasoning presets, default reasoning, service tiers, Responses Lite
 support, tool mode, search capability, and multi-agent metadata. Only models
 whose service metadata says they are visible in the picker are presented.
 
-The catalog adapter stores `supports_image_input`, but the current attachment
-pipeline does **not** consult that flag before adding user images to a Codex
-turn. It is descriptive metadata today, not a client-side entitlement gate;
-provider rejection remains possible for a selected model that cannot accept an
-image.
+The catalog adapter maps `input_modalities` into `supports_image_input`, and
+the Responses request path consults that provider-qualified flag on every turn.
+For a Codex model that does not advertise image input (including an unknown
+model absent from the authenticated catalog), the client normalizes only the
+request copy: typed image data in current input, resumed history, interjections,
+and tool results is replaced or omitted with one fixed bounded marker per item.
+Persisted Grok history remains unchanged, so switching to an image-capable
+model can re-evaluate and restore the authoritative image context.
 
 There is no hardcoded entitlement fallback. A successful empty catalog is
 authoritative. Network or authentication failure is distinct from “this
@@ -643,10 +646,12 @@ intentional.
 Image input and image creation are separate capabilities:
 
 - The authenticated catalog records whether a coding model advertises `image`
-  input, but the current attachment pipeline does not enforce that flag before
-  forwarding user images. Treat it as descriptive metadata and verify selected
-  models live; unsupported input can still reach and be rejected by the
-  provider.
+  input. Immediately before Responses serialization, the client applies that
+  provider-qualified capability to a cloned prompt. Supported models preserve
+  images; unsupported or unknown Codex models receive a fixed bounded omission
+  marker instead of typed image data across current input, resumed history,
+  interjections, and tool results. Provider/model switching re-evaluates the
+  catalog without mutating persisted conversation history.
 - `image_gen` and `image_edit` are independent, separately feature-gated tools
   using the pinned `gpt-image-2` backend. Their availability does not follow
   the selected coding model's image-input metadata.

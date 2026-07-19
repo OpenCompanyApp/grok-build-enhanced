@@ -553,11 +553,31 @@ impl From<ToolDefinition> for ToolSpec {
 // Conversation Request
 // ============================================================================
 
+/// Stable, data-independent marker used when a selected coding model cannot
+/// accept image input. The request-copy normalizer emits at most one marker per
+/// user/tool-result item, regardless of image count or encoded payload size.
+pub const UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER: &str =
+    "[Image omitted because the active model does not support image input.]";
+
+/// Request-local result of consulting a provider's authoritative model
+/// catalog. `Unspecified` deliberately preserves legacy behavior for providers
+/// that do not opt into request-time capability enforcement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ImageInputCapability {
+    #[default]
+    Unspecified,
+    Supported,
+    Unsupported,
+}
+
 /// A complete conversation request that can be sent to either API.
 #[derive(Debug, Clone, Default)]
 pub struct ConversationRequest {
     /// The conversation items (messages)
     pub items: Vec<ConversationItem>,
+    /// Provider/model image-input capability resolved for this request. This is
+    /// process-local transport policy, not persisted conversation state.
+    pub image_input_capability: ImageInputCapability,
     /// Available tools (client-side, sent as Function definitions)
     pub tools: Vec<ToolSpec>,
     /// Backend-hosted tools (sent as native Responses API tool types).
@@ -591,6 +611,77 @@ pub struct ConversationRequest {
 }
 
 impl ConversationRequest {
+    /// Clone the authoritative prompt for Responses serialization, applying
+    /// request-local image capability policy only to that clone.
+    ///
+    /// Unsupported routes retain ordinary text and item ordering while:
+    /// - replacing one or more images in each user item with one stable marker;
+    /// - clearing tool-result image blocks and appending the same marker once.
+    ///
+    /// The fixed marker and one-per-item rule keep replacement text bounded and
+    /// avoid reflecting model ids, image URLs, paths, or encoded bytes.
+    pub fn clone_for_responses_serialization(&self) -> Self {
+        let mut prompt = self.clone();
+        if prompt.image_input_capability == ImageInputCapability::Unsupported {
+            prompt.replace_unsupported_image_inputs();
+        }
+        prompt
+    }
+
+    fn replace_unsupported_image_inputs(&mut self) -> usize {
+        let placeholder = || ContentPart::Text {
+            text: Arc::<str>::from(UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER),
+        };
+        let mut replaced = 0usize;
+
+        for item in &mut self.items {
+            match item {
+                ConversationItem::User(user) => {
+                    let mut normalized = Vec::with_capacity(user.content.len());
+                    let mut inserted_placeholder = false;
+                    for part in std::mem::take(&mut user.content) {
+                        if matches!(part, ContentPart::Image { .. }) {
+                            replaced += 1;
+                            if !inserted_placeholder {
+                                normalized.push(placeholder());
+                                inserted_placeholder = true;
+                            }
+                        } else {
+                            normalized.push(part);
+                        }
+                    }
+                    user.content = normalized;
+                }
+                ConversationItem::ToolResult(tool_result) => {
+                    let image_count = tool_result
+                        .images
+                        .iter()
+                        .filter(|part| matches!(part, ContentPart::Image { .. }))
+                        .count();
+                    if image_count == 0 {
+                        continue;
+                    }
+                    replaced += image_count;
+                    tool_result.images.clear();
+                    if tool_result.content.is_empty() {
+                        tool_result.content = Arc::<str>::from(UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER);
+                    } else if !tool_result
+                        .content
+                        .ends_with(UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER)
+                    {
+                        tool_result.content = Arc::<str>::from(format!(
+                            "{}\n{}",
+                            tool_result.content, UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        replaced
+    }
+
     /// Strip all inline image data from the conversation to reduce payload size.
     ///
     /// Replaces `ContentPart::Image` entries with a text placeholder so the
@@ -7893,6 +7984,177 @@ mod tests {
 
         let stripped = req.strip_images();
         assert_eq!(stripped, 3);
+    }
+
+    // ── Request-time image capability tests ───────────────────────────────────
+
+    fn inline_image_count(request: &ConversationRequest) -> usize {
+        request
+            .items
+            .iter()
+            .map(|item| match item {
+                ConversationItem::User(user) => user
+                    .content
+                    .iter()
+                    .filter(|part| matches!(part, ContentPart::Image { .. }))
+                    .count(),
+                ConversationItem::ToolResult(tool_result) => tool_result
+                    .images
+                    .iter()
+                    .filter(|part| matches!(part, ContentPart::Image { .. }))
+                    .count(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    fn user_placeholder_count(item: &ConversationItem) -> usize {
+        let ConversationItem::User(user) = item else {
+            return 0;
+        };
+        user.content
+            .iter()
+            .filter(|part| {
+                matches!(part, ContentPart::Text { text } if text.as_ref() == UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER)
+            })
+            .count()
+    }
+
+    #[test]
+    fn unsupported_responses_clone_normalizes_initial_and_resumed_images_only_on_wire_copy() {
+        let mut resumed = ConversationItem::user("resumed prompt");
+        resumed.set_prompt_index(3);
+        resumed.add_image("data:image/png;base64,resumed-a".to_owned());
+        resumed.add_image("data:image/png;base64,resumed-b".to_owned());
+
+        let mut initial = ConversationItem::user("current prompt");
+        initial.set_prompt_index(9);
+        initial.add_image("data:image/jpeg;base64,CURRENT_IMAGE_DATA_SENTINEL".to_owned());
+
+        let mut authoritative = ConversationRequest::from_items(vec![
+            resumed,
+            ConversationItem::assistant("prior answer"),
+            initial,
+        ]);
+        authoritative.image_input_capability = ImageInputCapability::Unsupported;
+
+        let serialization_prompt = authoritative.clone_for_responses_serialization();
+
+        assert_eq!(inline_image_count(&authoritative), 3);
+        assert_eq!(inline_image_count(&serialization_prompt), 0);
+        assert_eq!(user_placeholder_count(&serialization_prompt.items[0]), 1);
+        assert_eq!(user_placeholder_count(&serialization_prompt.items[2]), 1);
+
+        let responses: rs::CreateResponse = (&serialization_prompt).into();
+        let body = serde_json::to_string(&responses).expect("serialize Responses prompt");
+        assert!(!body.contains("resumed-a"));
+        assert!(!body.contains("resumed-b"));
+        assert!(!body.contains("CURRENT_IMAGE_DATA_SENTINEL"));
+        assert_eq!(body.matches(UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER).count(), 2);
+    }
+
+    #[test]
+    fn unsupported_responses_clone_normalizes_interjection_and_tool_output_images() {
+        let mut interjection = ConversationItem::interjection("please also inspect this");
+        interjection.add_image("data:image/png;base64,interjection".to_owned());
+        let tool_result = ConversationItem::tool_result_with_images(
+            "call-1",
+            "Read image file: output.png",
+            vec![
+                ContentPart::Image {
+                    url: "data:image/png;base64,tool-a".into(),
+                },
+                ContentPart::Image {
+                    url: "data:image/png;base64,tool-b".into(),
+                },
+            ],
+        );
+        let mut authoritative = ConversationRequest::from_items(vec![interjection, tool_result]);
+        authoritative.image_input_capability = ImageInputCapability::Unsupported;
+
+        let serialization_prompt = authoritative.clone_for_responses_serialization();
+
+        assert_eq!(inline_image_count(&authoritative), 3);
+        assert_eq!(inline_image_count(&serialization_prompt), 0);
+        assert_eq!(user_placeholder_count(&serialization_prompt.items[0]), 1);
+        assert_matches!(&serialization_prompt.items[0], ConversationItem::User(user) => {
+            assert_eq!(user.synthetic_reason, Some(SyntheticReason::Interjection));
+        });
+        assert_matches!(&serialization_prompt.items[1], ConversationItem::ToolResult(tool) => {
+            assert!(tool.images.is_empty());
+            assert_eq!(
+                tool.content.as_ref(),
+                format!("Read image file: output.png\n{UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER}")
+            );
+            assert_eq!(
+                tool.content.matches(UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER).count(),
+                1
+            );
+        });
+
+        let responses: rs::CreateResponse = (&serialization_prompt).into();
+        let body = serde_json::to_string(&responses).expect("serialize Responses prompt");
+        for image_data in ["interjection", "tool-a", "tool-b"] {
+            assert!(!body.contains(image_data));
+        }
+        assert_eq!(body.matches(UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER).count(), 2);
+    }
+
+    #[test]
+    fn supported_and_unspecified_responses_prompts_preserve_images() {
+        for capability in [
+            ImageInputCapability::Supported,
+            ImageInputCapability::Unspecified,
+        ] {
+            let mut user = ConversationItem::user("inspect");
+            user.add_image("data:image/png;base64,user-image".to_owned());
+            let tool = ConversationItem::tool_result_with_images(
+                "call-1",
+                "tool image",
+                vec![ContentPart::Image {
+                    url: "data:image/png;base64,tool-image".into(),
+                }],
+            );
+            let mut authoritative = ConversationRequest::from_items(vec![user, tool]);
+            authoritative.image_input_capability = capability;
+
+            let serialization_prompt = authoritative.clone_for_responses_serialization();
+            assert_eq!(inline_image_count(&serialization_prompt), 2);
+            let responses: rs::CreateResponse = (&serialization_prompt).into();
+            let body = serde_json::to_string(&responses).expect("serialize Responses prompt");
+            assert!(body.contains("user-image"));
+            assert!(body.contains("tool-image"));
+            assert!(!body.contains(UNSUPPORTED_IMAGE_INPUT_PLACEHOLDER));
+        }
+    }
+
+    #[test]
+    fn image_input_normalization_does_not_gate_generation_or_edit_tools() {
+        let mut request =
+            ConversationRequest::from_items(vec![ConversationItem::user_with_parts(vec![
+                ContentPart::Image {
+                    url: "data:image/png;base64,input".into(),
+                },
+            ])]);
+        request.image_input_capability = ImageInputCapability::Unsupported;
+        request.tools = vec![
+            ToolSpec {
+                name: "image_gen".to_owned(),
+                description: Some("generate".to_owned()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolSpec {
+                name: "image_edit".to_owned(),
+                description: Some("edit".to_owned()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+
+        let serialization_prompt = request.clone_for_responses_serialization();
+        assert_eq!(inline_image_count(&serialization_prompt), 0);
+        assert_eq!(serialization_prompt.tools.len(), 2);
+        assert_eq!(serialization_prompt.tools[0].name, "image_gen");
+        assert_eq!(serialization_prompt.tools[1].name, "image_edit");
     }
 
     // ── Tool result with images tests ──────────────────────────────────────────

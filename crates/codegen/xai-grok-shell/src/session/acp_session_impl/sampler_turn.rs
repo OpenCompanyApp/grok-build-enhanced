@@ -1320,10 +1320,19 @@ impl SessionActor {
     ///    `send_xai_notification(RetryState::Failed)`.
     pub(crate) async fn run_turn_via_sampler(
         self: &Arc<Self>,
-        request: ConversationRequest,
+        mut request: ConversationRequest,
         allow_codex_auth_recovery: bool,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
         self.prepare_sampler_for_turn().await?;
+        // Resolve against the active provider/model and the live authenticated
+        // catalog immediately before handing this request-copy to Responses.
+        // Every loop iteration (including after a model/provider switch) gets a
+        // fresh decision; the chat-state conversation is never rewritten.
+        if let Some(sampling) = self.chat_state_handle.get_sampling_config().await {
+            request.image_input_capability = self
+                .models_manager
+                .codex_image_input_capability_for_request(sampling.provider, &sampling.model);
+        }
         let stream_drained_rx = {
             let (tx, rx) = tokio::sync::oneshot::channel();
             *self.turn_stream_drained.lock() = Some(tx);

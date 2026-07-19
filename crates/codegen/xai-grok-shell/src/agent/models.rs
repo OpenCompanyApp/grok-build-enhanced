@@ -1028,6 +1028,29 @@ impl ModelsManager {
             .is_some_and(|entry| entry.info.supports_image_input)
     }
 
+    /// Resolve request-local image input policy from the authenticated Codex
+    /// catalog. Other providers retain their established attachment behavior;
+    /// they do not inherit Codex catalog enforcement or its fail-closed lookup.
+    pub fn codex_image_input_capability_for_request(
+        &self,
+        provider: ProviderId,
+        model_id: &str,
+    ) -> xai_grok_sampling_types::ImageInputCapability {
+        use xai_grok_sampling_types::ImageInputCapability;
+
+        if !provider.is_openai_codex() {
+            return ImageInputCapability::Unspecified;
+        }
+        if self.model_supports_image_input_for_provider(provider, model_id) {
+            ImageInputCapability::Supported
+        } else {
+            // Missing/stale cross-provider entries cannot opt a Codex request
+            // into image input. An authoritative refreshed catalog can do so on
+            // the next request without rewriting persisted conversation state.
+            ImageInputCapability::Unsupported
+        }
+    }
+
     #[cfg(test)]
     fn prefetched(&self) -> Option<IndexMap<String, ModelEntry>> {
         self.inner.prefetched.read().clone()
@@ -3416,6 +3439,85 @@ mod tests {
             Arc::new(AuthManager::new(&tmp, GrokComConfig::default())),
             cfg,
         )
+    }
+
+    #[test]
+    fn codex_image_input_capability_tracks_catalog_modalities_on_every_route_selection() {
+        use crate::remote::{CodexCatalogModel, CodexModelCatalog};
+        use xai_grok_sampling_types::ImageInputCapability;
+
+        let catalog = map_openai_codex_catalog(CodexModelCatalog {
+            models: vec![
+                CodexCatalogModel {
+                    id: "openai-codex/vision-coding".to_owned(),
+                    slug: "vision-coding".to_owned(),
+                    display_name: "Vision Coding".to_owned(),
+                    visibility: Some("list".to_owned()),
+                    input_modalities: vec!["text".to_owned(), "image".to_owned()],
+                    ..Default::default()
+                },
+                CodexCatalogModel {
+                    id: "openai-codex/text-coding".to_owned(),
+                    slug: "text-coding".to_owned(),
+                    display_name: "Text Coding".to_owned(),
+                    visibility: Some("list".to_owned()),
+                    input_modalities: vec!["text".to_owned()],
+                    ..Default::default()
+                },
+            ],
+        });
+        assert!(
+            catalog["openai-codex/vision-coding"]
+                .info
+                .supports_image_input
+        );
+        assert!(
+            !catalog["openai-codex/text-coding"]
+                .info
+                .supports_image_input
+        );
+
+        let manager = manager_with_catalog(catalog);
+        let selections = [
+            (
+                ProviderId::OpenAiCodex,
+                "vision-coding",
+                ImageInputCapability::Supported,
+            ),
+            (
+                ProviderId::OpenAiCodex,
+                "text-coding",
+                ImageInputCapability::Unsupported,
+            ),
+            // Switching away from Codex must preserve the other provider's
+            // established attachment behavior, even for the same model slug.
+            (
+                ProviderId::Xai,
+                "text-coding",
+                ImageInputCapability::Unspecified,
+            ),
+            // Switching back re-reads the provider-qualified catalog entry.
+            (
+                ProviderId::OpenAiCodex,
+                "vision-coding",
+                ImageInputCapability::Supported,
+            ),
+            // Unknown Codex models fail closed until authenticated discovery
+            // installs an authoritative entry.
+            (
+                ProviderId::OpenAiCodex,
+                "not-entitled",
+                ImageInputCapability::Unsupported,
+            ),
+        ];
+
+        for (provider, model, expected) in selections {
+            assert_eq!(
+                manager.codex_image_input_capability_for_request(provider, model),
+                expected,
+                "unexpected request-time image capability for {provider}/{model}"
+            );
+        }
     }
 
     #[test]

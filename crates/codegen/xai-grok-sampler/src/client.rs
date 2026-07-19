@@ -2771,7 +2771,12 @@ impl SamplingClient {
         // (e.g., x_search). These are injected as raw JSON after serialization.
         let extra_tools = xai_grok_sampling_types::extra_raw_tools(&request.hosted_tools);
 
-        let responses_request: rs::CreateResponse = (&request).into();
+        // The shell resolves the authenticated provider/model capability for
+        // each turn. Normalize only this cheap Arc-backed prompt clone at the
+        // final Responses conversion seam so persisted Grok history remains
+        // authoritative and can be re-evaluated after a provider/model switch.
+        let serialization_prompt = request.clone_for_responses_serialization();
+        let responses_request: rs::CreateResponse = (&serialization_prompt).into();
 
         let mut wrapper = CreateResponseWrapper::new(responses_request);
         wrapper.x_grok_conv_id = x_grok_conv_id;
@@ -2807,7 +2812,10 @@ impl SamplingClient {
         let x_grok_agent_id = request.x_grok_agent_id.clone();
         let wire_reasoning_effort = request.reasoning_effort;
 
-        let responses_request: rs::CreateResponse = (&request).into();
+        // Keep non-streaming Responses on the same request-copy capability
+        // contract as the interactive streaming path.
+        let serialization_prompt = request.clone_for_responses_serialization();
+        let responses_request: rs::CreateResponse = (&serialization_prompt).into();
 
         let mut wrapper = CreateResponseWrapper::new(responses_request);
         wrapper.x_grok_conv_id = x_grok_conv_id;

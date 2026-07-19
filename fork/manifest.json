@@ -520,6 +520,32 @@
       ]
     },
     {
+      "id": "codex-coding-model-image-input",
+      "description": "Request-time authenticated Codex coding-model image-input enforcement over cloned Responses prompts, with bounded placeholders and provider-switch re-evaluation independent from hosted image tools.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex"
+      ],
+      "paths": [
+        "crates/codegen/xai-chat-state/src/actor/request_builder.rs",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "docs/providers/openai-codex-subscription-provider-reference.md"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES"
+      ]
+    },
+    {
       "id": "codex-standalone-tools",
       "description": "Codex-authenticated read, search, fetch, image, and provider-key tool adapters.",
       "source_ids": [
