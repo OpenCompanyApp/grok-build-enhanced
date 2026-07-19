@@ -60,8 +60,8 @@ pub async fn fetch_models(
         .await
         .map_err(|_| ZaiCodingPlanAuthError::InvalidResponse)?;
     let status = response.status();
-    let bytes = super::transport::read_limited_body(response, ZAI_CODING_PLAN_MAX_RESPONSE_BYTES)
-        .await?;
+    let bytes =
+        super::transport::read_limited_body(response, ZAI_CODING_PLAN_MAX_RESPONSE_BYTES).await?;
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|_| ZaiCodingPlanAuthError::InvalidResponse)?;
     if let Some(code) = super::transport::business_code(&value) {
@@ -192,8 +192,7 @@ fn load_cached_model_entries_for(
     let Ok(metadata) = std::fs::symlink_metadata(&path) else {
         return IndexMap::new();
     };
-    if !metadata.file_type().is_file()
-        || metadata.len() > ZAI_CODING_PLAN_MAX_RESPONSE_BYTES as u64
+    if !metadata.file_type().is_file() || metadata.len() > ZAI_CODING_PLAN_MAX_RESPONSE_BYTES as u64
     {
         return IndexMap::new();
     }

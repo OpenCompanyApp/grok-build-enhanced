@@ -1270,6 +1270,38 @@ mod tests {
         ));
     }
     #[test]
+    fn zai_coding_plan_provider_parses_for_login_logout_and_models() {
+        let login = PagerArgs::try_parse_from(["grok", "login", "--provider", "zai-coding-plan"])
+            .expect("Z.AI Coding Plan login parses");
+        assert!(matches!(
+            login.command,
+            Some(Command::Login {
+                provider: AuthProviderArg::ZaiCodingPlan,
+                device_auth: false,
+                ..
+            })
+        ));
+
+        let logout = PagerArgs::try_parse_from(["grok", "logout", "--provider", "zai-coding-plan"])
+            .expect("Z.AI Coding Plan logout parses");
+        assert!(matches!(
+            logout.command,
+            Some(Command::Logout {
+                provider: AuthProviderArg::ZaiCodingPlan
+            })
+        ));
+
+        let models = PagerArgs::try_parse_from(["grok", "models", "--provider", "zai-coding-plan"])
+            .expect("Z.AI Coding Plan model listing parses");
+        assert!(matches!(
+            models.command,
+            Some(Command::Models {
+                provider: AuthProviderArg::ZaiCodingPlan
+            })
+        ));
+    }
+
+    #[test]
     fn positional_prompt_conflicts_with_headless_single() {
         let err = PagerArgs::try_parse_from(["grok", "-p", "headless", "interactive"])
             .expect_err("positional prompt + --single must conflict");

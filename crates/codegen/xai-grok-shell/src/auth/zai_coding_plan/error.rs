@@ -44,9 +44,7 @@ impl fmt::Debug for ZaiCodingPlanAuthError {
                 formatter.write_str("ZaiCodingPlanAuthError::InvalidCredential")
             }
             Self::LockTimeout => formatter.write_str("ZaiCodingPlanAuthError::LockTimeout"),
-            Self::InvalidResponse => {
-                formatter.write_str("ZaiCodingPlanAuthError::InvalidResponse")
-            }
+            Self::InvalidResponse => formatter.write_str("ZaiCodingPlanAuthError::InvalidResponse"),
             Self::EmptyCatalog => formatter.write_str("ZaiCodingPlanAuthError::EmptyCatalog"),
         }
     }

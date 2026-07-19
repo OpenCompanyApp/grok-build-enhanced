@@ -11,13 +11,13 @@ mod flow;
 mod jwt;
 pub mod kimi_code;
 pub(crate) mod manager;
-pub mod zai_coding_plan;
 mod model;
 pub mod oidc;
 pub(crate) mod recovery;
 pub(crate) mod refresh;
 mod storage;
 pub(crate) mod token_type;
+pub mod zai_coding_plan;
 pub(crate) use config::LEGACY_AUTH_SCOPE;
 pub use config::{
     ForceLoginTeam, GrokComConfig, OAuth2ProviderConfig, OidcAuthConfig, PreferredAuthMethod,

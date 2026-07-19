@@ -1168,6 +1168,7 @@ impl MvpAgent {
             model.info().provider,
             xai_grok_sampling_types::ProviderId::OpenAiCodex
                 | xai_grok_sampling_types::ProviderId::KimiCode
+                | xai_grok_sampling_types::ProviderId::ZaiCodingPlan
         ) {
             let cfg = self.cfg.borrow();
             let mut sampling = crate::agent::config::sampling_config_for_model(
@@ -3313,6 +3314,7 @@ impl MvpAgent {
         if self.auth_method_id.load().is_none()
             && !sampling_config.provider.is_openai_codex()
             && !sampling_config.provider.is_kimi_code()
+            && !sampling_config.provider.is_zai_coding_plan()
         {
             return Err(acp::Error::auth_required().data("no auth method id provided"));
         }
@@ -3399,8 +3401,10 @@ impl MvpAgent {
                 let mid = acp::ModelId::new(Arc::from(id.as_str()));
                 let codex_slug = id.strip_prefix("openai-codex/");
                 let kimi_slug = id.strip_prefix("kimi-code/");
+                let zai_slug = id.strip_prefix("zai-coding-plan/");
                 let strict_codex = codex_slug.is_some();
                 let strict_kimi = kimi_slug.is_some();
+                let strict_zai = zai_slug.is_some();
                 if codex_slug.is_some_and(|slug| slug.trim().is_empty()) {
                     return Err(acp::Error::invalid_params()
                         .data("agent profile Codex model id must include a model slug"));
@@ -3409,12 +3413,18 @@ impl MvpAgent {
                     return Err(acp::Error::invalid_params()
                         .data("agent profile Kimi model id must include a model slug"));
                 }
-                if strict_codex || strict_kimi {
+                if zai_slug.is_some_and(|slug| slug.trim().is_empty()) {
+                    return Err(acp::Error::invalid_params()
+                        .data("agent profile Z.AI Coding Plan model id must include a model slug"));
+                }
+                if strict_codex || strict_kimi || strict_zai {
                     // A provider-qualified profile pin is an explicit routing
                     // request. Authenticate provider-locally and never fall
                     // back to the process-wide xAI session model.
                     let provider = if strict_kimi {
                         xai_grok_sampling_types::ProviderId::KimiCode
+                    } else if strict_zai {
+                        xai_grok_sampling_types::ProviderId::ZaiCodingPlan
                     } else {
                         xai_grok_sampling_types::ProviderId::OpenAiCodex
                     };
@@ -3425,8 +3435,14 @@ impl MvpAgent {
                 }
                 match self.resolve_model_id(&mid) {
                     Ok(entry) => Some((mid, entry)),
-                    Err(_) if strict_codex || strict_kimi => {
-                        let provider = if strict_kimi { "Kimi" } else { "Codex" };
+                    Err(_) if strict_codex || strict_kimi || strict_zai => {
+                        let provider = if strict_kimi {
+                            "Kimi"
+                        } else if strict_zai {
+                            "Z.AI Coding Plan"
+                        } else {
+                            "Codex"
+                        };
                         return Err(acp::Error::invalid_params().data(format!(
                             "agent profile {provider} model `{id}` is not available to the authenticated account"
                         )));
@@ -3461,7 +3477,8 @@ impl MvpAgent {
                 origin_client.clone(),
             );
         if (sampling_config.provider.is_openai_codex()
-            || sampling_config.provider.is_kimi_code())
+            || sampling_config.provider.is_kimi_code()
+            || sampling_config.provider.is_zai_coding_plan())
             && let Some(binding) = restored_credential_binding
         {
             sampling_config.credential_binding = Some(binding);

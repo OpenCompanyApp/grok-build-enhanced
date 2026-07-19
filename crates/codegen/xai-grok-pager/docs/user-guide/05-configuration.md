@@ -34,10 +34,11 @@ service_tier = "fast"
 fast_mode = true
 ```
 
-This affects only supported Codex subscription models. `/fast on`, `/fast
-off`, and `/fast status` change or inspect the current session setting. Fast
-mode does not change xAI requests, and ChatGPT credit multipliers do not apply
-to API-key billing.
+This affects only supported Codex subscription models. Fast mode is off when
+`service_tier` is omitted; `[features] fast_mode = true` only makes the controls
+available and does not opt you in. `/fast on`, `/fast off`, and `/fast status`
+change or inspect the current session setting. Fast mode does not change xAI
+requests, and ChatGPT credit multipliers do not apply to API-key billing.
 
 ### General Settings
 

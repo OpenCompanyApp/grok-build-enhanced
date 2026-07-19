@@ -681,6 +681,18 @@ impl ToolRegistryBuilder {
             grok_build::web_search::WebSearchParams,
         >();
         b.register_with_params::<grok_build::WebFetchTool, grok_build::web_fetch::WebFetchParams>();
+        b.register::<grok_build::ZreadSearchDocTool>();
+        b.register::<grok_build::ZreadGetRepoStructureTool>();
+        b.register::<grok_build::ZreadReadFileTool>();
+        b.register::<grok_build::ZaiVisionDoctorTool>();
+        b.register::<grok_build::ZaiVisionUiToArtifactTool>();
+        b.register::<grok_build::ZaiVisionExtractTextTool>();
+        b.register::<grok_build::ZaiVisionDiagnoseErrorTool>();
+        b.register::<grok_build::ZaiVisionUnderstandDiagramTool>();
+        b.register::<grok_build::ZaiVisionAnalyzeDataTool>();
+        b.register::<grok_build::ZaiVisionUiDiffTool>();
+        b.register::<grok_build::ZaiVisionAnalyzeImageTool>();
+        b.register::<grok_build::ZaiVisionAnalyzeVideoTool>();
         b.register::<grok_build::LspTool>();
         b.register::<grok_build::ImageGenTool>();
         b.register::<grok_build::ImageEditTool>();
@@ -998,12 +1010,42 @@ impl ToolRegistryBuilder {
         }
         let is_codex_subscription = ctx.web_search_config.is_codex_subscription();
         let is_kimi_code = ctx.web_search_config.is_kimi_code();
+        let is_zai_coding_plan = ctx.api_key_provider.as_ref().is_some_and(|provider| {
+            provider.request_auth_provider_id() == Some(crate::types::ZAI_CODING_PLAN_PROVIDER_ID)
+        });
         if let Ok(client) = crate::implementations::web_search::client::WebSearchClient::new(
             &ctx.web_search_config,
             ctx.api_key_provider.clone(),
         ) {
             let client = client.with_attribution_callback(ctx.attribution_callback.clone());
             resources.insert(client);
+        }
+        if is_zai_coding_plan {
+            match ctx.api_key_provider.clone() {
+                Some(provider) => {
+                    match crate::implementations::grok_build::zai_zread::ZaiZreadClient::new(
+                        provider.clone(),
+                    ) {
+                        Ok(client) => resources.insert(client),
+                        Err(error) => tracing::warn!(
+                            error = %error,
+                            "Failed to create Z.AI Coding Plan Zread client"
+                        ),
+                    }
+                    if crate::implementations::grok_build::zai_vision::zai_vision_mcp_enabled() {
+                        match crate::implementations::grok_build::zai_vision::ZaiVisionClient::new(
+                            provider,
+                        ) {
+                            Ok(client) => resources.insert(client),
+                            Err(error) => tracing::warn!(
+                                error = %error,
+                                "Failed to create Z.AI Coding Plan Vision MCP client"
+                            ),
+                        }
+                    }
+                }
+                None => tracing::warn!("Z.AI Coding Plan tool authentication is unavailable"),
+            }
         }
         if let Some(lsp) = ctx.lsp {
             resources.insert(lsp);
@@ -1036,10 +1078,9 @@ impl ToolRegistryBuilder {
                 }
             }
         }
-        if let Some(params) = ctx
-            .web_fetch_config
-            .params_for_codex_subscription(is_codex_subscription || is_kimi_code)
-        {
+        if let Some(params) = ctx.web_fetch_config.params_for_codex_subscription(
+            is_codex_subscription || is_kimi_code || is_zai_coding_plan,
+        ) {
             match crate::implementations::grok_build::web_fetch::WebFetchClient::new(params) {
                 Ok(client) => {
                     let client = if is_kimi_code {
@@ -1047,6 +1088,13 @@ impl ToolRegistryBuilder {
                             Some(provider) => client.with_kimi_hosted_fetch(provider),
                             None => Err(
                                 crate::implementations::grok_build::web_fetch::WebFetchError::HostedAuthentication,
+                            ),
+                        }
+                    } else if is_zai_coding_plan {
+                        match ctx.api_key_provider.clone() {
+                            Some(provider) => client.with_zai_coding_plan_reader(provider),
+                            None => Err(
+                                crate::implementations::grok_build::web_fetch::WebFetchError::ZaiReaderAuthentication,
                             ),
                         }
                     } else {

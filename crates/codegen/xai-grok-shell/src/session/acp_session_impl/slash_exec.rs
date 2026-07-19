@@ -25,7 +25,12 @@ impl SessionActor {
                 if let Some(sampling) = resolution.updated_sampling_config {
                     // Keep an explicit Standard sentinel in session state so a
                     // catalog default cannot silently turn Fast back on later.
+                    let service_tier = sampling.service_tier.clone();
                     self.chat_state_handle.update_sampling_config(sampling);
+                    self.send_xai_notification(XaiSessionUpdate::ServiceTierChanged {
+                        service_tier,
+                    })
+                    .await;
                 }
                 self.send_slash_command_output(&resolution.output).await;
                 ok_end_turn(0, None)

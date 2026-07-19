@@ -683,6 +683,12 @@ impl AgentBuilder {
         let tool_bridge_builder = ToolBridge::get_builder();
         let state_path = self.state_path.clone().unwrap_or_default();
         let mut tool_config = definition.tool_config.clone();
+        let is_zai_coding_plan = self.api_key_provider.as_ref().is_some_and(|provider| {
+            provider.request_auth_provider_id()
+                == Some(xai_grok_tools::types::ZAI_CODING_PLAN_PROVIDER_ID)
+        });
+        let uses_provider_scoped_fetch =
+            self.web_search_config.uses_provider_scoped_web() || is_zai_coding_plan;
         if !definition.inject_default_tools && tool_config.tools.is_empty() {
             return Err(AgentBuildError::InvalidConfig(format!(
                 "agent '{}' declares a curated toolset (inject_default_tools = false) \
@@ -708,11 +714,26 @@ impl AgentBuilder {
             }
             if self
                 .web_fetch_config
-                .params_for_codex_subscription(self.web_search_config.is_codex_subscription())
+                .params_for_codex_subscription(uses_provider_scoped_fetch)
                 .is_some()
             {
                 use xai_grok_tools::implementations::grok_build;
                 tool_config.tools.push((&grok_build::WebFetchTool).into());
+            }
+            if is_zai_coding_plan {
+                use xai_grok_tools::implementations::grok_build;
+                tool_config
+                    .tools
+                    .push((&grok_build::ZreadSearchDocTool).into());
+                tool_config
+                    .tools
+                    .push((&grok_build::ZreadGetRepoStructureTool).into());
+                tool_config
+                    .tools
+                    .push((&grok_build::ZreadReadFileTool).into());
+                if grok_build::zai_vision_mcp_enabled() {
+                    tool_config.tools.extend(grok_build::vision_tool_configs());
+                }
             }
             if self.lsp.is_some() {
                 tool_config
@@ -842,7 +863,7 @@ impl AgentBuilder {
         }
         if let Some(params) = self
             .web_fetch_config
-            .params_for_codex_subscription(self.web_search_config.is_codex_subscription())
+            .params_for_codex_subscription(self.web_search_config.uses_provider_scoped_web())
             && let Ok(params_value) = serde_json::to_value(params)
             && let Some(obj) = params_value.as_object()
         {
@@ -2271,6 +2292,61 @@ mod tests {
             assert!(!names.contains(&excluded.to_string()), "got: {names:?}");
         }
     }
+    #[derive(Debug)]
+    struct ZaiToolAuth;
+
+    impl xai_grok_tools::types::ApiKeyProvider for ZaiToolAuth {
+        fn current_api_key(&self) -> Option<String> {
+            None
+        }
+
+        fn request_auth_provider_id(&self) -> Option<&str> {
+            Some(xai_grok_tools::types::ZAI_CODING_PLAN_PROVIDER_ID)
+        }
+    }
+
+    #[tokio::test]
+    async fn disabling_zai_search_keeps_reader_and_zread_tools() {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        use xai_grok_tools::implementations::grok_build::web_fetch::{
+            WebFetchConfig, WebFetchParams,
+        };
+        use xai_grok_tools::notification::ToolNotificationHandle;
+
+        let agent = AgentBuilder::new(
+            std::env::temp_dir(),
+            Arc::new(LocalTerminalBackend::new()),
+            ToolNotificationHandle::noop(),
+        )
+        .from_definition(crate::config::AgentDefinition::default_grok_build())
+        .with_web_search_config(
+            xai_grok_tools::implementations::web_search::WebSearchConfig::Disabled,
+        )
+        .with_web_fetch_config(WebFetchConfig::CodexDefault {
+            params: WebFetchParams::default(),
+        })
+        .with_api_key_provider(Arc::new(ZaiToolAuth))
+        .build()
+        .await
+        .expect("Z.AI tools should build without Search");
+
+        let names = agent
+            .tool_definitions()
+            .await
+            .into_iter()
+            .map(|definition| definition.function.name)
+            .collect::<Vec<_>>();
+        assert!(!names.iter().any(|name| name == "web_search"), "{names:?}");
+        for expected in [
+            "web_fetch",
+            "zread_search_doc",
+            "zread_get_repo_structure",
+            "zread_read_file",
+        ] {
+            assert!(names.iter().any(|name| name == expected), "{names:?}");
+        }
+    }
+
     /// grok-build toolsets have no Skill tool — skills are read from
     /// `SKILL.md` via `read_file` — so a compat `Skill` allowlist entry grants
     /// toolset.

@@ -1,6 +1,6 @@
 # Authentication
 
-Grok supports several authentication methods, including interactive browser login, ChatGPT Codex subscription login, experimental Kimi Code plan API keys, enterprise single sign-on (SSO), and headless CI/CD runners. xAI, ChatGPT Codex, and Kimi Code credentials are stored in separate scopes and can remain signed in at the same time.
+Grok supports several authentication methods, including interactive browser login, ChatGPT Codex subscription login, experimental Kimi Code and Z.AI GLM Coding Plan API keys, enterprise single sign-on (SSO), and headless CI/CD runners. xAI, ChatGPT Codex, Kimi Code, and Z.AI Coding Plan credentials are stored in separate scopes and can remain signed in at the same time.
 
 ---
 
@@ -29,8 +29,9 @@ Running `grok login` starts the sign-in flow again, replacing your cached sessio
 | `--oauth` | Sign in through SpaceXAI OAuth at `auth.x.ai`. This is the default, so the flag is optional. |
 | `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
 
-To sign out of xAI, run `grok logout`. Add `--provider openai-codex` to clear
-only the independent ChatGPT Codex credential, as described below.
+To sign out of xAI, run `grok logout`. Add `--provider openai-codex`,
+`--provider kimi-code`, or `--provider zai-coding-plan` to clear only that
+independent provider credential, as described below.
 
 ---
 
@@ -226,6 +227,97 @@ grok logout --provider kimi-code
 > `/usages`, hosted `/search`, and hosted `/fetch`. Messages and longer-running
 > session, cache, quota, and media cases still require qualification when the
 > relevant entitlement or test condition is available.
+
+---
+
+## Z.AI GLM Coding Plan (Experimental)
+
+Z.AI Coding Plan uses a plan API key and the dedicated global Coding endpoint
+`https://api.z.ai/api/coding/paas/v4`. It is isolated from Z.AI Open Platform
+pay-go access, BigModel China, xAI, Codex, Kimi, and generic custom-model
+credentials. Grok never substitutes one of those credentials or endpoints.
+
+Validate and store a key without putting it in a command argument:
+
+```bash
+# Prefer a credential manager so the key does not enter shell history:
+secure-key-command | grok login --provider zai-coding-plan
+
+# Or export it from a protected environment source, then clear it afterward:
+export Z_AI_API_KEY="$(secure-key-command)"
+grok login --provider zai-coding-plan
+unset Z_AI_API_KEY
+```
+
+Login calls the authenticated Coding Plan `/models` endpoint before writing the
+credential. The key is stored under `zai::coding-plan::global` in
+`~/.grok/auth.json`; the last-known entitled model catalog is cached against an
+opaque credential record rather than the key. `Z_AI_API_KEY` is also accepted
+as a process-scoped fallback when no stored credential exists.
+
+List or refresh entitled models and select a namespaced model:
+
+```bash
+grok models --provider zai-coding-plan
+grok -m zai-coding-plan/<model-id>
+```
+
+The authenticated catalog is authoritative. Z.AI sessions use Coding Plan Chat
+Completions, preserve `reasoning_content` across streamed tool turns and active
+session history, support parallel fragmented function calls, and keep the same
+provider identity through model switching, resume, compaction, subagents,
+headless mode, and ACP.
+
+Supported sessions expose provider-authenticated Search MCP, Web Reader MCP,
+and the prefixed `zread_search_doc`, `zread_get_repo_structure`, and
+`zread_read_file` tools. Reader is called only after Grok's public-URL/SSRF
+screen and falls back to the protected local `web_fetch` implementation for
+ordinary protocol, transport, or service failures. Authentication and quota
+errors remain visible. `--disable-web-search` disables Search MCP only; it does
+not remove the independently authenticated Reader or Zread tools. Existing
+WebFetch configuration and web policy gates still apply.
+
+Use `/usage` for the provider-returned five-hour, weekly, and shared monthly
+Search/Reader/Zread quota plus available recent model/tool activity. `/usage
+manage` opens the Z.AI Coding Plan usage page. The summary does not reinterpret
+plan quota as pay-go spend.
+
+Coding Plan GLM models are treated as text-only. To analyze attached images or
+use the provider's screenshot, diagram, chart, image, UI-diff, and video tools,
+explicitly opt in to the local Vision MCP:
+
+```bash
+export GROK_ZAI_VISION_MCP=1
+grok -m zai-coding-plan/<model-id>
+```
+
+Vision requires Node.js 22+ and launches the exact runtime pin
+`@z_ai/mcp-server@0.1.4` through `npx`. The child receives a cleared/minimal
+environment, a temporary isolated home, and only the dynamically resolved
+provider variables `Z_AI_API_KEY` and `Z_AI_MODE=ZAI`. It uses bounded stdio
+MCP, runs in an isolated process group,
+and is terminated after each call. Local media must canonicalize beneath the
+workspace or private session directory. Videos are restricted to MP4, MOV, or
+M4V up to 8 MiB. User attachments are transcribed before inference, so inline
+image payloads do not reach the text-only model. This does not enable Z.AI
+pay-go image generation.
+
+Disconnect only the global Coding Plan credential and its model cache:
+
+```bash
+grok logout --provider zai-coding-plan
+```
+
+> [!WARNING]
+> Z.AI Coding Plan support is experimental. Credential-free tests cover
+> provider isolation, request shaping, exact reasoning replay, fragmented and
+> parallel tool streams, remote/local MCP handshakes, media rooting, and quota
+> rendering. An entitled account completed synthetic headless/ACP plus extended
+> GLM 5.2 qualification on 2026-07-19, including tools, compaction, cache hits,
+> usage, Search, Reader/SSRF policy, Zread, Vision, attachments, and invalid-key
+> rejection. Interactive TUI, live subagents, longer stress, and forced
+> rate/quota/expiry/account-change conditions remain. Public distribution is
+> also subject to Z.AI's supported-tool policy.
 
 ---
 

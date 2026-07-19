@@ -676,8 +676,23 @@ impl SessionActor {
         self.inject_plan_mode_reminders().await;
         self.inject_resumed_tasks_reminder();
         self.drain_between_turn_completions().await;
-        let user_message = if user_images.is_empty() {
+        let has_any_user_images = !user_images.is_empty() || !extra_images.is_empty();
+        let active_provider = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|config| config.provider);
+        let zai_coding_plan_images =
+            should_transcribe_zai_images(active_provider, user_images.len(), extra_images.len());
+        let user_message = if !has_any_user_images {
             user_message
+        } else if zai_coding_plan_images {
+            let images = user_images
+                .iter()
+                .chain(extra_images.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            self.transcribe_user_images(user_message, &images).await?
         } else if self.is_cursor_harness() {
             self.transcribe_user_images(user_message, &user_images)
                 .await?
@@ -697,7 +712,7 @@ impl SessionActor {
                     .data(format!("failed to save user images to assets dir: {e}"))
             })?
         };
-        let attached_image_refs = if self.is_cursor_harness() {
+        let attached_image_refs = if self.is_cursor_harness() || zai_coding_plan_images {
             Vec::new()
         } else {
             crate::session::placeholder_images::attached_image_references(&user_images)
@@ -749,7 +764,7 @@ impl SessionActor {
                 }
             };
             user_chat.set_prompt_index(current_prompt_index);
-            if !self.is_cursor_harness() {
+            if !self.is_cursor_harness() && !zai_coding_plan_images {
                 for image in &user_images {
                     user_chat.add_image(pick_user_image_url(image));
                 }
@@ -2515,6 +2530,15 @@ impl SessionActor {
 ///   401→refresh→retry event. Without `reset()` after a successful response,
 ///   the third rotation of one turn would land on the last (largest) delay
 ///   and the fourth would fail the turn outright.
+fn should_transcribe_zai_images(
+    provider: Option<xai_grok_sampling_types::ProviderId>,
+    normalized_image_count: usize,
+    embedded_image_count: usize,
+) -> bool {
+    normalized_image_count.saturating_add(embedded_image_count) > 0
+        && provider.is_some_and(xai_grok_sampling_types::ProviderId::is_zai_coding_plan)
+}
+
 struct AuthRetrySchedule {
     delays: std::iter::Take<ExponentialBackoff>,
     attempt: u32,
@@ -2750,6 +2774,37 @@ mod native_browse_recovery_tests {
             .await;
     }
 }
+#[cfg(test)]
+mod zai_attachment_routing_tests {
+    use super::should_transcribe_zai_images;
+    use xai_grok_sampling_types::ProviderId;
+
+    #[test]
+    fn transcribes_normalized_embedded_and_mixed_images_only_for_zai() {
+        assert!(should_transcribe_zai_images(
+            Some(ProviderId::ZaiCodingPlan),
+            1,
+            0
+        ));
+        assert!(should_transcribe_zai_images(
+            Some(ProviderId::ZaiCodingPlan),
+            0,
+            1
+        ));
+        assert!(should_transcribe_zai_images(
+            Some(ProviderId::ZaiCodingPlan),
+            2,
+            3
+        ));
+        assert!(!should_transcribe_zai_images(
+            Some(ProviderId::ZaiCodingPlan),
+            0,
+            0
+        ));
+        assert!(!should_transcribe_zai_images(Some(ProviderId::Xai), 1, 1));
+    }
+}
+
 #[cfg(test)]
 mod auth_retry_schedule_tests {
     use super::AuthRetrySchedule;

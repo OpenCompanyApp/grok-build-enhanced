@@ -11,8 +11,8 @@ use std::sync::Arc;
 use xai_grok_agent::prompt::skills::SkillsConfig;
 use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
-    CompactionAtTokens, CompactionsRemaining, ProviderId, REASONING_EFFORT_META_KEY,
-    REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption,
+    CompactionAtTokens, CompactionsRemaining, OPENAI_CODEX_SERVICE_TIER_METADATA_KEY, ProviderId,
+    REASONING_EFFORT_META_KEY, REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption,
     reasoning_effort_meta_value, reasoning_efforts_meta_value,
 };
 pub use xai_grok_tools::implementations::web_search::{CodexWebSearchMode, CodexWebSearchSettings};
@@ -3824,8 +3824,8 @@ pub struct ModelInfo {
     /// Service tiers advertised for this model by its owning provider.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_tiers: Vec<ModelServiceTier>,
-    /// Catalog default tier, applied only when Fast mode is enabled and the
-    /// user has not made an explicit selection.
+    /// Provider-advertised catalog default. Capability metadata only: the
+    /// resolver deliberately does not select this without explicit user opt-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_service_tier: Option<String>,
     /// Effective session-start selection (`priority`, `default`, or another
@@ -4200,8 +4200,10 @@ pub struct Features {
     /// when set, the agent may ask permission for tool executions
     #[serde(default)]
     pub support_permission: bool,
-    /// Enable authenticated Codex service-tier controls. Stable and enabled
-    /// by default; `Some(false)` disables Fast mode without changing auth.
+    /// Enable authenticated Codex service-tier controls. The controls are
+    /// available by default, but Fast itself remains off until the user opts in
+    /// through `service_tier = "fast"` or `/fast on`. `Some(false)` disables
+    /// the controls without changing auth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast_mode: Option<bool>,
     /// `None` = defer to remote settings / default (off).
@@ -5061,6 +5063,14 @@ pub fn to_acp_model_info(
                     "agentType".to_string(),
                     serde_json::Value::String(info.agent_type.clone()),
                 );
+                if info.provider == ProviderId::OpenAiCodex
+                    && let Some(service_tier) = info.service_tier.as_ref()
+                {
+                    map.insert(
+                        OPENAI_CODEX_SERVICE_TIER_METADATA_KEY.to_string(),
+                        serde_json::Value::String(service_tier.clone()),
+                    );
+                }
                 if info.supports_reasoning_effort {
                     map.insert(
                         "supportsReasoningEffort".to_string(),
@@ -6991,6 +7001,53 @@ reasoning_effort = "low"
             meta["agentType"], DEFAULT_AGENT_TYPE,
             "agentType should always be in meta, defaulting to DEFAULT_AGENT_TYPE"
         );
+    }
+
+    #[test]
+    fn acp_codex_model_meta_includes_the_effective_service_tier() {
+        let mut models = IndexMap::new();
+        let mut entry = test_model_entry(
+            "gpt-5.6-luna",
+            "https://chatgpt.com/backend-api/codex",
+            None,
+            None,
+            None,
+        );
+        entry.info.provider = ProviderId::OpenAiCodex;
+        entry.info.service_tier = Some("priority".to_string());
+        models.insert("openai-codex/gpt-5.6-luna".to_string(), entry);
+
+        let meta = to_acp_model_info(&models)
+            .values()
+            .next()
+            .unwrap()
+            .meta
+            .as_ref()
+            .unwrap()
+            .clone();
+
+        assert_eq!(meta[OPENAI_CODEX_SERVICE_TIER_METADATA_KEY], "priority");
+    }
+
+    #[test]
+    fn acp_non_codex_model_meta_omits_codex_service_tier_state() {
+        let mut models = IndexMap::new();
+        let mut entry =
+            test_model_entry("custom-luna", "https://example.test/v1", None, None, None);
+        entry.info.provider = ProviderId::Custom;
+        entry.info.service_tier = Some("priority".to_string());
+        models.insert("custom-luna".to_string(), entry);
+
+        let meta = to_acp_model_info(&models)
+            .values()
+            .next()
+            .unwrap()
+            .meta
+            .as_ref()
+            .unwrap()
+            .clone();
+
+        assert!(meta.get(OPENAI_CODEX_SERVICE_TIER_METADATA_KEY).is_none());
     }
     #[test]
     fn acp_model_meta_emits_reasoning_effort_when_supported() {

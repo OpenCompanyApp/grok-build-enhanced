@@ -397,8 +397,9 @@ pub(crate) fn maybe_drain_queue(agent: &mut AgentView) -> Vec<Effect> {
                 }]
             }
         }
-        QueueEntryKind::Command => {
-            // Currently only `/compact` — future slash commands will branch here.
+        QueueEntryKind::Command if queued.text.split_whitespace().next() == Some("/compact") => {
+            // Manual compaction uses its dedicated ACP extension instead of the
+            // prompt RPC used by ordinary shell-owned slash commands.
             // `start_command` occupies the turn slot without `start_turn`, so
             // it closes the between-turns status window itself.
             agent.end_work_announced = false;
@@ -408,6 +409,27 @@ pub(crate) fn maybe_drain_queue(agent: &mut AgentView) -> Vec<Effect> {
             vec![Effect::Compact {
                 agent_id,
                 session_id,
+            }]
+        }
+        QueueEntryKind::Command => {
+            // Shell-owned commands such as `/fast` still travel through the ACP
+            // prompt method, where the shell executes them without an LLM turn.
+            // Do not route every command through the dedicated `/compact`
+            // extension: doing so made `/fast off` compact the conversation.
+            agent.start_turn_boundary(Some(&prompt_id));
+            // Built-in slash commands return before the shell emits a user
+            // message echo, and the pager did not render one locally. Do not
+            // leave `start_turn_boundary`'s echo-skip armed for a later update.
+            agent.session.tracker.clear_user_echo_skip();
+            agent.session.current_prompt_id = Some(prompt_id.clone());
+            agent.turn_started_at = Some(Instant::now());
+
+            vec![Effect::SendPrompt {
+                agent_id,
+                session_id,
+                text: queued.text,
+                prompt_id,
+                skill_token_ranges: Vec::new(),
             }]
         }
         QueueEntryKind::BashCommand => {

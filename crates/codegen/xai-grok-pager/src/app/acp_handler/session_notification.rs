@@ -873,6 +873,15 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             }
             actually_changed
         }
+        XaiSessionUpdate::ServiceTierChanged { service_tier } => {
+            let was_fast = agent.session.models.current_model_fast_mode_active();
+            agent.session.models.set_service_tier(service_tier.clone());
+            // `/fast` also persists the preference for future sessions. Mirror
+            // that default in the pager's app-level model snapshot while
+            // leaving every other live session's explicit state untouched.
+            app.models.set_service_tier(service_tier);
+            was_fast != agent.session.models.current_model_fast_mode_active()
+        }
         XaiSessionUpdate::MemoryFiles { files } => {
             let entries = crate::views::memory_modal::build_entries(files);
             let modal_state = crate::views::memory_modal::MemoryModalState::new(entries);

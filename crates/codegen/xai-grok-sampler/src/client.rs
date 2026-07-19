@@ -30,12 +30,12 @@ use xai_grok_sampling_types::{
 };
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
-use crate::provider::{kimi_code, zai_coding_plan};
 pub(crate) use crate::provider::openai_codex::turn_state::CodexTurnStateStore;
 use crate::provider::openai_codex::{
     endpoint as codex_endpoint, errors as codex_errors, headers as codex_headers,
     responses as codex_responses, sse::CodexSseDecoder,
 };
+use crate::provider::{kimi_code, zai_coding_plan};
 use codex_headers::CODEX_TURN_STATE_HEADER;
 
 // Re-export ApiBackend from the shared types crate for downstream callers.
@@ -55,10 +55,7 @@ fn normalize_reasoning_effort_for_provider(
     provider: ProviderId,
     effort: ReasoningEffort,
 ) -> Result<ReasoningEffort> {
-    if provider.is_openai_codex()
-        || provider.is_kimi_code()
-        || provider.is_zai_coding_plan()
-    {
+    if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_zai_coding_plan() {
         return Ok(effort);
     }
     match effort {
@@ -1266,7 +1263,11 @@ impl SamplingClient {
         );
         let retry_after_secs = extract_retry_after(response.headers());
         let should_retry = extract_should_retry(response.headers());
-        let bytes = response.bytes().await?;
+        let bytes = if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::read_limited_response_body(response).await?
+        } else {
+            response.bytes().await?
+        };
 
         if self.defaults.provider.is_zai_coding_plan()
             && let Some(error) = zai_coding_plan::business_error(bytes.as_ref())
@@ -1497,7 +1498,7 @@ impl SamplingClient {
                 .and_then(|value| value.to_str().ok())
                 .is_none_or(|value| !value.to_ascii_lowercase().contains("text/event-stream"))
         {
-            let bytes = response.bytes().await?;
+            let bytes = zai_coding_plan::read_limited_response_body(response).await?;
             if let Some(error) = zai_coding_plan::business_error(bytes.as_ref()) {
                 return Err(error);
             }
@@ -1523,7 +1524,13 @@ impl SamplingClient {
                 } else {
                     self.endpoint("chat/completions")
                 };
-                let bytes = response.bytes().await.unwrap_or_default();
+                let bytes = if self.defaults.provider.is_zai_coding_plan() {
+                    zai_coding_plan::read_limited_response_body(response)
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    response.bytes().await.unwrap_or_default()
+                };
                 let server_message = self.provider_error_message(status, bytes.as_ref());
                 return Err(SamplingError::Auth(format!(
                     "Unauthorized (401) from {endpoint}: {server_message}"
@@ -1533,7 +1540,11 @@ impl SamplingClient {
             let req_headers = self.request_header_diagnostics(true);
             let resp_headers =
                 Self::format_response_headers(response.headers(), self.defaults.provider);
-            let bytes = response.bytes().await?;
+            let bytes = if self.defaults.provider.is_zai_coding_plan() {
+                zai_coding_plan::read_limited_response_body(response).await?
+            } else {
+                response.bytes().await?
+            };
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
             } else if self.defaults.provider.is_zai_coding_plan() {

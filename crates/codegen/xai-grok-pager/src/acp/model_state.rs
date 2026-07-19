@@ -3,8 +3,9 @@
 use agent_client_protocol as acp;
 use indexmap::IndexMap;
 use xai_grok_shell::sampling::types::{
-    ReasoningEffort, ReasoningEffortOption, parse_reasoning_effort_meta,
-    parse_reasoning_efforts_meta, supports_reasoning_effort_meta,
+    OPENAI_CODEX_FAST_SERVICE_TIER, OPENAI_CODEX_SERVICE_TIER_METADATA_KEY, ReasoningEffort,
+    ReasoningEffortOption, parse_reasoning_effort_meta, parse_reasoning_efforts_meta,
+    supports_reasoning_effort_meta,
 };
 
 use crate::slash::commands::effort_levels::legacy_effort_options;
@@ -52,6 +53,9 @@ pub struct ModelState {
     pub available: IndexMap<acp::ModelId, acp::ModelInfo>,
     pub current: Option<acp::ModelId>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Effective session service tier. `priority` activates the Codex Fast
+    /// indicator; `default` is the explicit Standard sentinel.
+    service_tier: Option<String>,
     /// External override for the context window size (tokens).
     /// When set, `get_context_window()` returns this instead of
     /// reading from the current model's metadata. Used for subagent
@@ -87,11 +91,41 @@ impl ModelState {
             .is_some_and(|model| model.starts_with("openai-codex/"))
     }
 
+    /// Whether the active provider-qualified Codex model is using its explicit
+    /// Fast service tier. Catalog capability/default metadata alone is not
+    /// sufficient; the effective session tier must be `priority`.
+    pub fn current_model_fast_mode_active(&self) -> bool {
+        self.current_model_is_openai_codex()
+            && self.service_tier.as_deref() == Some(OPENAI_CODEX_FAST_SERVICE_TIER)
+    }
+
+    /// Apply an effective service-tier update broadcast by the shell.
+    pub fn set_service_tier(&mut self, service_tier: Option<String>) {
+        self.service_tier = service_tier;
+    }
+
     /// Whether the active model belongs to the isolated Kimi Code plan
     /// provider rather than xAI or a same-named custom model.
     pub fn current_model_is_kimi_code(&self) -> bool {
         self.current_model_id_str()
             .is_some_and(|model| model.starts_with("kimi-code/"))
+    }
+
+    /// Whether the active model belongs to the isolated global Z.AI GLM
+    /// Coding Plan provider rather than Open Platform or a custom endpoint.
+    pub fn current_model_is_zai_coding_plan(&self) -> bool {
+        self.current_model_id_str()
+            .is_some_and(|model| model.starts_with("zai-coding-plan/"))
+    }
+
+    fn service_tier_for(&self, model_id: &acp::ModelId) -> Option<String> {
+        self.available
+            .get(model_id)?
+            .meta
+            .as_ref()?
+            .get(OPENAI_CODEX_SERVICE_TIER_METADATA_KEY)?
+            .as_str()
+            .map(str::to_owned)
     }
 
     /// Total context window tokens for the current model (if available).
@@ -182,6 +216,12 @@ impl ModelState {
                 .resolve_effort_value_for(&id, effort)
                 .or_else(|| self.default_reasoning_effort_for(&id));
         }
+        if self.service_tier.is_none() {
+            self.service_tier = self
+                .current
+                .clone()
+                .and_then(|id| self.service_tier_for(&id));
+        }
     }
 
     /// Set the current model and resolve reasoning effort from catalog meta.
@@ -194,6 +234,9 @@ impl ModelState {
         self.reasoning_effort = effort_override
             .and_then(|effort| self.resolve_effort_value_for(&model_id, effort))
             .or_else(|| self.default_reasoning_effort_for(&model_id));
+        if self.service_tier.is_none() {
+            self.service_tier = self.service_tier_for(&model_id);
+        }
     }
 
     /// The reasoning-effort menu for the current model. Gate-first: an unset or
@@ -383,10 +426,18 @@ impl From<Option<acp::SessionModelState>> for ModelState {
                     .as_ref()
                     .and_then(|id| models.get(id))
                     .and_then(|info| parse_reasoning_effort_meta(info.meta.as_ref()));
+                let service_tier = current_model
+                    .as_ref()
+                    .and_then(|id| models.get(id))
+                    .and_then(|info| info.meta.as_ref())
+                    .and_then(|meta| meta.get(OPENAI_CODEX_SERVICE_TIER_METADATA_KEY))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
                 Self {
                     available: models,
                     current: current_model,
                     reasoning_effort,
+                    service_tier,
                     context_window_override: None,
                 }
             })
@@ -419,6 +470,66 @@ mod tests {
     fn test_current_model_name() {
         let state = sample_models();
         assert_eq!(state.current_model_name(), Some("Model A".to_string()));
+    }
+
+    #[test]
+    fn codex_priority_tier_activates_the_fast_indicator() {
+        let id = acp::ModelId::new(Arc::from("openai-codex/gpt-5.6-luna"));
+        let mut state = ModelState::default();
+        state.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "GPT-5.6 Luna".to_string()),
+        );
+        state.set_current(id, None);
+
+        state.set_service_tier(Some("priority".to_string()));
+
+        assert!(state.current_model_fast_mode_active());
+    }
+
+    #[test]
+    fn session_model_metadata_restores_the_codex_fast_indicator() {
+        let id = acp::ModelId::new(Arc::from("openai-codex/gpt-5.6-luna"));
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            OPENAI_CODEX_SERVICE_TIER_METADATA_KEY.to_string(),
+            serde_json::Value::String("priority".to_string()),
+        );
+        let model = acp::ModelInfo::new(id.clone(), "GPT-5.6 Luna".to_string()).meta(Some(meta));
+
+        let state = ModelState::from(Some(acp::SessionModelState::new(id, vec![model])));
+
+        assert!(state.current_model_fast_mode_active());
+    }
+
+    #[test]
+    fn explicit_standard_tier_keeps_the_fast_indicator_off() {
+        let id = acp::ModelId::new(Arc::from("openai-codex/gpt-5.6-luna"));
+        let mut state = ModelState::default();
+        state.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "GPT-5.6 Luna".to_string()),
+        );
+        state.set_current(id, None);
+
+        state.set_service_tier(Some("default".to_string()));
+
+        assert!(!state.current_model_fast_mode_active());
+    }
+
+    #[test]
+    fn non_codex_model_cannot_inherit_the_fast_indicator() {
+        let id = acp::ModelId::new(Arc::from("gpt-5.6-luna"));
+        let mut state = ModelState::default();
+        state.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "Custom Luna".to_string()),
+        );
+        state.set_current(id, None);
+
+        state.set_service_tier(Some("priority".to_string()));
+
+        assert!(!state.current_model_fast_mode_active());
     }
 
     #[test]

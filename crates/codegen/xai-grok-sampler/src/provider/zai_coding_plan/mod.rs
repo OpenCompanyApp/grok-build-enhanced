@@ -4,11 +4,12 @@
 //! business-code handling, and redacted diagnostics for Coding Plan. It has no
 //! auth-store logic and never falls through to Open Platform or BigModel CN.
 
+use futures_util::StreamExt as _;
 use reqwest::header::{HeaderMap, HeaderName};
 use xai_grok_sampling_types::{
     ApiBackend, ChatCompletionRequest, CredentialBinding, CredentialSourceId, ProviderId,
     ReasoningEffort, Result, SamplingError, ZAI_CODING_PLAN_BASE_URL,
-    ZAI_CODING_PLAN_MAX_FUNCTION_TOOLS,
+    ZAI_CODING_PLAN_MAX_FUNCTION_TOOLS, ZAI_CODING_PLAN_MAX_RESPONSE_BYTES,
 };
 
 pub(crate) fn is_valid_base_url(raw: &str) -> bool {
@@ -59,7 +60,10 @@ pub(crate) fn endpoint(base_url: &str) -> Result<String> {
         base_url,
         ApiBackend::ChatCompletions,
     )?;
-    Ok(format!("{}/chat/completions", base_url.trim_end_matches('/')))
+    Ok(format!(
+        "{}/chat/completions",
+        base_url.trim_end_matches('/')
+    ))
 }
 
 /// Never follow redirects while carrying a Coding Plan credential.
@@ -74,15 +78,43 @@ pub(crate) fn http_client(force_http1: bool) -> Result<reqwest::Client> {
     builder.build().map_err(SamplingError::Http)
 }
 
+pub(crate) async fn read_limited_response_body(
+    response: reqwest::Response,
+) -> Result<bytes::Bytes> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > ZAI_CODING_PLAN_MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(response_too_large());
+    }
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(SamplingError::Http)?;
+        if chunk.len() > ZAI_CODING_PLAN_MAX_RESPONSE_BYTES.saturating_sub(body.len()) {
+            return Err(response_too_large());
+        }
+        body.try_reserve_exact(chunk.len())
+            .map_err(|_| response_too_large())?;
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body.into())
+}
+
+fn response_too_large() -> SamplingError {
+    SamplingError::Api {
+        status: reqwest::StatusCode::BAD_GATEWAY,
+        message: "Z.AI Coding Plan returned an oversized response".to_owned(),
+        model_metadata: None,
+        retry_after_secs: None,
+        should_retry: Some(false),
+    }
+}
+
 fn is_allowed_header(name: &HeaderName) -> bool {
     matches!(
         name.as_str(),
-        "authorization"
-            | "content-type"
-            | "accept"
-            | "user-agent"
-            | "traceparent"
-            | "tracestate"
+        "authorization" | "content-type" | "accept" | "user-agent" | "traceparent" | "tracestate"
     )
 }
 
@@ -204,14 +236,21 @@ pub(crate) fn chat_body(
         }
     }
 
-    if request.tools.as_ref().is_some_and(|tools| !tools.is_empty()) {
+    if request
+        .tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
+    {
         object.insert("tool_stream".to_owned(), serde_json::Value::Bool(true));
-        if !object.contains_key("tool_choice") {
-            object.insert(
-                "tool_choice".to_owned(),
-                serde_json::Value::String("auto".to_owned()),
-            );
-        }
+        // Coding Plan documents automatic function selection. Do not forward
+        // generic forced/specific tool choices that this endpoint does not
+        // advertise, even if a restored/custom caller supplied one.
+        object.insert(
+            "tool_choice".to_owned(),
+            serde_json::Value::String("auto".to_owned()),
+        );
+    } else {
+        object.remove("tool_choice");
     }
     if stream {
         object.insert("stream".to_owned(), serde_json::Value::Bool(true));
@@ -378,26 +417,22 @@ pub(crate) fn response_header_diagnostics(headers: &HeaderMap) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_grok_sampling_types::{ChatRequestMessage, ToolDefinition};
+    use xai_grok_sampling_types::{ChatRequestMessage, ToolChoice, ToolDefinition};
 
     #[test]
     fn glm_52_body_uses_singular_tool_stream_and_max_reasoning() {
-        let mut request = ChatCompletionRequest::new(
-            "glm-5.2",
-            vec![ChatRequestMessage::user("test")],
-        );
+        let mut request =
+            ChatCompletionRequest::new("glm-5.2", vec![ChatRequestMessage::user("test")]);
         request.reasoning_effort = Some(ReasoningEffort::Xhigh);
-        request.tools = Some(vec![ToolDefinition {
-            r#type: "function".to_owned(),
-            function: xai_grok_sampling_types::FunctionDefinition {
-                name: "test".to_owned(),
-                description: None,
-                parameters: serde_json::json!({"type": "object"}),
-                strict: None,
-            },
-        }]);
+        request.tools = Some(vec![ToolDefinition::function(
+            "test",
+            None::<String>,
+            serde_json::json!({"type": "object"}),
+        )]);
+        request.tool_choice = Some(ToolChoice::required());
         let body = chat_body(&request, true).unwrap();
         assert_eq!(body["tool_stream"], true);
+        assert_eq!(body["tool_choice"], "auto");
         assert!(body.get("stream_tool_calls").is_none());
         assert_eq!(body["reasoning_effort"], "max");
         assert_eq!(body["thinking"]["clear_thinking"], false);
@@ -405,14 +440,53 @@ mod tests {
 
     #[test]
     fn non_glm_52_omits_reasoning_effort_but_preserves_thinking() {
-        let mut request = ChatCompletionRequest::new(
-            "glm-4.7",
-            vec![ChatRequestMessage::user("test")],
-        );
+        let mut request =
+            ChatCompletionRequest::new("glm-4.7", vec![ChatRequestMessage::user("test")]);
         request.reasoning_effort = Some(ReasoningEffort::High);
         let body = chat_body(&request, true).unwrap();
         assert!(body.get("reasoning_effort").is_none());
         assert_eq!(body["thinking"]["type"], "enabled");
+    }
+
+    #[tokio::test]
+    async fn chunked_nonstream_response_is_bounded() {
+        use std::convert::Infallible;
+
+        use axum::{Router, body::Body, routing::get};
+        use bytes::Bytes;
+
+        let app = Router::new().route(
+            "/oversized",
+            get(|| async {
+                Body::from_stream(futures_util::stream::iter([
+                    Ok::<_, Infallible>(Bytes::from(vec![
+                        b'a';
+                        ZAI_CODING_PLAN_MAX_RESPONSE_BYTES
+                    ])),
+                    Ok::<_, Infallible>(Bytes::from_static(b"overflow")),
+                ]))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = http_client(false)
+            .unwrap()
+            .get(format!("http://{address}/oversized"))
+            .send()
+            .await
+            .unwrap();
+
+        let error = read_limited_response_body(response).await.unwrap_err();
+        server.abort();
+        assert!(matches!(
+            error,
+            SamplingError::Api {
+                status: reqwest::StatusCode::BAD_GATEWAY,
+                should_retry: Some(false),
+                ..
+            }
+        ));
     }
 
     #[test]

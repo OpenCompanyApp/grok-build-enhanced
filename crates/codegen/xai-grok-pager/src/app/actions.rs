@@ -2619,6 +2619,8 @@ pub enum TaskResult {
         codex_usage: Option<xai_grok_shell::auth::codex::CodexUsageSnapshot>,
         /// Authoritative Kimi Code plan limits, separate from xAI billing.
         kimi_usage: Option<xai_grok_shell::auth::kimi_code::KimiCodeUsageSnapshot>,
+        /// Authoritative Z.AI GLM Coding Plan quota and MCP usage.
+        zai_usage: Option<xai_grok_shell::auth::zai_coding_plan::ZaiCodingPlanUsageSnapshot>,
         codex_api_equivalent_cost:
             Option<xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
         /// When true, update `credit_balance` silently (no scrollback message).

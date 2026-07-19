@@ -378,6 +378,7 @@ pub(super) fn handle_billing_fetched(
     balance: Option<crate::views::credit_bar::CreditBalance>,
     codex_usage: Option<xai_grok_shell::auth::codex::CodexUsageSnapshot>,
     kimi_usage: Option<xai_grok_shell::auth::kimi_code::KimiCodeUsageSnapshot>,
+    zai_usage: Option<xai_grok_shell::auth::zai_coding_plan::ZaiCodingPlanUsageSnapshot>,
     codex_api_equivalent_cost: Option<xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
     silent: bool,
     subscription_tier: Option<String>,
@@ -400,6 +401,11 @@ pub(super) fn handle_billing_fetched(
                 .as_ref()
                 .and_then(|usage| usage.highest_used_percent())
         })
+        .or_else(|| {
+            zai_usage
+                .as_ref()
+                .and_then(|usage| usage.highest_used_percent())
+        })
         .map(|used| used >= 99.0)
         .or_else(|| balance.as_ref().map(|b| b.usage_pct >= 99.0))
         .unwrap_or(false);
@@ -414,18 +420,21 @@ pub(super) fn handle_billing_fetched(
         apply_auto_topup(&mut topup, &autotopup);
         agent.apply_credit_balance(balance.clone(), topup);
         if !silent && !agent.chat_kind {
-            let msg = match (&codex_usage, &kimi_usage, &balance) {
-                (Some(usage), _, _) => crate::views::credit_bar::format_codex_usage_summary(
+            let msg = match (&codex_usage, &kimi_usage, &zai_usage, &balance) {
+                (Some(usage), _, _, _) => crate::views::credit_bar::format_codex_usage_summary(
                     usage,
                     codex_api_equivalent_cost.as_ref(),
                 ),
-                (None, Some(usage), _) => {
+                (None, Some(usage), _, _) => {
                     crate::views::credit_bar::format_kimi_usage_summary(usage)
                 }
-                (None, None, Some(bal)) => {
+                (None, None, Some(usage), _) => {
+                    crate::views::credit_bar::format_zai_coding_plan_usage_summary(usage)
+                }
+                (None, None, None, Some(bal)) => {
                     crate::views::credit_bar::format_usage_summary(bal, summary_topup.as_ref())
                 }
-                (None, None, None) => "No billing data available.".to_string(),
+                (None, None, None, None) => "No billing data available.".to_string(),
             };
             agent.scrollback.push_block(RenderBlock::System(
                 crate::scrollback::blocks::SystemMessageBlock::new(msg),

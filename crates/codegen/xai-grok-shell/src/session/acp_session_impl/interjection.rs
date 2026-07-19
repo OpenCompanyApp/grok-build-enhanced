@@ -126,10 +126,15 @@ impl SessionActor {
             return images;
         }
         let is_cursor = self.is_cursor_harness();
+        let is_zai_coding_plan = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .is_some_and(|config| config.provider.is_zai_coding_plan());
         let images = self
             .normalize_images_with_notices(wrapped, images, is_cursor)
             .await;
-        if !is_cursor {
+        if !is_cursor && !is_zai_coding_plan {
             return images;
         }
         if !images.is_empty() {

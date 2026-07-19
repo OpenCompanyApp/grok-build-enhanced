@@ -2,8 +2,8 @@ use chrono::{DateTime, TimeZone, Utc};
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{
-    ZAI_CODING_PLAN_MAX_RESPONSE_BYTES, ZAI_CODING_PLAN_MODEL_USAGE_URL,
-    ZAI_CODING_PLAN_QUOTA_URL, ZAI_CODING_PLAN_TOOL_USAGE_URL,
+    ZAI_CODING_PLAN_MAX_RESPONSE_BYTES, ZAI_CODING_PLAN_MODEL_USAGE_URL, ZAI_CODING_PLAN_QUOTA_URL,
+    ZAI_CODING_PLAN_TOOL_USAGE_URL,
 };
 
 use super::{ZaiCodingPlanAuthError, ZaiCodingPlanCredentials};
@@ -76,16 +76,13 @@ pub async fn fetch_usage(
 
     // The detail endpoints are undocumented and optional. Their failure must
     // not hide the authoritative quota windows.
-    if let Ok(value) = fetch_dated_json(
-        &client,
-        credentials,
-        ZAI_CODING_PLAN_MODEL_USAGE_URL,
-    )
-    .await
+    if let Ok(value) = fetch_dated_json(&client, credentials, ZAI_CODING_PLAN_MODEL_USAGE_URL).await
     {
-        snapshot.recent_model_tokens = parse_series_details(&value, "modelDataList", "modelName", "tokensUsage");
+        snapshot.recent_model_tokens =
+            parse_series_details(&value, "modelDataList", "modelName", "tokensUsage");
     }
-    if let Ok(value) = fetch_dated_json(&client, credentials, ZAI_CODING_PLAN_TOOL_USAGE_URL).await {
+    if let Ok(value) = fetch_dated_json(&client, credentials, ZAI_CODING_PLAN_TOOL_USAGE_URL).await
+    {
         snapshot.recent_tool_calls = parse_generic_details(&value);
     }
     Ok(snapshot)
@@ -130,8 +127,8 @@ async fn fetch_json(
         .await
         .map_err(|_| ZaiCodingPlanAuthError::InvalidResponse)?;
     let status = response.status();
-    let bytes = super::transport::read_limited_body(response, ZAI_CODING_PLAN_MAX_RESPONSE_BYTES)
-        .await?;
+    let bytes =
+        super::transport::read_limited_body(response, ZAI_CODING_PLAN_MAX_RESPONSE_BYTES).await?;
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|_| ZaiCodingPlanAuthError::InvalidResponse)?;
     if let Some(code) = super::transport::business_code(&value) {
@@ -143,7 +140,9 @@ async fn fetch_json(
     Ok(value)
 }
 
-fn parse_quota(value: &serde_json::Value) -> Result<ZaiCodingPlanUsageSnapshot, ZaiCodingPlanAuthError> {
+fn parse_quota(
+    value: &serde_json::Value,
+) -> Result<ZaiCodingPlanUsageSnapshot, ZaiCodingPlanAuthError> {
     let envelope: Envelope = serde_json::from_value(value.clone())
         .map_err(|_| ZaiCodingPlanAuthError::InvalidResponse)?;
     if envelope.success == Some(false) {
@@ -378,9 +377,9 @@ fn safe_label(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()
         && value.len() <= 64
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, ' ' | '-' | '_')))
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, ' ' | '-' | '_')
+        }))
     .then(|| value.to_owned())
 }
 
@@ -420,7 +419,7 @@ mod tests {
             "data": {
                 "planName": "Pro",
                 "limits": [
-                    {"type":"TOKENS_LIMIT","unit":3,"number":5,"usage":100,"currentValue":25,"percentage":25,"nextResetTime":1700000000000},
+                    {"type":"TOKENS_LIMIT","unit":3,"number":5,"usage":100,"currentValue":25,"percentage":25,"nextResetTime":1700000000000_i64},
                     {"type":"TOKENS_LIMIT","unit":1,"number":7,"usage":1000,"remaining":400,"percentage":60},
                     {"type":"TIME_LIMIT","unit":5,"number":1,"usage":1000,"currentValue":10,"usageDetails":[{"modelCode":"web_search_prime","usage":8},{"modelCode":"zread","usage":2}]}
                 ]

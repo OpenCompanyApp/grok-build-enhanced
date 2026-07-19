@@ -501,6 +501,18 @@ impl ValidatedZaiCodingPlanRequestAuth {
     pub(crate) fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         request.headers(self.headers.clone())
     }
+
+    /// Borrow only the validated bearer token for a provider-owned local
+    /// subprocess environment. The value remains private and must never be
+    /// logged, formatted, persisted, or copied into tool configuration.
+    pub(crate) fn bearer_token(&self) -> Result<&str, ZaiCodingPlanRequestAuthError> {
+        self.headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .filter(|token| !token.trim().is_empty())
+            .ok_or(ZaiCodingPlanRequestAuthError::InvalidAuthorization)
+    }
 }
 
 impl std::fmt::Debug for ValidatedZaiCodingPlanRequestAuth {

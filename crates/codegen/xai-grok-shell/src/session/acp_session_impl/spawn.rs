@@ -52,8 +52,8 @@ fn persisted_provider_binding(
     (config.provider.is_openai_codex()
         || config.provider.is_kimi_code()
         || config.provider.is_zai_coding_plan())
-        .then(|| config.credential_binding.clone())
-        .flatten()
+    .then(|| config.credential_binding.clone())
+    .flatten()
 }
 
 fn resolve_memory_embedding_route(
@@ -62,10 +62,7 @@ fn resolve_memory_embedding_route(
     base_url: &str,
     api_key: Option<&str>,
 ) -> MemoryEmbeddingRoute {
-    if provider.is_openai_codex()
-        || provider.is_kimi_code()
-        || provider.is_zai_coding_plan()
-    {
+    if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_zai_coding_plan() {
         return MemoryEmbeddingRoute {
             config: None,
             base_url: String::new(),
@@ -377,7 +374,8 @@ pub(crate) async fn spawn_session_actor(
         let web_fetch_allowed_domains = web_fetch_config
             .params_for_codex_subscription(
                 sampling_config.provider.is_openai_codex()
-                    || sampling_config.provider.is_kimi_code(),
+                    || sampling_config.provider.is_kimi_code()
+                    || sampling_config.provider.is_zai_coding_plan(),
             )
             .map_or_else(Vec::new, |params| params.allowed_domains());
         let mut permission_config =
@@ -1083,6 +1081,9 @@ pub(crate) async fn spawn_session_actor(
             }
             xai_grok_tools::implementations::WebSearchConfig::KimiCode { .. } => {
                 Some(xai_grok_sampling_types::ProviderId::KimiCode)
+            }
+            xai_grok_tools::implementations::WebSearchConfig::ZaiCodingPlan { .. } => {
+                Some(xai_grok_sampling_types::ProviderId::ZaiCodingPlan)
             }
             xai_grok_tools::implementations::WebSearchConfig::Enabled { .. } => {
                 configured_web_search_provider

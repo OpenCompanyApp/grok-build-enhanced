@@ -3,9 +3,7 @@ use super::{
     validate_search_query,
 };
 use crate::attribution::{SharedAttributionCallback, ToolConsumer};
-use crate::implementations::zai_mcp::{
-    SEARCH_ENDPOINT, ZaiMcpClient, ZaiMcpError, text_content,
-};
+use crate::implementations::zai_mcp::{SEARCH_ENDPOINT, ZaiMcpClient, ZaiMcpError, text_content};
 use crate::types::{SharedApiKeyProvider, ZAI_CODING_PLAN_PROVIDER_ID};
 
 const MAX_RENDERED_BYTES: usize = 256 * 1024;
@@ -93,18 +91,25 @@ impl ZaiCodingPlanBackend {
         query: &str,
         allowed_domains: Option<&[String]>,
     ) -> Result<BackendSearchResult, xai_tool_runtime::ToolError> {
+        let provider_query = scoped_search_query(query, allowed_domains);
         let result = self
             .client
-            .call_tool("webSearchPrime", serde_json::json!({"search_query": query}))
+            .call_tool_candidates(
+                // Public docs use camelCase; the live Coding Plan catalog
+                // currently advertises the snake_case compatibility spelling.
+                &["webSearchPrime", "web_search_prime"],
+                serde_json::json!({"search_query": provider_query}),
+            )
             .await
             .map_err(|error| self.map_error(error))?;
         let mut content = text_content(&result)
             .map_err(|_| execution_error("Z.AI Coding Plan Search MCP returned invalid content"))?;
         if content.len() > MAX_RENDERED_BYTES {
-            content.truncate(MAX_RENDERED_BYTES);
-            while !content.is_char_boundary(content.len()) {
-                content.pop();
+            let mut end = MAX_RENDERED_BYTES;
+            while end > 0 && !content.is_char_boundary(end) {
+                end -= 1;
             }
+            content.truncate(end);
         }
         let citation_pairs = collect_citations(&content, allowed_domains);
         Ok(BackendSearchResult {
@@ -130,15 +135,15 @@ impl ZaiCodingPlanBackend {
                     "auth_recovery_exhausted": true,
                 }))
             }
-            ZaiMcpError::Quota => execution_error(
-                "Z.AI Coding Plan monthly Search/Reader/Zread quota was reached",
-            ),
+            ZaiMcpError::Quota => {
+                execution_error("Z.AI Coding Plan monthly Search/Reader/Zread quota was reached")
+            }
             ZaiMcpError::Unavailable => {
                 execution_error("Z.AI Coding Plan Search MCP is temporarily unavailable")
             }
-            ZaiMcpError::Protocol => execution_error(
-                "Z.AI Coding Plan Search MCP protocol negotiation failed",
-            ),
+            ZaiMcpError::Protocol => {
+                execution_error("Z.AI Coding Plan Search MCP protocol negotiation failed")
+            }
             ZaiMcpError::InvalidResponse | ZaiMcpError::Rejected => {
                 execution_error("Z.AI Coding Plan Search MCP returned an invalid response")
             }
@@ -146,10 +151,22 @@ impl ZaiCodingPlanBackend {
     }
 }
 
-fn collect_citations(
-    text: &str,
-    allowed_domains: Option<&[String]>,
-) -> Vec<(String, String)> {
+fn scoped_search_query(query: &str, allowed_domains: Option<&[String]>) -> String {
+    let Some(domains) = allowed_domains.filter(|domains| !domains.is_empty()) else {
+        return query.to_owned();
+    };
+    if domains.len() == 1 {
+        return format!("{query} site:{}", domains[0]);
+    }
+    let sites = domains
+        .iter()
+        .map(|domain| format!("site:{domain}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!("{query} ({sites})")
+}
+
+fn collect_citations(text: &str, allowed_domains: Option<&[String]>) -> Vec<(String, String)> {
     let mut citations = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for token in text.split_whitespace() {
@@ -190,6 +207,21 @@ fn collect_citations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn domain_filters_are_sent_to_search_and_applied_to_citations() {
+        assert_eq!(
+            scoped_search_query("rust async", Some(&["docs.rs".to_owned()])),
+            "rust async site:docs.rs"
+        );
+        assert_eq!(
+            scoped_search_query(
+                "rust async",
+                Some(&["docs.rs".to_owned(), "rust-lang.org".to_owned()]),
+            ),
+            "rust async (site:docs.rs OR site:rust-lang.org)"
+        );
+    }
 
     #[test]
     fn citation_projection_deduplicates_and_filters_domains() {

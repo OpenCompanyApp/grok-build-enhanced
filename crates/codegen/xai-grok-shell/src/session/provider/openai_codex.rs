@@ -23,8 +23,7 @@ use crate::auth::kimi_code::{
 };
 use crate::auth::zai_coding_plan::{
     ZaiCodingPlanAuthError, ZaiCodingPlanCredentialStore,
-    shared_sampler_request_auth as zai_sampler_auth,
-    shared_tool_auth_provider as zai_tool_auth,
+    shared_sampler_request_auth as zai_sampler_auth, shared_tool_auth_provider as zai_tool_auth,
 };
 
 /// Provider-qualified model identity carried alongside every bound auxiliary
@@ -350,8 +349,7 @@ pub(crate) fn pin_provider_candidate_to_active_record(
     let same_pinned_provider = (candidate.provider.is_openai_codex()
         && active_provider.is_openai_codex())
         || (candidate.provider.is_kimi_code() && active_provider.is_kimi_code())
-        || (candidate.provider.is_zai_coding_plan()
-            && active_provider.is_zai_coding_plan());
+        || (candidate.provider.is_zai_coding_plan() && active_provider.is_zai_coding_plan());
     if same_pinned_provider {
         candidate.credential_binding = active_binding.cloned();
     }

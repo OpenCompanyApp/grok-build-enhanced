@@ -43,6 +43,8 @@ impl SlashCommand for UsageCommand {
             "Open ChatGPT Codex usage settings"
         } else if ctx.models.current_model_is_kimi_code() {
             "Open Kimi Code Console"
+        } else if ctx.models.current_model_is_zai_coding_plan() {
+            "Open Z.AI Coding Plan usage"
         } else {
             "Open billing management page"
         };
@@ -72,6 +74,11 @@ impl SlashCommand for UsageCommand {
             "manage" if ctx.models.current_model_is_kimi_code() => CommandResult::Action(
                 Action::OpenUrl("https://www.kimi.com/code/console".to_string()),
             ),
+            "manage" if ctx.models.current_model_is_zai_coding_plan() => {
+                CommandResult::Action(Action::OpenUrl(
+                    "https://z.ai/manage-apikey/coding-plan/personal/usage".to_string(),
+                ))
+            }
             "manage" => {
                 CommandResult::Action(Action::OpenUrl("https://grok.com/?_s=usage".to_string()))
             }

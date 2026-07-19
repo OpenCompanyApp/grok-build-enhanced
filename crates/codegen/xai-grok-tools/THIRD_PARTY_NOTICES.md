@@ -117,6 +117,25 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Optional runtime components
+
+### Z.AI Vision MCP
+
+When a user explicitly sets `GROK_ZAI_VISION_MCP=1`, the Z.AI Coding Plan
+adapter invokes the exact npm package `@z_ai/mcp-server@0.1.4` through `npx`.
+The package is not copied into this repository or bundled in Grok Build
+Enhanced release artifacts; npm resolves it at runtime inside the subprocess's
+temporary isolated home. The audited package declares the Apache License,
+Version 2.0. Its
+recorded npm integrity is
+`sha512-jPLBKJaTIy7HGYI0VuAaFJIjU3dq5z09CYZNr3QYoHYhCQ2dr5D6qp93oEVxNyvex643dICB7WloHbph2EzlVg==`.
+See the [Z.AI Vision MCP documentation](https://docs.z.ai/devpack/mcp/vision-mcp-server)
+and [npm package](https://www.npmjs.com/package/@z_ai/mcp-server).
+
+The Grok-facing process isolation, credential injection, path validation,
+attachment routing, tool wrappers, and bounded stdio MCP client are independent
+fork code; no package source is vendored or ported.
+
 ## Bundled tool binaries
 
 Release builds of this crate embed unmodified, prebuilt binaries of the

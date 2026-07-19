@@ -1,6 +1,9 @@
 // Re-export all types from the standalone xai-grok-sampling-types crate.
 // This keeps all existing `crate::sampling::types::*` imports working.
 pub use xai_grok_sampling_types::types::*;
+pub use xai_grok_sampling_types::{
+    OPENAI_CODEX_FAST_SERVICE_TIER, OPENAI_CODEX_SERVICE_TIER_METADATA_KEY,
+};
 
 // `CreateResponseWrapper` and `MessagesRequestWrapper` previously lived
 // here. They were moved into `xai-grok-sampling-types::types` (and

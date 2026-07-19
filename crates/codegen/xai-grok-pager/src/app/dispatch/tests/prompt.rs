@@ -2018,6 +2018,29 @@ fn slash_compact_with_context_enqueues_command() {
 }
 
 #[test]
+fn slash_fast_off_sends_the_shell_command_without_compacting() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .prompt
+        .slash_controller
+        .registry_mut()
+        .set_acp_commands(&[acp::AvailableCommand::new(
+            "fast".to_string(),
+            "Control Codex Fast mode".to_string(),
+        )]);
+
+    let effects = dispatch(Action::SendPrompt("/fast off".into()), &mut app);
+
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::SendPrompt { text, .. }] if text == "/fast off"
+    ));
+}
+
+#[test]
 fn slash_unknown_command_passthrough_enqueues_prompt() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);

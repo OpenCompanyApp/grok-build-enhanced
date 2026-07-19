@@ -1,41 +1,37 @@
 # Z.AI GLM Coding Plan integration research
 
-> Status: research and implementation design only. Z.AI Coding Plan support
-> described here is not yet implemented. The source revisions and endpoint
-> observations below are prior research; this reconciliation did not fetch,
-> re-review, or re-probe them and leaves
-> [`UPSTREAM_VERSIONS.md`](../../UPSTREAM_VERSIONS.md) unchanged.
+> Status: **implemented, experimental, and initially live-qualified**. The
+> runtime provider, isolated API-key auth, authenticated catalog, Chat
+> Completions inference, exact reasoning replay, streamed tool calls, usage UX,
+> Search/Reader/Zread MCP, and opt-in pinned Vision MCP are checked in.
+> Deterministic credential-free tests cover the provider contracts, and an
+> entitled account completed the synthetic live matrix documented below on
+> 2026-07-19. The source revisions remain the reviewed implementation
+> provenance; broader failure-mode and interactive qualification is still open.
 >
-> The project owner reports written confirmation from Z.AI that Grok Build is
-> approved and will be added to the supported-tool list. That private
-> correspondence is project context, not public evidence that this repository
-> already implements the provider or that public support or endorsement is in
-> effect. Keep the email outside the repository and describe public listing as
-> pending until the official documentation is updated.
+> Private provider correspondence must stay outside the repository and is not
+> public evidence of support or endorsement. Public distribution of this
+> provider remains gated until Z.AI's official supported-tool documentation is
+> updated.
 
 ## Executive conclusion
 
-Z.AI GLM Coding Plan could fit this fork as a future first-class subscription
-provider alongside the currently implemented xAI and experimental OpenAI Codex
-providers. Kimi Code is a separate, unimplemented research proposal. Every
-identifier and command in this document is proposed design notation only: the
-checked-in provider and CLI enums contain no Z.AI variant, and no runtime path
-can select or load Z.AI credentials. The recommended future architecture is:
+Z.AI GLM Coding Plan is implemented as a first-class experimental subscription
+provider alongside xAI, OpenAI Codex, and Kimi Code. Its runtime contract is:
 
-- Proposed provider ID: `zai_coding_plan`.
-- Proposed credential source: a Z.AI Coding Plan API key.
-- Proposed credential scope: `zai::coding-plan::global`.
+- Provider ID: `zai_coding_plan`.
+- Credential source: an isolated Z.AI Coding Plan API key.
+- Credential scope: `zai::coding-plan::global`.
 - Protocol: OpenAI-compatible Chat Completions.
 - Base URL: `https://api.z.ai/api/coding/paas/v4`.
 - Dynamic model discovery from authenticated `GET /models`.
-- Dedicated adapters for Coding Plan Web Search, Web Reader, Zread, and Vision
-  MCP services.
+- Dedicated Coding Plan Search, Reader, Zread, and opt-in Vision MCP adapters.
 - Provider-specific quota reporting from the monitoring endpoints used by
   current Z.AI clients.
-- A distinct `zai_open_platform` provider for pay-as-you-go inference, image
-  generation, and other general API services.
+- No `zai_open_platform` runtime is shipped: pay-go inference and image
+  generation remain explicitly outside this provider.
 - Grok Build retains its existing agent loop, tools, sessions, subagents,
-  compaction, permissions, and TUI.
+  compaction, permissions, headless mode, ACP, and TUI.
 
 The inference transport itself is relatively conventional. The main
 engineering risks are exact preserved-reasoning round trips, Z.AI's singular
@@ -131,7 +127,7 @@ logic. See the current [Coding Plan overview][zai-overview].
 | Web Search MCP | `https://api.z.ai/api/mcp/web_search_prime/mcp` | Remote Streamable HTTP MCP |
 | Web Reader MCP | `https://api.z.ai/api/mcp/web_reader/mcp` | Remote Streamable HTTP MCP |
 | Zread MCP | `https://api.z.ai/api/mcp/zread/mcp` | Remote Streamable HTTP MCP |
-| Vision MCP | Local `npx @z_ai/mcp-server@latest` | Local stdio MCP backed by GLM-4.6V |
+| Vision MCP | Local `npx --yes @z_ai/mcp-server@0.1.4` | Opt-in, exact-pinned stdio MCP backed by GLM-4.6V |
 | Quota monitor | `GET https://api.z.ai/api/monitor/usage/quota/limit` | Current client behavior; undocumented |
 | Model usage | `GET https://api.z.ai/api/monitor/usage/model-usage` | Current client behavior; undocumented |
 | Pay-go Reader | `POST https://api.z.ai/api/paas/v4/reader` | General API, not plan Reader MCP |
@@ -158,28 +154,26 @@ does not publish a reusable third-party authorization contract. Grok should
 not emulate or reverse-engineer ZCode login. See [ZCode model
 configuration][zcode-configuration].
 
-Proposed future UX:
+Implemented UX:
 
 ```text
 grok login --provider zai-coding-plan
 grok logout --provider zai-coding-plan
-grok auth status --provider zai-coding-plan
 grok models --provider zai-coding-plan
+grok -m zai-coding-plan/<entitled-model-id>
 ```
 
-These commands are design examples; the current binary does not accept the
-`zai-coding-plan` provider.
+Login reads the key from `Z_AI_API_KEY` or bounded standard input without
+terminal echo, validates it against the Coding Plan catalog before writing, and
+stores it under `zai::coding-plan::global`. Logout removes only that record and
+its credential-bound model cache. Selecting a Z.AI model never replaces xAI,
+Codex, Kimi, custom-provider, Open Platform, or BigModel China credentials.
+ACP advertises a dedicated Z.AI Coding Plan auth method using the same flow.
 
-Login should prompt for the one-time-visible API key, validate it against the
-Coding Plan catalog and quota endpoints, then store it under
-`zai::coding-plan::global`. Logout removes only that record. Selecting a Z.AI
-model must not replace xAI, Codex, Kimi, or ordinary Z.AI Open Platform
-credentials.
-
-Use `Z_AI_API_KEY` as the preferred environment fallback. `ZHIPU_API_KEY` can
-be recognized as a clearly documented legacy/OpenCode alias, with explicit
-precedence and no value logging. The key must be dynamically injected into
-inference, MCP, and usage requests; it must not be copied into `config.toml` or
+`Z_AI_API_KEY` is the only environment fallback. The implementation does not
+accept `ZHIPU_API_KEY`, because global and China-region credentials must remain
+explicitly separate. The key is dynamically injected into inference, MCP,
+usage, and the opt-in local Vision child; it is not copied into `config.toml` or
 a custom model definition.
 
 ## Models and discovery
@@ -240,10 +234,10 @@ A GLM request should explicitly contain the selected behavior, for example:
 }
 ```
 
-OpenCode was consulted only as transport research for this proposed request
-shape. It is not a runtime provider in this fork, and its behavior must be
-re-verified at a ledger-recorded revision before any implementation is based on
-it.
+OpenCode was consulted only as transport research for this request shape. It
+is not a runtime provider in this fork. The implementation is independently
+owned and the ledger-recorded source revision remains provenance rather than a
+runtime dependency.
 
 ## Preserved and interleaved reasoning
 
@@ -396,20 +390,22 @@ Do not silently replace Grok's existing WebFetch:
   non-HTML artifacts.
 - Z.AI Reader uses the shared monthly MCP allowance.
 - Reader may succeed on anti-bot pages that local fetch cannot parse.
-- Local fetch is a useful fallback when MCP is unavailable or exhausted.
+- Local fetch is a useful fallback when MCP extraction, protocol, transport, or
+  service handling fails. Authentication, quota, and explicit rejection errors
+  remain visible.
 
-Recommended configuration:
+Runtime routing follows the active `zai-coding-plan/<model-id>` provider
+identity; no separate Z.AI endpoint or static credential configuration is
+accepted. `--disable-web-search` removes Search while leaving the independently
+authenticated Reader and Zread capabilities available, subject to existing web
+policy and WebFetch configuration.
 
-```toml
-[tools.web]
-search = "zai"
-reader = "auto" # auto | zai | local
-```
-
-`auto` can prefer Reader for ordinary public HTML and fall back to WebFetch on
-quota, extraction, protocol, or service failure. Before sending any URL to the
-remote Reader, Grok must still reject unsupported schemes, credentials in
-URLs, localhost, private/link-local addresses, and prohibited redirects.
+Reader can handle ordinary public HTML and fall back to WebFetch on
+extraction, protocol, transport, or service failure. Authentication, quota, and
+explicit provider rejection errors remain visible rather than being hidden by
+fallback. Before sending any URL to the remote Reader, Grok must still reject
+unsupported schemes, credentials in URLs, localhost, private/link-local
+addresses, and prohibited redirects.
 
 The direct `POST /api/paas/v4/reader` API is a separate pay-as-you-go service.
 It offers options such as output format, cache bypass, retained images, image
@@ -454,11 +450,15 @@ clients:
    succeeds manually.
 
 This has been reproduced for Search, Reader, and Zread in
-[openai/codex issue 5619][codex-zai-mcp-issue]. Grok currently uses `rmcp`, so a
-live credential smoke test is required before claiming compatibility.
+[openai/codex issue 5619][codex-zai-mcp-issue]. Grok therefore uses a narrow
+provider-owned compatibility transport rather than routing these services
+through the generic `rmcp` client. The 2026-07-19 live matrix completed the full
+handshake and a tool call on all three endpoints. It also found that the live
+Search catalog advertises `web_search_prime` while the public guide names
+`webSearchPrime`; the adapter accepts only those two exact spellings and invokes
+whichever one the authenticated `tools/list` response advertised.
 
-If the current library fails, implement a narrow Z.AI compatibility transport
-that:
+The compatibility transport:
 
 - Accepts the negotiated `2024-11-05` version.
 - Preserves and returns `mcp-session-id`.
@@ -479,7 +479,7 @@ GLM-5.2 on the Coding Plan endpoint is text-only. Image and video
 understanding are delivered through the local Vision MCP server:
 
 ```text
-npx -y @z_ai/mcp-server@latest
+npx --yes @z_ai/mcp-server@0.1.4
 ```
 
 Environment:
@@ -489,12 +489,13 @@ Z_AI_API_KEY=<scoped Coding Plan key>
 Z_AI_MODE=ZAI
 ```
 
-The current npm release observed during research is `0.1.4`. Its package
-metadata declares Node 18+, while the official guide requires Node 22+. Grok
-should enforce the stricter documented Node 22 minimum. The official guide
-also warns that cached old npm versions can cause problems, so the doctor
-command should report the resolved package version and offer a cache-clean or
-`@latest` remediation. See [Vision MCP][zai-vision-mcp].
+The audited npm release is `0.1.4`, with recorded integrity
+`sha512-jPLBKJaTIy7HGYI0VuAaFJIjU3dq5z09CYZNr3QYoHYhCQ2dr5D6qp93oEVxNyvex643dICB7WloHbph2EzlVg==`.
+Its package metadata declares Node 18+, while the official guide requires Node
+22+; Grok enforces the stricter requirement. `zai_vision_doctor` reports Node,
+`npx`, the exact package pin, and the recorded integrity without resolving or
+printing credentials. Exact pinning is intentional: the integration never
+executes `@latest`. See [Vision MCP][zai-vision-mcp].
 
 Available tools include:
 
@@ -504,13 +505,18 @@ Available tools include:
 - `understand_technical_diagram`.
 - `analyze_data_visualization`.
 - `ui_diff_check`.
-- `image_analysis`.
-- `video_analysis` for MP4, MOV, or M4V content up to 8 MB.
+- `analyze_image` in the pinned npm package (`image_analysis` in older
+  official examples).
+- `analyze_video` for MP4, MOV, or M4V content up to 8 MiB (`video_analysis`
+  in older official examples).
 
 Outside Claude Code, pasted images commonly bypass Vision MCP and are sent
-directly to the selected model. Grok must deliberately resolve the attachment
-to a safe local path and invoke the appropriate Vision MCP tool. Tool
-permissions should make that local file access visible.
+directly to the selected model. Grok deliberately persists normalized
+attachments under the private session directory, invokes the pinned Vision MCP,
+and replaces inline image content with a textual description before Coding Plan
+inference. Model-visible Vision tools are read-only and exist only when
+`GROK_ZAI_VISION_MCP=1`; local paths must canonicalize beneath the workspace or
+session roots.
 
 Vision consumes the ordinary five-hour plan resource pool rather than the
 monthly Search/Reader/Zread pool.
@@ -665,86 +671,119 @@ instead of entering a generic retry loop.
 
 ## Mapping into this fork
 
-1. Add `ProviderId::ZaiCodingPlan` and a Z.AI plan API-key credential source in
-   [`provider.rs`](../../crates/codegen/xai-grok-sampling-types/src/provider.rs).
-2. Add `ZaiOpenPlatform` separately so pay-go and subscription requests cannot
-   share endpoints accidentally.
-3. Store the plan key under a region-specific scope such as
-   `zai::coding-plan::global`.
-4. Add a Chat Completions sampler profile using the canonical coding endpoint.
-5. Replace provider-specific `is_openai_codex()` branching with capability or
-   request-policy abstractions where additional providers now need equivalent
-   hooks.
-6. Add the Z.AI request shaper for `thinking`, `reasoning_effort`, and
-   `tool_stream`.
-7. Make reasoning round trips exact across tool calls, resume, and compaction.
-8. Add authenticated model discovery and entitlement-aware selection.
-9. Generalize the web configuration currently selected in
-   [`spawn.rs`](../../crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs)
-   so Z.AI Search/Reader/Zread can use dynamic scoped authentication.
-10. Validate the existing `rmcp` transport and add a Z.AI compatibility path if
-    protocol negotiation fails.
-11. Add Vision MCP startup, doctor, file-path routing, permissions, and package
-    version reporting.
-12. Generalize `/usage` around provider quota snapshots and add dated
-    API-equivalent pricing.
-13. Add provider-scoped login, logout, model selection, redaction, and docs.
+The implementation is split across focused provider boundaries:
 
-## Delivery sequence
+1. `ProviderId::ZaiCodingPlan`, `ZaiCodingPlanApiKey`, and the
+   `zai::coding-plan::global` record establish isolated identity and storage.
+2. Authenticated catalog discovery maps only returned Coding Plan models into
+   the `zai-coding-plan/` namespace and binds the cache to an opaque credential
+   record.
+3. A provider-owned Chat Completions shaper enforces the canonical Coding Plan
+   endpoint, sensitive bearer-only headers, `thinking`, normalized
+   `reasoning_effort`, singular `tool_stream`, and the 128-function limit.
+4. The shared conversation representation replays provider reasoning without
+   introducing separators, while session routing preserves provider identity
+   through resume, model switching, compaction, subagents, headless mode, and
+   ACP.
+5. A narrow Z.AI Streamable HTTP MCP client implements initialization, session
+   header propagation, initialized notification, tool listing, tool calls, JSON
+   and SSE responses, bounded bodies, fixed-shape errors, and dynamic auth for
+   Search, Reader, and Zread.
+6. Reader is layered behind Grok's existing URL and SSRF validation and keeps
+   local WebFetch as the ordinary protocol/transport/service fallback.
+7. Vision is explicit opt-in, exact-pinned, Node-checked, process-isolated, and
+   rooted to workspace/session media. Automatic attachments are transcribed
+   before text-only Coding Plan inference.
+8. `/usage` projects returned five-hour, weekly, monthly MCP, reset, model, and
+   tool information without guessing pay-go spend; `/usage manage` is
+   provider-specific.
+9. No `ZaiOpenPlatform` or BigModel China runtime identity is shipped. Their
+   credentials, endpoints, and pay-go image generation cannot be selected by
+   this provider.
 
-### Phase 1: provider and credentials
+## Delivery status
 
-- Provider and credential identities.
-- Global/BigModel region identity.
-- Login, logout, status, and redaction.
-- Exact URL/header tests proving provider isolation.
+### Implemented and deterministically qualified
 
-### Phase 2: catalog and inference
+- Provider and credential identity, login/logout, redaction, storage, and
+  environment fallback.
+- Authenticated model catalog, cache binding, model selection, context/reasoning
+  metadata, and canonical Chat Completions inference.
+- Text, exact reasoning replay, fragmented/parallel streamed function calls,
+  final usage, stop/error handling, and bounded retry classification.
+- Session resume, active-chain compaction behavior, model switching, subagents,
+  headless mode, and ACP provider routing.
+- Search MCP, Reader MCP with protected local fallback, and prefixed Zread
+  tools, all with provider-scoped dynamic auth.
+- Opt-in Vision MCP doctor, exact package pin/integrity, bounded stdio
+  handshake, process cleanup, safe media paths, automatic attachments, and
+  eight provider media-analysis tools.
+- Five-hour, weekly, monthly MCP, recent activity, reset-time, and management
+  UX.
 
-- Authenticated dynamic model catalog.
-- GLM-5.2 capability and thinking-level metadata.
-- Chat Completions request shaping.
-- Text, reasoning, tool streaming, usage, stops, and cancellation.
-- Provider-owned error classification and bounded recovery.
+### Deliberately outside this provider
 
-### Phase 3: sessions and caching
+- Z.AI Open Platform pay-go inference or image generation.
+- BigModel China Coding Plan or team-organization credentials.
+- API-equivalent dollar estimates when no maintained, dated price mapping is
+  available. The UI reports them as unavailable rather than borrowing another
+  provider's rates.
 
-- Exact preserved-reasoning representation.
-- Tool-chain round trips.
-- Resume and compaction boundaries.
-- Cached-token and cache-rate accounting.
+### Entitled live qualification (2026-07-19)
 
-### Phase 4: remote web services
+A synthetic, telemetry-disabled matrix used disposable Grok homes and workspaces
+and retained no authenticated response captures. It qualified:
 
-- Search, Reader, and Zread MCP adapters.
-- Native Grok tool/result/citation normalization.
-- Reader versus local WebFetch policy.
-- MCP protocol compatibility and reconnect behavior.
-- Monthly quota visibility.
+- isolated login, authenticated discovery of eight entitled catalog entries,
+  logout, and preservation of unrelated provider scopes;
+- selectable `glm-4.7`, `glm-5-turbo`, and `glm-5.2` inference, streamed
+  reasoning, local read/write calls, a two-read parallel-call request, headless
+  resume/model switching, and an agent-profile model override;
+- the Rust usage client and quota parser against the account's returned limit
+  shape;
+- complete Search, Reader, and Zread Streamable HTTP handshakes and calls,
+  including all three prefixed Zread tools;
+- the opt-in Vision doctor and an actual local-image analysis through the exact
+  package pin; and
+- ACP inference, manual session compaction, post-compaction context recovery,
+  and namespaced live model switching.
 
-### Phase 5: vision and media
+An extended GLM 5.2 final pass then qualified:
 
-- Node/package doctor and local Vision MCP lifecycle.
-- Safe attachment-to-file-path routing.
-- Image/video tool permissions and output rendering.
-- Separate pay-go Z.AI image-generation provider.
+- invalid-key login rejection without credential/cache writes or credential
+  echoing;
+- exact JSON inference, streamed reasoning, local read/write, sequential
+  read-then-write, and two parallel reads completed in exactly two sampling
+  rounds (one multi-call response and one final response);
+- multi-turn resume with a later tool call, profile routing, logout cleanup, and
+  provider-qualified usage attribution to GLM 5.2;
+- three headless turns (two resumed) over an approximately 35 KiB stable
+  prefix, with provider-reported cache-read counts of 21,184, 22,720, and
+  22,784 tokens;
+- Search, Reader, deliberate loopback/SSRF rejection, all three Zread tools,
+  Vision doctor, explicit image analysis, automatic image-attachment routing,
+  and actionable failure when Vision opt-in was absent;
+- ACP reasoning and local tool traffic before manual compaction, context
+  recovery after a model round trip away from and back to GLM 5.2, persisted
+  namespaced selection, and the session-bound billing extension; and
+- valid returned quota rows plus recent GLM 5.2 activity.
 
-### Phase 6: usage and UX
+The credential was supplied only over stdin or sensitive request headers. A
+post-run exact-value scan found no credential in captured stdout or stderr; raw
+model reasoning, tool results, session IDs, account metadata, and provider
+payloads were not retained in the repository.
 
-- Five-hour, weekly, and monthly MCP quota snapshots.
-- Per-tool and optional per-model activity.
-- Reset timestamps.
-- API-equivalent token, cache, search, and image costs.
-- User guide and troubleshooting documentation.
+### Remaining live qualification
 
-### Phase 7: live qualification
-
-- Headless inference with a real approved Coding Plan key.
-- Long reasoning/tool loops and parallel calls.
-- Session resume, compaction, and repeated-prefix caching.
-- Search, Reader, Zread, and Vision MCP handshakes and calls.
-- Rate-limit, quota-exhaustion, model-overload, and account-switching behavior.
-- Full log and telemetry redaction review.
+- Interactive TUI behavior, live subagent execution, substantially longer
+  reasoning/tool loops, and heavier repeated-compaction pressure.
+- Rate-limit, quota-exhaustion, overload, model-entitlement, expiry, and account
+  switching responses; unlike invalid-key rejection, these were not forced
+  against the live account.
+- Quota-effect reconciliation across repeated Search, Reader, Zread, and Vision
+  calls.
+- A broader credential-bearing log and telemetry review under those unavailable
+  failure conditions, without retaining authenticated payloads.
 
 ## Acceptance gates
 
@@ -778,22 +817,23 @@ Tests must cover:
 
 ## Remaining live-test requirements
 
-No credential was accessed or printed during this research. Before declaring
-the provider production-ready, test with an approved Coding Plan account:
+The source research itself accessed no credential. The dated synthetic matrix
+above later exercised an entitled account without printing the key or retaining
+raw authenticated payloads. Before declaring the provider production-ready,
+still qualify:
 
-- Authenticated `/models` contents and capability metadata.
-- Exact GLM-5.2 request and streamed response shapes.
-- Tool-call argument streaming with `tool_stream=true`.
-- Byte-exact preserved reasoning accepted on a follow-up tool turn.
-- Cache hits on repeated stable prefixes.
-- `/usage` monitoring payloads for the user's tier.
-- Search, Reader, and Zread MCP negotiation through the current Rust client.
-- Vision MCP install, startup, file-path analysis, and quota effects.
-- Error bodies for invalid key, model entitlement, quota exhaustion, overload,
-  and expired subscription.
+- byte-exact preserved reasoning acceptance across a live multi-tool replay,
+  beyond the deterministic replay suite and streamed-reasoning smoke test;
+- substantially longer repeated-compaction and tool-loop stress beyond the
+  qualified stable-prefix cache and tool-bearing compaction cases;
+- quota deltas attributable to Search, Reader, Zread, and Vision calls;
+- interactive TUI and live subagent behavior; and
+- fixed-shape handling for model-entitlement loss, quota exhaustion, overload,
+  rate limits, account changes, and expired subscriptions. Invalid-key login
+  rejection is already live-qualified.
 
-These live checks must remain credential-gated and must not record API keys,
-raw authorization headers, private account identifiers, prompts, preserved
+These checks must remain credential-gated and must not record API keys, raw
+authorization headers, private account identifiers, prompts, preserved
 reasoning, or sensitive tool results.
 
 [zai-overview]: https://docs.z.ai/devpack/overview

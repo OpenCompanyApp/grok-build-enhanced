@@ -21,6 +21,11 @@ pub const OPENAI_CODEX_FAST_SERVICE_TIER: &str = "priority";
 /// persisted with session/config state but is never sent to Responses.
 pub const OPENAI_CODEX_STANDARD_SERVICE_TIER: &str = "default";
 
+/// ACP model-metadata key carrying the effective Codex service tier into UI
+/// clients. The value is session/config selection state, not catalog-default
+/// capability metadata.
+pub const OPENAI_CODEX_SERVICE_TIER_METADATA_KEY: &str = "serviceTier";
+
 /// Internal compatibility marker used by the public Codex client for models
 /// whose authenticated catalog entry enables the Responses Lite contract.
 pub const OPENAI_CODEX_RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";

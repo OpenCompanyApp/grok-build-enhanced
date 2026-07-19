@@ -2048,9 +2048,14 @@ impl AgentView {
         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
         let usage_warning = usage_warning_text.as_deref();
         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
+        let model_name = if self.session.models.current_model_fast_mode_active() {
+            format!("⚡ {model_id}")
+        } else {
+            model_id
+        };
         let model_label = match self.session.models.reasoning_effort {
-            Some(eff) => format!("{model_id} ({eff})"),
-            None => model_id,
+            Some(eff) => format!("{model_name} ({eff})"),
+            None => model_name,
         };
         let info = match &self.prompt_mode {
             PromptMode::Normal => PromptInfo {
@@ -4108,6 +4113,86 @@ mod selection_state_tests {
         agent.clear_scrollback_selection_state();
         assert!(agent.last_scrollback_selection_model.ranges.is_empty());
         assert!(agent.last_scrollback_selection_boundaries.is_empty());
+    }
+}
+#[cfg(test)]
+mod codex_fast_indicator_tests {
+    use super::super::test_fixtures::make_agent;
+    use crate::actions::ActionRegistry;
+    use crate::app::bundle::BundleState;
+    use crate::scrollback::render::ScratchBuffer;
+    use agent_client_protocol as acp;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn codex_agent(service_tier: &str) -> super::AgentView {
+        let mut agent = make_agent();
+        let model_id = acp::ModelId::new("openai-codex/gpt-5.6-luna");
+        agent.session.models.available.clear();
+        agent.session.models.available.insert(
+            model_id.clone(),
+            acp::ModelInfo::new(model_id.clone(), "GPT-5.6 Luna"),
+        );
+        agent.session.models.set_current(model_id, None);
+        agent
+            .session
+            .models
+            .set_service_tier(Some(service_tier.to_string()));
+        agent
+    }
+
+    fn render_text(agent: &mut super::AgentView) -> String {
+        let area = Rect::new(0, 0, 100, 40);
+        let mut buf = Buffer::empty(area);
+        let mut scratch = ScratchBuffer::new();
+        agent.draw(
+            area,
+            &mut buf,
+            &ActionRegistry::defaults(),
+            &mut scratch,
+            None,
+            false,
+            0,
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            &BundleState::default(),
+            false,
+            &mut Vec::new(),
+            false,
+            false,
+            None,
+        );
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(|cell| cell.symbol().to_string()))
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect()
+    }
+
+    #[test]
+    fn prompt_model_name_has_lightning_icon_when_codex_fast_is_active() {
+        let text = render_text(&mut codex_agent("priority"));
+
+        let icon_position = text.find('⚡').expect("lightning icon should be rendered");
+        let model_position = text
+            .find("GPT-5.6 Luna")
+            .expect("Codex model name should be rendered");
+        assert!(
+            icon_position < model_position,
+            "lightning icon must precede the model name:\n{text}"
+        );
+    }
+
+    #[test]
+    fn prompt_model_name_has_no_lightning_icon_in_codex_standard_mode() {
+        let text = render_text(&mut codex_agent("default"));
+
+        assert!(text.contains("GPT-5.6 Luna"), "rendered prompt:\n{text}");
+        assert!(!text.contains('⚡'), "rendered prompt:\n{text}");
     }
 }
 #[cfg(test)]

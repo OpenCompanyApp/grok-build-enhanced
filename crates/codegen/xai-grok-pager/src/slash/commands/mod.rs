@@ -490,6 +490,17 @@ mod tests {
         models.current = Some(id);
         models
     }
+
+    fn zai_models() -> ModelState {
+        let mut models = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("zai-coding-plan/glm-5.2"));
+        models.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "GLM-5.2".to_string()),
+        );
+        models.current = Some(id);
+        models
+    }
     #[test]
     fn usage_no_args_returns_show_usage() {
         assert!(matches!(
@@ -532,6 +543,18 @@ mod tests {
         match usage::UsageCommand.run(&mut ctx, "manage") {
             CommandResult::Action(Action::OpenUrl(url)) => {
                 assert_eq!(url, "https://www.kimi.com/code/console");
+            }
+            other => panic!("expected Action(OpenUrl), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_manage_opens_zai_coding_plan_usage_for_zai_model() {
+        let models = zai_models();
+        let mut ctx = make_ctx(&models);
+        match usage::UsageCommand.run(&mut ctx, "manage") {
+            CommandResult::Action(Action::OpenUrl(url)) => {
+                assert_eq!(url, "https://z.ai/manage-apikey/coding-plan/personal/usage");
             }
             other => panic!("expected Action(OpenUrl), got {other:?}"),
         }

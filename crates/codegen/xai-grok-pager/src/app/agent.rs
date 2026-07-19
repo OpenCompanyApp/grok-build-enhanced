@@ -22,7 +22,8 @@ pub struct AgentId(pub usize);
 pub enum QueueEntryKind {
     /// Regular user prompt — sent via `PromptRequest`.
     Prompt,
-    /// Slash command (e.g., `/compact`) — dispatched as `ExtRequest` or local action.
+    /// Slash command — `/compact` uses its dedicated extension; shell-owned
+    /// commands such as `/fast` use the prompt RPC without an LLM turn.
     Command,
     /// Direct bash command — bypasses agent loop, executed by shell directly.
     BashCommand,

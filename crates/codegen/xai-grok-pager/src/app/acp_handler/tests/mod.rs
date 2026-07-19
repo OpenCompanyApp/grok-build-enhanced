@@ -1815,6 +1815,20 @@ pub(super) fn model_changed_ext(
     let raw = serde_json::value::to_raw_value(&payload).unwrap();
     acp::ExtNotification::new("x.ai/session_notification", std::sync::Arc::from(raw))
 }
+pub(super) fn service_tier_changed_ext(
+    session_id: &str,
+    service_tier: &str,
+) -> acp::ExtNotification {
+    let payload = SessionNotification {
+        session_id: acp::SessionId::new(session_id),
+        update: XaiSessionUpdate::ServiceTierChanged {
+            service_tier: Some(service_tier.to_string()),
+        },
+        meta: None,
+    };
+    let raw = serde_json::value::to_raw_value(&payload).unwrap();
+    acp::ExtNotification::new("x.ai/session_notification", std::sync::Arc::from(raw))
+}
 pub(super) fn model_changed_ext_with_event(
     session_id: &str,
     model_id: &str,

@@ -220,6 +220,62 @@
         );
     }
 
+    #[test]
+    fn service_tier_changed_turns_on_the_codex_fast_indicator_state() {
+        let mut app = make_app_with_agent("sess-1");
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        seed_models(
+            agent,
+            "openai-codex/gpt-5.6-luna",
+            &["openai-codex/gpt-5.6-luna"],
+        );
+        agent
+            .session
+            .models
+            .set_service_tier(Some("default".to_string()));
+
+        let changed = handle_ext_notification(
+            &service_tier_changed_ext("sess-1", "priority"),
+            &mut app,
+        );
+
+        assert!(changed, "the newly visible icon requires a redraw");
+        assert!(
+            app.agents[&AgentId(0)]
+                .session
+                .models
+                .current_model_fast_mode_active()
+        );
+    }
+
+    #[test]
+    fn service_tier_changed_turns_off_the_codex_fast_indicator_state() {
+        let mut app = make_app_with_agent("sess-1");
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        seed_models(
+            agent,
+            "openai-codex/gpt-5.6-luna",
+            &["openai-codex/gpt-5.6-luna"],
+        );
+        agent
+            .session
+            .models
+            .set_service_tier(Some("priority".to_string()));
+
+        let changed = handle_ext_notification(
+            &service_tier_changed_ext("sess-1", "default"),
+            &mut app,
+        );
+
+        assert!(changed, "removing the visible icon requires a redraw");
+        assert!(
+            !app.agents[&AgentId(0)]
+                .session
+                .models
+                .current_model_fast_mode_active()
+        );
+    }
+
     /// A follower client (no in-flight switch of its own) receives the
     /// leader's `ModelChanged` broadcast and silently mirrors the new model
     /// into its local state — no scrollback entry, no toast, just enough

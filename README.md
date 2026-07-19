@@ -10,9 +10,10 @@ carefully scoped provider, theme, tool, and user-experience enhancements.
 > **Unofficial and independent.** Grok Build Enhanced is an unofficial
 > daily-driver fork maintained independently by OpenCompanyApp. It is not
 > affiliated with, endorsed by, or supported by xAI, SpaceXAI, OpenAI,
-> Moonshot AI, or their affiliates. ChatGPT Codex subscription and Kimi Code
-> support follow current public client/documented behavior and use experimental
-> backend contracts that may change without notice.
+> Moonshot AI, Z.AI, or their affiliates. ChatGPT Codex subscription, Kimi Code,
+> and Z.AI GLM Coding Plan support follow current public client/documented
+> behavior and use experimental backend contracts that may change without
+> notice.
 
 The executable remains `grok`. Existing `~/.grok` configuration, sessions,
 model IDs, environment variables, Agent Client Protocol (ACP) identity, and the
@@ -26,7 +27,7 @@ responsive Grok braille symbol remain compatible.
 | Custom OpenAI-compatible endpoint path | Retained with explicit provider identity; custom entries use only their own configured credentials |
 | Bundled Warp themes and theme UX | Implemented |
 | Kimi Code plan provider | Implemented and experimental: isolated API-key login, dynamic models, Chat/Messages inference, plan usage, and hosted web tools; the current Chat/K3/usage/web matrix was live-qualified on 2026-07-19 |
-| Z.AI GLM Coding Plan provider | Researched/planned only; no GLM runtime provider or login is shipped |
+| Z.AI GLM Coding Plan provider | Implemented and experimental: isolated API-key login, authenticated models, Chat Completions inference, preserved reasoning, plan usage, Search/Reader/Zread tools, and opt-in Vision MCP; the extended entitled GLM 5.2 headless/ACP/tool matrix was live-qualified on 2026-07-19 |
 | Enhanced release artifacts | Fork-owned stable `v0.2.3` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
 | Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
 
@@ -346,23 +347,99 @@ and the
 [authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)
 for current qualification boundaries and credential-handling details.
 
+### Z.AI GLM Coding Plan provider (experimental)
+
+Z.AI Coding Plan uses its dedicated global coding endpoint and a plan API key;
+it is not the Z.AI Open Platform pay-go API or the separate BigModel China
+service. Validate and store the key without putting it in a command argument:
+
+```sh
+# Recommended: read the key from a credential manager over standard input.
+secure-key-command | grok login --provider zai-coding-plan
+
+# Or use the supported environment fallback briefly, then clear it.
+export Z_AI_API_KEY="$(secure-key-command)"
+grok login --provider zai-coding-plan
+unset Z_AI_API_KEY
+```
+
+Login validates the key against the authenticated Coding Plan model catalog and
+stores it under an isolated provider scope. List or refresh entitled models and
+start a session with a returned ID:
+
+```sh
+grok models --provider zai-coding-plan
+grok -m zai-coding-plan/<model-id>
+```
+
+Z.AI sessions use the dedicated Coding Plan Chat Completions endpoint, preserve
+provider reasoning across tool turns and resume, support fragmented and
+parallel streamed function calls, and bind subagents, compaction, model
+switching, headless mode, and ACP to the same provider identity. Search MCP,
+Reader MCP with SSRF-screened local fallback, and collision-safe Zread tools
+are enabled for supported sessions. `--disable-web-search` disables Search
+without removing Reader or Zread. `/usage` shows the returned five-hour,
+weekly, and shared monthly Search/Reader/Zread quota; `/usage manage` opens the
+Coding Plan usage page.
+
+The selected GLM coding models are text-only. Image understanding is available
+through the local Vision MCP only after explicit opt-in:
+
+```sh
+export GROK_ZAI_VISION_MCP=1
+grok -m zai-coding-plan/<model-id>
+```
+
+Vision requires Node.js 22+ and runs the exact package pin
+`@z_ai/mcp-server@0.1.4` in a short-lived, isolated child environment. Attached
+images are persisted under the session, transcribed through Vision MCP, and
+never sent as inline image parts to the text-only Coding Plan model. The pin's
+recorded npm integrity is documented in the provider reference. Vision includes
+read-only screenshot, diagram, chart, image, UI-diff, and video tools; local
+media must remain under the workspace/session roots, and video is limited to
+MP4/MOV/M4V up to 8 MiB. This does not enable pay-go image generation.
+
+Disconnect only Z.AI Coding Plan without changing xAI, Codex, or Kimi
+credentials:
+
+```sh
+grok logout --provider zai-coding-plan
+```
+
+The runtime implementation has deterministic credential-isolation, request,
+streaming, MCP-handshake, path, and usage tests. On 2026-07-19, an entitled
+account completed synthetic, telemetry-disabled qualification covering all
+three selectable GLM models and an extended GLM 5.2 matrix: streamed reasoning,
+parallel and chained local tools, multi-turn resume, repeated-prefix cache hits,
+tool-bearing ACP compaction and model round-tripping, session-bound usage,
+Search, Reader with live SSRF rejection, all three Zread tools, explicit Vision
+analysis, and automatic attachment routing with opt-out failure behavior.
+Interactive TUI, live subagents, longer stress loops, quota-delta reconciliation,
+and forced rate-limit/quota/expiry/account-switch conditions remain before
+production-readiness claims. Public distribution also remains subject to
+Z.AI's supported-tool policy.
+
 ### Themes, tools, and UX
 
-Enhanced includes the packaged Warp theme corpus, provider-scoped Codex and
-Kimi web integrations, Codex image integration, and focused terminal UX
-additions while preserving Grok Build's existing tool names, permission model,
-sessions, and responsive braille symbol. Third-party attribution is recorded in
-[`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) and crate-local notices.
+Enhanced includes the packaged Warp theme corpus, provider-scoped Codex, Kimi,
+and Z.AI web integrations, Codex image integration, opt-in Z.AI Vision, and
+focused terminal UX additions while preserving Grok Build's existing tool
+names, permission model, sessions, and responsive braille symbol. Third-party
+attribution is recorded in [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) and
+crate-local notices.
 
 ### Additional provider status
 
-Kimi Code is now an experimental runtime provider; Z.AI GLM remains research
-only. An entitled plan key live-qualified Kimi's current Chat/K3 inference,
-usage, hosted-search, and hosted-fetch matrix on 2026-07-19. Broader Messages,
-session, cache, quota, and media qualification remains before production claims:
+Kimi Code and Z.AI GLM Coding Plan are experimental runtime providers. An
+entitled plan key live-qualified Kimi's current Chat/K3 inference, usage,
+hosted-search, and hosted-fetch matrix on 2026-07-19. An entitled Coding Plan
+account separately live-qualified Z.AI's initial model, reasoning, local-tool,
+resume, ACP compaction/model-switch, quota, hosted MCP, Zread, and opt-in Vision
+matrix on the same date. Broader interactive and forced-failure testing remains
+for both providers:
 
 - [Kimi Code provider reference and research — implemented, experimental](docs/providers/kimi-code-integration-research.md)
-- [Z.AI GLM Coding Plan integration research — researched/planned, not implemented](docs/providers/zai-glm-coding-plan-integration-research.md)
+- [Z.AI GLM Coding Plan provider reference — implemented, experimental; initial live matrix qualified](docs/providers/zai-glm-coding-plan-integration-research.md)
 - [Provider documentation index](docs/providers/README.md)
 - [Reviewed upstream revisions](UPSTREAM_VERSIONS.md)
 

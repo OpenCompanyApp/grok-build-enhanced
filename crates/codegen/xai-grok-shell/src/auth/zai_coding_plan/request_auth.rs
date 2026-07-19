@@ -215,7 +215,8 @@ mod tests {
     #[tokio::test]
     async fn sampler_uses_one_sensitive_bearer() {
         let directory = tempfile::tempdir().unwrap();
-        let store = ZaiCodingPlanCredentialStore::from_auth_path(directory.path().join("auth.json"));
+        let store =
+            ZaiCodingPlanCredentialStore::from_auth_path(directory.path().join("auth.json"));
         let credentials = ZaiCodingPlanCredentials::new("sentinel-zai-key").unwrap();
         let expected = credentials.credential_binding();
         store.save(credentials.clone()).await.unwrap();
@@ -232,7 +233,8 @@ mod tests {
     #[tokio::test]
     async fn request_auth_rejects_an_account_switch() {
         let directory = tempfile::tempdir().unwrap();
-        let store = ZaiCodingPlanCredentialStore::from_auth_path(directory.path().join("auth.json"));
+        let store =
+            ZaiCodingPlanCredentialStore::from_auth_path(directory.path().join("auth.json"));
         let first = ZaiCodingPlanCredentials::new("sentinel-first-key").unwrap();
         let expected = first.credential_binding();
         store.save(first.clone()).await.unwrap();

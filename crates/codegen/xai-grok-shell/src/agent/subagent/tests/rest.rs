@@ -1926,6 +1926,25 @@ fn reconcile_orphan_persists_subagent_finished_via_cmd_tx() {
     );
 }
 #[test]
+fn provider_bound_subagent_resume_includes_zai() {
+    use super::super::handle_request::provider_requires_local_resume_binding;
+
+    for provider in [
+        xai_grok_sampling_types::ProviderId::OpenAiCodex,
+        xai_grok_sampling_types::ProviderId::KimiCode,
+        xai_grok_sampling_types::ProviderId::ZaiCodingPlan,
+    ] {
+        assert!(provider_requires_local_resume_binding(provider));
+    }
+    for provider in [
+        xai_grok_sampling_types::ProviderId::Xai,
+        xai_grok_sampling_types::ProviderId::Custom,
+    ] {
+        assert!(!provider_requires_local_resume_binding(provider));
+    }
+}
+
+#[test]
 fn resumed_kimi_child_uses_the_binding_from_its_source_summary() {
     let source = ResumeSourceData {
         subagent_id: "sub-kimi".into(),

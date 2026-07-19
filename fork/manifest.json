@@ -820,8 +820,161 @@
       ]
     },
     {
-      "id": "zai-provider-research",
-      "description": "Research and implementation design for a possible, currently unimplemented Z.AI Coding Plan provider.",
+      "id": "zai-coding-plan-provider-auth-catalog",
+      "description": "Provider-scoped global Z.AI Coding Plan API-key storage, bounded login input, logout isolation, authenticated catalog discovery, credential-bound caching, ACP auth, and request authentication.",
+      "source_ids": [
+        "grok-build-upstream",
+        "zai-sdk-python",
+        "zai-coding-plugins"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md",
+        "crates/codegen/xai-grok-pager/src/app/cli.rs",
+        "crates/codegen/xai-grok-shell/src/agent/auth_method.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs",
+        "crates/codegen/xai-grok-shell/src/auth/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/model.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/**"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/request_auth.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/catalog.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "zai-coding-plan-provider-runtime",
+      "description": "First-class Z.AI Coding Plan identity, canonical Chat Completions transport, exact preserved reasoning, streamed function calls, and provider-bound session, compaction, subagent, headless, model-switch, and ACP routing.",
+      "source_ids": [
+        "grok-build-upstream",
+        "opencode",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-sampler/Cargo.toml",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/config.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/mod.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/zai_coding_plan/**",
+        "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
+        "crates/codegen/xai-grok-sampling-types/src/lib.rs",
+        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
+        "crates/codegen/xai-grok-sampling-types/src/types.rs",
+        "crates/codegen/xai-grok-sampling-types/src/zai_coding_plan.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/handle_request.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/tests/rest.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/prompt_build.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/auth_error_no_retry_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/compaction.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/session_compact.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/mod.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sampler/src/provider/zai_coding_plan/mod.rs",
+        "crates/codegen/xai-grok-sampling-types/src/zai_coding_plan.rs",
+        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-sampler/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "zai-coding-plan-web-vision-tools",
+      "description": "Dynamically authenticated Search, Reader, and Zread MCP adapters, SSRF-screened local fetch fallback, and opt-in exact-pinned Vision MCP attachment and media tooling.",
+      "source_ids": [
+        "grok-build-upstream",
+        "zai-sdk-python",
+        "zai-coding-plugins"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-agent/src/builder.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/prompt_build.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn.rs",
+        "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/**/*zai*.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/zai_coding_plan.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/types.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/zai_mcp.rs",
+        "crates/codegen/xai-grok-tools/src/registry/types.rs",
+        "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-tools/src/implementations/zai_mcp.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/hosted_zai.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/zai_coding_plan.rs",
+        "crates/codegen/xai-grok-tools/src/registry/types.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "zai-coding-plan-usage-ux",
+      "description": "Provider-bound Z.AI plan usage retrieval, drift-tolerant five-hour, weekly, monthly MCP, reset, model, and tool projections, TUI usage summaries, high-usage polling, and management routing.",
+      "source_ids": [
+        "grok-build-upstream",
+        "codexbar",
+        "zai-usage-helper"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/acp/model_state.rs",
+        "crates/codegen/xai-grok-pager/src/app/actions.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/billing.rs",
+        "crates/codegen/xai-grok-pager/src/app/effects/mod.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/usage.rs",
+        "crates/codegen/xai-grok-pager/src/views/credit_bar.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/usage.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/billing.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/usage.rs",
+        "crates/codegen/xai-grok-pager/src/views/credit_bar.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/usage.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/billing.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "zai-coding-plan-provider-reference",
+      "description": "Implemented experimental Z.AI Coding Plan provider contract, capability boundaries, source provenance, security policy, deterministic qualification, and remaining live gates.",
       "source_ids": [
         "grok-build-upstream",
         "opencode",
@@ -832,6 +985,7 @@
         "zai-usage-helper"
       ],
       "paths": [
+        "docs/providers/README.md",
         "docs/providers/zai-glm-coding-plan-integration-research.md"
       ],
       "integration_paths": [

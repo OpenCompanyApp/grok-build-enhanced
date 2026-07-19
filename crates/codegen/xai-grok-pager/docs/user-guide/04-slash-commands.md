@@ -164,7 +164,9 @@ at a higher rate than Standard mode. Current Codex behavior charges GPT-5.6 and
 GPT-5.5 at 2.5x the Standard credit rate and GPT-5.4 at 2x. It applies only to
 supported models when signed in with ChatGPT; xAI sessions and API-key billing
 do not use the ChatGPT credit multipliers. The authenticated model service
-remains authoritative for model availability.
+remains authoritative for model availability. Fast mode is **off by default**
+and must be selected explicitly. While it is active, a `⚡` icon appears before
+the Codex model name below the input.
 
 ### `/always-approve` and `/auto`
 

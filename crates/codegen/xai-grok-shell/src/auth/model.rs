@@ -286,9 +286,8 @@ impl AuthStore {
                 | AuthRecord::KimiCode(_)
                 | AuthRecord::ZaiCodingPlan(_)
                 | AuthRecord::Unknown(_),
-            ) | None => {
-                None
-            }
+            )
+            | None => None,
         }
     }
 
@@ -366,9 +365,8 @@ impl AuthStore {
                 | AuthRecord::KimiCode(_)
                 | AuthRecord::ZaiCodingPlan(_)
                 | AuthRecord::Unknown(_),
-            ) | None => {
-                None
-            }
+            )
+            | None => None,
         }
     }
 
@@ -426,9 +424,8 @@ impl AuthStore {
                 | AuthRecord::KimiCode(_)
                 | AuthRecord::ZaiCodingPlan(_)
                 | AuthRecord::Unknown(_),
-            ) | None => {
-                None
-            }
+            )
+            | None => None,
         }
     }
 

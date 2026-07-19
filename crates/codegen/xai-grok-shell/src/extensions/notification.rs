@@ -730,6 +730,14 @@ pub enum SessionUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_effort: Option<String>,
     },
+    /// The session's provider service tier changed without switching models.
+    /// Currently emitted by authenticated ChatGPT Codex `/fast` controls.
+    ServiceTierChanged {
+        /// Effective service tier (`priority` for Fast, `default` for explicit
+        /// Standard). `None` remains available for future provider reset flows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service_tier: Option<String>,
+    },
     /// Streaming chunk of a tool call's arguments.
     ///
     /// Behaves like `acp::SessionUpdate::AgentMessageChunk` /
@@ -2081,6 +2089,35 @@ mod tests {
         assert_eq!(json["sessionId"], "sess-abc");
         assert_eq!(json["update"]["sessionUpdate"], "model_changed");
         assert_eq!(json["update"]["model_id"], "grok-4");
+    }
+
+    #[test]
+    fn service_tier_changed_serializes_the_effective_fast_selection() {
+        let update = SessionUpdate::ServiceTierChanged {
+            service_tier: Some("priority".to_string()),
+        };
+
+        let json = serde_json::to_value(update).unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "sessionUpdate": "service_tier_changed",
+                "service_tier": "priority",
+            })
+        );
+    }
+
+    #[test]
+    fn service_tier_changed_roundtrips_through_json() {
+        let original = SessionUpdate::ServiceTierChanged {
+            service_tier: Some("priority".to_string()),
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: SessionUpdate = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed, original);
     }
 
     // ── TurnCompleted (durable, replayable turn-end signal) ──

@@ -85,6 +85,23 @@ impl ZaiMcpClient {
         expected_tool: &str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, ZaiMcpError> {
+        self.call_tool_candidates(&[expected_tool], arguments).await
+    }
+
+    /// Call one tool from a small, caller-owned compatibility set.
+    ///
+    /// Z.AI's public Search documentation names `webSearchPrime`, while the
+    /// live Coding Plan MCP catalog currently advertises `web_search_prime`.
+    /// Callers must opt into each exact spelling; an arbitrary advertised tool
+    /// is never selected or invoked.
+    pub(crate) async fn call_tool_candidates(
+        &self,
+        expected_tools: &[&str],
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, ZaiMcpError> {
+        if expected_tools.is_empty() || expected_tools.len() > 4 {
+            return Err(ZaiMcpError::Protocol);
+        }
         let initialize = self
             .send(
                 None,
@@ -104,6 +121,7 @@ impl ZaiMcpClient {
                 false,
             )
             .await?;
+        require_jsonrpc_response(&initialize.body, 1)?;
         let protocol = initialize
             .body
             .pointer("/result/protocolVersion")
@@ -136,18 +154,13 @@ impl ZaiMcpClient {
                 false,
             )
             .await?;
-        let tool_is_listed = listed
+        require_jsonrpc_response(&listed.body, 2)?;
+        let advertised_tools = listed
             .body
             .pointer("/result/tools")
             .and_then(serde_json::Value::as_array)
-            .is_some_and(|tools| {
-                tools.iter().any(|tool| {
-                    tool.get("name").and_then(serde_json::Value::as_str) == Some(expected_tool)
-                })
-            });
-        if !tool_is_listed {
-            return Err(ZaiMcpError::Protocol);
-        }
+            .ok_or(ZaiMcpError::Protocol)?;
+        let selected_tool = select_advertised_tool(advertised_tools, expected_tools)?;
 
         let called = self
             .send(
@@ -157,23 +170,20 @@ impl ZaiMcpClient {
                     "id": 3,
                     "method": "tools/call",
                     "params": {
-                        "name": expected_tool,
+                        "name": selected_tool,
                         "arguments": arguments
                     }
                 }),
                 false,
             )
             .await?;
+        require_jsonrpc_response(&called.body, 3)?;
         let result = called
             .body
             .get("result")
             .cloned()
             .ok_or(ZaiMcpError::InvalidResponse)?;
-        if result
-            .get("isError")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-        {
+        if result.get("isError").and_then(serde_json::Value::as_bool) == Some(true) {
             return Err(ZaiMcpError::Rejected);
         }
         Ok(result)
@@ -248,9 +258,27 @@ struct McpResponse {
     session_id: Option<String>,
 }
 
+fn select_advertised_tool<'a>(
+    advertised_tools: &'a [serde_json::Value],
+    expected_tools: &[&str],
+) -> Result<&'a str, ZaiMcpError> {
+    for candidate in expected_tools {
+        if let Some(name) = advertised_tools.iter().find_map(|tool| {
+            let name = tool.get("name")?.as_str()?;
+            (name == *candidate).then_some(name)
+        }) {
+            return Ok(name);
+        }
+    }
+    Err(ZaiMcpError::Protocol)
+}
+
 fn validate_endpoint(endpoint: &str) -> Result<String, ZaiMcpError> {
     let normalized = endpoint.trim_end_matches('/');
-    let canonical = matches!(normalized, SEARCH_ENDPOINT | READER_ENDPOINT | ZREAD_ENDPOINT);
+    let canonical = matches!(
+        normalized,
+        SEARCH_ENDPOINT | READER_ENDPOINT | ZREAD_ENDPOINT
+    );
     #[cfg(any(test, feature = "test-support"))]
     let allowed = canonical
         || reqwest::Url::parse(normalized).is_ok_and(|url| {
@@ -326,6 +354,19 @@ fn parse_response_body(bytes: &[u8]) -> Result<serde_json::Value, ZaiMcpError> {
     Err(ZaiMcpError::InvalidResponse)
 }
 
+fn require_jsonrpc_response(
+    value: &serde_json::Value,
+    expected_id: i64,
+) -> Result<(), ZaiMcpError> {
+    if value.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0")
+        || value.get("id").and_then(serde_json::Value::as_i64) != Some(expected_id)
+        || value.get("result").is_none()
+    {
+        return Err(ZaiMcpError::Protocol);
+    }
+    Ok(())
+}
+
 fn business_code(value: &serde_json::Value) -> Option<i64> {
     let success = value.get("success").and_then(serde_json::Value::as_bool);
     let code = value.get("code").and_then(|value| {
@@ -375,7 +416,48 @@ pub(crate) fn text_content(result: &serde_json::Value) -> Result<String, ZaiMcpE
 
 #[cfg(test)]
 mod tests {
+    use std::{future::Future, pin::Pin, sync::Arc};
+
     use super::*;
+    use crate::types::{
+        ApiKeyProvider, RequestAuth, RequestCredentialSnapshot, ZAI_CODING_PLAN_PROVIDER_ID,
+    };
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{body_json, method, path},
+    };
+
+    struct ZaiTestProvider;
+
+    impl ApiKeyProvider for ZaiTestProvider {
+        fn current_api_key(&self) -> Option<String> {
+            None
+        }
+
+        fn request_auth_provider_id(&self) -> Option<&str> {
+            Some(ZAI_CODING_PLAN_PROVIDER_ID)
+        }
+
+        fn current_request_auth_async(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Option<RequestAuth>> + Send + '_>> {
+            Box::pin(std::future::ready(Some(
+                RequestAuth::for_provider_snapshot(
+                    ZAI_CODING_PLAN_PROVIDER_ID,
+                    RequestCredentialSnapshot::new("opaque-zai-record", 1),
+                    [(
+                        "authorization".to_owned(),
+                        "Bearer sentinel-zai-key".to_owned(),
+                    )],
+                ),
+            )))
+        }
+    }
+
+    fn test_client(server: &MockServer) -> ZaiMcpClient {
+        let provider: SharedApiKeyProvider = Arc::new(ZaiTestProvider);
+        ZaiMcpClient::new(&server.uri(), provider).unwrap()
+    }
 
     #[test]
     fn parses_json_and_sse_responses() {
@@ -388,5 +470,181 @@ mod tests {
     #[test]
     fn rejects_cross_product_endpoint() {
         assert!(validate_endpoint("https://api.z.ai/api/paas/v4/web_search").is_err());
+    }
+
+    #[tokio::test]
+    async fn performs_complete_session_bound_handshake_with_dynamic_auth() {
+        let server = MockServer::start().await;
+        let endpoint_path = "/";
+        let session_id = "opaque-test-session";
+
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .and(body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "grok-build-enhanced",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                }
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header(MCP_SESSION_HEADER, session_id)
+                    .set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "protocolVersion": MCP_PROTOCOL_VERSION,
+                            "capabilities": {},
+                            "serverInfo": {"name": "mock-zai", "version": "1"}
+                        }
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .and(body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            })))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .and(body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "tools": [{"name": "search_doc", "inputSchema": {"type": "object"}}]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .and(body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "search_doc",
+                    "arguments": {"repo_name": "openai/codex", "query": "streaming"}
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {"content": [{"type": "text", "text": "result"}]}
+            })))
+            .mount(&server)
+            .await;
+
+        let result = test_client(&server)
+            .call_tool(
+                "search_doc",
+                serde_json::json!({"repo_name": "openai/codex", "query": "streaming"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(text_content(&result).unwrap(), "result");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 4);
+        for request in &requests {
+            assert_eq!(
+                request
+                    .headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok()),
+                Some("Bearer sentinel-zai-key")
+            );
+            assert_eq!(
+                request
+                    .headers
+                    .get("mcp-protocol-version")
+                    .and_then(|value| value.to_str().ok()),
+                Some(MCP_PROTOCOL_VERSION)
+            );
+        }
+        for request in requests.iter().skip(1) {
+            assert_eq!(
+                request
+                    .headers
+                    .get(MCP_SESSION_HEADER)
+                    .and_then(|value| value.to_str().ok()),
+                Some(session_id)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_http_200_business_authentication_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 1001,
+                "success": false,
+                "msg": "private provider detail"
+            })))
+            .mount(&server)
+            .await;
+
+        let error = test_client(&server)
+            .call_tool("search_doc", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(error, ZaiMcpError::Authentication);
+        assert!(!format!("{error:?}").contains("private provider detail"));
+    }
+
+    #[test]
+    fn selects_only_explicitly_allowed_advertised_tool_spelling() {
+        let tools = serde_json::json!([
+            {"name": "web_search_prime"},
+            {"name": "unrelated_tool"}
+        ]);
+        let tools = tools.as_array().unwrap();
+        assert_eq!(
+            select_advertised_tool(tools, &["webSearchPrime", "web_search_prime"]),
+            Ok("web_search_prime")
+        );
+        assert_eq!(
+            select_advertised_tool(tools, &["webSearchPrime"]),
+            Err(ZaiMcpError::Protocol)
+        );
+        assert_eq!(
+            select_advertised_tool(tools, &[]),
+            Err(ZaiMcpError::Protocol)
+        );
+    }
+
+    #[test]
+    fn rejects_mismatched_jsonrpc_response_identity() {
+        assert_eq!(
+            require_jsonrpc_response(
+                &serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {}}),
+                1,
+            ),
+            Err(ZaiMcpError::Protocol)
+        );
     }
 }

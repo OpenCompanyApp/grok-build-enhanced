@@ -32,6 +32,8 @@ pub mod update_goal;
 pub mod video_gen;
 pub mod web_fetch;
 pub mod web_search;
+pub mod zai_vision;
+pub mod zai_zread;
 pub use ask_user_question::AskUserQuestionTool;
 pub use bash::BashTool;
 pub use deploy_app::{AppBuilderDeployerConfig, DEPLOY_APP_TOOL_NAME};
@@ -65,3 +67,17 @@ pub use video_gen::{
 };
 pub use web_fetch::{WebFetchClient, WebFetchConfig, WebFetchParams, WebFetchTool};
 pub use web_search::{CodexWebSearchTool, WebSearchTool};
+pub use zai_vision::{
+    ZAI_VISION_ANALYZE_DATA_TOOL_NAME, ZAI_VISION_ANALYZE_IMAGE_TOOL_NAME,
+    ZAI_VISION_ANALYZE_VIDEO_TOOL_NAME, ZAI_VISION_DIAGNOSE_ERROR_TOOL_NAME,
+    ZAI_VISION_DOCTOR_TOOL_NAME, ZAI_VISION_EXTRACT_TEXT_TOOL_NAME, ZAI_VISION_UI_DIFF_TOOL_NAME,
+    ZAI_VISION_UI_TO_ARTIFACT_TOOL_NAME, ZAI_VISION_UNDERSTAND_DIAGRAM_TOOL_NAME,
+    ZaiVisionAnalyzeDataTool, ZaiVisionAnalyzeImageTool, ZaiVisionAnalyzeVideoTool,
+    ZaiVisionClient, ZaiVisionDiagnoseErrorTool, ZaiVisionDoctorTool, ZaiVisionExtractTextTool,
+    ZaiVisionUiDiffTool, ZaiVisionUiToArtifactTool, ZaiVisionUnderstandDiagramTool,
+    vision_tool_configs, zai_vision_mcp_enabled,
+};
+pub use zai_zread::{
+    ZREAD_GET_REPO_STRUCTURE_TOOL_NAME, ZREAD_READ_FILE_TOOL_NAME, ZREAD_SEARCH_DOC_TOOL_NAME,
+    ZaiZreadClient, ZreadGetRepoStructureTool, ZreadReadFileTool, ZreadSearchDocTool,
+};

@@ -461,10 +461,13 @@ fast_mode = true
 ```
 
 The UI/config name `fast` maps to the exact wire value
-`service_tier: "priority"`. Explicit Standard is stored locally as `default`
-but omitted from the request. Unknown tiers are omitted rather than forwarded.
-Fast is available only when the authenticated model catalog advertises the
-tier; it never affects xAI or custom-provider traffic.
+`service_tier: "priority"`. Fast is opt-in: an omitted `service_tier` remains
+Standard even if the authenticated catalog advertises `priority` as its default.
+Explicit Standard is stored locally as `default` but omitted from the request.
+Unknown tiers are omitted rather than forwarded. Fast is available only when
+the authenticated model catalog advertises the tier; it never affects xAI or
+custom-provider traffic. While the effective session tier is `priority`, the
+pager shows `⚡` immediately before the Codex model name below the input.
 
 The pre-existing 2026-07-17 product snapshot cites [official Fast mode
 documentation][openai-speed] for about 1.5x speed and higher ChatGPT-credit

@@ -683,6 +683,54 @@ impl SessionActor {
         let current_query = crate::session::image_describe::strip_template_context_tags(
             &xai_chat_state::compaction_utils::extract_user_query(&original_user_message),
         );
+        let active_provider = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|config| config.provider);
+        if active_provider == Some(xai_grok_sampling_types::ProviderId::ZaiCodingPlan) {
+            use xai_grok_tools::implementations::grok_build::ZaiVisionClient;
+            let vision = self
+                .tool_bridge_handle()
+                .read_resource::<ZaiVisionClient>()
+                .await
+                .ok_or_else(|| {
+                    acp::Error::internal_error().data(
+                        "Z.AI Coding Plan image understanding requires opt-in Vision MCP; set GROK_ZAI_VISION_MCP=1 and install Node.js 22 or newer",
+                    )
+                })?;
+            let prompt = crate::session::image_describe::build_describe_prompt(
+                outline.as_deref(),
+                &current_query,
+            );
+            let limit = crate::session::image_describe::IMAGE_DESCRIPTION_PROCESSING_LIMIT;
+            let skip_count = persisted.len().saturating_sub(limit);
+            let mut description_parts = Vec::with_capacity(persisted.len());
+            for (index, image) in persisted.iter().enumerate() {
+                let description = if index < skip_count {
+                    crate::session::image_describe::SKIPPED_IMAGE_MARKER.to_owned()
+                } else {
+                    vision
+                        .analyze_attachment(&image.path, &prompt)
+                        .await
+                        .map_err(|error| {
+                            acp::Error::internal_error().data(format!(
+                                "Z.AI Vision MCP image transcription failed: {error}"
+                            ))
+                        })?
+                };
+                if persisted.len() > 1 {
+                    description_parts.push(format!("Image {}: {description}", index + 1));
+                } else {
+                    description_parts.push(description);
+                }
+            }
+            return Ok(crate::session::image_describe::render_image_user_message(
+                &description_parts.join("\n\n"),
+                &image_paths,
+                &original_user_message,
+            ));
+        }
         let (client, describe_route) = self
             .prepare_aux_sampling_client(Some(&self.image_description_model), "image description")
             .await?;

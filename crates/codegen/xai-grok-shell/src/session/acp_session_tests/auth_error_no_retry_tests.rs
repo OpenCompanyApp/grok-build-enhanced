@@ -631,10 +631,10 @@ async fn kimi_401_surfaces_provider_scoped_reauthentication_details() {
             sampling.base_url = xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned();
             actor.chat_state_handle.update_sampling_config(sampling);
 
-            let error = actor
-                .handle_sampling_failure(auth_error())
-                .await
-                .expect_err("Kimi 401 must be terminal");
+            let error = match actor.handle_sampling_failure(auth_error()).await {
+                Err(error) => error,
+                Ok(_) => panic!("Kimi 401 must be terminal"),
+            };
             let details = error.data.expect("error details");
             let message = details
                 .get("message")
@@ -645,6 +645,81 @@ async fn kimi_401_surfaces_provider_scoped_reauthentication_details() {
             assert!(message.contains("Auth:      kimi_code"), "{message}");
             assert!(
                 message.contains("grok login --provider kimi-code"),
+                "{message}"
+            );
+            assert!(!message.contains("openai-codex"), "{message}");
+            assert!(!message.contains("Auth:      WebLogin"), "{message}");
+        })
+        .await;
+}
+
+/// A terminal Z.AI Coding Plan 401 must never invoke the global xAI token
+/// refresher, even when an xAI account is logged in simultaneously.
+#[tokio::test(flavor = "current_thread")]
+async fn zai_401_does_not_run_xai_auth_recovery() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let xai_refresh_called = Arc::new(AtomicBool::new(false));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysSucceedRefresher {
+                    called: xai_refresh_called.clone(),
+                });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor sampling config");
+            sampling.provider = xai_grok_sampling_types::ProviderId::ZaiCodingPlan;
+            sampling.model = "glm-5.2".to_owned();
+            sampling.base_url = xai_grok_sampling_types::ZAI_CODING_PLAN_BASE_URL.to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+
+            let result = actor.handle_sampling_failure(auth_error()).await;
+
+            assert!(result.is_err(), "Z.AI 401 must remain terminal");
+            assert!(
+                !xai_refresh_called.load(Ordering::SeqCst),
+                "Z.AI 401 must never call the xAI refresher"
+            );
+        })
+        .await;
+}
+
+/// Z.AI authentication failures must identify only the Coding Plan provider
+/// and its own login command.
+#[tokio::test(flavor = "current_thread")]
+async fn zai_401_surfaces_provider_scoped_reauthentication_details() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = make_actor_with_auth_manager(None).await;
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor sampling config");
+            sampling.provider = xai_grok_sampling_types::ProviderId::ZaiCodingPlan;
+            sampling.model = "glm-5.2".to_owned();
+            sampling.base_url = xai_grok_sampling_types::ZAI_CODING_PLAN_BASE_URL.to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+
+            let error = match actor.handle_sampling_failure(auth_error()).await {
+                Err(error) => error,
+                Ok(_) => panic!("Z.AI 401 must be terminal"),
+            };
+            let details = error.data.expect("error details");
+            let message = details
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| details.as_str())
+                .expect("user-facing message");
+
+            assert!(message.contains("Auth:      zai_coding_plan"), "{message}");
+            assert!(
+                message.contains("grok login --provider zai-coding-plan"),
                 "{message}"
             );
             assert!(!message.contains("openai-codex"), "{message}");

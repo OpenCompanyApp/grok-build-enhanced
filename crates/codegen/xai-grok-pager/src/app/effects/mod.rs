@@ -3890,9 +3890,13 @@ pub(crate) fn execute(
                     let subscription_tier = billing.subscription_tier;
                     let codex_usage = billing.codex_usage;
                     let kimi_usage = billing.kimi_usage;
+                    let zai_usage = billing.zai_usage;
                     let codex_api_equivalent_cost = billing.codex_api_equivalent_cost;
                     let balance = billing.config.map(credit_balance_from_config);
-                    let autotopup = if codex_usage.is_some() || kimi_usage.is_some() {
+                    let autotopup = if codex_usage.is_some()
+                        || kimi_usage.is_some()
+                        || zai_usage.is_some()
+                    {
                         crate::views::credit_bar::AutoTopupFetch::Cleared
                     } else if has_prepaid_credits(balance.as_ref()) {
                         fetch_auto_topup_info(&tx).await
@@ -3904,6 +3908,7 @@ pub(crate) fn execute(
                         balance,
                         codex_usage,
                         kimi_usage,
+                        zai_usage,
                         codex_api_equivalent_cost,
                         silent,
                         subscription_tier,

@@ -379,6 +379,86 @@ pub fn format_kimi_usage_summary(
     lines.join("\n")
 }
 
+/// Format authoritative Z.AI GLM Coding Plan token windows, the shared monthly
+/// Search/Reader/Zread MCP pool, and optional 24-hour usage details.
+pub fn format_zai_coding_plan_usage_summary(
+    usage: &xai_grok_shell::auth::zai_coding_plan::ZaiCodingPlanUsageSnapshot,
+) -> String {
+    fn push_row(
+        lines: &mut Vec<String>,
+        row: &xai_grok_shell::auth::zai_coding_plan::ZaiCodingPlanUsageRow,
+    ) {
+        let amount = if row.limit > 0 {
+            format!("{} / {} ({:.0}% used)", row.used, row.limit, row.percentage)
+        } else {
+            format!("{} used", row.used)
+        };
+        lines.push(format!("{}: {amount}", row.label));
+        if let Some(reset) = row.reset_at {
+            lines.push(format!(
+                "  Resets: {}",
+                reset.with_timezone(&chrono::Local).format("%B %-d, %H:%M")
+            ));
+        }
+        let detail_unit = if row.label.to_ascii_lowercase().contains("mcp") {
+            "calls"
+        } else {
+            "quota units"
+        };
+        for detail in &row.details {
+            lines.push(format!("  {}: {} {detail_unit}", detail.code, detail.usage));
+        }
+    }
+
+    fn push_details(
+        lines: &mut Vec<String>,
+        heading: &str,
+        details: &[xai_grok_shell::auth::zai_coding_plan::ZaiCodingPlanUsageDetail],
+        unit: &str,
+    ) {
+        if details.is_empty() {
+            return;
+        }
+        lines.push(String::new());
+        lines.push(heading.to_owned());
+        for detail in details {
+            let amount = u64::try_from(detail.usage.max(0))
+                .map(format_token_count)
+                .unwrap_or_else(|_| detail.usage.max(0).to_string());
+            lines.push(format!("  {}: {amount} {unit}", detail.code));
+        }
+    }
+
+    let mut lines = vec!["Z.AI GLM Coding Plan usage".to_owned()];
+    if let Some(plan) = usage.plan_name.as_deref().filter(|plan| !plan.is_empty()) {
+        lines.push(format!("Plan: {plan}"));
+    }
+    for row in usage.rows() {
+        push_row(&mut lines, row);
+    }
+    if usage.rows().next().is_none() {
+        lines.push("Plan windows: unavailable".to_owned());
+    }
+    push_details(
+        &mut lines,
+        "Recent model usage (24 hours)",
+        &usage.recent_model_tokens,
+        "tokens",
+    );
+    push_details(
+        &mut lines,
+        "Recent MCP usage (24 hours)",
+        &usage.recent_tool_calls,
+        "calls",
+    );
+    lines.push(String::new());
+    lines.push(
+        "API-equivalent cost: unavailable; Coding Plan quota and MCP calls are not pay-go spend."
+            .to_owned(),
+    );
+    lines.join("\n")
+}
+
 /// Low-balance ($10) and pay-as-you-go critical ($5) warning thresholds, in cents.
 const LOW_BALANCE_CENTS: i64 = 1000;
 const PAY_AS_YOU_GO_CRITICAL_CENTS: i64 = 500;
@@ -645,6 +725,69 @@ mod tests {
         assert!(summary.contains("Extra Usage balance: USD 5.00 / 10.00"));
         assert!(summary.contains("Extra Usage monthly spend: USD 12.50 / 50.00"));
         assert!(summary.contains("API-equivalent cost: unavailable"));
+    }
+
+    #[test]
+    fn zai_summary_reports_plan_token_and_mcp_windows_without_cost_guessing() {
+        use xai_grok_shell::auth::zai_coding_plan::{
+            ZaiCodingPlanUsageDetail, ZaiCodingPlanUsageRow, ZaiCodingPlanUsageSnapshot,
+        };
+
+        let usage = ZaiCodingPlanUsageSnapshot {
+            plan_name: Some("Pro".to_owned()),
+            five_hour: Some(ZaiCodingPlanUsageRow {
+                label: "5-hour pool".to_owned(),
+                used: 38,
+                limit: 100,
+                percentage: 38.0,
+                reset_at: None,
+                details: vec![ZaiCodingPlanUsageDetail {
+                    code: "glm-5.2".to_owned(),
+                    usage: 30,
+                }],
+            }),
+            weekly: Some(ZaiCodingPlanUsageRow {
+                label: "Weekly quota".to_owned(),
+                used: 610,
+                limit: 1000,
+                percentage: 61.0,
+                reset_at: None,
+                details: Vec::new(),
+            }),
+            monthly_mcp: Some(ZaiCodingPlanUsageRow {
+                label: "Monthly MCP".to_owned(),
+                used: 212,
+                limit: 1000,
+                percentage: 21.2,
+                reset_at: None,
+                details: vec![ZaiCodingPlanUsageDetail {
+                    code: "web_search_prime".to_owned(),
+                    usage: 91,
+                }],
+            }),
+            other_limits: Vec::new(),
+            recent_model_tokens: vec![ZaiCodingPlanUsageDetail {
+                code: "glm-5.2".to_owned(),
+                usage: 8_300_000,
+            }],
+            recent_tool_calls: vec![ZaiCodingPlanUsageDetail {
+                code: "web_reader".to_owned(),
+                usage: 103,
+            }],
+        };
+
+        let summary = format_zai_coding_plan_usage_summary(&usage);
+        assert!(summary.contains("Z.AI GLM Coding Plan usage"));
+        assert!(summary.contains("Plan: Pro"));
+        assert!(summary.contains("5-hour pool: 38 / 100 (38% used)"));
+        assert!(summary.contains("glm-5.2: 30 quota units"));
+        assert!(summary.contains("Weekly quota: 610 / 1000 (61% used)"));
+        assert!(summary.contains("Monthly MCP: 212 / 1000 (21% used)"));
+        assert!(summary.contains("web_search_prime: 91 calls"));
+        assert!(summary.contains("glm-5.2: 8,300,000 tokens"));
+        assert!(summary.contains("web_reader: 103 calls"));
+        assert!(summary.contains("API-equivalent cost: unavailable"));
+        assert!(!summary.contains("Subscription spend: $"));
     }
 
     #[test]

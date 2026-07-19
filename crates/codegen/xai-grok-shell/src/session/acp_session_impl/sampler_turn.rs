@@ -525,7 +525,7 @@ impl SessionActor {
         let bound_runtime = crate::session::provider::bind_provider_runtime(full_config, None)
             .await
             .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
-        if (is_codex || cfg.provider.is_kimi_code())
+        if (is_codex || cfg.provider.is_kimi_code() || cfg.provider.is_zai_coding_plan())
             && state_cfg.credential_binding != bound_runtime.sampler_config.credential_binding
         {
             state_cfg.credential_binding = bound_runtime.sampler_config.credential_binding.clone();
@@ -974,8 +974,9 @@ impl SessionActor {
             .data(detailed_message);
             return Err(acp_err);
         }
-        let has_provider_owned_auth =
-            request_provider.is_openai_codex() || request_provider.is_kimi_code();
+        let has_provider_owned_auth = request_provider.is_openai_codex()
+            || request_provider.is_kimi_code()
+            || request_provider.is_zai_coding_plan();
         if matches!(error.kind, SamplingErrorKind::Auth) && has_provider_owned_auth {
             tracing::warn!(
                 session_id = %self.session_info.id.0,
@@ -983,9 +984,8 @@ impl SessionActor {
                 "provider auth recovery exhausted; refusing xAI auth fallback"
             );
         }
-        let auth_recovery_eligible = matches!(error.kind, SamplingErrorKind::Auth)
-            && !has_provider_owned_auth
-            && {
+        let auth_recovery_eligible =
+            matches!(error.kind, SamplingErrorKind::Auth) && !has_provider_owned_auth && {
                 let (model_id, base_url) = self
                     .chat_state_handle
                     .get_sampling_config()
@@ -1177,8 +1177,10 @@ impl SessionActor {
                          `grok login --provider openai-codex`.",
                     );
                 } else if request_provider.is_kimi_code() {
+                    msg.push_str("\n\n  Re-authenticate: run `grok login --provider kimi-code`.");
+                } else if request_provider.is_zai_coding_plan() {
                     msg.push_str(
-                        "\n\n  Re-authenticate: run `grok login --provider kimi-code`.",
+                        "\n\n  Re-authenticate: run `grok login --provider zai-coding-plan`.",
                     );
                 }
             }
@@ -1300,8 +1302,8 @@ impl SessionActor {
         // Subscription-provider refresh belongs exclusively to the provider
         // binder, which runs after reconstructing the request config. Do not
         // evaluate the global xAI or generic static-key refresh paths for a
-        // Codex or Kimi session.
-        if provider.is_openai_codex() || provider.is_kimi_code() {
+        // Codex, Kimi, or Z.AI Coding Plan session.
+        if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_zai_coding_plan() {
             return;
         }
         if provider == xai_grok_sampling_types::ProviderId::Xai {

@@ -120,6 +120,10 @@ pub struct BillingConfigResponse {
     /// populated on xAI or Codex paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kimi_usage: Option<crate::auth::kimi_code::KimiCodeUsageSnapshot>,
+    /// Authoritative Z.AI GLM Coding Plan quota and MCP usage for a Z.AI-backed
+    /// session. Never populated on xAI, Codex, or Kimi paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zai_usage: Option<crate::auth::zai_coding_plan::ZaiCodingPlanUsageSnapshot>,
     /// Informational API-price comparison from actual session token counters.
     /// This is explicitly not ChatGPT subscription spend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -228,6 +232,16 @@ fn billing_provider(
     session_provider.unwrap_or(configured_provider)
 }
 
+fn zai_usage_binding_is_current(
+    expected: &xai_grok_sampling_types::CredentialBinding,
+    current: &xai_grok_sampling_types::CredentialBinding,
+) -> bool {
+    expected.provider == xai_grok_sampling_types::ProviderId::ZaiCodingPlan
+        && expected.source == xai_grok_sampling_types::CredentialSourceId::ZaiCodingPlanApiKey
+        && expected.same_record(current)
+        && current.generation >= expected.generation
+}
+
 async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let request: BillingRequest = super::parse_params(args)?;
     let session = match request.session_id.as_ref() {
@@ -315,6 +329,7 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
             config: None,
             codex_usage: Some(codex_usage),
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost,
             on_demand_enabled: None,
             subscription_tier: None,
@@ -370,6 +385,63 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
             config: None,
             codex_usage: None,
             kimi_usage: Some(kimi_usage),
+            zai_usage: None,
+            codex_api_equivalent_cost: None,
+            on_demand_enabled: None,
+            subscription_tier: None,
+        });
+    }
+
+    if provider == xai_grok_sampling_types::ProviderId::ZaiCodingPlan {
+        let grok_home = crate::util::grok_home::grok_home();
+        let (credentials, current_binding) =
+            crate::auth::zai_coding_plan::current_credentials_and_binding(&grok_home).map_err(
+                |error| {
+                    acp::Error::auth_required()
+                        .data(format!("Z.AI Coding Plan usage unavailable: {error}"))
+                },
+            )?;
+        if let Some(sampling) = session_sampling.as_ref() {
+            let expected = sampling.credential_binding.as_ref().ok_or_else(|| {
+                acp::Error::auth_required().data(
+                    "Z.AI Coding Plan session credential binding is unavailable; restart or select the model again",
+                )
+            })?;
+            if !zai_usage_binding_is_current(expected, &current_binding) {
+                return Err(acp::Error::auth_required().data(
+                    "Z.AI Coding Plan usage authentication changed; restart or select the model again",
+                ));
+            }
+        }
+        let zai_usage = crate::auth::zai_coding_plan::fetch_usage(&credentials)
+            .await
+            .map_err(|error| {
+                let display = error.to_string();
+                if matches!(
+                    error,
+                    crate::auth::zai_coding_plan::ZaiCodingPlanAuthError::Unavailable
+                        | crate::auth::zai_coding_plan::ZaiCodingPlanAuthError::InvalidCredential
+                        | crate::auth::zai_coding_plan::ZaiCodingPlanAuthError::Http(
+                            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+                        )
+                        | crate::auth::zai_coding_plan::ZaiCodingPlanAuthError::Business(
+                            1001..=1004
+                        )
+                ) {
+                    acp::Error::auth_required().data(format!(
+                        "Z.AI Coding Plan usage authentication failed: {display}"
+                    ))
+                } else {
+                    acp::Error::internal_error()
+                        .data(format!("Failed to fetch Z.AI Coding Plan usage: {display}"))
+                }
+            })?;
+        tracing::info!("billing: fetched Z.AI Coding Plan limits");
+        return to_raw_response(&BillingConfigResponse {
+            config: None,
+            codex_usage: None,
+            kimi_usage: None,
+            zai_usage: Some(zai_usage),
             codex_api_equivalent_cost: None,
             on_demand_enabled: None,
             subscription_tier: None,
@@ -528,6 +600,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zai_usage_binding_accepts_only_the_pinned_record_and_generation() {
+        use xai_grok_sampling_types::{CredentialBinding, CredentialSourceId, ProviderId};
+
+        let mut expected = CredentialBinding::zai_coding_plan(Some("zai-record".to_owned()));
+        expected.generation = 3;
+        let mut current = expected.clone();
+        assert!(zai_usage_binding_is_current(&expected, &current));
+
+        current.generation = 4;
+        assert!(zai_usage_binding_is_current(&expected, &current));
+
+        current.record_id = Some("different-record".to_owned());
+        assert!(!zai_usage_binding_is_current(&expected, &current));
+
+        let mut stale = expected.clone();
+        stale.generation = 2;
+        assert!(!zai_usage_binding_is_current(&expected, &stale));
+
+        let foreign = CredentialBinding {
+            provider: ProviderId::KimiCode,
+            source: CredentialSourceId::KimiCodeApiKey,
+            record_id: expected.record_id.clone(),
+            generation: expected.generation,
+        };
+        assert!(!zai_usage_binding_is_current(&expected, &foreign));
+    }
+
+    #[test]
     fn billing_request_defaults_to_explicit_and_accepts_silent_polling() {
         let explicit: BillingRequest = serde_json::from_value(serde_json::json!({
             "sessionId": "session-1"
@@ -651,6 +751,7 @@ mod tests {
             }),
             codex_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: Some(true),
             subscription_tier: Some("SuperGrok".into()),
@@ -699,6 +800,7 @@ mod tests {
             config: Some(config),
             codex_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: None,
             subscription_tier: None,

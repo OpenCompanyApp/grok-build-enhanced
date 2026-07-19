@@ -270,6 +270,10 @@ impl WebSearchConfig {
         matches!(self, Self::ZaiCodingPlan { .. })
     }
 
+    pub fn uses_provider_scoped_web(&self) -> bool {
+        self.is_codex_subscription() || self.is_kimi_code() || self.is_zai_coding_plan()
+    }
+
     /// Return a copy safe for returning to clients.
     ///
     /// Static keys, configured header values, and Codex turn/session identity

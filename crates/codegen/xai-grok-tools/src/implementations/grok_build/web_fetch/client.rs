@@ -237,6 +237,43 @@ impl WebFetchClient {
             }
         }
 
+        if let Some(reader) = self.zai_reader.as_ref() {
+            match reader.fetch(&url).await? {
+                HostedFetchResult::Content(content) => {
+                    let source_bytes = content.len();
+                    let processed = self
+                        .process_text_content(
+                            content.as_bytes(),
+                            "text/markdown; charset=utf-8",
+                            session_folder,
+                            RecoveryTools {
+                                read: read_tool_name,
+                                execute: execute_tool_name,
+                            },
+                        )
+                        .await;
+                    let was_truncated = processed.was_truncated;
+                    let output = WebFetchOutput::Content(WebFetchContent {
+                        url: url_str.clone(),
+                        content: processed.content,
+                        content_type: processed.content_type,
+                        status_code: 200,
+                        bytes: source_bytes,
+                        source_artifact: processed
+                            .artifact_path
+                            .map(|path| WebFetchSourceArtifact { path }),
+                        inline_fallback: processed.inline_fallback,
+                        output_location: None,
+                    });
+                    self.cache
+                        .write()
+                        .insert_text(url_str, output.clone(), was_truncated);
+                    return Ok(output);
+                }
+                HostedFetchResult::Fallback => {}
+            }
+        }
+
         // Make request and build output. Every direct network hop gets a
         // one-shot client pinned to the exact DNS answers that passed SSRF
         // validation, preventing validation/connection rebinding.

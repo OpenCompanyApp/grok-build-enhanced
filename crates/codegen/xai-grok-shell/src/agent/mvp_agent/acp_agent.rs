@@ -2188,6 +2188,8 @@ impl acp::Agent for MvpAgent {
             if provider_model != persisted_model {
                 let (provider_name, fallback_name) = if provider.is_kimi_code() {
                     ("Kimi Code", "Kimi")
+                } else if provider.is_zai_coding_plan() {
+                    ("Z.AI Coding Plan", "Z.AI")
                 } else {
                     ("ChatGPT Codex", "Codex")
                 };

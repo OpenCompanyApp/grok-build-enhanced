@@ -32,11 +32,19 @@ type SubagentProviderTools = (
     Option<xai_grok_tools::types::SharedApiKeyProvider>,
 );
 
+pub(super) fn provider_requires_local_resume_binding(
+    provider: xai_grok_sampling_types::ProviderId,
+) -> bool {
+    provider.is_openai_codex()
+        || provider.is_kimi_code()
+        || provider.is_zai_coding_plan()
+}
+
 fn local_resume_credential_binding(
     source: &ResumeSourceData,
     provider: xai_grok_sampling_types::ProviderId,
 ) -> Result<Option<xai_grok_sampling_types::CredentialBinding>, &'static str> {
-    if !provider.is_openai_codex() && !provider.is_kimi_code() {
+    if !provider_requires_local_resume_binding(provider) {
         return Ok(None);
     }
     let summary = crate::session::persistence::find_summary_by_session_id(

@@ -9,29 +9,24 @@ mod storage;
 mod transport;
 mod usage;
 
-pub use catalog::{
-    ZaiCodingPlanModel, fetch_models, load_cached_model_entries, map_models,
-};
+pub use catalog::{ZaiCodingPlanModel, fetch_models, load_cached_model_entries, map_models};
 pub use credentials::{
-    ZAI_CODING_PLAN_CREDENTIAL_SCHEMA_VERSION, ZaiCodingPlanCredentials,
-    ZaiCodingPlanSecret,
+    ZAI_CODING_PLAN_CREDENTIAL_SCHEMA_VERSION, ZaiCodingPlanCredentials, ZaiCodingPlanSecret,
 };
 pub use error::ZaiCodingPlanAuthError;
 pub use request_auth::{
-    ZaiCodingPlanSamplerRequestAuth, ZaiCodingPlanToolAuthProvider,
-    shared_sampler_request_auth, shared_tool_auth_provider,
+    ZaiCodingPlanSamplerRequestAuth, ZaiCodingPlanToolAuthProvider, shared_sampler_request_auth,
+    shared_tool_auth_provider,
 };
 pub use storage::ZaiCodingPlanCredentialStore;
 pub use usage::{
-    ZaiCodingPlanUsageDetail, ZaiCodingPlanUsageRow, ZaiCodingPlanUsageSnapshot,
-    fetch_usage,
+    ZaiCodingPlanUsageDetail, ZaiCodingPlanUsageRow, ZaiCodingPlanUsageSnapshot, fetch_usage,
 };
 
 use std::io::{IsTerminal, Read};
 use std::sync::LazyLock;
 
-pub const ZAI_CODING_PLAN_AUTH_SCOPE: &str =
-    xai_grok_sampling_types::ZAI_CODING_PLAN_AUTH_SCOPE;
+pub const ZAI_CODING_PLAN_AUTH_SCOPE: &str = xai_grok_sampling_types::ZAI_CODING_PLAN_AUTH_SCOPE;
 
 static PROCESS_ENV_CREDENTIAL_RECORD_ID: LazyLock<String> =
     LazyLock::new(|| format!("env-process:{}", uuid::Uuid::new_v4()));
@@ -68,9 +63,13 @@ pub async fn run_zai_coding_plan_cli_login() -> Result<(), ZaiCodingPlanAuthErro
     let credentials = ZaiCodingPlanCredentials::new(api_key)?;
     // Validate the dedicated Coding Plan catalog before any credential write.
     let models = catalog::fetch_models(&credentials).await?;
-    let store = ZaiCodingPlanCredentialStore::new(&grok_home);
-    store.save(credentials.clone()).await?;
+    // Publish the credential-bound cache first. If it fails, the existing
+    // credential remains untouched; if the later auth-store write fails, the
+    // new cache is unreachable because its opaque record ID does not match.
     catalog::save_cache(&grok_home, &credentials, &models)?;
+    ZaiCodingPlanCredentialStore::new(&grok_home)
+        .save(credentials)
+        .await?;
     println!(
         "Z.AI Coding Plan login succeeded; discovered {} entitled model(s).",
         models.len()
@@ -154,8 +153,7 @@ fn read_login_api_key_from(reader: &mut impl Read) -> Result<String, ZaiCodingPl
     if input.len() > credentials::MAX_ZAI_CODING_PLAN_API_KEY_BYTES {
         return Err(ZaiCodingPlanAuthError::InvalidCredential);
     }
-    let input =
-        String::from_utf8(input).map_err(|_| ZaiCodingPlanAuthError::InvalidCredential)?;
+    let input = String::from_utf8(input).map_err(|_| ZaiCodingPlanAuthError::InvalidCredential)?;
     let api_key = input.trim().to_owned();
     if api_key.is_empty() {
         return Err(ZaiCodingPlanAuthError::Unavailable);
