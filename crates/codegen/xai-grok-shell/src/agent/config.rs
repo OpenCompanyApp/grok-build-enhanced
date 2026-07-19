@@ -3789,6 +3789,10 @@ pub struct ModelInfo {
     pub auth_scheme: AuthScheme,
     pub extra_headers: IndexMap<String, String>,
     pub context_window: NonZeroU64,
+    /// Opaque provider catalog compatibility fingerprint. This is compared
+    /// only within the owning provider and is never interpreted or sent on wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comp_hash: Option<String>,
     /// Per-model auto-compact threshold (0-100). `None` defers to the
     /// global / default tiers in `resolve_auto_compact_threshold_percent`.
     pub auto_compact_threshold_percent: Option<u8>,
@@ -3818,6 +3822,12 @@ pub struct ModelInfo {
     pub reasoning_effort: Option<ReasoningEffort>,
     /// When true, the UI shows effort controls for this model.
     pub supports_reasoning_effort: bool,
+    /// Whether this model's Responses route accepts `reasoning.summary`.
+    #[serde(default)]
+    pub supports_reasoning_summary_parameter: bool,
+    /// Exact provider-advertised `reasoning.summary` default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_summary: Option<String>,
     /// Per-model reasoning-effort menu (source of truth); legacy fields derived from it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<ReasoningEffortOption>,
@@ -3876,6 +3886,7 @@ impl ModelInfo {
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
+            comp_hash: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,
@@ -3886,6 +3897,8 @@ impl ModelInfo {
             supported_in_api: true,
             reasoning_effort: None,
             supports_reasoning_effort: false,
+            supports_reasoning_summary_parameter: false,
+            default_reasoning_summary: None,
             reasoning_efforts: Vec::new(),
             service_tiers: Vec::new(),
             default_service_tier: None,
@@ -3917,6 +3930,7 @@ impl ModelInfo {
             auth_scheme: entry.auth_scheme.unwrap_or_default(),
             extra_headers: entry.extra_headers.clone(),
             context_window: entry.context_window,
+            comp_hash: None,
             auto_compact_threshold_percent: entry.auto_compact_threshold_percent,
             system_prompt_label: entry.system_prompt_label.clone(),
             use_concise: entry.use_concise,
@@ -3927,6 +3941,8 @@ impl ModelInfo {
             supported_in_api: entry.supported_in_api,
             reasoning_effort: entry.reasoning_effort,
             supports_reasoning_effort: entry.supports_reasoning_effort,
+            supports_reasoning_summary_parameter: false,
+            default_reasoning_summary: None,
             reasoning_efforts: entry.reasoning_efforts.clone(),
             service_tiers: Vec::new(),
             default_service_tier: None,
@@ -4683,6 +4699,7 @@ pub fn resolve_aux_model_sampling_config(
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(200_000).unwrap(),
+                comp_hash: None,
                 auto_compact_threshold_percent: None,
                 system_prompt_label: None,
                 use_concise: false,
@@ -4693,6 +4710,8 @@ pub fn resolve_aux_model_sampling_config(
                 supported_in_api: true,
                 reasoning_effort: None,
                 supports_reasoning_effort: false,
+                supports_reasoning_summary_parameter: false,
+                default_reasoning_summary: None,
                 reasoning_efforts: Vec::new(),
                 service_tiers: Vec::new(),
                 default_service_tier: None,
@@ -4865,9 +4884,12 @@ pub fn sampling_config_for_model(
         api_backend,
         auth_scheme: resolved_auth_scheme,
         extra_headers,
+        comp_hash: info.comp_hash.clone(),
         context_window: info.context_window.get(),
         client_version,
         reasoning_effort: info.reasoning_effort,
+        supports_reasoning_summary_parameter: info.supports_reasoning_summary_parameter,
+        default_reasoning_summary: info.default_reasoning_summary.clone(),
         service_tier: info.service_tier.clone(),
         force_http1: false,
         max_retries: info.max_retries,
@@ -4967,6 +4989,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
+            comp_hash: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,
@@ -4978,6 +5001,8 @@ fn resolve_hidden_default_web_search_sampling_config(
             supported_in_api: true,
             reasoning_effort: None,
             supports_reasoning_effort: false,
+            supports_reasoning_summary_parameter: false,
+            default_reasoning_summary: None,
             reasoning_efforts: Vec::new(),
             service_tiers: Vec::new(),
             default_service_tier: None,
@@ -5685,6 +5710,8 @@ reasoning_effort = "low"
                 supported_in_api: true,
                 reasoning_effort: None,
                 supports_reasoning_effort: false,
+                supports_reasoning_summary_parameter: false,
+                default_reasoning_summary: None,
                 reasoning_efforts: Vec::new(),
                 service_tiers: Vec::new(),
                 default_service_tier: None,
@@ -6790,6 +6817,7 @@ reasoning_effort = "low"
             auth_scheme: None,
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
+            comp_hash: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             api_base_url: None,
@@ -6801,6 +6829,8 @@ reasoning_effort = "low"
             supported_in_api: true,
             reasoning_effort: None,
             supports_reasoning_effort: false,
+            supports_reasoning_summary_parameter: false,
+            default_reasoning_summary: None,
             reasoning_efforts: Vec::new(),
             supports_backend_search: false,
             compactions_remaining: None,
@@ -6950,6 +6980,7 @@ reasoning_effort = "low"
             auth_scheme: None,
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
+            comp_hash: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             api_base_url: None,
@@ -6961,6 +6992,8 @@ reasoning_effort = "low"
             supported_in_api: true,
             reasoning_effort: None,
             supports_reasoning_effort: false,
+            supports_reasoning_summary_parameter: false,
+            default_reasoning_summary: None,
             reasoning_efforts: Vec::new(),
             supports_backend_search: false,
             compactions_remaining: None,
@@ -7449,6 +7482,7 @@ reasoning_effort = "low"
             auth_scheme: None,
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
+            comp_hash: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             api_base_url: None,
@@ -7460,6 +7494,8 @@ reasoning_effort = "low"
             supported_in_api: true,
             reasoning_effort: None,
             supports_reasoning_effort: false,
+            supports_reasoning_summary_parameter: false,
+            default_reasoning_summary: None,
             reasoning_efforts: Vec::new(),
             supports_backend_search: false,
             compactions_remaining: None,
@@ -7662,6 +7698,22 @@ reasoning_effort = "low"
     fn resolve_sampling(model: &ModelEntry, session_key: Option<&str>) -> SamplerConfig {
         let credentials = resolve_credentials(model, session_key);
         sampling_config_for_model(model, credentials, None, None, None, None)
+    }
+    #[test]
+    fn codex_catalog_metadata_propagates_to_sampler_config() {
+        let mut model = ModelEntry::fallback("gpt-5.2", &EndpointsConfig::default());
+        model.info.provider = ProviderId::OpenAiCodex;
+        model.info.base_url = xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned();
+        model.info.api_backend = ApiBackend::Responses;
+        model.info.comp_hash = Some("opaque-model-hash".to_owned());
+        model.info.supports_reasoning_summary_parameter = true;
+        model.info.default_reasoning_summary = Some("auto".to_owned());
+
+        let sampling = resolve_sampling(&model, None);
+
+        assert_eq!(sampling.comp_hash.as_deref(), Some("opaque-model-hash"));
+        assert!(sampling.supports_reasoning_summary_parameter);
+        assert_eq!(sampling.default_reasoning_summary.as_deref(), Some("auto"));
     }
     #[test]
     #[serial]
@@ -11032,6 +11084,8 @@ default = "grok-4.5"
                 supported_in_api: true,
                 reasoning_effort: None,
                 supports_reasoning_effort: false,
+                supports_reasoning_summary_parameter: false,
+                default_reasoning_summary: None,
                 reasoning_efforts: Vec::new(),
                 service_tiers: Vec::new(),
                 default_service_tier: None,

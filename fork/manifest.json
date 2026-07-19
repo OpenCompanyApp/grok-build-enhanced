@@ -546,6 +546,64 @@
       ]
     },
     {
+      "id": "codex-catalog-compatibility-persistence",
+      "description": "Opaque authenticated Codex catalog compatibility hashes, catalog-owned reasoning summaries, provider-isolated resume compaction, and pinned GPT-5.6 context metadata.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/config.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/openai_codex/responses.rs",
+        "crates/codegen/xai-grok-sampling-types/src/types.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models/codex_catalog.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/handle_request.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/mod.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/tests/mod.rs",
+        "crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs",
+        "crates/codegen/xai-grok-shell/src/remote/pull.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
+        "crates/codegen/xai-grok-shell/src/session/compaction.rs",
+        "crates/codegen/xai-grok-shell/src/session/compaction_config.rs",
+        "crates/codegen/xai-grok-shell/src/session/merge.rs",
+        "crates/codegen/xai-grok-shell/src/session/persistence.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/search.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/summary_write.rs",
+        "crates/codegen/xai-grok-shell/src/tools/config.rs",
+        "docs/providers/openai-codex-subscription-provider-reference.md",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/openai_codex/responses.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models/codex_catalog.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
+        "crates/codegen/xai-grok-shell/src/session/compaction.rs",
+        "crates/codegen/xai-grok-shell/src/session/persistence.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/mod.rs",
+        "docs/providers/openai-codex-subscription-provider-reference.md"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
       "id": "codex-standalone-tools",
       "description": "Codex-authenticated read, search, fetch, image, and provider-key tool adapters.",
       "source_ids": [

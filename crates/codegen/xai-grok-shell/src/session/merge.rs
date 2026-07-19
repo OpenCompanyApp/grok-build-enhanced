@@ -359,6 +359,7 @@ mod tests {
             agent_name: None,
             sandbox_profile: None,
             reasoning_effort: None,
+            comp_hash: None,
             credential_binding: None,
         }
     }

@@ -317,6 +317,9 @@ pub enum PersistenceMsg {
         /// on the mutable model catalog.
         agent_name: Option<String>,
         reasoning_effort: Option<Option<ReasoningEffort>>,
+        /// Outer `None` leaves the persisted fingerprint unchanged; inner
+        /// `None` clears it for a model without one.
+        comp_hash: Option<Option<String>>,
         /// Written in the same summary patch as the model so a crash cannot
         /// restore a Codex route without the credential record it belongs to.
         credential_binding: Option<xai_grok_sampling_types::CredentialBinding>,
@@ -907,6 +910,10 @@ pub struct Summary {
     pub sandbox_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Opaque provider catalog compatibility fingerprint for the last active
+    /// model. Local resume compares it only within the persisted provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comp_hash: Option<String>,
     /// Local-only, non-secret provider auth-store metadata used to fail closed
     /// when a restored Codex session observes logout, account replacement, or
     /// a credential-generation rollback. `ExportedMetadata::from_summary`
@@ -965,6 +972,7 @@ impl Summary {
             agent_name: None,
             sandbox_profile: None,
             reasoning_effort: None,
+            comp_hash: None,
             credential_binding: None,
         })
     }
@@ -1036,7 +1044,7 @@ mod is_hidden_tests {
     }
 
     #[test]
-    fn summary_round_trips_and_defaults_reasoning_effort() {
+    fn summary_round_trips_reasoning_effort_and_opaque_comp_hash() {
         let mut s = summary_with_kind(None);
         s.reasoning_effort = None;
         let json = serde_json::to_string(&s).unwrap();
@@ -1046,11 +1054,14 @@ mod is_hidden_tests {
         );
         let back: Summary = serde_json::from_str(&json).unwrap();
         assert_eq!(back.reasoning_effort, None);
+        assert_eq!(back.comp_hash, None);
 
         s.reasoning_effort = Some(ReasoningEffort::Xhigh);
+        s.comp_hash = Some("opaque/hash with spaces".to_owned());
         let json = serde_json::to_string(&s).unwrap();
         let back: Summary = serde_json::from_str(&json).unwrap();
         assert_eq!(back.reasoning_effort, Some(ReasoningEffort::Xhigh));
+        assert_eq!(back.comp_hash.as_deref(), Some("opaque/hash with spaces"));
     }
 
     #[test]
@@ -1656,6 +1667,7 @@ impl SessionPersistence {
                     model_id,
                     agent_name,
                     reasoning_effort,
+                    comp_hash,
                     credential_binding,
                 } => {
                     if let Err(e) = self
@@ -1665,6 +1677,7 @@ impl SessionPersistence {
                             &model_id,
                             agent_name.as_deref(),
                             reasoning_effort,
+                            comp_hash,
                             Some(credential_binding),
                         )
                         .await

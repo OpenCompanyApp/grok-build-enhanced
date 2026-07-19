@@ -56,6 +56,24 @@ fn persisted_provider_binding(
     .flatten()
 }
 
+fn restored_previous_model(
+    config: &xai_grok_sampler::SamplerConfig,
+    restored_comp_hash: Option<String>,
+    resumed_session: bool,
+) -> Option<crate::session::compaction_config::PreviousModelInfo> {
+    if !resumed_session || !config.provider.is_openai_codex() {
+        return None;
+    }
+    restored_comp_hash.map(
+        |comp_hash| crate::session::compaction_config::PreviousModelInfo {
+            model_slug: config.model.clone(),
+            provider: config.provider,
+            context_window: config.context_window,
+            comp_hash: Some(comp_hash),
+        },
+    )
+}
+
 fn resolve_memory_embedding_route(
     provider: xai_grok_sampling_types::ProviderId,
     config: Option<&crate::config::MemoryEmbeddingConfig>,
@@ -140,6 +158,42 @@ mod provider_binding_persistence_tests {
         let persisted = persisted_provider_binding(&config);
 
         assert_eq!(persisted, Some(binding));
+    }
+}
+
+#[cfg(test)]
+mod comp_hash_resume_tests {
+    use super::restored_previous_model;
+    use xai_grok_sampling_types::ProviderId;
+
+    #[test]
+    fn resumed_codex_session_restores_opaque_hash_as_previous_model_snapshot() {
+        let mut config = xai_grok_sampler::SamplerConfig::openai_codex("gpt-5.2");
+        config.context_window = 272_000;
+
+        let previous =
+            restored_previous_model(&config, Some("opaque/hash with spaces".to_owned()), true)
+                .expect("resumed Codex snapshot");
+
+        assert_eq!(previous.model_slug, "gpt-5.2");
+        assert_eq!(previous.provider, ProviderId::OpenAiCodex);
+        assert_eq!(previous.context_window, 272_000);
+        assert_eq!(
+            previous.comp_hash.as_deref(),
+            Some("opaque/hash with spaces")
+        );
+    }
+
+    #[test]
+    fn resume_hash_is_rejected_outside_codex_and_absent_for_new_sessions() {
+        let mut xai = xai_grok_sampler::SamplerConfig::default();
+        xai.provider = ProviderId::Xai;
+        xai.model = "same-slug".to_owned();
+        assert!(restored_previous_model(&xai, Some("cross-provider".to_owned()), true).is_none());
+
+        let codex = xai_grok_sampler::SamplerConfig::openai_codex("same-slug");
+        assert!(restored_previous_model(&codex, Some("new-session".to_owned()), false).is_none());
+        assert!(restored_previous_model(&codex, None, true).is_none());
     }
 }
 
@@ -277,6 +331,7 @@ pub(crate) async fn spawn_session_actor(
     managed_mcp_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     managed_mcp_proxy_base_url: String,
     session_model_id: acp::ModelId,
+    restored_comp_hash: Option<String>,
     session_yolo_mode: bool,
     session_auto_mode: bool,
     session_client_identifier: Option<String>,
@@ -348,6 +403,7 @@ pub(crate) async fn spawn_session_actor(
         model_id: session_model_id.clone(),
         agent_name: Some(agent_definition.name.clone()),
         reasoning_effort: initial_reasoning_effort,
+        comp_hash: Some(sampling_config.comp_hash.clone()),
         credential_binding: persisted_binding,
     });
 
@@ -630,8 +686,11 @@ pub(crate) async fn spawn_session_actor(
         top_p: sampling_config.top_p,
         api_backend: sampling_config.api_backend.clone(),
         extra_headers: sampling_config.extra_headers.clone(),
+        comp_hash: sampling_config.comp_hash.clone(),
         context_window: context_window_override.unwrap_or(baseline_context_window),
         reasoning_effort: sampling_config.reasoning_effort,
+        supports_reasoning_summary_parameter: sampling_config.supports_reasoning_summary_parameter,
+        default_reasoning_summary: sampling_config.default_reasoning_summary.clone(),
         service_tier: sampling_config.service_tier.clone(),
         stream_tool_calls: Some(sampling_config.stream_tool_calls),
     };
@@ -645,6 +704,8 @@ pub(crate) async fn spawn_session_actor(
     };
     let (chat_state_event_tx, chat_state_event_rx) = mpsc::unbounded_channel();
     let resumed_session = !initial_prompt_texts.is_empty();
+    let restored_previous_model =
+        restored_previous_model(&sampling_config, restored_comp_hash, resumed_session);
     let mut initial_session_usage = super::load_session_usage(&session_info).or_else(|| {
         resumed_session.then(|| {
             // Legacy/corrupt resumes have historical model calls but no durable
@@ -1422,7 +1483,7 @@ pub(crate) async fn spawn_session_actor(
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
             auto_compact_retry_not_before_unix_secs: std::sync::atomic::AtomicU64::new(0),
-            previous_model: std::cell::Cell::new(None),
+            previous_model: std::cell::Cell::new(restored_previous_model),
             compaction_mode,
             verbatim_input: compaction_verbatim_input,
             prefire: crate::session::compaction_config::PrefireState::default(),
@@ -1995,6 +2056,7 @@ pub(crate) async fn spawn_session_on_thread(
     managed_mcp_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     managed_mcp_proxy_base_url: String,
     session_model_id: acp::ModelId,
+    restored_comp_hash: Option<String>,
     session_yolo_mode: bool,
     session_auto_mode: bool,
     session_client_identifier: Option<String>,
@@ -2158,6 +2220,7 @@ pub(crate) async fn spawn_session_on_thread(
                         managed_mcp_expires_at,
                         managed_mcp_proxy_base_url,
                         session_model_id,
+                        restored_comp_hash,
                         session_yolo_mode,
                         session_auto_mode,
                         session_client_identifier,

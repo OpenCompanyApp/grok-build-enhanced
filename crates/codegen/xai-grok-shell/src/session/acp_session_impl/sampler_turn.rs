@@ -293,8 +293,11 @@ impl SessionActor {
                 top_p: None,
                 api_backend: Default::default(),
                 extra_headers: Default::default(),
+                comp_hash: None,
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
                 reasoning_effort: None,
+                supports_reasoning_summary_parameter: false,
+                default_reasoning_summary: None,
                 service_tier: None,
                 stream_tool_calls: None,
             });
@@ -479,9 +482,12 @@ impl SessionActor {
             api_backend: cfg.api_backend,
             auth_scheme,
             extra_headers,
+            comp_hash: cfg.comp_hash.clone(),
             context_window: cfg.context_window.get(),
             client_version: creds.client_version,
             reasoning_effort,
+            supports_reasoning_summary_parameter: cfg.supports_reasoning_summary_parameter,
+            default_reasoning_summary: cfg.default_reasoning_summary.clone(),
             service_tier,
             force_http1: false,
             max_retries: Some(self.max_retries),
@@ -836,9 +842,20 @@ impl SessionActor {
         Option<xai_grok_sampler::SamplerConfig>,
     ) {
         let Some(previous_model) = previous_model.filter(|previous| {
+            let comp_hash_changed = previous
+                .comp_hash
+                .as_deref()
+                .filter(|hash| !hash.is_empty())
+                .zip(
+                    active_config
+                        .comp_hash
+                        .as_deref()
+                        .filter(|hash| !hash.is_empty()),
+                )
+                .is_some_and(|(previous, current)| previous != current);
             active_config.provider.is_openai_codex()
                 && previous.provider == active_config.provider
-                && previous.model_slug != active_config.model
+                && (previous.model_slug != active_config.model || comp_hash_changed)
         }) else {
             return (active_config, None);
         };
@@ -846,6 +863,9 @@ impl SessionActor {
         let mut previous_config = active_config.clone();
         previous_config.model = previous_model.model_slug.clone();
         previous_config.context_window = previous_model.context_window;
+        previous_config
+            .comp_hash
+            .clone_from(&previous_model.comp_hash);
         if self
             .models_manager
             .model_in_catalog_for_provider(previous_config.provider, &previous_config.model)

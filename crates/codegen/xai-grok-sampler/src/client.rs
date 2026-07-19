@@ -438,6 +438,8 @@ struct ClientDefaults {
     top_p: Option<f32>,
     api_backend: ApiBackend,
     auth_scheme: AuthScheme,
+    supports_reasoning_summary_parameter: bool,
+    default_reasoning_summary: Option<String>,
     service_tier: Option<String>,
     stream_tool_calls: bool,
     responses_lite: bool,
@@ -792,6 +794,8 @@ impl SamplingClient {
             top_p: config.top_p,
             api_backend: config.api_backend,
             auth_scheme: config.auth_scheme,
+            supports_reasoning_summary_parameter: config.supports_reasoning_summary_parameter,
+            default_reasoning_summary: config.default_reasoning_summary,
             service_tier: config.service_tier,
             stream_tool_calls: config.stream_tool_calls,
             responses_lite,
@@ -1792,6 +1796,12 @@ impl SamplingClient {
             request.wire_reasoning_effort,
             &mut request_body,
         )?;
+        codex_responses::apply_codex_reasoning_summary(
+            self.defaults.provider,
+            self.defaults.supports_reasoning_summary_parameter,
+            self.defaults.default_reasoning_summary.as_deref(),
+            &mut request_body,
+        )?;
         codex_responses::apply_codex_responses_lite_contract(
             self.defaults.provider,
             self.defaults.responses_lite,
@@ -1969,6 +1979,12 @@ impl SamplingClient {
         codex_responses::apply_extended_codex_reasoning_effort(
             self.defaults.provider,
             request.wire_reasoning_effort,
+            &mut request_body,
+        )?;
+        codex_responses::apply_codex_reasoning_summary(
+            self.defaults.provider,
+            self.defaults.supports_reasoning_summary_parameter,
+            self.defaults.default_reasoning_summary.as_deref(),
             &mut request_body,
         )?;
         // Inject xAI-specific fields not in async-openai's CreateResponse type.
@@ -4204,6 +4220,9 @@ mod tests {
         let (mut config, auth_calls) = codex_config();
         config.base_url = format!("http://{addr}");
         config.model = "gpt-5.6-terra".to_string();
+        config.comp_hash = Some("opaque-session-only-hash".to_string());
+        config.supports_reasoning_summary_parameter = true;
+        config.default_reasoning_summary = Some("auto".to_string());
         config.client_version = Some("must-not-be-sent".to_string());
         config.client_identifier = Some("must-not-be-sent".to_string());
         config.deployment_id = Some("must-not-be-sent".to_string());
@@ -4317,7 +4336,9 @@ mod tests {
             "Codex requests must not contain any xAI-specific header"
         );
         assert_eq!(body["model"], "gpt-5.6-terra");
+        assert!(body.get("comp_hash").is_none());
         assert_eq!(body["reasoning"]["effort"], "max");
+        assert_eq!(body["reasoning"]["summary"], "auto");
         assert_eq!(body["reasoning"]["context"], "all_turns");
         assert_eq!(body["parallel_tool_calls"], false);
         assert_eq!(body["tool_choice"], "auto");

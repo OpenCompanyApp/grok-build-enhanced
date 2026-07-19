@@ -37,6 +37,8 @@ pub struct PreviousModelInfo {
     pub model_slug: String,
     pub provider: xai_grok_sampling_types::ProviderId,
     pub context_window: u64,
+    /// Opaque catalog compatibility fingerprint from the completed turn.
+    pub comp_hash: Option<String>,
 }
 
 /// Cached result of an **async** (background / prefire) pass-1 sample for

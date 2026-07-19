@@ -751,8 +751,12 @@ impl SessionActor {
                 top_p: sampling_config.top_p,
                 api_backend: sampling_config.api_backend.clone(),
                 extra_headers: sampling_config.extra_headers.clone(),
+                comp_hash: sampling_config.comp_hash.clone(),
                 context_window: new_context_window,
                 reasoning_effort: sampling_config.reasoning_effort,
+                supports_reasoning_summary_parameter: sampling_config
+                    .supports_reasoning_summary_parameter,
+                default_reasoning_summary: sampling_config.default_reasoning_summary.clone(),
                 service_tier: sampling_config.service_tier.clone(),
                 stream_tool_calls: Some(sampling_config.stream_tool_calls),
             });
@@ -827,6 +831,7 @@ impl SessionActor {
                 model_id: model_id.clone(),
                 agent_name: Some(agent_name),
                 reasoning_effort: Some(sampling_config.reasoning_effort),
+                comp_hash: Some(sampling_config.comp_hash.clone()),
                 credential_binding: persisted_binding,
             });
         Ok(model_id)

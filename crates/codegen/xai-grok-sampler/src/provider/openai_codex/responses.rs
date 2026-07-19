@@ -52,6 +52,52 @@ pub(crate) fn apply_extended_codex_reasoning_effort(
     Ok(())
 }
 
+/// Apply the authenticated Codex catalog's reasoning-summary contract at the
+/// final JSON boundary. The shared Responses builder retains its historical
+/// concise summary for non-Codex providers; Codex instead omits unsupported or
+/// `none` summaries and forwards every other advertised default verbatim.
+pub(crate) fn apply_codex_reasoning_summary(
+    provider: ProviderId,
+    supports_parameter: bool,
+    catalog_default: Option<&str>,
+    body: &mut serde_json::Value,
+) -> Result<()> {
+    if !provider.is_openai_codex() {
+        return Ok(());
+    }
+
+    let Some(root) = body.as_object_mut() else {
+        return Err(SamplingError::InvalidConfiguration(
+            "Responses request body must be a JSON object",
+        ));
+    };
+    let reasoning = root
+        .entry("reasoning")
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+    let Some(reasoning) = reasoning.as_object_mut() else {
+        return Err(SamplingError::InvalidConfiguration(
+            "Responses reasoning configuration must be a JSON object",
+        ));
+    };
+
+    let summary = supports_parameter
+        .then_some(catalog_default)
+        .flatten()
+        .filter(|summary| !summary.is_empty() && *summary != "none");
+    match summary {
+        Some(summary) => {
+            reasoning.insert(
+                "summary".to_string(),
+                serde_json::Value::String(summary.to_string()),
+            );
+        }
+        None => {
+            reasoning.remove("summary");
+        }
+    }
+    Ok(())
+}
+
 fn advertised_native_web_tools(tools: &[serde_json::Value]) -> Vec<&'static str> {
     ["web_search", "web_fetch"]
         .into_iter()
@@ -404,6 +450,51 @@ mod tests {
                 Some(expected)
             );
         }
+    }
+
+    #[test]
+    fn codex_reasoning_summary_uses_exact_supported_catalog_default() {
+        for summary in ["auto", "concise", "detailed"] {
+            let mut body = serde_json::json!({
+                "model": "gpt-5.2",
+                "reasoning": {"effort": "high", "summary": "concise"}
+            });
+
+            apply_codex_reasoning_summary(ProviderId::OpenAiCodex, true, Some(summary), &mut body)
+                .unwrap();
+
+            assert_eq!(body["reasoning"]["effort"], "high");
+            assert_eq!(body["reasoning"]["summary"], summary);
+        }
+    }
+
+    #[test]
+    fn codex_reasoning_summary_is_omitted_for_none_missing_or_unsupported() {
+        for (supports, summary) in [(true, Some("none")), (true, None), (false, Some("auto"))] {
+            let mut body = serde_json::json!({
+                "model": "gpt-5.2",
+                "reasoning": {"effort": "medium", "summary": "concise"}
+            });
+
+            apply_codex_reasoning_summary(ProviderId::OpenAiCodex, supports, summary, &mut body)
+                .unwrap();
+
+            assert_eq!(body["reasoning"]["effort"], "medium");
+            assert!(body["reasoning"].get("summary").is_none());
+        }
+    }
+
+    #[test]
+    fn codex_reasoning_summary_metadata_cannot_change_non_codex_requests() {
+        let original = serde_json::json!({
+            "model": "grok-4",
+            "reasoning": {"effort": "high", "summary": "concise"}
+        });
+        let mut body = original.clone();
+
+        apply_codex_reasoning_summary(ProviderId::Xai, true, Some("auto"), &mut body).unwrap();
+
+        assert_eq!(body, original);
     }
 
     #[test]

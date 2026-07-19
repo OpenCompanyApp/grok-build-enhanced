@@ -1004,6 +1004,9 @@ mod tests {
         assert!(model.accepts_images());
         assert!(model.supports_parallel_tool_calls);
         assert!(model.supports_image_detail_original);
+        assert!(model.supports_reasoning_summary_parameter);
+        assert_eq!(model.default_reasoning_summary.as_deref(), Some("auto"));
+        assert_eq!(model.comp_hash.as_deref(), Some("opaque-comp-hash"));
         assert_eq!(model.truncation_policy.as_ref().unwrap().limit, 12000);
         assert_eq!(model.extra["future_capability"]["enabled"], true);
 

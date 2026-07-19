@@ -695,6 +695,18 @@ impl JsonlStorageAdapter {
         }
         let num_chat_messages = chat_to_copy.len();
         let num_messages = updates_to_copy.len();
+        let provider_for_model_id = |model_id: &acp::ModelId| {
+            if model_id.0.starts_with("openai-codex/") {
+                Some(xai_grok_sampling_types::ProviderId::OpenAiCodex)
+            } else if model_id.0.starts_with("kimi-code/") {
+                Some(xai_grok_sampling_types::ProviderId::KimiCode)
+            } else if model_id.0.starts_with("zai-coding-plan/") {
+                Some(xai_grok_sampling_types::ProviderId::ZaiCodingPlan)
+            } else {
+                None
+            }
+        };
+        let source_provider = provider_for_model_id(&source_summary.current_model_id);
         let target_model_id = options
             .new_model_id
             .map(acp::ModelId::new)
@@ -702,18 +714,15 @@ impl JsonlStorageAdapter {
         // A provider-qualified fork remains pinned only when the target route
         // belongs to the same provider as the source's local credential
         // record. Actual provider switches clear the binding.
-        let target_provider = if target_model_id.0.starts_with("openai-codex/") {
-            Some(xai_grok_sampling_types::ProviderId::OpenAiCodex)
-        } else if target_model_id.0.starts_with("kimi-code/") {
-            Some(xai_grok_sampling_types::ProviderId::KimiCode)
-        } else if target_model_id.0.starts_with("zai-coding-plan/") {
-            Some(xai_grok_sampling_types::ProviderId::ZaiCodingPlan)
-        } else {
-            None
-        };
+        let target_provider = provider_for_model_id(&target_model_id);
         let target_credential_binding = source_summary
             .credential_binding
             .filter(|binding| Some(binding.provider) == target_provider);
+        let target_comp_hash = (source_provider
+            == Some(xai_grok_sampling_types::ProviderId::OpenAiCodex)
+            && target_provider == source_provider)
+            .then_some(source_summary.comp_hash)
+            .flatten();
         let target_summary = crate::session::persistence::Summary {
             info: target_info.clone(),
             session_summary: source_summary.session_summary,
@@ -747,6 +756,7 @@ impl JsonlStorageAdapter {
             agent_name: source_summary.agent_name,
             sandbox_profile: source_summary.sandbox_profile,
             reasoning_effort: source_summary.reasoning_effort,
+            comp_hash: target_comp_hash,
             credential_binding: target_credential_binding,
         };
         let summary_bytes = serde_json::to_vec_pretty(&target_summary)
@@ -974,6 +984,7 @@ impl StorageAdapter for JsonlStorageAdapter {
         model_id: &acp::ModelId,
         agent_name: Option<&str>,
         reasoning_effort: Option<Option<xai_grok_sampling_types::ReasoningEffort>>,
+        comp_hash: Option<Option<String>>,
         credential_binding: Option<Option<xai_grok_sampling_types::CredentialBinding>>,
     ) -> io::Result<()> {
         self.apply_summary_patch(
@@ -983,6 +994,7 @@ impl StorageAdapter for JsonlStorageAdapter {
                     model_id: model_id.clone(),
                     agent_name: agent_name.map(String::from),
                     reasoning_effort,
+                    comp_hash,
                 }),
                 credential_binding,
                 ..Default::default()

@@ -150,6 +150,7 @@ pub(crate) mod hydrate {
             // Hydrated locally — record the profile this process runs under.
             sandbox_profile: xai_grok_sandbox::configured_profile_name().map(String::from),
             reasoning_effort: None,
+            comp_hash: None,
             // Credential record identities are local-only and are never
             // reconstructed from remote session metadata.
             credential_binding: None,

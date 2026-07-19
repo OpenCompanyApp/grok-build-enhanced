@@ -1076,11 +1076,21 @@ pub struct SamplingConfig {
     /// Extra headers to send with requests (e.g., for BYOK scenarios).
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     pub extra_headers: indexmap::IndexMap<String, String>,
+    /// Opaque provider catalog compatibility fingerprint. Persisted for
+    /// pre-turn compatibility compaction but never sent on wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comp_hash: Option<String>,
     /// Total context window size in tokens. Used for auto-compact thresholds.
     pub context_window: NonZeroU64,
     /// Reasoning effort level for reasoning models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Whether the selected model accepts `reasoning.summary`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supports_reasoning_summary_parameter: bool,
+    /// Exact provider-advertised summary default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_summary: Option<String>,
     /// Provider service-tier selection. Codex persists `priority` for Fast and
     /// `default` for explicit Standard; the sampler omits the latter on wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]

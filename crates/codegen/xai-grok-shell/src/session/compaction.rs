@@ -32,6 +32,41 @@ use xai_chat_state::compaction_utils::{
     validate_compacted_history,
 };
 use xai_grok_sampling_types::{ApiBackend, ConversationItem};
+
+fn codex_comp_hash_changed(
+    previous: &crate::session::compaction_config::PreviousModelInfo,
+    current_provider: xai_grok_sampling_types::ProviderId,
+    current_comp_hash: Option<&str>,
+) -> bool {
+    previous.provider == current_provider
+        && current_provider.is_openai_codex()
+        && previous
+            .comp_hash
+            .as_deref()
+            .filter(|hash| !hash.is_empty())
+            .zip(current_comp_hash.filter(|hash| !hash.is_empty()))
+            .is_some_and(|(previous, current)| previous != current)
+}
+
+fn codex_comp_hash_trigger_info(
+    previous: &crate::session::compaction_config::PreviousModelInfo,
+    current_provider: xai_grok_sampling_types::ProviderId,
+    current_comp_hash: Option<&str>,
+    total_tokens: u64,
+    context_window: std::num::NonZeroU64,
+) -> Option<AutoCompactTriggerInfo> {
+    codex_comp_hash_changed(previous, current_provider, current_comp_hash).then(|| {
+        AutoCompactTriggerInfo {
+            tokens_used: total_tokens,
+            context_window: context_window.get(),
+            percentage: xai_token_estimation::usage_percentage_u8(
+                total_tokens,
+                context_window.get(),
+            ),
+        }
+    })
+}
+
 /// Default percentage points below the auto-compact threshold at which prefire
 /// (background pass-1) starts, giving pass-1 runway to finish before the limit.
 /// Override with `GROK_PREFIRE_LEAD_PERCENT`.
@@ -2049,7 +2084,10 @@ impl SessionActor {
             return;
         };
         let provider_changed = cfg.provider != prev.provider;
-        if cfg.model == prev.model_slug && !provider_changed {
+        let comp_hash_changed =
+            codex_comp_hash_changed(&prev, cfg.provider, cfg.comp_hash.as_deref());
+        let route_changed = cfg.model != prev.model_slug || provider_changed;
+        if !route_changed && !comp_hash_changed {
             return;
         }
         if self
@@ -2067,20 +2105,33 @@ impl SessionActor {
         self.compaction
             .auto_compact_retry_not_before_unix_secs
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        if prev.context_window <= cfg.context_window.get() {
+        if !comp_hash_changed && prev.context_window <= cfg.context_window.get() {
             return;
         }
         let total_tokens = self.chat_state_handle.get_estimated_total_tokens().await;
-        let Some(trigger_info) = self.should_auto_compact(total_tokens, cfg.context_window) else {
-            return;
+        let trigger_info = if let Some(trigger_info) = codex_comp_hash_trigger_info(
+            &prev,
+            cfg.provider,
+            cfg.comp_hash.as_deref(),
+            total_tokens,
+            cfg.context_window,
+        ) {
+            trigger_info
+        } else {
+            let Some(trigger_info) = self.should_auto_compact(total_tokens, cfg.context_window)
+            else {
+                return;
+            };
+            trigger_info
         };
         tracing::info!(
-            "Proactive model-switch compact: {} ({}) -> {} ({}), {}% full",
-            prev.model_slug,
-            prev.context_window,
-            cfg.model,
-            cfg.context_window.get(),
-            trigger_info.percentage,
+            previous_model = %prev.model_slug,
+            previous_context_window = prev.context_window,
+            current_model = %cfg.model,
+            current_context_window = cfg.context_window.get(),
+            comp_hash_changed,
+            percentage = trigger_info.percentage,
+            "proactive model compatibility compaction",
         );
         let previous_codex_model =
             (!provider_changed && cfg.provider.is_openai_codex()).then_some(&prev);
@@ -2099,6 +2150,7 @@ impl SessionActor {
                     model_slug: cfg.model.clone(),
                     provider: cfg.provider,
                     context_window: cfg.context_window.get(),
+                    comp_hash: cfg.comp_hash.clone(),
                 },
             ));
         }
@@ -2792,6 +2844,7 @@ mod inline_auto_compact_flow_tests {
                         model_slug: "old-small-model".to_string(),
                         provider: xai_grok_sampling_types::ProviderId::Xai,
                         context_window: 100_000,
+                        comp_hash: None,
                     }));
                     actor.maybe_compact_on_model_switch().await;
                     assert_eq!(
@@ -2831,6 +2884,7 @@ mod inline_auto_compact_flow_tests {
                     model_slug: "old-big-model".to_string(),
                     provider: xai_grok_sampling_types::ProviderId::Xai,
                     context_window: 400_000,
+                    comp_hash: None,
                 }));
                 actor.maybe_compact_on_model_switch().await;
                 assert_eq!(
@@ -2871,6 +2925,7 @@ mod inline_auto_compact_flow_tests {
                     model_slug: "test".to_string(),
                     provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
                     context_window: 200_000,
+                    comp_hash: None,
                 }));
 
                 actor.maybe_compact_on_model_switch().await;
@@ -3607,6 +3662,7 @@ mod inline_auto_compact_flow_tests {
                     model_slug: "gpt-previous".to_owned(),
                     provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
                     context_window: 200_000,
+                    comp_hash: None,
                 };
 
                 let (primary, _) = actor.compaction_sampling_configs(active, Some(&previous));
@@ -3630,6 +3686,7 @@ mod inline_auto_compact_flow_tests {
                     model_slug: "gpt-previous".to_owned(),
                     provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
                     context_window: 200_000,
+                    comp_hash: None,
                 };
 
                 let (_, fallback) = actor.compaction_sampling_configs(active, Some(&previous));
@@ -3655,6 +3712,7 @@ mod inline_auto_compact_flow_tests {
                     model_slug: "gpt-previous".to_owned(),
                     provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
                     context_window: 200_000,
+                    comp_hash: None,
                 };
 
                 let (primary, fallback) =
@@ -3684,13 +3742,20 @@ mod inline_auto_compact_flow_tests {
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
-                let active = xai_grok_sampler::SamplerConfig::openai_codex("gpt-current");
+                let mut active = xai_grok_sampler::SamplerConfig::openai_codex("gpt-current");
+                active.comp_hash = Some("current-codex-hash".to_owned());
                 let previous = crate::session::compaction_config::PreviousModelInfo {
                     model_slug: "grok-previous".to_owned(),
                     provider: xai_grok_sampling_types::ProviderId::Xai,
                     context_window: 200_000,
+                    comp_hash: Some("foreign-provider-hash".to_owned()),
                 };
 
+                assert!(!codex_comp_hash_changed(
+                    &previous,
+                    active.provider,
+                    active.comp_hash.as_deref(),
+                ));
                 let (primary, fallback) =
                     actor.compaction_sampling_configs(active, Some(&previous));
 
@@ -3719,6 +3784,7 @@ mod inline_auto_compact_flow_tests {
                     model_slug: "grok-previous".to_owned(),
                     provider: xai_grok_sampling_types::ProviderId::Xai,
                     context_window: 200_000,
+                    comp_hash: None,
                 };
 
                 let (primary, fallback) =
@@ -3729,6 +3795,91 @@ mod inline_auto_compact_flow_tests {
                 assert!(fallback.is_none());
             })
             .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn changed_codex_comp_hash_uses_previous_then_current_even_for_same_slug() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
+                let actor =
+                    create_test_actor(10_000, 272_000, 85, gateway_tx, persistence_tx).await;
+                let mut active = xai_grok_sampler::SamplerConfig::openai_codex("gpt-5.2");
+                active.context_window = 272_000;
+                active.comp_hash = Some("current-hash".to_owned());
+                let previous = crate::session::compaction_config::PreviousModelInfo {
+                    model_slug: "gpt-5.2".to_owned(),
+                    provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
+                    context_window: 272_000,
+                    comp_hash: Some("previous-hash".to_owned()),
+                };
+
+                assert!(codex_comp_hash_changed(
+                    &previous,
+                    active.provider,
+                    active.comp_hash.as_deref(),
+                ));
+                let trigger = codex_comp_hash_trigger_info(
+                    &previous,
+                    active.provider,
+                    active.comp_hash.as_deref(),
+                    10_000,
+                    std::num::NonZeroU64::new(272_000).unwrap(),
+                )
+                .expect("hash mismatch forces a pre-turn trigger below the 85% threshold");
+                assert_eq!(trigger.tokens_used, 10_000);
+                assert!(trigger.percentage < 85);
+                let (primary, fallback) =
+                    actor.compaction_sampling_configs(active, Some(&previous));
+
+                assert_eq!(primary.model, "gpt-5.2");
+                assert_eq!(primary.comp_hash.as_deref(), Some("previous-hash"));
+                let fallback = fallback.expect("current Codex fallback");
+                assert_eq!(fallback.model, "gpt-5.2");
+                assert_eq!(fallback.comp_hash.as_deref(), Some("current-hash"));
+            })
+            .await;
+    }
+
+    #[test]
+    fn missing_empty_equal_and_cross_provider_hashes_do_not_trigger() {
+        let mut previous = crate::session::compaction_config::PreviousModelInfo {
+            model_slug: "same-slug".to_owned(),
+            provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            context_window: 272_000,
+            comp_hash: None,
+        };
+        assert!(!codex_comp_hash_changed(
+            &previous,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            Some("current"),
+        ));
+        previous.comp_hash = Some("previous".to_owned());
+        assert!(!codex_comp_hash_changed(
+            &previous,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            None,
+        ));
+        previous.comp_hash = Some(String::new());
+        assert!(!codex_comp_hash_changed(
+            &previous,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            Some("current"),
+        ));
+        previous.comp_hash = Some("same".to_owned());
+        assert!(!codex_comp_hash_changed(
+            &previous,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            Some("same"),
+        ));
+        previous.provider = xai_grok_sampling_types::ProviderId::Xai;
+        assert!(!codex_comp_hash_changed(
+            &previous,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+            Some("different"),
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3745,6 +3896,7 @@ mod inline_auto_compact_flow_tests {
                     model_slug: "gpt-current".to_owned(),
                     provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
                     context_window: 200_000,
+                    comp_hash: None,
                 };
 
                 let (primary, fallback) =
@@ -3771,6 +3923,7 @@ mod inline_auto_compact_flow_tests {
                         model_slug: "large-model".to_string(),
                         provider: xai_grok_sampling_types::ProviderId::Xai,
                         context_window: 200_000,
+                        comp_hash: None,
                     },
                 ));
                 let prev = actor.compaction.previous_model.take();
@@ -3787,6 +3940,7 @@ mod inline_auto_compact_flow_tests {
                         model_slug: "small-model".to_string(),
                         provider: xai_grok_sampling_types::ProviderId::Xai,
                         context_window: 50_000,
+                        comp_hash: None,
                     },
                 ));
                 let prev = actor.compaction.previous_model.take().unwrap();

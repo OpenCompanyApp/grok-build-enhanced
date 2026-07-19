@@ -340,9 +340,9 @@ always wins.
 
 | Model slug | Context | Default effort | Advertised efforts | Images | Fast | Multi-agent |
 | --- | ---: | --- | --- | --- | --- | --- |
-| `gpt-5.6-sol` | 372K | `low` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Yes | `priority` | v2 |
-| `gpt-5.6-terra` | 372K | `medium` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Yes | `priority` | v2 |
-| `gpt-5.6-luna` | 372K | `medium` | `low`, `medium`, `high`, `xhigh`, `max` | Yes | `priority` | v1 |
+| `gpt-5.6-sol` | 272K | `low` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Yes | `priority` | v2 |
+| `gpt-5.6-terra` | 272K | `medium` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Yes | `priority` | v2 |
+| `gpt-5.6-luna` | 272K | `medium` | `low`, `medium`, `high`, `xhigh`, `max` | Yes | `priority` | v1 |
 
 All three were marked `use_responses_lite: true` and `tool_mode:
 code_mode_only` in that source snapshot. The “Images” column records catalog

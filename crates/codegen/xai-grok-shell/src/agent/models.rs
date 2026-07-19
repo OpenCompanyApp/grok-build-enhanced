@@ -3269,8 +3269,8 @@ mod tests {
                 .collect(),
             visibility: Some("list".to_owned()),
             supported_in_api: true,
-            context_window: Some(372_000),
-            max_context_window: Some(372_000),
+            context_window: Some(272_000),
+            max_context_window: Some(272_000),
             input_modalities: vec!["text".to_owned(), "image".to_owned()],
             use_responses_lite: true,
             multi_agent_version: Some(serde_json::json!("v2")),
@@ -3529,7 +3529,7 @@ mod tests {
             ("openai-codex/gpt-5.6-luna", ReasoningEffort::Medium),
         ] {
             let info = &catalog[id].info;
-            assert_eq!(info.context_window.get(), 372_000);
+            assert_eq!(info.context_window.get(), 272_000);
             assert_eq!(info.reasoning_effort, Some(expected_default));
             assert_eq!(info.provider, ProviderId::OpenAiCodex);
             assert!(info.supports_image_input);
@@ -3696,13 +3696,19 @@ mod tests {
                 context_window: Some(123_000),
                 max_context_window: Some(456_000),
                 auto_compact_token_limit: Some(100_000),
+                comp_hash: Some("opaque-gpt-5.2-hash".to_owned()),
+                supports_reasoning_summary_parameter: true,
+                default_reasoning_summary: Some("auto".to_owned()),
                 use_responses_lite: true,
                 ..Default::default()
             }],
         });
         let info = &mapped["openai-codex/provider-only"].info;
         assert_eq!(info.context_window.get(), 123_000);
+        assert_eq!(info.comp_hash.as_deref(), Some("opaque-gpt-5.2-hash"));
         assert_eq!(info.auto_compact_threshold_percent, Some(81));
+        assert!(info.supports_reasoning_summary_parameter);
+        assert_eq!(info.default_reasoning_summary.as_deref(), Some("auto"));
         assert!(!info.supported_in_api);
         assert!(model_visible_for_auth(info, false));
         assert_eq!(

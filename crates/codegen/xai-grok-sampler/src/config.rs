@@ -73,6 +73,10 @@ pub struct SamplerConfig {
     /// the URL to derive headers; callers (the session) inject proxy auth
     /// and other access headers here before constructing the config.
     pub extra_headers: IndexMap<String, String>,
+    /// Opaque provider catalog compatibility fingerprint. It is session
+    /// metadata only and is never serialized into an inference request.
+    #[serde(default)]
+    pub comp_hash: Option<String>,
     /// Total context window size in tokens. The sampler does not enforce
     /// it; it is informational metadata used by the session for compaction
     /// decisions.
@@ -84,6 +88,13 @@ pub struct SamplerConfig {
 
     // Reasoning effort
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Whether the selected model accepts `reasoning.summary`.
+    #[serde(default)]
+    pub supports_reasoning_summary_parameter: bool,
+    /// Exact provider-advertised summary default. `none` is represented as a
+    /// value here but omitted at the Responses wire boundary.
+    #[serde(default)]
+    pub default_reasoning_summary: Option<String>,
 
     /// Provider service-tier selection. Only authenticated Codex Responses
     /// requests consume this field; `default` is an explicit no-tier sentinel.
@@ -174,12 +185,15 @@ impl Default for SamplerConfig {
             api_backend: ApiBackend::default(),
             auth_scheme: AuthScheme::default(),
             extra_headers: IndexMap::new(),
+            comp_hash: None,
             context_window: 0,
             force_http1: false,
             max_retries: None,
             stream_tool_calls: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
+            supports_reasoning_summary_parameter: false,
+            default_reasoning_summary: None,
             service_tier: None,
             origin_client: None,
             client_identifier: None,

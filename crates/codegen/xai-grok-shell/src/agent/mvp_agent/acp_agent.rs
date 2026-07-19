@@ -12,6 +12,16 @@ fn is_strict_openai_codex_model_id(model_id: &acp::ModelId) -> bool {
     model_id.0.starts_with(OPENAI_CODEX_MODEL_PREFIX)
 }
 
+pub(super) fn restored_codex_comp_hash(
+    model_id: &acp::ModelId,
+    comp_hash: Option<&str>,
+) -> Option<String> {
+    is_strict_openai_codex_model_id(model_id)
+        .then_some(comp_hash)
+        .flatten()
+        .map(str::to_owned)
+}
+
 fn is_strict_kimi_code_model_id(model_id: &acp::ModelId) -> bool {
     model_id.0.starts_with(KIMI_CODE_MODEL_PREFIX)
 }
@@ -1429,6 +1439,7 @@ impl acp::Agent for MvpAgent {
                         model_agent_type: model_agent_type.as_deref(),
                         session_model_id,
                         restored_credential_binding: None,
+                        restored_comp_hash: None,
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd: None,
@@ -2050,6 +2061,10 @@ impl acp::Agent for MvpAgent {
                         model_agent_type: persisted_agent_name.as_deref(),
                         session_model_id: spawn_model_id,
                         restored_credential_binding: summary.credential_binding.clone(),
+                        restored_comp_hash: restored_codex_comp_hash(
+                            &summary.current_model_id,
+                            summary.comp_hash.as_deref(),
+                        ),
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd,

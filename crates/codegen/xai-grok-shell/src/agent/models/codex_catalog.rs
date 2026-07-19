@@ -858,6 +858,7 @@ impl CodexCatalogController {
                             auth_scheme: xai_grok_sampler::AuthScheme::Bearer,
                             extra_headers,
                             context_window,
+                            comp_hash: model.comp_hash,
                             auto_compact_threshold_percent,
                             system_prompt_label: None,
                             use_concise: false,
@@ -871,6 +872,9 @@ impl CodexCatalogController {
                             supported_in_api: model.supported_in_api,
                             reasoning_effort: default_effort,
                             supports_reasoning_effort: !reasoning_efforts.is_empty(),
+                            supports_reasoning_summary_parameter: model
+                                .supports_reasoning_summary_parameter,
+                            default_reasoning_summary: model.default_reasoning_summary,
                             reasoning_efforts,
                             service_tiers: model
                                 .service_tiers

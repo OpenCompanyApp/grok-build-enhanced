@@ -70,7 +70,7 @@ async fn write_compaction_segment_numbers_and_indexes_resume_safely() {
     assert_eq!(index.lines().filter(| l | l.contains("segment_")).count(), 3);
 }
 #[tokio::test]
-async fn update_current_route_persists_binding_and_reasoning_effort() {
+async fn update_current_route_persists_binding_reasoning_effort_and_comp_hash() {
     use xai_grok_sampling_types::{CredentialBinding, ReasoningEffort};
     let temp_dir = TempDir::new().unwrap();
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
@@ -85,6 +85,7 @@ async fn update_current_route_persists_binding_and_reasoning_effort() {
             &model,
             None,
             Some(Some(ReasoningEffort::High)),
+            Some(Some("opaque-model-hash".to_owned())),
             Some(Some(binding.clone())),
         )
         .await
@@ -92,6 +93,10 @@ async fn update_current_route_persists_binding_and_reasoning_effort() {
     assert_eq!(
         adapter.read_summary_sync(&info).unwrap().reasoning_effort,
         Some(ReasoningEffort::High),
+    );
+    assert_eq!(
+        adapter.read_summary_sync(&info).unwrap().comp_hash.as_deref(),
+        Some("opaque-model-hash"),
     );
     assert_eq!(
         adapter
@@ -107,11 +112,12 @@ async fn update_current_route_persists_binding_and_reasoning_effort() {
         "model-only update must not wipe the persisted effort",
     );
     adapter
-        .update_current_model_and_agent(&info, &model, None, Some(None), None)
+        .update_current_model_and_agent(&info, &model, None, Some(None), Some(None), None)
         .await
         .unwrap();
     let summary = adapter.read_summary_sync(&info).unwrap();
     assert_eq!(summary.reasoning_effort, None);
+    assert_eq!(summary.comp_hash, None);
     assert_eq!(
         summary.credential_binding,
         Some(binding),
@@ -796,7 +802,7 @@ async fn test_copy_session_data_with_model_override() {
     assert_eq!(loaded.summary.parent_session_id, Some("source-model-test".to_string()));
 }
 #[tokio::test]
-async fn copy_session_keeps_binding_only_for_codex_routes() {
+async fn copy_session_keeps_binding_and_comp_hash_only_within_codex() {
     use xai_grok_sampling_types::CredentialBinding;
 
     let temp_dir = TempDir::new().unwrap();
@@ -805,17 +811,22 @@ async fn copy_session_keeps_binding_only_for_codex_routes() {
         id: acp::SessionId::new("source-codex-binding"),
         cwd: "/source".to_owned(),
     };
+    let codex_model = acp::ModelId::new("openai-codex/gpt-5.6-luna");
     adapter
-        .init_session(
-            &source,
-            acp::ModelId::new("openai-codex/gpt-5.6-luna"),
-        )
+        .init_session(&source, codex_model.clone())
         .await
         .unwrap();
     let mut binding = CredentialBinding::openai_codex(Some("local-record".to_owned()));
     binding.generation = 7;
     adapter
-        .update_credential_binding(&source, Some(binding.clone()))
+        .update_current_model_and_agent(
+            &source,
+            &codex_model,
+            None,
+            None,
+            Some(Some("opaque-codex-hash".to_owned())),
+            Some(Some(binding.clone())),
+        )
         .await
         .unwrap();
 
@@ -827,12 +838,11 @@ async fn copy_session_keeps_binding_only_for_codex_routes() {
         .copy_session_data(&source, &codex_target, CopySessionOptions::default())
         .await
         .unwrap();
+    let codex_summary = adapter.read_summary_sync(&codex_target).unwrap();
+    assert_eq!(codex_summary.credential_binding, Some(binding));
     assert_eq!(
-        adapter
-            .read_summary_sync(&codex_target)
-            .unwrap()
-            .credential_binding,
-        Some(binding),
+        codex_summary.comp_hash.as_deref(),
+        Some("opaque-codex-hash")
     );
 
     let xai_target = Info {
@@ -850,13 +860,58 @@ async fn copy_session_keeps_binding_only_for_codex_routes() {
         )
         .await
         .unwrap();
+    let xai_summary = adapter.read_summary_sync(&xai_target).unwrap();
+    assert!(
+        xai_summary.credential_binding.is_none(),
+        "switching a copied session away from Codex must clear local binding metadata"
+    );
+    assert!(
+        xai_summary.comp_hash.is_none(),
+        "a Codex compatibility hash must never cross into an xAI fork"
+    );
+
+    let foreign_source = Info {
+        id: acp::SessionId::new("source-xai-with-foreign-hash"),
+        cwd: "/source/xai".to_owned(),
+    };
+    let xai_model = acp::ModelId::new("grok-4");
+    adapter
+        .init_session(&foreign_source, xai_model.clone())
+        .await
+        .unwrap();
+    adapter
+        .update_current_model_and_agent(
+            &foreign_source,
+            &xai_model,
+            None,
+            None,
+            Some(Some("must-not-enter-codex".to_owned())),
+            None,
+        )
+        .await
+        .unwrap();
+    let foreign_codex_target = Info {
+        id: acp::SessionId::new("fork-codex-from-xai-hash"),
+        cwd: "/target/codex-from-xai".to_owned(),
+    };
+    adapter
+        .copy_session_data(
+            &foreign_source,
+            &foreign_codex_target,
+            CopySessionOptions {
+                new_model_id: Some("openai-codex/gpt-5.6-luna".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     assert!(
         adapter
-            .read_summary_sync(&xai_target)
+            .read_summary_sync(&foreign_codex_target)
             .unwrap()
-            .credential_binding
+            .comp_hash
             .is_none(),
-        "switching a copied session away from Codex must clear local binding metadata"
+        "an xAI source hash must not be relabeled as Codex during a fork"
     );
 }
 
@@ -1991,6 +2046,7 @@ fn write_test_summary(
         agent_name: None,
         sandbox_profile: None,
         reasoning_effort: None,
+        comp_hash: None,
         credential_binding: None,
     };
     let json = serde_json::to_vec_pretty(&summary).unwrap();

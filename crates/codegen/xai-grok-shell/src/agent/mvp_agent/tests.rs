@@ -2077,6 +2077,39 @@ mod eligibility_gates {
         assert!(check_gates(ClientType::GrokWeb, true, true).is_ok());
     }
 }
+
+#[test]
+fn restored_comp_hash_requires_provider_qualified_codex_model_id() {
+    let hash = Some("opaque-cross-provider-guard");
+    assert_eq!(
+        super::acp_agent::restored_codex_comp_hash(
+            &acp::ModelId::new("openai-codex/gpt-5.2"),
+            hash,
+        )
+        .as_deref(),
+        hash,
+    );
+    assert!(
+        super::acp_agent::restored_codex_comp_hash(&acp::ModelId::new("gpt-5.2"), hash)
+            .is_none(),
+        "a bare slug from another provider must not relabel its hash as Codex on resume",
+    );
+    assert!(
+        super::acp_agent::restored_codex_comp_hash(
+            &acp::ModelId::new("kimi-code/gpt-5.2"),
+            hash,
+        )
+        .is_none(),
+    );
+    assert!(
+        super::acp_agent::restored_codex_comp_hash(
+            &acp::ModelId::new("openai-codex/gpt-5.2"),
+            None,
+        )
+        .is_none(),
+    );
+}
+
 #[test]
 fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
     let entry = |model: &str| ModelEntry {
@@ -2095,6 +2128,7 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
             context_window: std::num::NonZeroU64::new(200_000).unwrap(),
+            comp_hash: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,
@@ -2105,6 +2139,8 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             supported_in_api: true,
             reasoning_effort: None,
             supports_reasoning_effort: false,
+            supports_reasoning_summary_parameter: false,
+            default_reasoning_summary: None,
             reasoning_efforts: Vec::new(),
             service_tiers: Vec::new(),
             default_service_tier: None,

@@ -48,6 +48,8 @@ pub(crate) struct ModelPatch {
     pub model_id: acp::ModelId,
     pub agent_name: Option<String>,
     pub reasoning_effort: Option<Option<ReasoningEffort>>,
+    /// Outer `None` leaves the fingerprint unchanged; inner `None` clears it.
+    pub comp_hash: Option<Option<String>>,
 }
 
 /// Persisted git HEAD. `commit` and `branch` are last-writer-wins, including
@@ -138,6 +140,9 @@ impl Summary {
             }
             if let Some(reasoning_effort) = &model.reasoning_effort {
                 self.reasoning_effort = *reasoning_effort;
+            }
+            if let Some(comp_hash) = &model.comp_hash {
+                self.comp_hash.clone_from(comp_hash);
             }
         }
         if let Some(binding) = &patch.credential_binding {

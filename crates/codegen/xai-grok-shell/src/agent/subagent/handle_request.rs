@@ -1402,6 +1402,7 @@ pub(crate) async fn handle_subagent_request(
             None,
             ctx.managed_mcp_proxy_base_url.clone(),
             effective_model_id,
+            None,
             ctx.yolo_mode
                 || matches!(
                     agent_permission_mode,
