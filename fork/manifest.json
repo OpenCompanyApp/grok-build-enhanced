@@ -1459,6 +1459,25 @@
       "legal_paths": [
         "LICENSE"
       ]
+    },
+    {
+      "id": "upstream-mcp-security-boundaries",
+      "description": "MCP OAuth issuer verification, strict qualified tool identifiers, and owner-only credential persistence.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-mcp/src/credentials.rs",
+        "crates/codegen/xai-grok-mcp/src/oauth.rs",
+        "crates/codegen/xai-grok-mcp/src/servers.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-mcp/src/oauth.rs",
+        "crates/codegen/xai-grok-mcp/src/servers.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
     }
   ]
 }
