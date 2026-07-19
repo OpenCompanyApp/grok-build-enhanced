@@ -13,6 +13,7 @@ pub mod config;
 pub mod domain;
 pub mod error;
 mod hosted_kimi;
+mod hosted_zai;
 mod http;
 pub(crate) mod overflow;
 mod ssrf;

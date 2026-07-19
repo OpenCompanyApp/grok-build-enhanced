@@ -56,6 +56,15 @@ pub enum WebFetchError {
     #[error("Kimi Code hosted fetch quota or concurrency limit was reached")]
     HostedQuota,
 
+    #[error("Z.AI Coding Plan Reader MCP authentication was rejected")]
+    ZaiReaderAuthentication,
+
+    #[error("Z.AI Coding Plan monthly Search/Reader/Zread quota was reached")]
+    ZaiReaderQuota,
+
+    #[error("Z.AI Coding Plan Reader MCP rejected the validated request")]
+    ZaiReaderRejected,
+
     #[error("HTTP request to {origin} failed ({kind})")]
     HttpRequest { origin: String, kind: &'static str },
 
@@ -107,6 +116,9 @@ impl WebFetchError {
             | Self::HostedMembership
             | Self::HostedRequestRejected { .. }
             | Self::HostedQuota
+            | Self::ZaiReaderAuthentication
+            | Self::ZaiReaderQuota
+            | Self::ZaiReaderRejected
             | Self::HttpRequest { .. }
             | Self::ProxyConfigError
             | Self::IoError(_) => WebToolErrorCode::ProviderUnavailable,
@@ -149,6 +161,31 @@ impl WebFetchError {
             .with_details(serde_json::json!({
                 "tool_id": "web_fetch",
                 "code": "quota_exhausted",
+            })),
+            Self::ZaiReaderAuthentication => xai_tool_runtime::ToolError::unauthorized(
+                "Z.AI Coding Plan Reader MCP API key was rejected".to_owned(),
+            )
+            .with_details(serde_json::json!({
+                "tool_id": "web_fetch",
+                "status": 401,
+                "auth_recovery_provider": crate::types::ZAI_CODING_PLAN_PROVIDER_ID,
+                "auth_recovery_exhausted": true,
+            })),
+            Self::ZaiReaderQuota => xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Execution,
+                "Z.AI Coding Plan monthly Search/Reader/Zread quota was reached".to_owned(),
+            )
+            .with_details(serde_json::json!({
+                "tool_id": "web_fetch",
+                "code": "quota_exhausted",
+            })),
+            Self::ZaiReaderRejected => xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Execution,
+                "Z.AI Coding Plan Reader MCP rejected the validated request".to_owned(),
+            )
+            .with_details(serde_json::json!({
+                "tool_id": "web_fetch",
+                "code": "hosted_request_rejected",
             })),
             error => {
                 let code = error.failure_code();
