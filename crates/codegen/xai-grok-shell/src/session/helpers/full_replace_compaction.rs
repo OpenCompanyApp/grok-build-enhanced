@@ -21,6 +21,7 @@
 //! [`FullReplaceError`](xai_grok_compaction::FullReplaceError).
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use agent_client_protocol as acp;
@@ -56,14 +57,20 @@ use crate::session::helpers::session_compact::{
 /// the engine passes is ignored — the engine builds the grok-build prompt,
 /// which equals what `build_compaction_chat_history(.., false)` appends, and
 /// the short-prompt harness needs its own variant the engine can't produce.
+struct CompactionSamplingRoute {
+    client: OaiCompatClient,
+    config: SamplingConfig,
+}
+
 pub(crate) struct ShellCompactionSampler {
     use_short_prompt: bool,
     user_context: Option<String>,
     tools: Vec<ToolSpec>,
     hosted_tools: Vec<HostedTool>,
-    client: OaiCompatClient,
+    primary: CompactionSamplingRoute,
+    fallback: Option<CompactionSamplingRoute>,
+    fallback_active: AtomicBool,
     session_id: acp::SessionId,
-    sampling_config: SamplingConfig,
     /// Per-chunk idle timeout forwarded to `generate_session_compact`: a stalled
     /// summarizer stream (no model-output chunk for this long) fails instead of
     /// hanging.
@@ -73,6 +80,9 @@ pub(crate) struct ShellCompactionSampler {
     wall_clock_budget_secs: u64,
     /// Full output of the most recent successful sample (for L5 telemetry).
     last_success: Mutex<Option<CompactOutput>>,
+    /// Model used by the most recent request. This keeps persisted compaction
+    /// artifacts accurate when the previous-model route falls back.
+    last_attempted_model: Mutex<String>,
 }
 
 impl ShellCompactionSampler {
@@ -85,26 +95,57 @@ impl ShellCompactionSampler {
         client: OaiCompatClient,
         session_id: acp::SessionId,
         sampling_config: SamplingConfig,
+        fallback: Option<(OaiCompatClient, SamplingConfig)>,
         idle_timeout: Duration,
         wall_clock_budget_secs: u64,
     ) -> Self {
+        let last_attempted_model = sampling_config.model.clone();
         Self {
             use_short_prompt,
             user_context,
             tools,
             hosted_tools,
-            client,
+            primary: CompactionSamplingRoute {
+                client,
+                config: sampling_config,
+            },
+            fallback: fallback.map(|(client, config)| CompactionSamplingRoute { client, config }),
+            fallback_active: AtomicBool::new(false),
             session_id,
-            sampling_config,
             idle_timeout,
             wall_clock_budget_secs,
             last_success: Mutex::new(None),
+            last_attempted_model: Mutex::new(last_attempted_model),
         }
     }
 
     /// Take the [`CompactOutput`] of the most recent successful sample, if any.
     pub(crate) fn take_last_success(&self) -> Option<CompactOutput> {
         self.last_success.lock().unwrap().take()
+    }
+
+    /// Return the model used by the latest primary or fallback request.
+    pub(crate) fn last_attempted_model(&self) -> String {
+        self.last_attempted_model.lock().unwrap().clone()
+    }
+
+    async fn sample_route(
+        &self,
+        chat_history: Vec<ConversationItem>,
+        route: &CompactionSamplingRoute,
+    ) -> Result<CompactOutput, CompactFailure> {
+        *self.last_attempted_model.lock().unwrap() = route.config.model.clone();
+        generate_session_compact(
+            chat_history,
+            self.tools.clone(),
+            self.hosted_tools.clone(),
+            route.client.clone(),
+            self.session_id.clone(),
+            &route.config,
+            self.idle_timeout,
+            self.wall_clock_budget_secs,
+        )
+        .await
     }
 }
 
@@ -127,18 +168,31 @@ impl CompactionSampler for ShellCompactionSampler {
             self.use_short_prompt,
         );
 
-        match generate_session_compact(
-            chat_history,
-            self.tools.clone(),
-            self.hosted_tools.clone(),
-            self.client.clone(),
-            self.session_id.clone(),
-            &self.sampling_config,
-            self.idle_timeout,
-            self.wall_clock_budget_secs,
-        )
-        .await
-        {
+        let output = if self.fallback_active.load(Ordering::Relaxed) {
+            let fallback = self
+                .fallback
+                .as_ref()
+                .expect("fallback_active requires a fallback route");
+            self.sample_route(chat_history, fallback).await
+        } else {
+            match self.sample_route(chat_history.clone(), &self.primary).await {
+                Err(failure)
+                    if self.fallback.is_some() && failure.should_retry_with_current_model() =>
+                {
+                    let fallback = self.fallback.as_ref().unwrap();
+                    self.fallback_active.store(true, Ordering::Relaxed);
+                    tracing::warn!(
+                        previous_model = %self.primary.config.model,
+                        current_model = %fallback.config.model,
+                        "previous-model Codex compaction failed; retrying with active model"
+                    );
+                    self.sample_route(chat_history, fallback).await
+                }
+                result => result,
+            }
+        };
+
+        match output {
             Ok(output) => {
                 let response = output.content.clone();
                 *self.last_success.lock().unwrap() = Some(output);
@@ -164,7 +218,8 @@ impl CompactionSampler for ShellCompactionSampler {
 ///   `false`), so the engine retries it.
 fn compact_failure_to_sample_error(failure: CompactFailure) -> CompactionSampleError {
     let (deterministic, err) = match failure {
-        CompactFailure::Deterministic(err) => (true, err),
+        CompactFailure::Deterministic(err)
+        | CompactFailure::DeterministicWithCurrentModelFallback(err) => (true, err),
         CompactFailure::Transient(err) => (false, err),
     };
     let message = acp_error_message(&err);
@@ -415,5 +470,105 @@ impl FullReplaceObserver for ShellFullReplaceObserver {
                 s.last_error_msg = Some((*message).to_string());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Scenario: previous-model compaction fails at the inference boundary.
+    //! Responsibility: retry once with the active model using real production
+    //! sampler wiring and only the HTTP inference service stubbed. Run with
+    //! `cargo test -p xai-grok-shell previous_model_failure_uses_active_model_fallback --lib`.
+
+    use super::*;
+    use reqwest::header::{AUTHORIZATION, HeaderValue};
+    use serde_json::json;
+    use std::sync::Arc;
+    use xai_grok_test_support::{MockInferenceServer, ScriptedResponse};
+
+    struct TestCodexRequestAuth;
+
+    impl xai_grok_sampler::RequestAuth for TestCodexRequestAuth {
+        fn apply(
+            &self,
+            headers: &mut reqwest::header::HeaderMap,
+        ) -> Result<xai_grok_sampling_types::CredentialBinding, xai_grok_sampler::RequestAuthError>
+        {
+            let mut authorization = HeaderValue::from_static("Bearer test-compaction-token");
+            authorization.set_sensitive(true);
+            headers.insert(AUTHORIZATION, authorization);
+            let mut account = HeaderValue::from_static("test-compaction-account");
+            account.set_sensitive(true);
+            headers.insert("chatgpt-account-id", account);
+            let mut binding = xai_grok_sampling_types::CredentialBinding::openai_codex(Some(
+                "test-compaction-record".to_owned(),
+            ));
+            binding.generation = 1;
+            Ok(binding)
+        }
+    }
+
+    #[tokio::test]
+    async fn previous_model_failure_uses_active_model_fallback() {
+        let server = MockInferenceServer::start().await.unwrap();
+        server.enqueue_response(
+            "/v1/responses",
+            ScriptedResponse::json(
+                400,
+                json!({"error": {"type": "invalid_request_error", "message": "unsupported model"}}),
+            ),
+        );
+        server.set_response("Summary produced by the active fallback model.");
+        let mut previous_config = xai_grok_sampler::SamplerConfig::openai_codex("gpt-previous");
+        previous_config.base_url = server.url();
+        previous_config.max_retries = Some(0);
+        previous_config.request_auth = Some(Arc::new(TestCodexRequestAuth));
+        let active_config = xai_grok_sampler::SamplerConfig {
+            model: "gpt-current".to_owned(),
+            ..previous_config.clone()
+        };
+        let previous_client =
+            xai_grok_sampler::SamplingClient::new(previous_config.clone()).unwrap();
+        let active_client = xai_grok_sampler::SamplingClient::new(active_config.clone()).unwrap();
+        let sampler = ShellCompactionSampler::new(
+            false,
+            None,
+            Vec::new(),
+            Vec::new(),
+            previous_client,
+            acp::SessionId::new("compaction-model-fallback-test"),
+            previous_config,
+            Some((active_client, active_config)),
+            Duration::from_secs(5),
+            0,
+        );
+        let prompt = CompactionPrompt {
+            system: String::new(),
+            user: String::new(),
+        };
+
+        let result = sampler
+            .sample_compaction(
+                &[
+                    ConversationItem::system("system"),
+                    ConversationItem::user("summarize"),
+                ],
+                &prompt,
+                Duration::ZERO,
+            )
+            .await
+            .expect("active-model fallback succeeds");
+
+        assert_eq!(
+            result.response,
+            "Summary produced by the active fallback model."
+        );
+        let models = server
+            .request_bodies()
+            .into_iter()
+            .filter_map(|body| body["model"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert_eq!(models, vec!["gpt-previous", "gpt-current"]);
+        assert!(server.has_responses_request());
     }
 }

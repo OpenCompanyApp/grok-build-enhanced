@@ -644,6 +644,7 @@ impl SessionActor {
                 user_context,
                 None,
                 xai_grok_telemetry::events::CompactionTrigger::Manual,
+                None,
             )
             .await
         {
@@ -926,6 +927,7 @@ impl SessionActor {
         user_context: Option<String>,
         auto_continue: Option<crate::extensions::notification::AutoContinueInfo>,
         trigger: xai_grok_telemetry::events::CompactionTrigger,
+        previous_codex_model: Option<&crate::session::compaction_config::PreviousModelInfo>,
     ) -> Result<(), acp::Error> {
         let tokens_before = self.chat_state_handle.get_total_tokens().await;
         tracing::Span::current().record("compaction_tokens_before", tokens_before as i64);
@@ -957,12 +959,15 @@ impl SessionActor {
             .as_ref()
             .map(|c| c.api_backend == ApiBackend::Messages)
             .unwrap_or(false);
-        let model_id = sampling_config.map(|c| c.model).unwrap_or_default();
-        let compaction = xai_grok_telemetry::events::CompactionScope::begin(
+        let active_model_id = sampling_config.map(|c| c.model).unwrap_or_default();
+        let selected_model_id = previous_codex_model
+            .map(|previous| previous.model_slug.clone())
+            .unwrap_or_else(|| active_model_id.clone());
+        let mut compaction = xai_grok_telemetry::events::CompactionScope::begin(
             trigger,
             tokens_before,
             context_window,
-            model_id.clone(),
+            selected_model_id,
             user_context.is_some(),
         );
         let compact_source = trigger_str;
@@ -1050,7 +1055,9 @@ impl SessionActor {
             return Err(acp::Error::internal_error()
                 .data("Compaction failed: no system message in simplified conversation"));
         }
-        let (sampling_client, sampling_config) = self.prepare_bound_chat_completion(false).await?;
+        let (sampling_client, sampling_config, fallback_sampling) = self
+            .prepare_compaction_sampling_plan(previous_codex_model)
+            .await?;
         let use_backend_search =
             self.agent.borrow().backend_search_enabled() && self.supports_backend_search.get();
         let effective_tool_defs: Vec<xai_grok_sampling_types::ToolDefinition> = self
@@ -1072,11 +1079,13 @@ impl SessionActor {
                 Vec::new()
             };
         tracing::info!(
+            model = %sampling_config.model,
+            fallback_model = fallback_sampling
+                .as_ref()
+                .map(|(_, config)| config.model.as_str()),
             num_tools = compaction_tools.len(),
             tool_tokens = compaction_tool_tokens,
-            "Running compact with model '{}' (user model: '{}')",
-            &sampling_config.model,
-            &sampling_config.model
+            "running compaction with the selected session model route"
         );
         let mut last_error: Option<acp::Error> = None;
         let mut last_failure_outcome = CompactionOutcome::Failed;
@@ -1118,6 +1127,7 @@ impl SessionActor {
             sampling_client,
             self.session_info.id.clone(),
             sampling_config.clone(),
+            fallback_sampling,
             self.inference_idle_timeout,
             wall_clock_budget_secs,
         );
@@ -1137,9 +1147,15 @@ impl SessionActor {
         };
         let mut request_turns = simplified_messages.clone();
         let mut input_overflow_rejections: u32 = 0;
-        let two_pass_output = self
-            .try_two_pass_pass2_apply(user_context.as_deref(), summary_strips_reasoning)
-            .await;
+        // A prefire NOTE1 is keyed to the active model. Previous-model Codex
+        // downshift compaction must stay entirely on its explicit primary /
+        // fallback routes rather than mixing models across two passes.
+        let two_pass_output = if previous_codex_model.is_some() {
+            None
+        } else {
+            self.try_two_pass_pass2_apply(user_context.as_deref(), summary_strips_reasoning)
+                .await
+        };
         let mut compact_summary: Option<String> =
             two_pass_output.as_ref().map(|o| o.content.clone());
         while compact_summary.is_none() {
@@ -1285,6 +1301,11 @@ impl SessionActor {
             }
         }
         let telemetry = observer.into_telemetry();
+        let attempted_model = if two_pass_output.is_none() {
+            sampler.last_attempted_model()
+        } else {
+            active_model_id
+        };
         if two_pass_output.is_none() {
             let request_chat_history = build_compaction_chat_history(
                 request_turns,
@@ -1296,7 +1317,7 @@ impl SessionActor {
                 compaction_tools,
                 user_context.as_deref(),
                 use_short_prompt,
-                &sampling_config.model,
+                &attempted_model,
                 trigger,
                 compact_summary
                     .as_deref()
@@ -1849,6 +1870,10 @@ impl SessionActor {
                 span.record("compaction_itl_max_ms", ms as i64);
             }
         }
+        // The trigger records the initially selected route. Completion records
+        // the route that actually produced the summary after any sticky
+        // previous-model -> active-model fallback.
+        compaction.model_id = attempted_model;
         compaction.complete(tokens_after);
         Ok(())
     }
@@ -2057,7 +2082,12 @@ impl SessionActor {
             cfg.context_window.get(),
             trigger_info.percentage,
         );
-        if let Err(e) = self.run_compact_only(trigger_info).await {
+        let previous_codex_model =
+            (!provider_changed && cfg.provider.is_openai_codex()).then_some(&prev);
+        if let Err(e) = self
+            .run_compact_only_with_previous_codex_model(trigger_info, previous_codex_model)
+            .await
+        {
             tracing::error!(error = % e, "Model-switch compaction failed");
         }
     }
@@ -2075,6 +2105,14 @@ impl SessionActor {
     }
     /// Compact without auto-continue. The outer turn loop rebuilds and retries.
     /// Emits telemetry (`auto_compact_fired`) and UI notifications automatically.
+    pub(crate) async fn run_compact_only(
+        self: &Arc<Self>,
+        trigger_info: AutoCompactTriggerInfo,
+    ) -> Result<(), acp::Error> {
+        self.run_compact_only_with_previous_codex_model(trigger_info, None)
+            .await
+    }
+
     #[tracing::instrument(
         name = "session.compact",
         skip_all,
@@ -2089,9 +2127,10 @@ impl SessionActor {
             error = tracing::field::Empty,
         )
     )]
-    pub(crate) async fn run_compact_only(
+    async fn run_compact_only_with_previous_codex_model(
         self: &Arc<Self>,
         trigger_info: AutoCompactTriggerInfo,
+        previous_codex_model: Option<&crate::session::compaction_config::PreviousModelInfo>,
     ) -> Result<(), acp::Error> {
         use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
         self.record_compaction_variant();
@@ -2122,6 +2161,7 @@ impl SessionActor {
                 None,
                 None,
                 xai_grok_telemetry::events::CompactionTrigger::Auto,
+                previous_codex_model,
             )
             .await;
         let elapsed_ms = compact_start.elapsed().as_millis() as i64;
@@ -2299,6 +2339,21 @@ mod inline_auto_compact_flow_tests {
     use xai_grok_workspace::permission::PermissionHandle;
     #[derive(Debug)]
     struct DummyTerminal;
+
+    struct TestCodexRequestAuth;
+
+    impl xai_grok_sampler::RequestAuth for TestCodexRequestAuth {
+        fn apply(
+            &self,
+            _headers: &mut reqwest::header::HeaderMap,
+        ) -> Result<xai_grok_sampling_types::CredentialBinding, xai_grok_sampler::RequestAuthError>
+        {
+            Ok(xai_grok_sampling_types::CredentialBinding::openai_codex(
+                Some("test-compaction-record".to_owned()),
+            ))
+        }
+    }
+
     #[async_trait::async_trait]
     impl AsyncTerminalRunner for DummyTerminal {
         async fn run(
@@ -3501,6 +3556,206 @@ mod inline_auto_compact_flow_tests {
             })
             .await;
     }
+    /// Manual and ordinary automatic compaction share this public flow: the
+    /// active session model must be the model sent to the inference boundary.
+    #[tokio::test(flavor = "current_thread")]
+    async fn compact_request_uses_the_active_session_model() {
+        use xai_grok_test_support::MockInferenceServer;
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
+                let actor = Arc::new(
+                    create_test_actor(10_000, 100_000, 85, gateway_tx, persistence_tx).await,
+                );
+                let server = MockInferenceServer::start().await.unwrap();
+                server.set_response("Summary of the active session model request. ".repeat(20));
+                let mut config = actor.chat_state_handle.get_sampling_config().await.unwrap();
+                config.base_url = server.url();
+                config.model = "active-session-model".to_owned();
+                actor.chat_state_handle.update_sampling_config(config);
+                actor.chat_state_handle.replace_conversation(vec![
+                    ConversationItem::system("system"),
+                    ConversationItem::user("summarize this conversation"),
+                ]);
+
+                actor.run_compact(None).await.expect("compaction succeeds");
+
+                let request = server
+                    .request_bodies()
+                    .into_iter()
+                    .find(|body| body.get("model").is_some())
+                    .expect("one inference request");
+                assert_eq!(request["model"], "active-session-model");
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_downshift_compaction_uses_the_previous_model_first() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
+                let actor =
+                    create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
+                let active = xai_grok_sampler::SamplerConfig::openai_codex("gpt-current");
+                let previous = crate::session::compaction_config::PreviousModelInfo {
+                    model_slug: "gpt-previous".to_owned(),
+                    provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
+                    context_window: 200_000,
+                };
+
+                let (primary, _) = actor.compaction_sampling_configs(active, Some(&previous));
+
+                assert_eq!(primary.model, "gpt-previous");
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_downshift_compaction_keeps_the_active_model_as_fallback() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
+                let actor =
+                    create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
+                let active = xai_grok_sampler::SamplerConfig::openai_codex("gpt-current");
+                let previous = crate::session::compaction_config::PreviousModelInfo {
+                    model_slug: "gpt-previous".to_owned(),
+                    provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
+                    context_window: 200_000,
+                };
+
+                let (_, fallback) = actor.compaction_sampling_configs(active, Some(&previous));
+
+                assert_eq!(fallback.expect("active fallback").model, "gpt-current");
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_compaction_routes_share_one_credential_binding() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
+                let actor =
+                    create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
+                let mut active = xai_grok_sampler::SamplerConfig::openai_codex("gpt-current");
+                let auth: xai_grok_sampler::SharedRequestAuth = Arc::new(TestCodexRequestAuth);
+                active.request_auth = Some(Arc::clone(&auth));
+                let previous = crate::session::compaction_config::PreviousModelInfo {
+                    model_slug: "gpt-previous".to_owned(),
+                    provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
+                    context_window: 200_000,
+                };
+
+                let (primary, fallback) =
+                    actor.compaction_sampling_configs(active, Some(&previous));
+
+                assert!(Arc::ptr_eq(
+                    primary.request_auth.as_ref().expect("primary auth"),
+                    &auth,
+                ));
+                assert!(Arc::ptr_eq(
+                    fallback
+                        .as_ref()
+                        .and_then(|config| config.request_auth.as_ref())
+                        .expect("fallback auth"),
+                    &auth,
+                ));
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_compaction_rejects_a_cross_provider_previous_model() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
+                let actor =
+                    create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
+                let active = xai_grok_sampler::SamplerConfig::openai_codex("gpt-current");
+                let previous = crate::session::compaction_config::PreviousModelInfo {
+                    model_slug: "grok-previous".to_owned(),
+                    provider: xai_grok_sampling_types::ProviderId::Xai,
+                    context_window: 200_000,
+                };
+
+                let (primary, fallback) =
+                    actor.compaction_sampling_configs(active, Some(&previous));
+
+                assert_eq!(
+                    primary.provider,
+                    xai_grok_sampling_types::ProviderId::OpenAiCodex
+                );
+                assert_eq!(primary.model, "gpt-current");
+                assert!(fallback.is_none());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_codex_compaction_keeps_its_active_route() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
+                let actor =
+                    create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
+                let mut active = xai_grok_sampler::SamplerConfig::default();
+                active.model = "grok-current".to_owned();
+                let previous = crate::session::compaction_config::PreviousModelInfo {
+                    model_slug: "grok-previous".to_owned(),
+                    provider: xai_grok_sampling_types::ProviderId::Xai,
+                    context_window: 200_000,
+                };
+
+                let (primary, fallback) =
+                    actor.compaction_sampling_configs(active, Some(&previous));
+
+                assert_eq!(primary.provider, xai_grok_sampling_types::ProviderId::Xai);
+                assert_eq!(primary.model, "grok-current");
+                assert!(fallback.is_none());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_compaction_does_not_create_a_same_model_fallback() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
+                let actor =
+                    create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
+                let active = xai_grok_sampler::SamplerConfig::openai_codex("gpt-current");
+                let previous = crate::session::compaction_config::PreviousModelInfo {
+                    model_slug: "gpt-current".to_owned(),
+                    provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
+                    context_window: 200_000,
+                };
+
+                let (primary, fallback) =
+                    actor.compaction_sampling_configs(active, Some(&previous));
+
+                assert_eq!(primary.model, "gpt-current");
+                assert!(fallback.is_none());
+            })
+            .await;
+    }
+
     /// Model-switch compaction fires when switching to a smaller context window.
     #[tokio::test(flavor = "current_thread")]
     async fn test_model_switch_compaction_triggers_on_downgrade() {

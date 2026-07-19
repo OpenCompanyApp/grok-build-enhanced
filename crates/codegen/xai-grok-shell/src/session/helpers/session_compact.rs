@@ -40,12 +40,29 @@ your response.
 /// retries without re-parsing free-form error strings.
 #[derive(Debug)]
 pub(crate) enum CompactFailure {
-    /// Retrying the same payload will hit the same failure. The retry loop
-    /// in `run_compact_inner` should bail without sleeping or re-issuing.
+    /// Retrying the same payload will hit the same local failure. The retry
+    /// loop in `run_compact_inner` should bail without sleeping or re-issuing,
+    /// and changing only the model cannot repair it.
     Deterministic(acp::Error),
+    /// A deterministic provider/model rejection that Codex CLI retries once
+    /// with the active model when previous-model compaction fails.
+    DeterministicWithCurrentModelFallback(acp::Error),
     /// Failure may resolve on retry. The caller follows its existing
-    /// N-attempt + backoff loop.
+    /// N-attempt + backoff loop; a previous-model route may also switch to the
+    /// active model before that loop retries.
     Transient(acp::Error),
+}
+
+impl CompactFailure {
+    /// Whether Codex CLI would retry a failed previous-model compaction with
+    /// the active model. Eligibility is retained at the typed error boundary;
+    /// never infer it by reparsing provider-controlled display text.
+    pub(crate) fn should_retry_with_current_model(&self) -> bool {
+        matches!(
+            self,
+            Self::DeterministicWithCurrentModelFallback(_) | Self::Transient(_)
+        )
+    }
 }
 pub(crate) use xai_grok_sampling_types::is_context_length_error;
 /// Classify an upstream `SamplingError` for the compaction retry loop.
@@ -61,40 +78,45 @@ fn classify_sampling_error_for_provider(
     provider: xai_grok_sampling_types::ProviderId,
 ) -> CompactFailure {
     let acp_err = acp::Error::internal_error().data(format!("compact failed: {err}"));
-    let deterministic = match &err {
+    match &err {
         SamplingError::Auth(_)
         | SamplingError::ProviderAuthRejected { .. }
         | SamplingError::InvalidConfiguration(_)
         | SamplingError::Serialization(_)
-        | SamplingError::IdleTimeout { .. } => true,
+        | SamplingError::IdleTimeout { .. } => CompactFailure::Deterministic(acp_err),
         SamplingError::Api {
             status,
             message,
             should_retry,
             ..
         } => {
-            *should_retry == Some(false)
+            let deterministic = *should_retry == Some(false)
                 || is_context_length_error(message)
                 || (*status == StatusCode::TOO_MANY_REQUESTS
                     && (provider.is_openai_codex() || message.contains("usage limit reached")))
                 || (status.is_client_error()
                     && *status != StatusCode::REQUEST_TIMEOUT
-                    && *status != StatusCode::TOO_MANY_REQUESTS)
+                    && *status != StatusCode::TOO_MANY_REQUESTS);
+            if deterministic {
+                CompactFailure::DeterministicWithCurrentModelFallback(acp_err)
+            } else {
+                CompactFailure::Transient(acp_err)
+            }
         }
-        SamplingError::MaxTokensTruncation => true,
+        SamplingError::MaxTokensTruncation => {
+            CompactFailure::DeterministicWithCurrentModelFallback(acp_err)
+        }
         SamplingError::StreamError {
             error_type,
             message,
-        } => error_type == "usage_limit_reached" || message.contains("usage limit reached"),
-        SamplingError::Http(_)
+        } if error_type == "usage_limit_reached" || message.contains("usage limit reached") => {
+            CompactFailure::DeterministicWithCurrentModelFallback(acp_err)
+        }
+        SamplingError::StreamError { .. }
+        | SamplingError::Http(_)
         | SamplingError::EventStreamError(_)
         | SamplingError::EmptyResponse { .. }
-        | SamplingError::DoomLoopDetected { .. } => false,
-    };
-    if deterministic {
-        CompactFailure::Deterministic(acp_err)
-    } else {
-        CompactFailure::Transient(acp_err)
+        | SamplingError::DoomLoopDetected { .. } => CompactFailure::Transient(acp_err),
     }
 }
 
@@ -119,20 +141,20 @@ fn classify_response_event_error(code: Option<&str>, message: &str) -> CompactFa
         None => format!("compact failed: {message}"),
     });
     if matches!(code, Some("usage_limit_reached")) || message.contains("usage limit reached") {
-        return CompactFailure::Deterministic(acp_err);
+        return CompactFailure::DeterministicWithCurrentModelFallback(acp_err);
     }
     if matches!(code, Some("invalid_request_error")) || message.contains("invalid_request_error") {
-        return CompactFailure::Deterministic(acp_err);
+        return CompactFailure::DeterministicWithCurrentModelFallback(acp_err);
     }
     if let Some(status_code) = code.and_then(|c| c.parse::<u16>().ok())
         && (400..500).contains(&status_code)
         && status_code != 408
         && status_code != 429
     {
-        return CompactFailure::Deterministic(acp_err);
+        return CompactFailure::DeterministicWithCurrentModelFallback(acp_err);
     }
     if is_context_length_error(message) {
-        return CompactFailure::Deterministic(acp_err);
+        return CompactFailure::DeterministicWithCurrentModelFallback(acp_err);
     }
     CompactFailure::Transient(acp_err)
 }
@@ -985,7 +1007,11 @@ pub(crate) async fn generate_session_compact(
 mod classify_tests {
     use super::*;
     fn is_det(failure: &CompactFailure) -> bool {
-        matches!(failure, CompactFailure::Deterministic(_))
+        matches!(
+            failure,
+            CompactFailure::Deterministic(_)
+                | CompactFailure::DeterministicWithCurrentModelFallback(_)
+        )
     }
 
     #[test]
@@ -1101,6 +1127,73 @@ mod classify_tests {
         )));
     }
     #[test]
+    fn codex_invalid_request_allows_previous_model_fallback() {
+        let failure = classify_sampling_error_for_provider(
+            SamplingError::Api {
+                status: StatusCode::BAD_REQUEST,
+                message: "invalid_request_error".into(),
+                model_metadata: None,
+                retry_after_secs: None,
+                should_retry: Some(false),
+            },
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+        );
+
+        assert!(failure.should_retry_with_current_model());
+    }
+
+    #[test]
+    fn codex_max_token_truncation_allows_previous_model_fallback() {
+        let failure = classify_sampling_error_for_provider(
+            SamplingError::MaxTokensTruncation,
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+        );
+
+        assert!(failure.should_retry_with_current_model());
+    }
+
+    #[test]
+    fn codex_numeric_stream_status_allows_previous_model_fallback() {
+        let failure = classify_response_event_error(Some("404"), "model is unavailable");
+
+        assert!(failure.should_retry_with_current_model());
+    }
+
+    #[test]
+    fn codex_auth_construction_failure_does_not_change_models() {
+        let failure = classify_sampling_error_for_provider(
+            SamplingError::Auth("expired".into()),
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+        );
+
+        assert!(!failure.should_retry_with_current_model());
+    }
+
+    #[test]
+    fn codex_provider_credential_rejection_does_not_change_models() {
+        let failure = classify_sampling_error_for_provider(
+            SamplingError::ProviderAuthRejected {
+                provider: xai_grok_sampling_types::ProviderId::OpenAiCodex,
+                credential: xai_grok_sampling_types::CredentialBinding::openai_codex(None),
+            },
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+        );
+
+        assert!(!failure.should_retry_with_current_model());
+    }
+
+    #[test]
+    fn codex_serialization_failure_does_not_change_models() {
+        let serde_error = serde_json::from_str::<u32>("not a number").unwrap_err();
+        let failure = classify_sampling_error_for_provider(
+            SamplingError::Serialization(serde_error),
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+        );
+
+        assert!(!failure.should_retry_with_current_model());
+    }
+
+    #[test]
     fn sampling_non_api_variants_classify_correctly() {
         assert!(is_det(&classify_sampling_error(SamplingError::Auth(
             "expired".into()
@@ -1204,14 +1297,16 @@ mod classify_tests {
     }
     #[test]
     fn classifier_preserves_acp_error_data() {
-        let CompactFailure::Deterministic(err) = classify_sampling_error(SamplingError::Api {
-            status: StatusCode::BAD_REQUEST,
-            message: "bad payload".into(),
-            model_metadata: None,
-            retry_after_secs: None,
-            should_retry: None,
-        }) else {
-            panic!("expected Deterministic for 400");
+        let CompactFailure::DeterministicWithCurrentModelFallback(err) =
+            classify_sampling_error(SamplingError::Api {
+                status: StatusCode::BAD_REQUEST,
+                message: "bad payload".into(),
+                model_metadata: None,
+                retry_after_secs: None,
+                should_retry: None,
+            })
+        else {
+            panic!("expected model-fallback-eligible deterministic failure for 400");
         };
         let data = err.data.as_ref().and_then(|d| d.as_str()).unwrap();
         assert!(data.contains("compact failed"));
@@ -2172,7 +2267,10 @@ mod reasoning_compaction_regression_tests {
                     "expected an idle-timeout transient failure, got: {data}"
                 );
             }
-            Err(CompactFailure::Deterministic(_)) => {
+            Err(
+                CompactFailure::Deterministic(_)
+                | CompactFailure::DeterministicWithCurrentModelFallback(_),
+            ) => {
                 panic!("a stalled stream must be retryable (Transient), not Deterministic")
             }
             Ok(_) => panic!("a stalled stream must not produce a summary"),
@@ -2239,7 +2337,10 @@ mod reasoning_compaction_regression_tests {
                     "expected an idle-timeout transient failure, got: {data}"
                 );
             }
-            Err(CompactFailure::Deterministic(_)) => {
+            Err(
+                CompactFailure::Deterministic(_)
+                | CompactFailure::DeterministicWithCurrentModelFallback(_),
+            ) => {
                 panic!("a stalled stream must be retryable (Transient), not Deterministic")
             }
             Ok(_) => {
@@ -2310,7 +2411,10 @@ mod reasoning_compaction_regression_tests {
                     "expected an idle-timeout transient failure, got: {data}"
                 );
             }
-            Err(CompactFailure::Deterministic(_)) => {
+            Err(
+                CompactFailure::Deterministic(_)
+                | CompactFailure::DeterministicWithCurrentModelFallback(_),
+            ) => {
                 panic!("a stalled stream must be retryable (Transient), not Deterministic")
             }
             Ok(_) => {

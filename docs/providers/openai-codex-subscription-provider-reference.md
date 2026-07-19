@@ -732,6 +732,15 @@ deliberately tool-free request. The request:
 - accepts text delivered only in `response.output_text.done`; and
 - owns one exact-generation 401 recovery.
 
+Model selection follows Codex CLI. Manual `/compact` and ordinary automatic
+compaction use the active session model; there is no separate cheap or hidden
+compaction model. When a Codex model switch moves an over-threshold conversation
+to a smaller context window, compaction first uses the previous Codex model and
+retries eligible model/request/provider failures with the new active model. Both
+routes stay pinned to the same provider and credential record. The
+`session_summary_model` setting controls session titles/persistence summaries,
+not conversation compaction.
+
 Compaction never sends xAI-specific headers. A usage-limit response is a
 deterministic stop, not a transient retry loop. A network failure or an idle
 stream before completion is transient and can use the bounded compaction retry

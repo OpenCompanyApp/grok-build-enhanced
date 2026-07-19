@@ -787,6 +787,98 @@ impl SessionActor {
             .map(|(client, _)| client)
     }
 
+    /// Build the provider-bound compaction route, optionally using the prior
+    /// Codex model as the primary route after a model downshift. The active
+    /// route is retained as a same-provider fallback, matching Codex CLI's
+    /// previous-model compaction contract without mutating live chat state.
+    pub(super) async fn prepare_compaction_sampling_plan(
+        &self,
+        previous_model: Option<&crate::session::compaction_config::PreviousModelInfo>,
+    ) -> Result<
+        (
+            xai_grok_sampler::SamplingClient,
+            xai_grok_sampler::SamplerConfig,
+            Option<(
+                xai_grok_sampler::SamplingClient,
+                xai_grok_sampler::SamplerConfig,
+            )>,
+        ),
+        acp::Error,
+    > {
+        self.refresh_token_if_expired().await;
+        let active_config = self.reconstruct_full_config().await?;
+        self.mark_codex_auxiliary_usage_incomplete(active_config.provider)
+            .await;
+        let (primary_config, fallback_config) =
+            self.compaction_sampling_configs(active_config, previous_model);
+        let primary_client = xai_grok_sampler::SamplingClient::new(primary_config.clone())
+            .map_err(|error| self.to_acp_error(error))?;
+        let fallback = match fallback_config {
+            Some(config) => {
+                let client = xai_grok_sampler::SamplingClient::new(config.clone())
+                    .map_err(|error| self.to_acp_error(error))?;
+                Some((client, config))
+            }
+            None => None,
+        };
+        Ok((primary_client, primary_config, fallback))
+    }
+
+    /// Select compaction model configs from one provider-bound credential
+    /// snapshot. Only a same-provider Codex switch may use the previous model;
+    /// every other path keeps the active session model and has no fallback.
+    pub(super) fn compaction_sampling_configs(
+        &self,
+        active_config: xai_grok_sampler::SamplerConfig,
+        previous_model: Option<&crate::session::compaction_config::PreviousModelInfo>,
+    ) -> (
+        xai_grok_sampler::SamplerConfig,
+        Option<xai_grok_sampler::SamplerConfig>,
+    ) {
+        let Some(previous_model) = previous_model.filter(|previous| {
+            active_config.provider.is_openai_codex()
+                && previous.provider == active_config.provider
+                && previous.model_slug != active_config.model
+        }) else {
+            return (active_config, None);
+        };
+
+        let mut previous_config = active_config.clone();
+        previous_config.model = previous_model.model_slug.clone();
+        previous_config.context_window = previous_model.context_window;
+        if self
+            .models_manager
+            .model_in_catalog_for_provider(previous_config.provider, &previous_config.model)
+        {
+            previous_config.reasoning_effort = previous_config
+                .reasoning_effort
+                .and_then(|effort| {
+                    self.models_manager.resolve_reasoning_effort_for_provider(
+                        previous_config.provider,
+                        &previous_config.model,
+                        effort,
+                    )
+                })
+                .or_else(|| {
+                    self.models_manager
+                        .model_default_reasoning_effort_for_provider(
+                            previous_config.provider,
+                            &previous_config.model,
+                        )
+                });
+            previous_config.service_tier =
+                previous_config.service_tier.as_deref().and_then(|tier| {
+                    self.models_manager.resolve_service_tier_for_provider(
+                        previous_config.provider,
+                        &previous_config.model,
+                        tier,
+                    )
+                });
+        }
+
+        (previous_config, Some(active_config))
+    }
+
     /// Construct an auxiliary/compaction client and return the exact bound
     /// config used for that client. This avoids a second credential snapshot
     /// between route decisions and sampler construction.
