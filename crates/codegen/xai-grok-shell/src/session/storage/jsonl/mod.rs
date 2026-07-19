@@ -706,6 +706,8 @@ impl JsonlStorageAdapter {
             Some(xai_grok_sampling_types::ProviderId::OpenAiCodex)
         } else if target_model_id.0.starts_with("kimi-code/") {
             Some(xai_grok_sampling_types::ProviderId::KimiCode)
+        } else if target_model_id.0.starts_with("zai-coding-plan/") {
+            Some(xai_grok_sampling_types::ProviderId::ZaiCodingPlan)
         } else {
             None
         };

@@ -3190,6 +3190,17 @@ pub fn resolve_model_list(
         tracing::debug!(count = kimi_models.len(), "loaded Kimi Code model catalog");
         resolved.extend(kimi_models);
     }
+    // Z.AI Coding Plan catalog entries are likewise bound to the opaque ID of
+    // the currently stored global-plan credential. Unknown models remain
+    // visible but unselectable until their capabilities are qualified.
+    let zai_models = crate::auth::zai_coding_plan::load_cached_model_entries();
+    if !zai_models.is_empty() {
+        tracing::debug!(
+            count = zai_models.len(),
+            "loaded Z.AI Coding Plan model catalog"
+        );
+        resolved.extend(zai_models);
+    }
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
         let base = resolved.shift_remove(key);
@@ -4410,6 +4421,18 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
             auth_scheme: info.auth_scheme,
         };
     }
+    if info.provider == ProviderId::ZaiCodingPlan {
+        // The global Coding Plan key is dynamically attached by its own
+        // provider binder and cannot fall through to Open Platform, BigModel,
+        // xAI, Codex, Kimi, or generic custom credentials.
+        return ResolvedCredentials {
+            provider: ProviderId::ZaiCodingPlan,
+            api_key: None,
+            base_url: xai_grok_sampling_types::ZAI_CODING_PLAN_BASE_URL.to_owned(),
+            auth_type: xai_chat_state::AuthType::ApiKey,
+            auth_scheme: AuthScheme::Bearer,
+        };
+    }
     if info.provider == ProviderId::Custom {
         let api_key = model.own_credential();
         if api_key.is_none()
@@ -4623,7 +4646,7 @@ pub fn resolve_aux_model_sampling_config(
         );
         if matches!(
             entry.info.provider,
-            ProviderId::OpenAiCodex | ProviderId::KimiCode
+            ProviderId::OpenAiCodex | ProviderId::KimiCode | ProviderId::ZaiCodingPlan
         ) {
             // Return provider/model routing only. The fallible session binder
             // attests the restored record and attaches sampler + tool auth at
@@ -4808,6 +4831,9 @@ pub fn sampling_config_for_model(
             xai_grok_sampling_types::CredentialSourceId::OpenAiCodexSubscription
         }
         ProviderId::KimiCode => xai_grok_sampling_types::CredentialSourceId::KimiCodeApiKey,
+        ProviderId::ZaiCodingPlan => {
+            xai_grok_sampling_types::CredentialSourceId::ZaiCodingPlanApiKey
+        }
         ProviderId::Custom if model.has_own_credentials() => {
             xai_grok_sampling_types::CredentialSourceId::StaticApiKey
         }

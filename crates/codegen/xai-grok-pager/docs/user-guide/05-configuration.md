@@ -140,6 +140,17 @@ broadening the other blocks:
 allow_loopback = true
 ```
 
+Readable HTTP error pages remain available as content because their bodies can
+contain useful recovery information. When the local fetcher receives a `4xx` or
+`5xx` response, the model-visible result begins with
+`[HTTP <status> — error page body follows]` so an error page is not mistaken for
+the requested document. When a project offers
+both a rendered site and a stable raw, text, or API endpoint, prefer the raw
+endpoint; it avoids client-side rendering and usually gives clearer provenance.
+For provenance-sensitive research, set `web_search.allowed_domains` (or the
+call-level `allowed_domains` filter) to authoritative domains before searching
+rather than filtering sources only after retrieval.
+
 See the [OpenAI Codex subscription provider reference](../../../../../docs/providers/openai-codex-subscription-provider-reference.md#web-tools)
 for exact wire values, output budgets, trust metadata, failure codes, and live
 validation.

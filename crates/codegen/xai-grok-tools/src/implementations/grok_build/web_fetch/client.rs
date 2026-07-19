@@ -165,6 +165,14 @@ impl WebFetchClient {
         let mut url = validate_url(raw_url)?;
         upgrade_to_https(&mut url);
 
+        // A Kimi-hosted request must pass the same SSRF policy before any
+        // provider call or local cache lookup. Otherwise content cached while
+        // loopback was explicitly allowed could bypass a later fail-closed
+        // provider session.
+        if self.kimi_hosted.is_some() {
+            ssrf::check_ssrf(&url, self.params.allow_loopback()).await?;
+        }
+
         let url_str = url.to_string();
 
         // Check cache. Only aggregate counters are logged; cache keys can
@@ -177,10 +185,6 @@ impl WebFetchClient {
         }
 
         if let Some(hosted) = self.kimi_hosted.as_ref() {
-            // Do not turn Kimi's hosted extractor into a route to local,
-            // private, link-local, or metadata destinations. The existing
-            // local-development loopback opt-in remains the only exception.
-            ssrf::check_ssrf(&url, self.params.allow_loopback()).await?;
             match hosted.fetch(&url).await? {
                 HostedFetchResult::Content(content) => {
                     let source_bytes = content.len();
@@ -1043,7 +1047,41 @@ fn strip_base64_data_uris(content: String) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+
     use super::*;
+    use crate::types::{
+        ApiKeyProvider, KIMI_CODE_PROVIDER_ID, RequestAuth, RequestCredentialSnapshot,
+        SharedApiKeyProvider,
+    };
+
+    struct KimiHostedCacheTestProvider;
+
+    impl ApiKeyProvider for KimiHostedCacheTestProvider {
+        fn current_api_key(&self) -> Option<String> {
+            None
+        }
+
+        fn request_auth_provider_id(&self) -> Option<&str> {
+            Some(KIMI_CODE_PROVIDER_ID)
+        }
+
+        fn current_request_auth_async(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Option<RequestAuth>> + Send + '_>> {
+            Box::pin(std::future::ready(Some(
+                RequestAuth::for_provider_snapshot(
+                    KIMI_CODE_PROVIDER_ID,
+                    RequestCredentialSnapshot::new("opaque-kimi-cache-test-record", 1),
+                    [(
+                        "authorization".to_owned(),
+                        "Bearer sentinel-kimi-cache-test-key".to_owned(),
+                    )],
+                ),
+            )))
+        }
+    }
 
     #[derive(Default)]
     struct RejectBlockedRedirectValidator {
@@ -1089,6 +1127,31 @@ mod tests {
                 revalidations: 1,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn kimi_hosted_fetch_checks_ssrf_before_returning_a_cached_entry() {
+        let provider: SharedApiKeyProvider = std::sync::Arc::new(KimiHostedCacheTestProvider);
+        let client = WebFetchClient::new(&WebFetchParams::default())
+            .unwrap()
+            .with_kimi_hosted_fetch(provider)
+            .unwrap();
+        client.cache.write().insert_text(
+            "https://127.0.0.1/private".to_owned(),
+            WebFetchOutput::Error {
+                url: None,
+                message: "cached private content must not be returned".to_owned(),
+            },
+            false,
+        );
+
+        let error = client
+            .fetch("http://127.0.0.1/private", None, None, None)
+            .await
+            .expect_err("Kimi provider mode must reject loopback before cache lookup");
+
+        assert!(matches!(error, WebFetchError::SsrfBlocked { .. }));
+        assert_eq!(client.cache_stats(), WebFetchCacheStats::default());
     }
 
     #[test]

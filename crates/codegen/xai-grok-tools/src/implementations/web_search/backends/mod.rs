@@ -1,12 +1,14 @@
 mod kimi_code;
 mod openai_codex;
 mod responses;
+mod zai_coding_plan;
 
 use crate::types::output::WebSearchReference;
 
 pub(super) use kimi_code::KimiCodeBackend;
 pub(super) use openai_codex::OpenAiCodexBackend;
 pub(super) use responses::ResponsesBackend;
+pub(super) use zai_coding_plan::ZaiCodingPlanBackend;
 
 const MAX_SEARCH_QUERY_BYTES: usize = 16 * 1024;
 const MAX_SEARCH_COMMAND_BYTES: usize = 64 * 1024;

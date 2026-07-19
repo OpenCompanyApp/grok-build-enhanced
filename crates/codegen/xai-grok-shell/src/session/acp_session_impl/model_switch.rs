@@ -257,9 +257,11 @@ async fn refresh_provider_memory_resource(
     params.embed_api_key = sampling_config.api_key.clone();
     match sampling_config.provider {
         xai_grok_sampling_types::ProviderId::OpenAiCodex
-        | xai_grok_sampling_types::ProviderId::KimiCode => {
-            // Provider-owned Codex/Kimi auth is not a general xAI credential,
-            // and neither scoped backend exposes a supported embeddings route.
+        | xai_grok_sampling_types::ProviderId::KimiCode
+        | xai_grok_sampling_types::ProviderId::ZaiCodingPlan => {
+            // Provider-owned subscription auth is not a general xAI
+            // credential, and these scoped backends expose no supported
+            // embeddings route.
             params.embed_config = None;
             params.embed_base_url.clear();
             params.embed_api_key = None;
@@ -328,6 +330,11 @@ fn web_search_config_for_provider(
     if sampling_config.provider.is_kimi_code() {
         return WebSearchConfig::KimiCode {
             base_url: xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned(),
+        };
+    }
+    if sampling_config.provider.is_zai_coding_plan() {
+        return WebSearchConfig::ZaiCodingPlan {
+            endpoint: xai_grok_sampling_types::ZAI_CODING_PLAN_SEARCH_MCP_URL.to_owned(),
         };
     }
 
@@ -479,7 +486,8 @@ impl SessionActor {
         if let Some(previous) = previous_sampling_config.as_ref()
             && previous.provider == sampling_config.provider
             && (sampling_config.provider.is_openai_codex()
-                || sampling_config.provider.is_kimi_code())
+                || sampling_config.provider.is_kimi_code()
+                || sampling_config.provider.is_zai_coding_plan())
         {
             crate::session::provider::pin_provider_candidate_to_active_record(
                 &mut sampling_config,
@@ -512,6 +520,9 @@ impl SessionActor {
             }
             xai_grok_sampling_types::ProviderId::KimiCode => {
                 acp::ModelId::new(format!("kimi-code/{}", sampling_config.model))
+            }
+            xai_grok_sampling_types::ProviderId::ZaiCodingPlan => {
+                acp::ModelId::new(format!("zai-coding-plan/{}", sampling_config.model))
             }
             xai_grok_sampling_types::ProviderId::Xai
             | xai_grok_sampling_types::ProviderId::Custom => {

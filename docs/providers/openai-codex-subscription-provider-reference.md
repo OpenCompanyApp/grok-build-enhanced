@@ -587,9 +587,9 @@ a stable failure code—not bodies, URLs, queries, or credential state.
 
 Both native web tools use bounded failure envelopes with `code`, `retryable`,
 and safe advice. Stable codes include `domain_rejected`, `ssrf_blocked`,
-`cross_host_redirect`, `unsupported_content`, `provider_unavailable`,
-`reference_expired`, `authentication_required`, `response_too_large`,
-`timeout`, `rate_limited`, `context_budget_exhausted`,
+`cross_host_redirect`, `unsupported_content`, `dns_resolution_failed`,
+`provider_unavailable`, `reference_expired`, `authentication_required`,
+`response_too_large`, `timeout`, `rate_limited`, `context_budget_exhausted`,
 `required_browsing_not_invoked`, and `repeated_failure`.
 
 Within one user turn, identical effective-tool/argument fingerprints share one
@@ -613,6 +613,13 @@ allow_loopback = true
 That switch permits loopback only; private, link-local, and cloud metadata
 addresses remain blocked, and every redirect is revalidated. It is local-only
 and cannot be broadened by managed or remote policy.
+
+Readable `4xx` and `5xx` bodies remain content so useful error-page details are
+not discarded, but model-visible output begins with an explicit HTTP-status
+marker. Inline cache entries retain the complete typed output, including the
+original status. DNS resolution failures use the non-retryable
+`dns_resolution_failed` envelope rather than consuming the retry allowance for
+the same unresolved destination.
 
 Codex mode `disabled` removes the implicit Codex fetch default but does not
 remove an explicitly enabled provider-independent fetch tool. The global kill

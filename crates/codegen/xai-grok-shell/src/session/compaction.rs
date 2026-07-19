@@ -734,6 +734,11 @@ impl SessionActor {
                 {
                     "Kimi Code authentication failed. Run `grok login --provider kimi-code`, then /compact."
                 }
+                SuppressReason::Auth
+                    if provider.is_some_and(|provider| provider.is_zai_coding_plan()) =>
+                {
+                    "Z.AI Coding Plan authentication failed. Run `grok login --provider zai-coding-plan`, then /compact."
+                }
                 SuppressReason::Auth => {
                     "authentication failed. Re-authenticate, then run /compact."
                 }

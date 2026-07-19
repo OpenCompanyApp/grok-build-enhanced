@@ -1366,6 +1366,24 @@ pub fn reasoning_item_text(r: &rs::ReasoningItem) -> String {
     parts.join("\n")
 }
 
+/// Reconstruct provider wire reasoning without introducing separators that
+/// were not emitted by the provider. Chat Completions preserved-thinking
+/// contracts require byte-exact replay, including an explicitly empty value.
+fn reasoning_item_wire_text(r: &rs::ReasoningItem) -> String {
+    let mut text = String::new();
+    for part in &r.summary {
+        match part {
+            rs::SummaryPart::SummaryText(part) => text.push_str(&part.text),
+        }
+    }
+    if let Some(content) = &r.content {
+        for part in content {
+            text.push_str(&part.text);
+        }
+    }
+    text
+}
+
 /// Construct an `rs::ReasoningItem` carrying a single `SummaryText`
 /// part — the shape every non-Responses-API streaming consumer
 /// (`stream/chat_completions`, `stream/messages`, `stream/responses`
@@ -1947,8 +1965,9 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
 }
 
 /// Convert a sequence of [`ConversationItem`]s into the chat-completions
-/// wire format, joining each run of `Reasoning` siblings into the
-/// `reasoning_content` of the following `Assistant` message. An intervening
+/// wire format, concatenating each run of `Reasoning` siblings exactly into
+/// the `reasoning_content` of the following `Assistant` message. No separator
+/// is introduced, and a present-but-empty reasoning item stays present. An intervening
 /// `BackendToolCall` (emitted as its own synthetic assistant message) does
 /// not break this fold, so the canonical
 /// `[Reasoning, BackendToolCall, Assistant]` turn keeps its reasoning; any
@@ -1963,21 +1982,20 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
 /// lone `Reasoning` item has no chat-completions equivalent).
 pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRequestMessage> {
     let mut out: Vec<ChatRequestMessage> = Vec::with_capacity(items.len());
-    let mut pending_reasoning: Vec<String> = Vec::new();
+    let mut pending_reasoning: Option<String> = None;
 
     for item in items {
         match item {
             ConversationItem::Reasoning(r) => {
-                let text = reasoning_item_text(&r);
-                if !text.is_empty() {
-                    pending_reasoning.push(text);
-                }
+                let text = reasoning_item_wire_text(&r);
+                pending_reasoning
+                    .get_or_insert_with(String::new)
+                    .push_str(&text);
             }
             ConversationItem::Assistant(_) => {
                 let mut msg = conversation_item_to_chat_message(item);
-                if !pending_reasoning.is_empty() {
-                    msg.reasoning_content = Some(pending_reasoning.join("\n"));
-                    pending_reasoning.clear();
+                if let Some(reasoning) = pending_reasoning.take() {
+                    msg.reasoning_content = Some(reasoning);
                 }
                 out.push(msg);
             }
@@ -1996,7 +2014,7 @@ pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRe
                 // intervening user/tool messages clear it, matching the
                 // pre-refactor behavior where reasoning lived on the
                 // immediately-following assistant turn only.
-                pending_reasoning.clear();
+                pending_reasoning = None;
                 out.push(conversation_item_to_chat_message(other));
             }
         }
@@ -8809,9 +8827,22 @@ mod tests {
         assert_eq!(msgs[1].text_content(), "answer");
         assert_eq!(
             msgs[1].reasoning_content.as_deref(),
-            Some("thinking step 1\nthinking step 2"),
-            "reasoning text joined and attached to the assistant"
+            Some("thinking step 1thinking step 2"),
+            "reasoning text is concatenated without mutating provider bytes"
         );
+    }
+
+    #[test]
+    fn conversation_to_chat_messages_preserves_present_empty_reasoning() {
+        let items = vec![
+            ConversationItem::Reasoning(synthesized_reasoning_item("")),
+            ConversationItem::assistant("tool turn"),
+        ];
+
+        let messages = conversation_to_chat_messages(items);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].reasoning_content.as_deref(), Some(""));
     }
 
     #[test]

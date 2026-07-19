@@ -49,7 +49,9 @@ struct MemoryEmbeddingRoute {
 fn persisted_provider_binding(
     config: &xai_grok_sampler::SamplerConfig,
 ) -> Option<xai_grok_sampling_types::CredentialBinding> {
-    (config.provider.is_openai_codex() || config.provider.is_kimi_code())
+    (config.provider.is_openai_codex()
+        || config.provider.is_kimi_code()
+        || config.provider.is_zai_coding_plan())
         .then(|| config.credential_binding.clone())
         .flatten()
 }
@@ -60,7 +62,10 @@ fn resolve_memory_embedding_route(
     base_url: &str,
     api_key: Option<&str>,
 ) -> MemoryEmbeddingRoute {
-    if provider.is_openai_codex() || provider.is_kimi_code() {
+    if provider.is_openai_codex()
+        || provider.is_kimi_code()
+        || provider.is_zai_coding_plan()
+    {
         return MemoryEmbeddingRoute {
             config: None,
             base_url: String::new(),
@@ -535,6 +540,18 @@ pub(crate) async fn spawn_session_actor(
         } else {
             tracing::warn!(
                 provider = "kimi_code",
+                "web_search disabled: provider-scoped request authentication is unavailable"
+            );
+            xai_grok_tools::implementations::WebSearchConfig::Disabled
+        }
+    } else if sampling_config.provider.is_zai_coding_plan() {
+        if api_key_provider.is_some() {
+            xai_grok_tools::implementations::WebSearchConfig::ZaiCodingPlan {
+                endpoint: xai_grok_sampling_types::ZAI_CODING_PLAN_SEARCH_MCP_URL.to_owned(),
+            }
+        } else {
+            tracing::warn!(
+                provider = "zai_coding_plan",
                 "web_search disabled: provider-scoped request authentication is unavailable"
             );
             xai_grok_tools::implementations::WebSearchConfig::Disabled
