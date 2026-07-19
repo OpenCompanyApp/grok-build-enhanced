@@ -1420,6 +1420,28 @@
       "legal_paths": [
         "LICENSE"
       ]
+    },
+    {
+      "id": "upstream-privacy-safe-retention-default",
+      "description": "Fail-closed coding-data retention defaults shared by persisted auth, ACP auth metadata, and every fresh login path.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-shell/src/auth/device_code.rs",
+        "crates/codegen/xai-grok-shell/src/auth/external_auth.rs",
+        "crates/codegen/xai-grok-shell/src/auth/meta.rs",
+        "crates/codegen/xai-grok-shell/src/auth/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/model.rs",
+        "crates/codegen/xai-grok-shell/src/auth/oidc/protocol.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/auth/meta.rs",
+        "crates/codegen/xai-grok-shell/src/auth/model.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
     }
   ]
 }
