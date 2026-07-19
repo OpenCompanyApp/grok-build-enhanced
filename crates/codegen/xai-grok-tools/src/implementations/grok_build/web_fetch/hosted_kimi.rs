@@ -74,6 +74,9 @@ impl KimiHostedFetch {
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(WebFetchError::HostedQuota);
         }
+        if status == reqwest::StatusCode::REQUEST_TIMEOUT {
+            return Ok(HostedFetchResult::Fallback);
+        }
         if status.is_client_error() {
             // A validated URL producing another 4xx indicates request-contract
             // rejection, not a transient hosted-service outage. Do not hide a
@@ -233,6 +236,23 @@ mod tests {
             .fetch(&url::Url::parse("https://example.com/article").unwrap())
             .await
             .unwrap();
+        assert!(matches!(outcome, HostedFetchResult::Fallback));
+    }
+
+    #[tokio::test]
+    async fn fetch_requests_local_fallback_when_the_hosted_service_times_out() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/fetch"))
+            .respond_with(ResponseTemplate::new(408))
+            .mount(&server)
+            .await;
+
+        let outcome = test_client(&server)
+            .fetch(&url::Url::parse("https://example.com/article").unwrap())
+            .await
+            .unwrap();
+
         assert!(matches!(outcome, HostedFetchResult::Fallback));
     }
 

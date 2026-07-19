@@ -6,6 +6,7 @@ use super::*;
 
 const OPENAI_CODEX_MODEL_PREFIX: &str = "openai-codex/";
 const KIMI_CODE_MODEL_PREFIX: &str = "kimi-code/";
+const ZAI_CODING_PLAN_MODEL_PREFIX: &str = "zai-coding-plan/";
 
 fn is_strict_openai_codex_model_id(model_id: &acp::ModelId) -> bool {
     model_id.0.starts_with(OPENAI_CODEX_MODEL_PREFIX)
@@ -13,6 +14,10 @@ fn is_strict_openai_codex_model_id(model_id: &acp::ModelId) -> bool {
 
 fn is_strict_kimi_code_model_id(model_id: &acp::ModelId) -> bool {
     model_id.0.starts_with(KIMI_CODE_MODEL_PREFIX)
+}
+
+fn is_strict_zai_coding_plan_model_id(model_id: &acp::ModelId) -> bool {
+    model_id.0.starts_with(ZAI_CODING_PLAN_MODEL_PREFIX)
 }
 
 async fn refresh_openai_codex_catalog_for_selection(
@@ -32,6 +37,23 @@ async fn resolve_explicit_model_for_selection(
     agent: &MvpAgent,
     requested: &acp::ModelId,
 ) -> Result<ModelEntry, acp::Error> {
+    if is_strict_zai_coding_plan_model_id(requested) {
+        agent
+            .ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::ZaiCodingPlan)
+            .await?;
+        let model = agent.resolve_model_id(requested).map_err(|_| {
+            acp::Error::invalid_params().data(format!(
+                "Z.AI Coding Plan model \"{}\" is not available in the authenticated catalog. Run `grok models --provider zai-coding-plan` to refresh discovery.",
+                requested.0
+            ))
+        })?;
+        if model.info().provider != xai_grok_sampling_types::ProviderId::ZaiCodingPlan {
+            return Err(acp::Error::invalid_params().data(
+                "The requested zai-coding-plan model did not resolve to the Z.AI Coding Plan provider.",
+            ));
+        }
+        return Ok(model);
+    }
     if is_strict_kimi_code_model_id(requested) {
         agent
             .ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::KimiCode)
@@ -132,6 +154,41 @@ async fn resolve_persisted_kimi_code_model_for_load(
 
     Err(acp::Error::invalid_params().data(format!(
         "Kimi Code model \"{}\" is unavailable and no entitled Kimi fallback model is cached. Run `grok models --provider kimi-code` to refresh discovery.",
+        persisted.0
+    )))
+}
+
+async fn resolve_persisted_zai_coding_plan_model_for_load(
+    agent: &MvpAgent,
+    persisted: &acp::ModelId,
+) -> Result<acp::ModelId, acp::Error> {
+    debug_assert!(is_strict_zai_coding_plan_model_id(persisted));
+    agent
+        .ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::ZaiCodingPlan)
+        .await?;
+
+    let models = agent.models_manager.models();
+    let available = agent.models_manager.available();
+    let provider = xai_grok_sampling_types::ProviderId::ZaiCodingPlan;
+    if let Some(exact) = crate::agent::models::selectable_catalog_key_for_persisted_provider(
+        &models,
+        &available,
+        persisted,
+        agent.models_manager.is_session_auth(),
+        provider,
+    ) {
+        return Ok(exact);
+    }
+    if let Some(fallback) = crate::agent::models::first_available_catalog_key_for_provider(
+        &models,
+        &available,
+        provider,
+    ) {
+        return Ok(fallback);
+    }
+
+    Err(acp::Error::invalid_params().data(format!(
+        "Z.AI Coding Plan model \"{}\" is unavailable and no entitled fallback model is cached. Run `grok models --provider zai-coding-plan` to refresh discovery.",
         persisted.0
     )))
 }
@@ -453,6 +510,8 @@ impl acp::Agent for MvpAgent {
             == xai_grok_sampling_types::ProviderId::OpenAiCodex;
         let kimi_selected = selected_provider
             == xai_grok_sampling_types::ProviderId::KimiCode;
+        let zai_selected = selected_provider
+            == xai_grok_sampling_types::ProviderId::ZaiCodingPlan;
         let grok_home = crate::util::grok_home::grok_home();
         let codex_configured = crate::auth::codex::CodexAuthManager::new(&grok_home)
             .ok()
@@ -487,7 +546,7 @@ impl acp::Agent for MvpAgent {
             ),
         );
         debug_assert!(
-            codex_selected || kimi_selected || ! has_external_api_key || matches!(auth_methods.first().map(| m |
+            codex_selected || kimi_selected || zai_selected || ! has_external_api_key || matches!(auth_methods.first().map(| m |
             auth_method::AuthMethodKind::from_id(m.id())),
             Some(auth_method::AuthMethodKind::XaiApiKey)),
             "BYOK invariant violated: xai.api_key MUST be auth_methods.first() \
@@ -710,6 +769,46 @@ impl acp::Agent for MvpAgent {
                     );
                 }
                 emit_login_span(true, auth_method::KIMI_CODE_METHOD_ID, None, None);
+                Ok(Default::default())
+            }
+            auth_method::ZAI_CODING_PLAN_METHOD_ID => {
+                let grok_home = crate::util::grok_home::grok_home();
+                let (credentials, binding) =
+                    crate::auth::zai_coding_plan::current_credentials_and_binding(&grok_home)
+                        .map_err(|error| {
+                            emit_login_span(
+                                false,
+                                auth_method::ZAI_CODING_PLAN_METHOD_ID,
+                                None,
+                                Some("credentials_unavailable"),
+                            );
+                            acp::Error::auth_required().data(format!(
+                                "Z.AI Coding Plan authentication failed: {error}. Run `grok login --provider zai-coding-plan` to configure an API key."
+                            ))
+                        })?;
+                if self.sampling_config.borrow().provider
+                    == xai_grok_sampling_types::ProviderId::ZaiCodingPlan
+                {
+                    let store =
+                        crate::auth::zai_coding_plan::ZaiCodingPlanCredentialStore::new(
+                            &grok_home,
+                        );
+                    let mut sampling_config = self.sampling_config.borrow_mut();
+                    sampling_config.credential_binding = Some(binding.clone());
+                    sampling_config.request_auth = Some(
+                        crate::auth::zai_coding_plan::shared_sampler_request_auth(
+                            store,
+                            credentials,
+                            binding,
+                        ),
+                    );
+                }
+                emit_login_span(
+                    true,
+                    auth_method::ZAI_CODING_PLAN_METHOD_ID,
+                    None,
+                    None,
+                );
                 Ok(Default::default())
             }
             auth_method::XAI_API_KEY_METHOD_ID => {
@@ -1151,6 +1250,7 @@ impl acp::Agent for MvpAgent {
             let requested = acp::ModelId::new(custom_model);
             let strict_codex = is_strict_openai_codex_model_id(&requested);
             let strict_kimi = is_strict_kimi_code_model_id(&requested);
+            let strict_zai = is_strict_zai_coding_plan_model_id(&requested);
             match resolve_explicit_model_for_selection(self, &requested).await {
                 Ok(model) if model.info.user_selectable => {
                     model_agent_type = Some(model.info().agent_type.clone());
@@ -1161,8 +1261,14 @@ impl acp::Agent for MvpAgent {
                     );
                     Some(custom_model)
                 }
-                Ok(_) if strict_codex || strict_kimi => {
-                    let provider = if strict_kimi { "Kimi Code" } else { "ChatGPT Codex" };
+                Ok(_) if strict_codex || strict_kimi || strict_zai => {
+                    let provider = if strict_zai {
+                        "Z.AI Coding Plan"
+                    } else if strict_kimi {
+                        "Kimi Code"
+                    } else {
+                        "ChatGPT Codex"
+                    };
                     return Err(
                         acp::Error::invalid_params()
                             .data(format!("This {provider} model isn't allowed by your allowed_models setting.")),
@@ -1176,7 +1282,7 @@ impl acp::Agent for MvpAgent {
                     disallowed_custom = Some(custom_model.to_string());
                     None
                 }
-                Err(error) if strict_codex || strict_kimi => return Err(error),
+                Err(error) if strict_codex || strict_kimi || strict_zai => return Err(error),
                 Err(_) => {
                     tracing::warn!(
                         requested_model = custom_model, fallback_model = % self
@@ -1641,6 +1747,15 @@ impl acp::Agent for MvpAgent {
                 )
                 .await?,
             ))
+        } else if is_strict_zai_coding_plan_model_id(&summary.current_model_id) {
+            Some((
+                xai_grok_sampling_types::ProviderId::ZaiCodingPlan,
+                resolve_persisted_zai_coding_plan_model_for_load(
+                    self,
+                    &summary.current_model_id,
+                )
+                .await?,
+            ))
         } else {
             None
         };
@@ -1659,6 +1774,7 @@ impl acp::Agent for MvpAgent {
         restored_sampling.credential_binding = (
             restored_sampling.provider.is_openai_codex()
                 || restored_sampling.provider.is_kimi_code()
+                || restored_sampling.provider.is_zai_coding_plan()
         )
             .then(|| summary.credential_binding.clone())
             .flatten();

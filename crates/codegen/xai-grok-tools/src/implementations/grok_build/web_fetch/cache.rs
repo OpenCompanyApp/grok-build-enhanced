@@ -85,11 +85,15 @@ mod tests {
     use crate::types::output::WebFetchContent;
 
     fn output(content: &str) -> WebFetchOutput {
+        output_with_status(content, 200)
+    }
+
+    fn output_with_status(content: &str, status_code: u16) -> WebFetchOutput {
         WebFetchOutput::Content(WebFetchContent {
             url: "https://example.com/".to_string(),
             content: content.to_string(),
             content_type: "markdown".to_string(),
-            status_code: 200,
+            status_code,
             bytes: content.len(),
             source_artifact: None,
             inline_fallback: None,
@@ -106,6 +110,22 @@ mod tests {
 
         cache.insert_text(url.to_string(), output("fully inline"), false);
         assert!(cache.get(url).is_some());
+    }
+
+    #[test]
+    fn lookup_preserves_the_http_status_of_a_cached_error_page() {
+        let url = "https://example.com/unavailable";
+        let mut cache = FetchCache::new(Duration::from_secs(60), 10);
+        cache.insert_text(
+            url.to_owned(),
+            output_with_status("Temporarily unavailable.", 503),
+            false,
+        );
+
+        let FetchCacheLookup::Hit(WebFetchOutput::Content(content)) = cache.lookup(url) else {
+            panic!("expected cached web content");
+        };
+        assert_eq!(content.status_code, 503);
     }
 
     #[test]

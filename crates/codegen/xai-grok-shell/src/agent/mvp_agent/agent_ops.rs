@@ -141,6 +141,17 @@ impl MvpAgent {
                     ))
                 })
             }
+            xai_grok_sampling_types::ProviderId::ZaiCodingPlan => {
+                crate::auth::zai_coding_plan::current_credentials_and_binding(
+                    &crate::util::grok_home::grok_home(),
+                )
+                .map(|_| ())
+                .map_err(|error| {
+                    acp::Error::auth_required().data(format!(
+                        "Z.AI Coding Plan authentication failed: {error}. Run `grok login --provider zai-coding-plan` to configure an API key."
+                    ))
+                })
+            }
             _ => Ok(()),
         }
     }

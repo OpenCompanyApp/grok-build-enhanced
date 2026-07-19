@@ -133,6 +133,7 @@ pub enum WebToolErrorCode {
     SsrfBlocked,
     CrossHostRedirect,
     UnsupportedContent,
+    DnsResolutionFailed,
     ProviderUnavailable,
     ReferenceExpired,
     AuthenticationRequired,
@@ -171,6 +172,10 @@ impl WebToolFailure {
             WebToolErrorCode::UnsupportedContent => (
                 false,
                 "Use a supported textual page or a specialized file-reading tool.",
+            ),
+            WebToolErrorCode::DnsResolutionFailed => (
+                false,
+                "Check the hostname or search for a valid public URL; do not retry the same unresolved destination.",
             ),
             WebToolErrorCode::ProviderUnavailable => (
                 true,
@@ -736,6 +741,10 @@ impl WebFetchOutput {
 
     pub fn to_prompt_format(&self) -> String {
         match self {
+            Self::Content(c) if c.status_code >= 400 => format!(
+                "[HTTP {} — error page body follows]\n\n{}",
+                c.status_code, c.content
+            ),
             Self::Content(c) => c.content.clone(),
             Self::DomainNotAllowed(_) | Self::CrossHostRedirect { .. } | Self::Error { .. } => self
                 .failure()
@@ -1464,6 +1473,20 @@ mod tests {
     fn to_json(output: ToolOutput) -> serde_json::Value {
         serde_json::to_value(&output).unwrap()
     }
+
+    fn web_fetch_output(status_code: u16, content: &str) -> WebFetchOutput {
+        WebFetchOutput::Content(WebFetchContent {
+            url: "https://example.com/resource".to_owned(),
+            content: content.to_owned(),
+            content_type: "markdown".to_owned(),
+            status_code,
+            bytes: content.len(),
+            source_artifact: None,
+            inline_fallback: None,
+            output_location: None,
+        })
+    }
+
     #[test]
     fn text_output_to_prompt_format_omits_consumed_completion_task_id() {
         let output = ToolOutput::Text(TextOutput {
@@ -1503,6 +1526,23 @@ mod tests {
             Some("task-abc")
         );
     }
+    #[test]
+    fn web_fetch_http_error_content_includes_status_marker_and_body() {
+        let output = web_fetch_output(404, "The requested page was not found.");
+
+        assert_eq!(
+            output.to_prompt_format(),
+            "[HTTP 404 — error page body follows]\n\nThe requested page was not found."
+        );
+    }
+
+    #[test]
+    fn web_fetch_success_content_preserves_the_body_without_a_status_marker() {
+        let output = web_fetch_output(200, "Published documentation.");
+
+        assert_eq!(output.to_prompt_format(), "Published documentation.");
+    }
+
     #[test]
     fn codex_web_search_references_are_model_visible_without_opaque_results() {
         let output = ToolOutput::WebSearch(WebSearchOutput {

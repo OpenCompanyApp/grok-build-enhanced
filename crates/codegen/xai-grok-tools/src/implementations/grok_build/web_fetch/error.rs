@@ -101,9 +101,8 @@ impl WebFetchError {
             | Self::CredentialsInUrl
             | Self::SingleLabelHost { .. }
             | Self::InvalidUrl(_) => WebToolErrorCode::DomainRejected,
-            Self::DnsResolution { .. }
-            | Self::DnsEmpty(_)
-            | Self::ClientBuildError
+            Self::DnsResolution { .. } | Self::DnsEmpty(_) => WebToolErrorCode::DnsResolutionFailed,
+            Self::ClientBuildError
             | Self::HostedAuthentication
             | Self::HostedMembership
             | Self::HostedRequestRejected { .. }
@@ -160,6 +159,7 @@ impl WebFetchError {
                         xai_tool_runtime::ToolErrorKind::NetworkError
                     }
                     WebToolErrorCode::DomainRejected
+                    | WebToolErrorCode::DnsResolutionFailed
                     | WebToolErrorCode::SsrfBlocked
                     | WebToolErrorCode::CrossHostRedirect
                     | WebToolErrorCode::UnsupportedContent
@@ -230,6 +230,32 @@ fn gh_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::output::{WebToolErrorCode, WebToolFailure};
+
+    #[test]
+    fn dns_failures_are_non_retryable_destination_errors() {
+        let failures = [
+            WebFetchError::DnsResolution {
+                host: "missing.invalid".to_owned(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+            },
+            WebFetchError::DnsEmpty("missing.invalid".to_owned()),
+        ];
+
+        for error in failures {
+            let tool_error = error.into_tool_error();
+            let failure: WebToolFailure = serde_json::from_value(
+                tool_error
+                    .details
+                    .expect("DNS failure must include a structured failure envelope"),
+            )
+            .unwrap();
+
+            assert_eq!(tool_error.kind, xai_tool_runtime::ToolErrorKind::Execution);
+            assert_eq!(failure.code, WebToolErrorCode::DnsResolutionFailed);
+            assert!(!failure.retryable);
+        }
+    }
 
     #[test]
     fn github_host_detection() {

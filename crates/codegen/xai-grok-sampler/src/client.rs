@@ -30,7 +30,7 @@ use xai_grok_sampling_types::{
 };
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
-use crate::provider::kimi_code;
+use crate::provider::{kimi_code, zai_coding_plan};
 pub(crate) use crate::provider::openai_codex::turn_state::CodexTurnStateStore;
 use crate::provider::openai_codex::{
     endpoint as codex_endpoint, errors as codex_errors, headers as codex_headers,
@@ -55,7 +55,10 @@ fn normalize_reasoning_effort_for_provider(
     provider: ProviderId,
     effort: ReasoningEffort,
 ) -> Result<ReasoningEffort> {
-    if provider.is_openai_codex() || provider.is_kimi_code() {
+    if provider.is_openai_codex()
+        || provider.is_kimi_code()
+        || provider.is_zai_coding_plan()
+    {
         return Ok(effort);
     }
     match effort {
@@ -588,6 +591,22 @@ impl SamplingClient {
                 ));
             }
         }
+        if config.provider.is_zai_coding_plan() {
+            zai_coding_plan::validate_config(
+                config.provider,
+                &config.base_url,
+                config.api_backend.clone(),
+            )?;
+            if config.api_key.is_some()
+                || config.bearer_resolver.is_some()
+                || config.request_auth.is_none()
+                || config.auth_scheme != AuthScheme::Bearer
+            {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Z.AI Coding Plan requires provider-scoped bearer authentication",
+                ));
+            }
+        }
 
         let mut headers = HeaderMap::new();
         let mut responses_lite = false;
@@ -658,6 +677,13 @@ impl SamplingClient {
                     "Kimi Code protected/provider headers cannot be set via extra_headers",
                 ));
             }
+            if config.provider.is_zai_coding_plan()
+                && zai_coding_plan::is_protected_header(&header_name)
+            {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Z.AI Coding Plan protected/provider headers cannot be set via extra_headers",
+                ));
+            }
             let mut header_value = HeaderValue::from_str(value)
                 .map_err(|_| SamplingError::InvalidConfiguration("Invalid extra header value"))?;
             if Self::is_sensitive_header(header_name.as_str()) {
@@ -720,6 +746,7 @@ impl SamplingClient {
                     );
                 }
             }
+            ProviderId::ZaiCodingPlan => {}
         }
 
         // Always set User-Agent: per-session origin if available, else fallback.
@@ -741,6 +768,8 @@ impl SamplingClient {
             codex_endpoint::http_client()?
         } else if config.provider.is_kimi_code() {
             kimi_code::http_client(config.force_http1)?
+        } else if config.provider.is_zai_coding_plan() {
+            zai_coding_plan::http_client(config.force_http1)?
         } else if config.force_http1 {
             tracing::info!("Using HTTP/1.1 for sampling client (force_http1=true)");
             crate::shared_http::client_http1().map_err(SamplingError::Http)?
@@ -865,6 +894,9 @@ impl SamplingClient {
                 credential_binding.as_ref(),
             )?;
         }
+        if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::seal_headers(&headers, credential_binding.as_ref())?;
+        }
         if let Some(rejected) = rejected
             && !credential_binding
                 .as_ref()
@@ -955,9 +987,12 @@ impl SamplingClient {
                 self.defaults.responses_lite,
             )?;
             Ok(self.codex_turn_state.apply(builder, grok_headers.req_id))
-        } else if self.defaults.provider.is_kimi_code() {
-            // Kimi receives only its protocol authentication plus the truthful
-            // process User-Agent. Grok/xAI conversation identity is local.
+        } else if self.defaults.provider.is_kimi_code()
+            || self.defaults.provider.is_zai_coding_plan()
+        {
+            // Subscription providers receive only their protocol
+            // authentication plus the truthful process User-Agent. Grok/xAI
+            // conversation identity remains local.
             Ok(builder)
         } else {
             Ok(grok_headers.apply(builder))
@@ -1033,6 +1068,7 @@ impl SamplingClient {
         let auth_type = match (self.defaults.provider, self.defaults.auth_scheme, has_auth) {
             (ProviderId::OpenAiCodex, _, true) => "openai-codex-subscription",
             (ProviderId::KimiCode, _, true) => "kimi-code-api-key",
+            (ProviderId::ZaiCodingPlan, _, true) => "zai-coding-plan-api-key",
             (_, AuthScheme::XApiKey, true) => "x-api-key",
             (_, AuthScheme::Bearer, true) => "bearer",
             (_, _, false) => "none",
@@ -1116,6 +1152,9 @@ impl SamplingClient {
         if provider.is_kimi_code() {
             return kimi_code::response_header_diagnostics(headers);
         }
+        if provider.is_zai_coding_plan() {
+            return zai_coding_plan::response_header_diagnostics(headers);
+        }
 
         headers
             .iter()
@@ -1174,6 +1213,8 @@ impl SamplingClient {
             codex_errors::response_message(body)
         } else if self.defaults.provider.is_kimi_code() {
             kimi_code::response_message(status, body)
+        } else if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::response_message(status, body)
         } else {
             parse_error_bytes(body)
         }
@@ -1227,6 +1268,21 @@ impl SamplingClient {
         let should_retry = extract_should_retry(response.headers());
         let bytes = response.bytes().await?;
 
+        if self.defaults.provider.is_zai_coding_plan()
+            && let Some(error) = zai_coding_plan::business_error(bytes.as_ref())
+        {
+            if matches!(
+                error,
+                SamplingError::Api {
+                    status: reqwest::StatusCode::UNAUTHORIZED,
+                    ..
+                }
+            ) {
+                self.record_401_attribution(crate::attribution::SamplingConsumer::ChatCompletions);
+            }
+            return Err(error);
+        }
+
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 self.record_401_attribution(crate::attribution::SamplingConsumer::ChatCompletions);
@@ -1238,6 +1294,8 @@ impl SamplingClient {
             let message = self.provider_error_message(status, bytes.as_ref());
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
+            } else if self.defaults.provider.is_zai_coding_plan() {
+                zai_coding_plan::should_retry(status, bytes.as_ref(), should_retry)
             } else {
                 should_retry
             };
@@ -1318,6 +1376,8 @@ impl SamplingClient {
         };
         let endpoint = if self.defaults.provider.is_kimi_code() {
             kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
+        } else if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::endpoint(&self.base_url)?
         } else {
             self.endpoint("chat/completions")
         };
@@ -1327,6 +1387,8 @@ impl SamplingClient {
             self.apply_provider_request_headers(prepared.builder, &grok_headers)?;
         let http_request = if self.defaults.provider.is_kimi_code() {
             request_builder.json(&kimi_code::chat_body(&payload, false)?)
+        } else if self.defaults.provider.is_zai_coding_plan() {
+            request_builder.json(&zai_coding_plan::chat_body(&payload, false)?)
         } else {
             request_builder.json(&payload)
         };
@@ -1387,6 +1449,8 @@ impl SamplingClient {
         };
         let endpoint = if self.defaults.provider.is_kimi_code() {
             kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
+        } else if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::endpoint(&self.base_url)?
         } else {
             self.endpoint("chat/completions")
         };
@@ -1397,6 +1461,8 @@ impl SamplingClient {
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
         let http_request = if self.defaults.provider.is_kimi_code() {
             request_builder.json(&kimi_code::chat_body(&payload, true)?)
+        } else if self.defaults.provider.is_zai_coding_plan() {
+            request_builder.json(&zai_coding_plan::chat_body(&payload, true)?)
         } else {
             request_builder.json(&streaming_request)
         };
@@ -1423,6 +1489,22 @@ impl SamplingClient {
         let span = tracing::Span::current();
         span.record("status_code", status.as_u16() as i64);
         span.record("success", status.is_success());
+        if self.defaults.provider.is_zai_coding_plan()
+            && status.is_success()
+            && response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_none_or(|value| !value.to_ascii_lowercase().contains("text/event-stream"))
+        {
+            let bytes = response.bytes().await?;
+            if let Some(error) = zai_coding_plan::business_error(bytes.as_ref()) {
+                return Err(error);
+            }
+            return Err(SamplingError::InvalidConfiguration(
+                "Z.AI Coding Plan streaming response was not an event stream",
+            ));
+        }
         let model_metadata = extract_model_metadata(
             response.headers(),
             self.defaults.provider,
@@ -1454,6 +1536,8 @@ impl SamplingClient {
             let bytes = response.bytes().await?;
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
+            } else if self.defaults.provider.is_zai_coding_plan() {
+                zai_coding_plan::should_retry(status, bytes.as_ref(), should_retry)
             } else {
                 should_retry
             };
@@ -1537,7 +1621,11 @@ impl SamplingClient {
                             );
                         }
 
-                        if stream_provider.is_kimi_code()
+                        if stream_provider.is_zai_coding_plan()
+                            && let Some(stream_error) = zai_coding_plan::stream_error(data)
+                        {
+                            Some(Err(stream_error))
+                        } else if stream_provider.is_kimi_code()
                             && let Some(stream_error) = kimi_code::stream_error(data)
                         {
                             Some(Err(stream_error))
@@ -2228,6 +2316,8 @@ impl SamplingClient {
             let req_headers = self.request_header_diagnostics(false);
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
+            } else if self.defaults.provider.is_zai_coding_plan() {
+                zai_coding_plan::should_retry(status, bytes.as_ref(), should_retry)
             } else {
                 should_retry
             };
@@ -2407,6 +2497,8 @@ impl SamplingClient {
             let bytes = response.bytes().await?;
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
+            } else if self.defaults.provider.is_zai_coding_plan() {
+                zai_coding_plan::should_retry(status, bytes.as_ref(), should_retry)
             } else {
                 should_retry
             };

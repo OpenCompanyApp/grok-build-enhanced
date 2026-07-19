@@ -186,6 +186,13 @@ fn resolve_effective_provider_tools(
             VideoGenConfig::Disabled,
             bound_api_key_provider,
         ),
+        ProviderId::ZaiCodingPlan => (
+            // Coding Plan Vision is a separate, opt-in local MCP service;
+            // the text model does not own image/video generation endpoints.
+            ImageGenConfig::Disabled,
+            VideoGenConfig::Disabled,
+            bound_api_key_provider,
+        ),
         // A custom model may have arbitrary provider semantics. Fail closed
         // for provider-owned media rather than guessing from its URL/key.
         ProviderId::Custom => (ImageGenConfig::Disabled, VideoGenConfig::Disabled, None),

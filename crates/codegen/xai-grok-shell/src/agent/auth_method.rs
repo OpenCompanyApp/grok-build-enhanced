@@ -193,6 +193,13 @@ pub fn add_provider_scoped_auth_methods(
     } else {
         built.methods.push(kimi_code_auth_method());
     }
+
+    if selected_provider.is_zai_coding_plan() {
+        built.methods.insert(0, zai_coding_plan_auth_method());
+        built.default_auth_method_id = Some(acp::AuthMethodId::new(ZAI_CODING_PLAN_METHOD_ID));
+    } else {
+        built.methods.push(zai_coding_plan_auth_method());
+    }
 }
 
 fn build_pinned_api_key(has_external_api_key: bool) -> BuiltAuthMethods {
@@ -321,6 +328,7 @@ pub enum AuthMethodKind {
     Oidc,
     OpenAiCodex,
     KimiCode,
+    ZaiCodingPlan,
     Unknown,
 }
 
@@ -333,6 +341,7 @@ impl AuthMethodKind {
             OIDC_METHOD_ID => Self::Oidc,
             OPENAI_CODEX_METHOD_ID => Self::OpenAiCodex,
             KIMI_CODE_METHOD_ID => Self::KimiCode,
+            ZAI_CODING_PLAN_METHOD_ID => Self::ZaiCodingPlan,
             _ => Self::Unknown,
         }
     }
@@ -360,8 +369,12 @@ impl AuthMethodKind {
         matches!(self, Self::KimiCode)
     }
 
+    pub fn is_zai_coding_plan(self) -> bool {
+        matches!(self, Self::ZaiCodingPlan)
+    }
+
     pub fn is_provider_scoped(self) -> bool {
-        self.is_openai_codex() || self.is_kimi_code()
+        self.is_openai_codex() || self.is_kimi_code() || self.is_zai_coding_plan()
     }
 
     pub fn auth_error_message(self) -> &'static str {
@@ -547,6 +560,20 @@ pub fn kimi_code_auth_method() -> acp::AuthMethod {
         )
         .description(Some(
             "Use the API key saved by `grok login --provider kimi-code`".to_owned(),
+        )),
+    )
+}
+
+pub const ZAI_CODING_PLAN_METHOD_ID: &str = "zai-coding-plan";
+
+pub fn zai_coding_plan_auth_method() -> acp::AuthMethod {
+    acp::AuthMethod::Agent(
+        acp::AuthMethodAgent::new(
+            acp::AuthMethodId::new(ZAI_CODING_PLAN_METHOD_ID),
+            "Z.AI Coding Plan".to_owned(),
+        )
+        .description(Some(
+            "Use the API key saved by `grok login --provider zai-coding-plan`".to_owned(),
         )),
     )
 }
