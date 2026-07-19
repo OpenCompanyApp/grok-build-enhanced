@@ -798,7 +798,7 @@ fn synthesize_from_info(info: &SamplingErrorInfo) -> SamplingError {
                 message: info.message.clone(),
                 model_metadata: info.model_metadata.clone(),
                 retry_after_secs: info.retry_after_secs,
-                should_retry: None,
+                should_retry: info.should_retry,
             }
         }
         SamplingErrorKind::EmptyResponse => {
@@ -909,6 +909,7 @@ fn handle_cancellation(
         message: "request cancelled".to_string(),
         is_retryable: false,
         retry_after_secs: None,
+        should_retry: None,
         model_metadata: None,
         empty_response_context: None,
         doom_loop_triggers: None,
@@ -1570,6 +1571,7 @@ mod tests {
             message: "inference idle timeout after 240s with no chunks".to_string(),
             is_retryable: false,
             retry_after_secs: None,
+            should_retry: None,
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,
@@ -1590,6 +1592,7 @@ mod tests {
             message: "boom".to_string(),
             is_retryable: true,
             retry_after_secs: None,
+            should_retry: None,
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,
@@ -1615,6 +1618,7 @@ mod tests {
             message: "slow down".to_string(),
             is_retryable: true,
             retry_after_secs: Some(7),
+            should_retry: Some(false),
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,

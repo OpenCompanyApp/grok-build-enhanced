@@ -6,6 +6,48 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Canonical public xAI inference API base URL.
+pub const XAI_API_BASE_URL: &str = "https://api.x.ai/v1";
+/// Canonical authenticated Grok CLI inference proxy base URL.
+pub const XAI_CLI_CHAT_PROXY_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
+
+/// Whether `candidate` is a credential-bearing xAI inference route.
+///
+/// This is intentionally narrower than a general first-party-host check: only
+/// the two canonical HTTPS origins and their `/v1` route trees may receive an
+/// xAI bearer. Userinfo, query, fragment, alternate ports, sibling xAI hosts,
+/// and hostname-suffix lookalikes all fail closed.
+pub fn is_trusted_xai_inference_url(candidate: &str) -> bool {
+    [XAI_API_BASE_URL, XAI_CLI_CHAT_PROXY_BASE_URL]
+        .into_iter()
+        .any(|trusted| matches_trusted_inference_base(candidate, trusted))
+}
+
+fn matches_trusted_inference_base(candidate: &str, trusted: &str) -> bool {
+    let (Ok(candidate), Ok(trusted)) =
+        (reqwest::Url::parse(candidate), reqwest::Url::parse(trusted))
+    else {
+        return false;
+    };
+    if !candidate.username().is_empty()
+        || candidate.password().is_some()
+        || candidate.query().is_some()
+        || candidate.fragment().is_some()
+    {
+        return false;
+    }
+    let trusted_path = trusted.path().trim_end_matches('/');
+    let candidate_path = candidate.path().trim_end_matches('/');
+    let path_matches = candidate_path == trusted_path
+        || candidate_path
+            .strip_prefix(trusted_path)
+            .is_some_and(|suffix| suffix.starts_with('/'));
+    candidate.scheme() == trusted.scheme()
+        && candidate.host_str() == trusted.host_str()
+        && candidate.port_or_known_default() == trusted.port_or_known_default()
+        && path_matches
+}
+
 // Compatibility re-exports for callers that historically reached Codex
 // protocol constants through `provider`.
 pub use crate::openai_codex::{
@@ -175,6 +217,34 @@ impl CredentialBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trusted_xai_inference_urls_are_exact_and_canonical() {
+        assert!(is_trusted_xai_inference_url(XAI_API_BASE_URL));
+        assert!(is_trusted_xai_inference_url(
+            "https://api.x.ai/v1/responses"
+        ));
+        assert!(is_trusted_xai_inference_url(
+            "https://cli-chat-proxy.grok.com/v1/chat/completions"
+        ));
+
+        for candidate in [
+            "http://api.x.ai/v1",
+            "https://api.x.ai:444/v1",
+            "https://api.x.ai/v11",
+            "https://other.x.ai/v1",
+            "https://api.x.ai.evil.example/v1",
+            "https://user@api.x.ai/v1",
+            "https://api.x.ai/v1?redirect=1",
+            "https://api.x.ai/v1#fragment",
+            "https://custom.example/v1",
+        ] {
+            assert!(
+                !is_trusted_xai_inference_url(candidate),
+                "unexpected trusted xAI URL: {candidate}"
+            );
+        }
+    }
 
     #[test]
     fn legacy_provider_defaults_to_xai() {

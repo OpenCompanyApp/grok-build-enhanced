@@ -27,6 +27,24 @@ impl crate::auth::refresh::TokenRefresher for AlwaysSucceedRefresher {
     }
 }
 
+struct AlwaysFailRefresher {
+    calls: Arc<std::sync::atomic::AtomicU32>,
+}
+
+#[async_trait::async_trait]
+impl crate::auth::refresh::TokenRefresher for AlwaysFailRefresher {
+    async fn refresh(
+        &self,
+        _reason: crate::auth::refresh::RefreshReason,
+    ) -> crate::auth::refresh::RefreshOutcome {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        crate::auth::refresh::RefreshOutcome::permanent(
+            crate::auth::error::RefreshTokenFailedReason::RefreshTokenRejected,
+            Some("initial-test-key".to_owned()),
+        )
+    }
+}
+
 /// `(tempdir, manager)` with an expired OIDC token loaded so
 /// `unauthorized_recovery()` actually dispatches to the refresher.
 /// Tempdir must outlive the manager (auth.json path).
@@ -56,6 +74,22 @@ fn auth_error() -> xai_grok_sampler::SamplingErrorInfo {
         status_code: Some(401),
         is_retryable: false,
         retry_after_secs: None,
+        should_retry: None,
+        model_metadata: None,
+        empty_response_context: None,
+        doom_loop_triggers: None,
+        doom_loop_aborted_at_chunk: None,
+    }
+}
+
+fn rate_limited_error(message: &str) -> xai_grok_sampler::SamplingErrorInfo {
+    xai_grok_sampler::SamplingErrorInfo {
+        kind: xai_grok_sampler::SamplingErrorKind::RateLimited,
+        message: message.to_owned(),
+        status_code: Some(429),
+        is_retryable: true,
+        retry_after_secs: Some(7),
+        should_retry: Some(false),
         model_metadata: None,
         empty_response_context: None,
         doom_loop_triggers: None,
@@ -107,6 +141,14 @@ async fn make_actor_with_method_and_credentials(
     let mut actor = create_test_actor(50_000, 100_000, 85, gateway_tx, persistence_tx).await;
     actor.auth_manager = auth_manager;
     actor.auth_method_id = test_auth_method_id(auth_method_id);
+    let mut sampling = actor
+        .chat_state_handle
+        .get_sampling_config()
+        .await
+        .expect("test actor sampling config");
+    sampling.provider = xai_grok_sampling_types::ProviderId::Xai;
+    sampling.base_url = xai_grok_sampling_types::XAI_API_BASE_URL.to_owned();
+    actor.chat_state_handle.update_sampling_config(sampling);
     actor
         .chat_state_handle
         .update_credentials(xai_chat_state::Credentials {
@@ -267,7 +309,10 @@ async fn pre_flight_refresh_skips_api_key_auth_type() {
                 "byok-api-key".to_string(),
             )
             .await;
-            actor.refresh_token_if_expired().await;
+            actor
+                .refresh_token_if_expired()
+                .await
+                .expect("preflight refresh should succeed");
             assert!(
                 !called.load(Ordering::SeqCst),
                 "pre-flight refresh must NOT fire for ApiKey auth_type"
@@ -281,6 +326,127 @@ async fn pre_flight_refresh_skips_api_key_auth_type() {
                     .as_deref(),
                 Some("byok-api-key"),
                 "BYOK api_key must not be overwritten by session token refresh"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn managed_xai_refresh_failure_is_returned_without_credential_fallback() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysFailRefresher {
+                    calls: calls.clone(),
+                });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
+
+            let error = actor
+                .refresh_token_if_expired()
+                .await
+                .expect_err("managed refresh failure must abort preflight");
+            assert_eq!(
+                error.data.as_ref().and_then(serde_json::Value::as_str),
+                Some("managed xAI authentication refresh failed")
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .as_deref(),
+                Some("initial-test-key"),
+                "failed managed refresh must not adopt a generic/config credential"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_managed_xai_refresh_waiters_observe_one_consistent_failure() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysFailRefresher {
+                    calls: calls.clone(),
+                });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
+
+            let (a, b, c, d) = tokio::join!(
+                actor.refresh_token_if_expired(),
+                actor.refresh_token_if_expired(),
+                actor.refresh_token_if_expired(),
+                actor.refresh_token_if_expired(),
+            );
+            for result in [a, b, c, d] {
+                let error = result.expect_err("every managed refresh waiter must fail closed");
+                assert_eq!(
+                    error.data.as_ref().and_then(serde_json::Value::as_str),
+                    Some("managed xAI authentication refresh failed")
+                );
+            }
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "AuthManager must serialize and cache the permanent refresh failure"
+            );
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .as_deref(),
+                Some("initial-test-key")
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn xai_label_on_custom_origin_never_consults_managed_xai_auth() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let called = Arc::new(AtomicBool::new(false));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysSucceedRefresher {
+                    called: called.clone(),
+                });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor sampling config");
+            sampling.provider = xai_grok_sampling_types::ProviderId::Xai;
+            sampling.base_url = "https://custom.invalid/v1".to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+
+            actor
+                .refresh_token_if_expired()
+                .await
+                .expect("untrusted xAI-labelled origin should skip refresh");
+            let config = actor
+                .reconstruct_full_config()
+                .await
+                .expect("reconstruct untrusted xAI-labelled route");
+
+            assert!(!called.load(Ordering::SeqCst));
+            assert!(config.api_key.is_none());
+            assert!(config.bearer_resolver.is_none());
+            assert_eq!(
+                config.credential_source,
+                xai_grok_sampling_types::CredentialSourceId::Unspecified
             );
         })
         .await;
@@ -334,7 +500,10 @@ async fn proactive_refresh_makes_per_turn_refresh_a_cache_hit() {
             // It should see the proactively-refreshed token and NOT invoke
             // the refresher again.
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
-            actor.refresh_token_if_expired().await;
+            actor
+                .refresh_token_if_expired()
+                .await
+                .expect("preflight refresh should succeed");
 
             assert_eq!(
                 call_count.load(Ordering::SeqCst),
@@ -364,6 +533,7 @@ fn model_not_found_error() -> xai_grok_sampler::SamplingErrorInfo {
             status_code: Some(404),
             is_retryable: false,
             retry_after_secs: None,
+            should_retry: None,
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,
@@ -431,6 +601,7 @@ fn unauthorized_401_error() -> xai_grok_sampler::SamplingErrorInfo {
             status_code: Some(401),
             is_retryable: false,
             retry_after_secs: None,
+            should_retry: None,
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,
@@ -503,7 +674,10 @@ async fn codex_401_uses_provider_scoped_auth_label_and_login_commands() {
             sampling.base_url = xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned();
             actor.chat_state_handle.update_sampling_config(sampling);
 
-            actor.refresh_token_if_expired().await;
+            actor
+                .refresh_token_if_expired()
+                .await
+                .expect("preflight refresh should succeed");
             assert!(
                 !xai_refresh_called.load(Ordering::SeqCst),
                 "Codex pre-flight must never call the xAI refresher"
@@ -568,12 +742,59 @@ async fn kimi_preflight_does_not_run_xai_credential_refresh() {
             sampling.base_url = xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned();
             actor.chat_state_handle.update_sampling_config(sampling);
 
-            actor.refresh_token_if_expired().await;
+            actor
+                .refresh_token_if_expired()
+                .await
+                .expect("preflight refresh should succeed");
 
             assert!(
                 !xai_refresh_called.load(Ordering::SeqCst),
                 "Kimi preflight must never call the xAI refresher"
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_xai_429_keeps_provider_detail_and_never_uses_xai_billing_code() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = make_actor_with_auth_manager(None).await;
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor sampling config");
+            sampling.provider = xai_grok_sampling_types::ProviderId::KimiCode;
+            sampling.model = "k3".to_owned();
+            sampling.base_url = xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+
+            let error = match actor
+                .handle_sampling_failure(rate_limited_error(
+                    "Kimi provider capacity is temporarily unavailable",
+                ))
+                .await
+            {
+                Err(error) => error,
+                Ok(_) => panic!("non-xAI 429 should remain terminal"),
+            };
+
+            assert_ne!(
+                i32::from(error.code),
+                crate::sampling::error::RATE_LIMITED_ERROR_CODE,
+                "xAI billing/upgrade rendering code must be xAI-only"
+            );
+            let details = error.data.expect("provider error details");
+            let message = details
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| details.as_str())
+                .expect("provider error message");
+            assert!(message.contains("Kimi provider capacity"), "{message}");
+            assert!(!message.contains("Upgrade your account"), "{message}");
+            assert!(!message.contains("purchase more credits"), "{message}");
         })
         .await;
 }
@@ -987,7 +1208,10 @@ async fn pre_flight_refresh_heals_session_method_with_stale_api_key_auth_type() 
             )
             .await;
 
-            actor.refresh_token_if_expired().await;
+            actor
+                .refresh_token_if_expired()
+                .await
+                .expect("preflight refresh should succeed");
 
             assert_eq!(
                 actor
@@ -1052,7 +1276,10 @@ async fn session_born_on_api_key_recovers_after_oidc_login_without_restart() {
             );
 
             // The pre-flight refresh then heals the stale api_key with the live token.
-            actor.refresh_token_if_expired().await;
+            actor
+                .refresh_token_if_expired()
+                .await
+                .expect("preflight refresh should succeed");
             assert_eq!(
                 actor
                     .chat_state_handle

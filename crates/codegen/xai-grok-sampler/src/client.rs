@@ -146,8 +146,8 @@ fn deserialize_response_event(data: &str) -> Result<rs::ResponseStreamEvent> {
             }
             tracing::error!(
                 error = %first_err,
-                raw_data = %data,
-                "Failed to deserialize ResponseStreamEvent from stream"
+                body_len = data.len(),
+                "Failed to deserialize ResponseStreamEvent; body omitted"
             );
             return Err(SamplingError::Serialization(first_err));
         }
@@ -162,11 +162,10 @@ fn deserialize_response_for_provider(bytes: &[u8], provider: ProviderId) -> Resu
     }
 
     serde_json::from_slice::<rs::Response>(bytes).map_err(|error| {
-        let raw_body = String::from_utf8_lossy(bytes);
         tracing::error!(
             error = %error,
-            raw_body = %raw_body,
-            "Failed to deserialize rs::Response"
+            body_len = bytes.len(),
+            "Failed to deserialize rs::Response; body omitted"
         );
         SamplingError::Serialization(error)
     })
@@ -432,6 +431,8 @@ impl std::fmt::Debug for SamplingClient {
 #[derive(Clone, Debug, Default)]
 struct ClientDefaults {
     provider: ProviderId,
+    /// True only for explicit xAI requests targeting a canonical inference URL.
+    xai_trusted_origin: bool,
     model: String,
     max_completion_tokens: Option<u32>,
     temperature: Option<f32>,
@@ -531,9 +532,20 @@ impl SamplingClient {
     }
 
     pub(crate) fn new_with_codex_turn_state(
-        config: SamplerConfig,
+        mut config: SamplerConfig,
         codex_turn_state: CodexTurnStateStore,
     ) -> Result<Self> {
+        let xai_trusted_origin = config.provider == ProviderId::Xai
+            && xai_grok_sampling_types::is_trusted_xai_inference_url(&config.base_url);
+        if config.provider == ProviderId::Xai && !xai_trusted_origin {
+            // Legacy/restored state may label an arbitrary custom endpoint as
+            // xAI. Preserve routing, but fail closed at the final wire seam:
+            // no static, live, or provider-hook xAI credential may reach it.
+            config.api_key = None;
+            config.bearer_resolver = None;
+            config.request_auth = None;
+        }
+
         if let Some(binding) = config.credential_binding.as_ref()
             && (binding.provider != config.provider
                 || (config.credential_source
@@ -648,6 +660,18 @@ impl SamplingClient {
         for (key, value) in &config.extra_headers {
             let header_name = HeaderName::try_from(key.as_str())
                 .map_err(|_| SamplingError::InvalidConfiguration("Invalid extra header name"))?;
+            if config.provider == ProviderId::Xai
+                && !xai_trusted_origin
+                && (Self::is_xai_specific_header(&header_name)
+                    || Self::is_credential_header(&header_name))
+            {
+                continue;
+            }
+            if config.provider != ProviderId::Xai && Self::is_xai_specific_header(&header_name) {
+                return Err(SamplingError::InvalidConfiguration(
+                    "xAI-specific headers require the xAI provider",
+                ));
+            }
             if header_name.as_str() == OPENAI_CODEX_RESPONSES_LITE_HEADER {
                 if !config.provider.is_openai_codex() {
                     return Err(SamplingError::InvalidConfiguration(
@@ -692,9 +716,9 @@ impl SamplingClient {
         }
 
         match config.provider {
-            ProviderId::Xai | ProviderId::Custom => {
-                // Grok/xAI compatibility identity stays restricted to its
-                // legacy first-party and explicitly custom request paths.
+            ProviderId::Xai if xai_trusted_origin => {
+                // xAI request identity is meaningful only on the two
+                // canonical xAI inference routes.
                 if let Some(client_version) = config.client_version.as_ref()
                     && let Ok(header_value) = HeaderValue::from_str(client_version)
                 {
@@ -730,6 +754,7 @@ impl SamplingClient {
                     );
                 }
             }
+            ProviderId::Xai | ProviderId::Custom => {}
             ProviderId::OpenAiCodex => codex_headers::insert_provider_identity(&mut headers),
             ProviderId::KimiCode => {
                 if matches!(config.api_backend, ApiBackend::Messages) {
@@ -788,6 +813,7 @@ impl SamplingClient {
 
         let defaults = ClientDefaults {
             provider: config.provider,
+            xai_trusted_origin,
             model: config.model,
             max_completion_tokens: config.max_completion_tokens,
             temperature: config.temperature,
@@ -884,6 +910,14 @@ impl SamplingClient {
                     .map_err(|error| SamplingError::Auth(error.to_string()))
             })
             .transpose()?;
+
+        if self.defaults.provider == ProviderId::Xai && !self.defaults.xai_trusted_origin {
+            Self::retain_wire_headers(&mut headers, |name| {
+                !Self::is_credential_header(name) && !Self::is_xai_specific_header(name)
+            });
+        } else if self.defaults.provider == ProviderId::Custom {
+            Self::retain_wire_headers(&mut headers, |name| !Self::is_xai_specific_header(name));
+        }
 
         if self.defaults.provider.is_openai_codex() {
             codex_headers::seal_after_request_auth(&mut headers, credential_binding.as_ref())?;
@@ -988,15 +1022,12 @@ impl SamplingClient {
                 self.defaults.responses_lite,
             )?;
             Ok(self.codex_turn_state.apply(builder, grok_headers.req_id))
-        } else if self.defaults.provider.is_kimi_code()
-            || self.defaults.provider.is_zai_coding_plan()
-        {
-            // Subscription providers receive only their protocol
-            // authentication plus the truthful process User-Agent. Grok/xAI
-            // conversation identity remains local.
-            Ok(builder)
-        } else {
+        } else if self.defaults.provider == ProviderId::Xai && self.defaults.xai_trusted_origin {
             Ok(grok_headers.apply(builder))
+        } else {
+            // Non-xAI providers and legacy xAI-labelled custom endpoints keep
+            // Grok/xAI conversation identity local.
+            Ok(builder)
         }
     }
 
@@ -1075,6 +1106,35 @@ impl SamplingClient {
             (_, _, false) => "none",
         };
         crate::sampling_log::AuthInfo { auth_type }
+    }
+
+    fn is_xai_specific_header(name: &HeaderName) -> bool {
+        let name = name.as_str();
+        name.starts_with("x-grok-")
+            || name.starts_with("x-xai-")
+            || matches!(
+                name,
+                "x-authenticateresponse"
+                    | "x-userid"
+                    | "x-email"
+                    | "x-compactions-remaining"
+                    | "x-compaction-at"
+            )
+    }
+
+    fn is_credential_header(name: &HeaderName) -> bool {
+        let lower = name.as_str();
+        lower == AUTHORIZATION.as_str()
+            || lower == "proxy-authorization"
+            || lower == "x-api-key"
+            || Self::is_sensitive_header(lower)
+    }
+
+    fn retain_wire_headers(headers: &mut HeaderMap, mut keep: impl FnMut(&HeaderName) -> bool) {
+        let remove: Vec<HeaderName> = headers.keys().filter(|name| !keep(name)).cloned().collect();
+        for name in remove {
+            headers.remove(name);
+        }
     }
 
     /// Check if a header name contains sensitive information that should be redacted.
@@ -1325,25 +1385,12 @@ impl SamplingClient {
             })?
         } else {
             serde_json::from_slice::<ChatCompletionResponse>(&bytes).map_err(|error| {
-                if self
-                    .defaults
-                    .provider
-                    .requires_redacted_provider_diagnostics()
-                {
-                    tracing::error!(
-                        error = %error,
-                        provider = %self.defaults.provider,
-                        body_len = bytes.len(),
-                        "Failed to deserialize provider ChatCompletionResponse; body omitted"
-                    );
-                } else {
-                    let raw_body = String::from_utf8_lossy(&bytes);
-                    tracing::error!(
-                        error = %error,
-                        raw_body = %raw_body,
-                        "Failed to deserialize ChatCompletionResponse"
-                    );
-                }
+                tracing::error!(
+                    error = %error,
+                    provider = %self.defaults.provider,
+                    body_len = bytes.len(),
+                    "Failed to deserialize ChatCompletionResponse; body omitted"
+                );
                 SamplingError::Serialization(error)
             })?
         };
@@ -1632,7 +1679,7 @@ impl SamplingClient {
                                 target: crate::sampling_log::TARGET,
                                 event = "sse_chunk",
                                 backend = "chat_completions",
-                                data = %data,
+                                body_len = data.len(),
                             );
                         }
 
@@ -1675,8 +1722,8 @@ impl SamplingClient {
                                     } else {
                                         tracing::error!(
                                             error = %e,
-                                            raw_data = %data,
-                                            "Failed to deserialize ChatCompletionChunk from stream"
+                                            body_len = data.len(),
+                                            "Failed to deserialize ChatCompletionChunk; body omitted"
                                         );
                                     }
                                     SamplingError::Serialization(e)
@@ -2023,8 +2070,12 @@ impl SamplingClient {
         let mut http_request = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
-        if doom_loop.is_some() {
-            // Presence opts in; the server ignores the value.
+        if doom_loop.is_some()
+            && self.defaults.provider == ProviderId::Xai
+            && self.defaults.xai_trusted_origin
+        {
+            // Presence opts in; the server ignores the value. This xAI header
+            // is never projected onto custom or subscription providers.
             http_request = http_request.header(DOOM_LOOP_CHECK_HEADER, "true");
         }
         let http_request = http_request.json(&request_body);
@@ -2170,7 +2221,7 @@ impl SamplingClient {
                                 target: crate::sampling_log::TARGET,
                                 event = "sse_chunk",
                                 backend = "responses",
-                                data = %data,
+                                body_len = data.len(),
                             );
                         }
 
@@ -2374,25 +2425,12 @@ impl SamplingClient {
 
         let response_obj =
             serde_json::from_slice::<messages::MessagesResponse>(&bytes).map_err(|e| {
-                if self
-                    .defaults
-                    .provider
-                    .requires_redacted_provider_diagnostics()
-                {
-                    tracing::error!(
-                        error = %e,
-                        provider = %self.defaults.provider,
-                        body_len = bytes.len(),
-                        "Failed to deserialize provider MessagesResponse; body omitted"
-                    );
-                } else {
-                    let raw_body = String::from_utf8_lossy(&bytes);
-                    tracing::error!(
-                        error = %e,
-                        raw_body = %raw_body,
-                        "Failed to deserialize MessagesResponse"
-                    );
-                }
+                tracing::error!(
+                    error = %e,
+                    provider = %self.defaults.provider,
+                    body_len = bytes.len(),
+                    "Failed to deserialize MessagesResponse; body omitted"
+                );
                 SamplingError::Serialization(e)
             })?;
         Ok(response_obj)
@@ -2600,7 +2638,7 @@ impl SamplingClient {
                                 target: crate::sampling_log::TARGET,
                                 event = "sse_chunk",
                                 backend = "messages",
-                                data = %data,
+                                body_len = data.len(),
                             );
                         }
 
@@ -2620,21 +2658,12 @@ impl SamplingClient {
                             Some(
                                 serde_json::from_str::<messages::MessageStreamEvent>(data).map_err(
                                     |e| {
-                                        if stream_provider.requires_redacted_provider_diagnostics()
-                                        {
-                                            tracing::error!(
-                                                error = %e,
-                                                provider = %stream_provider,
-                                                data_len = data.len(),
-                                                "Failed to deserialize provider MessageStreamEvent; data omitted"
-                                            );
-                                        } else {
-                                            tracing::error!(
-                                                error = %e,
-                                                raw_data = %data,
-                                                "Failed to deserialize MessageStreamEvent from stream"
-                                            );
-                                        }
+                                        tracing::error!(
+                                            error = %e,
+                                            provider = %stream_provider,
+                                            body_len = data.len(),
+                                            "Failed to deserialize MessageStreamEvent; body omitted"
+                                        );
                                         SamplingError::Serialization(e)
                                     },
                                 ),
@@ -2965,7 +2994,7 @@ impl SamplingClient {
                 message: info.message,
                 model_metadata: info.model_metadata,
                 retry_after_secs: info.retry_after_secs,
-                should_retry: None,
+                should_retry: info.should_retry,
             })
     }
 }
@@ -3053,7 +3082,7 @@ mod tests {
 
     fn minimal_config() -> SamplerConfig {
         SamplerConfig {
-            provider: Default::default(),
+            provider: ProviderId::Custom,
             credential_source: Default::default(),
             credential_binding: None,
             api_key: Some("test-key".to_string()),
@@ -3416,7 +3445,7 @@ mod tests {
             "authorization",
             "proxy-authorization",
             "x-api-key",
-            "x-XAI-token-auth",
+            "x-custom-token",
             "x-api-key-backup",
             "x-client-secret",
         ] {
@@ -3430,7 +3459,7 @@ mod tests {
             "authorization",
             "proxy-authorization",
             "x-api-key",
-            "x-xai-token-auth",
+            "x-custom-token",
             "x-api-key-backup",
             "x-client-secret",
         ] {
@@ -3471,6 +3500,29 @@ mod tests {
     fn kimi_config(backend: ApiBackend) -> SamplerConfig {
         let mut config = SamplerConfig::kimi_code("k3", backend.clone());
         config.request_auth = Some(std::sync::Arc::new(StaticKimiRequestAuth { backend }));
+        config
+    }
+
+    #[derive(Debug)]
+    struct StaticZaiRequestAuth;
+
+    impl crate::config::RequestAuth for StaticZaiRequestAuth {
+        fn apply(
+            &self,
+            headers: &mut HeaderMap,
+        ) -> std::result::Result<CredentialBinding, crate::config::RequestAuthError> {
+            let mut value = HeaderValue::from_static("Bearer opaque-zai-key");
+            value.set_sensitive(true);
+            headers.insert(AUTHORIZATION, value);
+            let mut binding = CredentialBinding::zai_coding_plan(Some("zai-record".to_owned()));
+            binding.generation = 1;
+            Ok(binding)
+        }
+    }
+
+    fn zai_config() -> SamplerConfig {
+        let mut config = SamplerConfig::zai_coding_plan("glm-5.2");
+        config.request_auth = Some(std::sync::Arc::new(StaticZaiRequestAuth));
         config
     }
 
@@ -3649,6 +3701,162 @@ mod tests {
             calls: std::sync::Arc::clone(&calls),
         }));
         (config, calls)
+    }
+
+    #[tokio::test]
+    async fn fake_server_provider_matrix_never_receives_xai_headers_off_trusted_xai_routes() {
+        use axum::Router;
+        use axum::extract::State;
+        use axum::http::{HeaderMap as AxumHeaderMap, StatusCode};
+        use axum::routing::post;
+
+        type Capture = std::sync::Arc<tokio::sync::Mutex<Vec<AxumHeaderMap>>>;
+        async fn capture_request(
+            State(capture): State<Capture>,
+            headers: AxumHeaderMap,
+        ) -> StatusCode {
+            capture.lock().await.push(headers);
+            StatusCode::NO_CONTENT
+        }
+
+        let capture: Capture = Default::default();
+        let app = Router::new()
+            .route("/capture", post(capture_request))
+            .with_state(std::sync::Arc::clone(&capture));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let base_url = format!("http://{address}");
+
+        let mut xai_labelled_custom = minimal_config();
+        xai_labelled_custom.provider = ProviderId::Xai;
+        xai_labelled_custom.base_url = base_url.clone();
+        xai_labelled_custom.api_key = Some("synthetic-xai-key".to_owned());
+        xai_labelled_custom.extra_headers.insert(
+            "x-xai-token-auth".to_owned(),
+            "synthetic-xai-marker".to_owned(),
+        );
+
+        let mut custom = minimal_config();
+        custom.base_url = base_url.clone();
+        custom.api_key = Some("synthetic-custom-key".to_owned());
+
+        let (mut codex, _) = codex_config();
+        codex.base_url = base_url.clone();
+        let mut kimi = kimi_config(ApiBackend::ChatCompletions);
+        kimi.base_url = base_url.clone();
+        let mut zai = zai_config();
+        zai.base_url = base_url.clone();
+
+        for config in [xai_labelled_custom, custom, codex, kimi, zai] {
+            let client = SamplingClient::new(config).expect("matrix client should build");
+            let request = client
+                .post(format!("{base_url}/capture"))
+                .expect("matrix auth should prepare")
+                .builder
+                .body("{}")
+                .build()
+                .expect("matrix request should build");
+            let response = client
+                .http
+                .execute(request)
+                .await
+                .expect("matrix request should reach fake server");
+            assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        }
+
+        let captures = capture.lock().await.clone();
+        server.abort();
+        assert_eq!(captures.len(), 5);
+
+        assert!(captures[0].get(AUTHORIZATION).is_none());
+        assert!(captures[0].get("x-api-key").is_none());
+        assert!(captures[1].get(AUTHORIZATION).is_some());
+        assert!(captures[2].get(AUTHORIZATION).is_some());
+        assert!(captures[2].get(CHATGPT_ACCOUNT_ID_HEADER).is_some());
+        assert!(captures[3].get(AUTHORIZATION).is_some());
+        assert!(captures[4].get(AUTHORIZATION).is_some());
+        for headers in captures {
+            assert!(headers.keys().all(|name| {
+                !name.as_str().starts_with("x-xai-")
+                    && !name.as_str().starts_with("x-grok-")
+                    && name.as_str() != "x-authenticateresponse"
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticated_cross_origin_redirect_is_not_followed() {
+        use axum::Router;
+        use axum::http::{HeaderMap as AxumHeaderMap, HeaderValue as AxumHeaderValue, StatusCode};
+        use axum::response::IntoResponse;
+        use axum::routing::post;
+
+        let redirected_requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let redirected_counter = std::sync::Arc::clone(&redirected_requests);
+        let target_app = Router::new().route(
+            "/target",
+            post(move |headers: AxumHeaderMap| {
+                let redirected_counter = std::sync::Arc::clone(&redirected_counter);
+                async move {
+                    redirected_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    assert!(headers.get(AUTHORIZATION).is_none());
+                    StatusCode::NO_CONTENT
+                }
+            }),
+        );
+        let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_address = target_listener.local_addr().unwrap();
+        let target_server =
+            tokio::spawn(async move { axum::serve(target_listener, target_app).await.unwrap() });
+
+        let location = format!("http://{target_address}/target");
+        let redirect_app = Router::new().route(
+            "/start",
+            post(move || {
+                let location = location.clone();
+                async move {
+                    let mut response = StatusCode::TEMPORARY_REDIRECT.into_response();
+                    response.headers_mut().insert(
+                        axum::http::header::LOCATION,
+                        AxumHeaderValue::from_str(&location).unwrap(),
+                    );
+                    response
+                }
+            }),
+        );
+        let redirect_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirect_address = redirect_listener.local_addr().unwrap();
+        let redirect_server =
+            tokio::spawn(
+                async move { axum::serve(redirect_listener, redirect_app).await.unwrap() },
+            );
+
+        let mut config = minimal_config();
+        config.base_url = format!("http://{redirect_address}");
+        config.api_key = Some("synthetic-custom-bearer".to_owned());
+        let client = SamplingClient::new(config).expect("redirect test client");
+        let request = client
+            .post(format!("http://{redirect_address}/start"))
+            .expect("prepare authenticated redirect request")
+            .builder
+            .body("{}")
+            .build()
+            .expect("build authenticated redirect request");
+        let response = client
+            .http
+            .execute(request)
+            .await
+            .expect("redirect response");
+
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            redirected_requests.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "cross-origin redirect target must not receive any request"
+        );
+        redirect_server.abort();
+        target_server.abort();
     }
 
     #[test]
@@ -3848,6 +4056,8 @@ mod tests {
     #[test]
     fn xai_does_not_inherit_codex_fast_service_tier() {
         let mut config = minimal_config();
+        config.provider = ProviderId::Xai;
+        config.base_url = xai_grok_sampling_types::XAI_API_BASE_URL.to_owned();
         config.api_backend = ApiBackend::Responses;
         config.service_tier =
             Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER.to_owned());
@@ -4637,6 +4847,76 @@ mod tests {
         fn current_bearer(&self) -> Option<String> {
             Some(self.0.to_string())
         }
+    }
+
+    #[test]
+    fn xai_auth_is_kept_only_for_a_canonical_trusted_origin() {
+        let mut config = minimal_config();
+        config.provider = ProviderId::Xai;
+        config.base_url = xai_grok_sampling_types::XAI_API_BASE_URL.to_owned();
+        config.bearer_resolver = Some(std::sync::Arc::new(StaticBearerResolver(
+            "synthetic-live-xai",
+        )));
+        let client = SamplingClient::new(config).expect("trusted xAI client");
+        let request = client
+            .post("https://api.x.ai/v1/responses")
+            .expect("prepare trusted xAI request")
+            .builder
+            .build()
+            .expect("build trusted xAI request");
+
+        let authorization = request
+            .headers()
+            .get(AUTHORIZATION)
+            .expect("trusted xAI request should carry its bearer");
+        assert_eq!(authorization.as_bytes(), b"Bearer synthetic-live-xai");
+        assert!(authorization.is_sensitive());
+    }
+
+    #[test]
+    fn xai_label_on_custom_origin_strips_static_live_and_extra_auth() {
+        let mut config = minimal_config();
+        config.provider = ProviderId::Xai;
+        config.base_url = "https://custom.invalid/v1".to_owned();
+        config.api_key = Some("synthetic-static-xai".to_owned());
+        config.bearer_resolver = Some(std::sync::Arc::new(StaticBearerResolver(
+            "synthetic-live-xai",
+        )));
+        config.extra_headers.insert(
+            "Authorization".to_owned(),
+            "Bearer synthetic-extra-xai".to_owned(),
+        );
+        config
+            .extra_headers
+            .insert("X-XAI-Token-Auth".to_owned(), "synthetic-marker".to_owned());
+        config
+            .extra_headers
+            .insert("x-grok-user-id".to_owned(), "synthetic-user".to_owned());
+        let client = SamplingClient::new(config).expect("untrusted xAI-labelled client");
+        let prepared = client
+            .prepare_request_headers(None)
+            .expect("prepare untrusted xAI-labelled headers")
+            .0;
+
+        assert!(prepared.get(AUTHORIZATION).is_none());
+        assert!(prepared.get("x-api-key").is_none());
+        assert!(prepared.get("x-xai-token-auth").is_none());
+        assert!(
+            prepared
+                .keys()
+                .all(|name| !name.as_str().starts_with("x-grok-"))
+        );
+        assert_eq!(client.auth_info().auth_type, "none");
+    }
+
+    #[test]
+    fn custom_provider_rejects_xai_specific_extra_headers() {
+        let mut config = minimal_config();
+        config
+            .extra_headers
+            .insert("x-xai-token-auth".to_owned(), "synthetic-marker".to_owned());
+        let error = SamplingClient::new(config).expect_err("custom must reject xAI headers");
+        assert!(error.to_string().contains("require the xAI provider"));
     }
 
     impl crate::attribution::Auth401AttributionCallback for CountingCallback {

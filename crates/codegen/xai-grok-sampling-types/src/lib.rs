@@ -39,7 +39,10 @@ pub use self::openai_codex::{
     OPENAI_CODEX_RESPONSES_LITE_HEADER, OPENAI_CODEX_RESPONSES_URL,
     OPENAI_CODEX_SERVICE_TIER_METADATA_KEY, OPENAI_CODEX_STANDARD_SERVICE_TIER,
 };
-pub use self::provider::{CredentialBinding, CredentialSourceId, ProviderId};
+pub use self::provider::{
+    CredentialBinding, CredentialSourceId, ProviderId, XAI_API_BASE_URL,
+    XAI_CLI_CHAT_PROXY_BASE_URL, is_trusted_xai_inference_url,
+};
 pub use self::types::*;
 pub use self::zai_coding_plan::*;
 

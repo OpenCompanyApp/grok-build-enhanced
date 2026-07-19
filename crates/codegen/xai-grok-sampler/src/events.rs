@@ -124,6 +124,9 @@ pub struct SamplingErrorInfo {
     pub message: String,
     pub is_retryable: bool,
     pub retry_after_secs: Option<u64>,
+    /// Explicit provider retry directive from `x-should-retry`, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub should_retry: Option<bool>,
     pub model_metadata: Option<ResponseModelMetadata>,
     /// Present only when `kind == EmptyResponse`. Carries the structured
     /// context from the L2 stream so downstream consumers can distinguish
@@ -186,6 +189,7 @@ impl From<&SamplingError> for SamplingErrorInfo {
     fn from(err: &SamplingError) -> Self {
         let is_retryable = err.is_retryable();
         let message = err.to_string();
+        let should_retry = err.should_retry_header();
 
         let (kind, status_code, retry_after_secs, model_metadata) = match err {
             SamplingError::Auth(_) | SamplingError::ProviderAuthRejected { .. } => {
@@ -244,6 +248,7 @@ impl From<&SamplingError> for SamplingErrorInfo {
             message,
             is_retryable,
             retry_after_secs,
+            should_retry,
             model_metadata,
             empty_response_context,
             doom_loop_triggers,
@@ -309,12 +314,13 @@ mod tests {
             message: "slow down".into(),
             model_metadata: None,
             retry_after_secs: Some(15),
-            should_retry: None,
+            should_retry: Some(false),
         };
         let info = SamplingErrorInfo::from(&err);
         assert_eq!(info.kind, SamplingErrorKind::RateLimited);
         assert_eq!(info.status_code, Some(429));
         assert_eq!(info.retry_after_secs, Some(15));
+        assert_eq!(info.should_retry, Some(false));
         assert!(info.is_retryable, "429 should be retryable");
     }
 

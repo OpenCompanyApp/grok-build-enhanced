@@ -51,9 +51,8 @@ fn provider_auth_recovery_exhausted(err: &xai_tool_runtime::ToolError) -> bool {
 struct SessionTokenAuthGate {
     is_session_based: bool,
     model_byok: crate::agent::auth_method::ModelByok,
-    /// Whether the request targets a first-party host. Lets an `Unknown`
-    /// BYOK status still refresh against cli-chat-proxy / `*.x.ai` without
-    /// risking a session-token leak to a third-party BYOK endpoint.
+    /// Whether the request targets one of the canonical xAI inference routes.
+    /// A broader first-party hostname match is insufficient for bearer auth.
     endpoint_is_first_party: bool,
 }
 impl SessionTokenAuthGate {
@@ -68,7 +67,9 @@ impl SessionTokenAuthGate {
             is_session_based: auth_method_id
                 .is_some_and(crate::agent::auth_method::is_session_based_method),
             model_byok,
-            endpoint_is_first_party: crate::util::is_first_party_xai_url(base_url),
+            endpoint_is_first_party: xai_grok_sampling_types::is_trusted_xai_inference_url(
+                base_url,
+            ),
         }
     }
     fn active(self) -> bool {
@@ -223,7 +224,7 @@ impl SessionActor {
     /// even when server-side metrics only show the aggregate 401. No-op for a
     /// definite `Byok`/`NotByok`, so steady-state turns stay quiet — a burst of
     /// these is itself the signal that `Unknown` is being hit in the field.
-    fn log_auth_gate_unknown(&self, site: &str, gate: SessionTokenAuthGate, base_url: &str) {
+    fn log_auth_gate_unknown(&self, site: &str, gate: SessionTokenAuthGate) {
         use crate::agent::auth_method::ModelByok;
         if gate.model_byok != ModelByok::Unknown || !gate.is_session_based {
             return;
@@ -232,8 +233,7 @@ impl SessionActor {
         let ctx = serde_json::json!(
             { "site" : site, "model_byok" : gate.model_byok.as_str(), "is_session_based"
             : gate.is_session_based, "endpoint_is_first_party" : gate
-            .endpoint_is_first_party, "refresh_active" : refresh_active, "base_url" :
-            base_url, }
+            .endpoint_is_first_party, "refresh_active" : refresh_active, }
         );
         let sid = Some(self.session_info.id.0.as_ref());
         if refresh_active {
@@ -304,6 +304,8 @@ impl SessionActor {
         let creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());
         let is_xai = cfg.provider == xai_grok_sampling_types::ProviderId::Xai;
+        let trusted_xai_origin =
+            is_xai && xai_grok_sampling_types::is_trusted_xai_inference_url(&cfg.base_url);
         let stored_credentials_match_provider = match cfg.provider {
             xai_grok_sampling_types::ProviderId::OpenAiCodex
             | xai_grok_sampling_types::ProviderId::KimiCode
@@ -326,11 +328,11 @@ impl SessionActor {
         let auth_method = self.auth_method_id.load();
         let gate =
             SessionTokenAuthGate::new(auth_method.as_deref(), model_facts.byok, &cfg.base_url);
-        let use_bearer_resolver = is_xai && gate.active();
-        self.log_auth_gate_unknown("reconstruct_full_config", gate, &cfg.base_url);
+        let use_bearer_resolver = trusted_xai_origin && gate.active();
+        self.log_auth_gate_unknown("reconstruct_full_config", gate);
         let auth_scheme = model_facts.auth_scheme;
         let mut extra_headers = cfg.extra_headers.clone();
-        if is_xai {
+        if trusted_xai_origin {
             crate::agent::config::inject_url_derived_headers(
                 &mut extra_headers,
                 creds.alpha_test_key.as_deref(),
@@ -339,7 +341,8 @@ impl SessionActor {
         }
         let compaction_at_tokens = self.compaction_at_tokens.get();
         let compactions_remaining = self.compactions_remaining.get();
-        if is_xai && (compactions_remaining.is_some() || compaction_at_tokens.is_some()) {
+        if trusted_xai_origin && (compactions_remaining.is_some() || compaction_at_tokens.is_some())
+        {
             let has_compaction_summary = self
                 .chat_state_handle
                 .get_last_compaction_prompt_index()
@@ -441,6 +444,9 @@ impl SessionActor {
             xai_grok_sampling_types::ProviderId::Custom => {
                 xai_grok_sampling_types::CredentialSourceId::Unspecified
             }
+            xai_grok_sampling_types::ProviderId::Xai if !trusted_xai_origin => {
+                xai_grok_sampling_types::CredentialSourceId::Unspecified
+            }
             xai_grok_sampling_types::ProviderId::Xai if use_bearer_resolver => {
                 xai_grok_sampling_types::CredentialSourceId::XaiSession
             }
@@ -463,7 +469,9 @@ impl SessionActor {
             | xai_grok_sampling_types::ProviderId::ZaiCodingPlan => None,
             xai_grok_sampling_types::ProviderId::Custom if custom_owns_key => creds.api_key.clone(),
             xai_grok_sampling_types::ProviderId::Custom => None,
-            xai_grok_sampling_types::ProviderId::Xai if stored_credentials_match_provider => {
+            xai_grok_sampling_types::ProviderId::Xai
+                if trusted_xai_origin && stored_credentials_match_provider =>
+            {
                 creds.api_key.clone()
             }
             xai_grok_sampling_types::ProviderId::Xai => None,
@@ -494,14 +502,14 @@ impl SessionActor {
             stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
             idle_timeout_secs: None,
             client_identifier: self.client_identifier.clone(),
-            deployment_id: is_xai
+            deployment_id: trusted_xai_origin
                 .then(|| {
                     crate::managed_config::resolve_deployment_id(
                         crate::managed_config::resolve_deployment_key().as_deref(),
                     )
                 })
                 .flatten(),
-            user_id: is_xai
+            user_id: trusted_xai_origin
                 .then(|| {
                     self.auth_manager
                         .as_ref()
@@ -511,7 +519,9 @@ impl SessionActor {
                 })
                 .flatten(),
             origin_client: self.origin_client.clone(),
-            attribution_callback: is_xai.then(|| self.attribution_callback.clone()).flatten(),
+            attribution_callback: trusted_xai_origin
+                .then(|| self.attribution_callback.clone())
+                .flatten(),
             bearer_resolver: if use_bearer_resolver {
                 self.auth_manager
                     .as_ref()
@@ -523,8 +533,12 @@ impl SessionActor {
             },
             request_auth,
             supports_backend_search: self.supports_backend_search.get(),
-            compactions_remaining: is_xai.then(|| self.compactions_remaining.get()).flatten(),
-            compaction_at_tokens: is_xai.then(|| self.compaction_at_tokens.get()).flatten(),
+            compactions_remaining: trusted_xai_origin
+                .then(|| self.compactions_remaining.get())
+                .flatten(),
+            compaction_at_tokens: trusted_xai_origin
+                .then(|| self.compaction_at_tokens.get())
+                .flatten(),
             doom_loop_recovery: (!is_codex).then_some(self.doom_loop_recovery).flatten(),
             header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
         };
@@ -811,7 +825,7 @@ impl SessionActor {
         ),
         acp::Error,
     > {
-        self.refresh_token_if_expired().await;
+        self.refresh_token_if_expired().await?;
         let active_config = self.reconstruct_full_config().await?;
         self.mark_codex_auxiliary_usage_incomplete(active_config.provider)
             .await;
@@ -912,7 +926,7 @@ impl SessionActor {
         ),
         acp::Error,
     > {
-        self.refresh_token_if_expired().await;
+        self.refresh_token_if_expired().await?;
         let mut full_config = self.reconstruct_full_config().await?;
         self.mark_codex_auxiliary_usage_incomplete(full_config.provider)
             .await;
@@ -950,7 +964,7 @@ impl SessionActor {
     /// the sampler actor is invalidated automatically by
     /// `update_config`.
     pub(crate) async fn prepare_sampler_for_turn(&self) -> Result<(), acp::Error> {
-        self.refresh_token_if_expired().await;
+        self.refresh_token_if_expired().await?;
         let mut sampler_config = self.reconstruct_full_config().await?;
         sampler_config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
         self.sampler_handle.update_config(sampler_config);
@@ -1071,20 +1085,35 @@ impl SessionActor {
                 error.status_code,
                 &detailed_message,
             );
+            if request_provider == xai_grok_sampling_types::ProviderId::Xai {
+                self.send_xai_notification(XaiSessionUpdate::RetryState(
+                    crate::extensions::notification::RetryState::Exhausted {
+                        attempts: 0,
+                        reason: detailed_message.clone(),
+                        is_rate_limited: true,
+                    },
+                ))
+                .await;
+                return Err(acp::Error::new(
+                    crate::sampling::error::RATE_LIMITED_ERROR_CODE,
+                    "Rate limited".to_string(),
+                )
+                .data(detailed_message));
+            }
+
+            // The special ACP code/notification flag is an xAI product
+            // contract: pager/headless replace it with xAI billing copy. Other
+            // providers retain their own bounded error detail instead.
             self.send_xai_notification(XaiSessionUpdate::RetryState(
-                crate::extensions::notification::RetryState::Exhausted {
-                    attempts: 0,
-                    reason: detailed_message.clone(),
-                    is_rate_limited: true,
+                crate::extensions::notification::RetryState::Failed {
+                    error_type: "rate_limited".to_owned(),
+                    message: detailed_message.clone(),
                 },
             ))
             .await;
-            let acp_err = acp::Error::new(
-                crate::sampling::error::RATE_LIMITED_ERROR_CODE,
-                "Rate limited".to_string(),
-            )
-            .data(detailed_message);
-            return Err(acp_err);
+            return Err(acp::Error::internal_error().data(
+                crate::sampling::error::error_data_with_status(detailed_message, error.status_code),
+            ));
         }
         let has_provider_owned_auth = request_provider.is_openai_codex()
             || request_provider.is_kimi_code()
@@ -1106,7 +1135,7 @@ impl SessionActor {
                     .unwrap_or_default();
                 let gate = self.auth_gate(&model_id, &base_url);
                 let eligible = gate.active();
-                self.log_auth_gate_unknown("handle_sampling_failure", gate, &base_url);
+                self.log_auth_gate_unknown("handle_sampling_failure", gate);
                 if !eligible {
                     tracing::warn!(
                         session_id = % self.session_info.id.0, is_session_based = gate
@@ -1407,7 +1436,7 @@ impl SessionActor {
         }
     }
     /// Proactively refresh the auth token if near expiry.
-    pub(super) async fn refresh_token_if_expired(&self) {
+    pub(super) async fn refresh_token_if_expired(&self) -> Result<(), acp::Error> {
         let (provider, current_model_id, base_url) = self
             .chat_state_handle
             .get_sampling_config()
@@ -1425,37 +1454,45 @@ impl SessionActor {
         // evaluate the global xAI or generic static-key refresh paths for a
         // Codex, Kimi, or Z.AI Coding Plan session.
         if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_zai_coding_plan() {
-            return;
+            return Ok(());
         }
         if provider == xai_grok_sampling_types::ProviderId::Xai {
-            if let Some(ref am) = self.auth_manager {
-                let creds = self.chat_state_handle.get_credentials().await;
-                if self.auth_gate(&current_model_id, &base_url).active()
-                    && let Ok(key) = am.get_valid_token().await
+            if !xai_grok_sampling_types::is_trusted_xai_inference_url(&base_url) {
+                // Compatibility-default xAI state on a custom endpoint never
+                // consults or reloads an xAI credential source.
+                return Ok(());
+            }
+            let managed_refresh = self.auth_gate(&current_model_id, &base_url).active();
+            if managed_refresh {
+                let Some(ref am) = self.auth_manager else {
+                    xai_grok_telemetry::unified_log::debug(
+                        "managed xAI token refresh skipped: no auth manager",
+                        Some(self.session_info.id.0.as_ref()),
+                        None,
+                    );
+                    return Ok(());
+                };
+                let key = am.get_valid_token().await.map_err(|_| {
+                    acp::Error::auth_required().data("managed xAI authentication refresh failed")
+                })?;
+                let mut creds = self.chat_state_handle.get_credentials().await;
+                if creds.api_key.as_deref() != Some(&key)
+                    || creds.provider != Some(xai_grok_sampling_types::ProviderId::Xai)
                 {
-                    if creds.api_key.as_deref() != Some(&key)
-                        || creds.provider != Some(xai_grok_sampling_types::ProviderId::Xai)
-                    {
-                        let mut creds = creds;
-                        creds.provider = Some(xai_grok_sampling_types::ProviderId::Xai);
-                        creds.api_key = Some(key);
-                        self.chat_state_handle.update_credentials(creds);
-                    }
-                    return;
+                    creds.provider = Some(xai_grok_sampling_types::ProviderId::Xai);
+                    creds.api_key = Some(key);
+                    self.chat_state_handle.update_credentials(creds);
                 }
-            } else {
-                xai_grok_telemetry::unified_log::debug(
-                    "token refresh skipped: no auth manager",
-                    Some(self.session_info.id.0.as_ref()),
-                    None,
-                );
+                return Ok(());
             }
         }
         use crate::auth::{is_jwt_expired_or_near, parse_jwt_expiration};
         const REFRESH_THRESHOLD: chrono::Duration = chrono::Duration::minutes(5);
         let creds = self.chat_state_handle.get_credentials().await;
         let current_key = creds.api_key;
-        let Some(ref key) = current_key else { return };
+        let Some(ref key) = current_key else {
+            return Ok(());
+        };
         if !is_jwt_expired_or_near(key, REFRESH_THRESHOLD) {
             if let Some(exp) = parse_jwt_expiration(key) {
                 let remaining_secs = (exp - chrono::Utc::now()).num_seconds();
@@ -1469,7 +1506,7 @@ impl SessionActor {
                     "Token is not a JWT, expiry-based refresh not applicable"
                 );
             }
-            return;
+            return Ok(());
         }
         let remaining_secs =
             parse_jwt_expiration(key).map_or(0, |exp| (exp - chrono::Utc::now()).num_seconds());
@@ -1478,14 +1515,14 @@ impl SessionActor {
             "JWT near expiry, refreshing from config.toml"
         );
         let Some(new_key) = self.reload_api_key_from_config(&current_model_id) else {
-            return;
+            return Ok(());
         };
         if key == &new_key {
             tracing::warn!(
                 model = % current_model_id,
                 "Config.toml returned same token (not yet rotated by external process?)"
             );
-            return;
+            return Ok(());
         }
         let new_remaining_secs = parse_jwt_expiration(&new_key)
             .map_or(0, |exp| (exp - chrono::Utc::now()).num_seconds());
@@ -1498,6 +1535,7 @@ impl SessionActor {
         creds.provider = Some(provider);
         creds.api_key = Some(new_key);
         self.chat_state_handle.update_credentials(creds);
+        Ok(())
     }
     fn reload_api_key_from_config(&self, current_model_id: &str) -> Option<String> {
         let raw_config = crate::config::load_effective_config()

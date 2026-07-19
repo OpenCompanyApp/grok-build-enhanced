@@ -1580,6 +1580,42 @@
       "legal_paths": [
         "LICENSE"
       ]
+    },
+    {
+      "id": "provider-bearer-auth-source-isolation",
+      "description": "Canonical-origin xAI bearer isolation, cross-origin redirect refusal, fail-closed managed refresh, provider-neutral bounded errors, explicit retry hints, and synthetic provider-matrix regressions.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-sampler/src/actor/request_task.rs",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/events.rs",
+        "crates/codegen/xai-grok-sampler/src/shared_http.rs",
+        "crates/codegen/xai-grok-sampler/src/stream/collect.rs",
+        "crates/codegen/xai-grok-sampling-types/src/error.rs",
+        "crates/codegen/xai-grok-sampling-types/src/lib.rs",
+        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/auth_error_no_retry_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/inline_auto_compact_flow_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/replay_buffer_send_update_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/compaction.rs",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/shared_http.rs",
+        "crates/codegen/xai-grok-sampling-types/src/error.rs",
+        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
     }
   ]
 }

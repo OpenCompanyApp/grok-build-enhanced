@@ -19,6 +19,28 @@ use std::time::Duration;
 static SHARED_H2: OnceLock<reqwest::Client> = OnceLock::new();
 static SHARED_HTTP1: OnceLock<reqwest::Client> = OnceLock::new();
 
+const MAX_SAME_ORIGIN_REDIRECTS: usize = 10;
+
+fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+/// Sampling requests may retain credentials across a bounded same-origin
+/// redirect chain, but never follow a redirect to another origin.
+fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_SAME_ORIGIN_REDIRECTS {
+            return attempt.error("too many same-origin sampling redirects");
+        }
+        match attempt.previous().first() {
+            Some(original) if same_origin(original, attempt.url()) => attempt.follow(),
+            _ => attempt.stop(),
+        }
+    })
+}
+
 /// Kill switch: `GROK_SAMPLER_SHARED_CLIENT=0` (or `false`, any case)
 /// restores the old behavior of building a fresh `reqwest::Client` per
 /// `SamplingClient`. Resolved once per process: the environment cannot
@@ -84,6 +106,7 @@ fn build_http_client() -> Result<reqwest::Client, reqwest::Error> {
         .unwrap_or(10);
 
     reqwest::Client::builder()
+        .redirect(same_origin_redirect_policy())
         .pool_max_idle_per_host(pool_max_idle)
         .pool_idle_timeout(Duration::from_secs(pool_idle_timeout_secs))
         .connect_timeout(Duration::from_secs(connect_timeout_secs))
@@ -104,6 +127,7 @@ fn build_http_client_http1() -> Result<reqwest::Client, reqwest::Error> {
         .unwrap_or(10);
 
     reqwest::Client::builder()
+        .redirect(same_origin_redirect_policy())
         .pool_max_idle_per_host(0)
         .pool_idle_timeout(Duration::from_secs(0))
         .connect_timeout(Duration::from_secs(connect_timeout_secs))

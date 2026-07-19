@@ -380,18 +380,84 @@ fn try_parse_error(data: &str) -> Option<(String, String)> {
     None
 }
 
+const MAX_PROVIDER_ERROR_CHARS: usize = 2_048;
+const EMPTY_PROVIDER_ERROR: &str = "provider returned an empty error response";
+const HTML_PROVIDER_ERROR: &str = "provider returned an HTML error response";
+
+fn sanitize_provider_error_text(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let lower_prefix: String = trimmed
+        .chars()
+        .take(128)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if lower_prefix.starts_with('<')
+        && (lower_prefix.contains("<html")
+            || lower_prefix.contains("<!doctype")
+            || lower_prefix.contains("<head")
+            || lower_prefix.contains("<body"))
+    {
+        return HTML_PROVIDER_ERROR.to_owned();
+    }
+
+    let mut output = String::with_capacity(trimmed.len().min(MAX_PROVIDER_ERROR_CHARS));
+    let mut output_chars = 0;
+    let mut pending_space = false;
+    let mut truncated = false;
+    for ch in trimmed.chars() {
+        if ch.is_whitespace() || ch.is_control() {
+            pending_space = !output.is_empty();
+            continue;
+        }
+        if pending_space {
+            if output_chars >= MAX_PROVIDER_ERROR_CHARS {
+                truncated = true;
+                break;
+            }
+            output.push(' ');
+            output_chars += 1;
+            pending_space = false;
+        }
+        if output_chars >= MAX_PROVIDER_ERROR_CHARS {
+            truncated = true;
+            break;
+        }
+        // Keep diagnostics plain-text even when a UI later renders them in an
+        // HTML-capable surface.
+        match ch {
+            '<' => output.push('‹'),
+            '>' => output.push('›'),
+            _ => output.push(ch),
+        }
+        output_chars += 1;
+    }
+    if output.is_empty() {
+        return EMPTY_PROVIDER_ERROR.to_owned();
+    }
+    if truncated {
+        output.push('…');
+    }
+    output
+}
+
 pub fn parse_error_bytes(bytes: &[u8]) -> String {
     if let Some((error_type, message)) = std::str::from_utf8(bytes).ok().and_then(try_parse_error) {
+        let message = sanitize_provider_error_text(&message);
         if error_type == "unknown" || error_type == "server_error" {
             return message;
         }
-        return format!("{error_type}: {message}");
+        return sanitize_provider_error_text(&format!(
+            "{}: {message}",
+            sanitize_provider_error_text(&error_type)
+        ));
     }
-    String::from_utf8_lossy(bytes).trim().to_owned()
+    sanitize_provider_error_text(&String::from_utf8_lossy(bytes))
 }
 
 pub fn try_parse_stream_error(data: &str) -> Option<SamplingError> {
     let (error_type, message) = try_parse_error(data)?;
+    let error_type = sanitize_provider_error_text(&error_type);
+    let message = sanitize_provider_error_text(&message);
     tracing::warn!(error_type, message, "Server-side stream error");
     Some(SamplingError::StreamError {
         error_type,
@@ -577,6 +643,37 @@ mod tests {
             msg,
             "The service is currently unavailable: Service temporarily unavailable."
         );
+    }
+
+    #[test]
+    fn provider_error_text_is_bounded_and_control_neutral() {
+        let body = format!(
+            r#"{{"error":{{"type":"server_error","message":"{}\n\u0000tail"}}}}"#,
+            "x".repeat(MAX_PROVIDER_ERROR_CHARS * 2)
+        );
+        let message = parse_error_bytes(body.as_bytes());
+        assert!(message.chars().count() <= MAX_PROVIDER_ERROR_CHARS + 1);
+        assert!(message.ends_with('…'));
+        assert!(!message.contains('\n'));
+        assert!(!message.contains('\0'));
+    }
+
+    #[test]
+    fn html_provider_error_body_is_not_reflected() {
+        let body = b"<!doctype html><html><body><script>synthetic-marker</script></body></html>";
+        let message = parse_error_bytes(body);
+        assert_eq!(message, HTML_PROVIDER_ERROR);
+        assert!(!message.contains("synthetic-marker"));
+        assert!(!message.contains('<'));
+    }
+
+    #[test]
+    fn json_provider_error_message_is_html_neutral() {
+        let body = br#"{"error":{"type":"bad_request","message":"bad <b>tag</b>"}}"#;
+        let message = parse_error_bytes(body);
+        assert_eq!(message, "bad_request: bad ‹b›tag‹/b›");
+        assert!(!message.contains('<'));
+        assert!(!message.contains('>'));
     }
 
     /// Regression test: 403 Forbidden must NOT be classified as an auth

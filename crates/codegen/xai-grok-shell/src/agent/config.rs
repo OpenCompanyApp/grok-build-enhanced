@@ -4472,6 +4472,19 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
             auth_scheme: info.auth_scheme,
         };
     }
+    if !xai_grok_sampling_types::is_trusted_xai_inference_url(&info.base_url) {
+        // A legacy/restored model may still carry the compatibility-default
+        // xAI label while routing to a custom origin. It must opt into the
+        // Custom provider before any model, session, or ambient xAI key can be
+        // selected.
+        return ResolvedCredentials {
+            provider: ProviderId::Xai,
+            api_key: None,
+            base_url: info.base_url.clone(),
+            auth_type: xai_chat_state::AuthType::ApiKey,
+            auth_scheme: info.auth_scheme,
+        };
+    }
     let (api_key, base_url, auth_type) = if let Some(key) = model.own_credential() {
         (
             Some(key),
@@ -4506,6 +4519,15 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
             xai_chat_state::AuthType::ApiKey,
         )
     };
+    if !xai_grok_sampling_types::is_trusted_xai_inference_url(&base_url) {
+        return ResolvedCredentials {
+            provider: ProviderId::Xai,
+            api_key: None,
+            base_url,
+            auth_type,
+            auth_scheme: info.auth_scheme,
+        };
+    }
     let auth_scheme = info.auth_scheme;
     tracing::debug!(
         model = % info.model, auth_type = ? auth_type, "resolved credentials"
@@ -4766,7 +4788,10 @@ pub fn stamp_session_local_sampler_fields(
 ) {
     cfg.client_identifier = client_identifier;
     cfg.attribution_callback = active_session_config.attribution_callback.clone();
-    if cfg.provider == active_session_config.provider {
+    if cfg.provider == active_session_config.provider
+        && cfg.provider == ProviderId::Xai
+        && xai_grok_sampling_types::is_trusted_xai_inference_url(&cfg.base_url)
+    {
         cfg.bearer_resolver = active_session_config.bearer_resolver.clone();
     }
     cfg.max_retries = max_retries;
@@ -4828,18 +4853,23 @@ pub fn sampling_config_for_model(
             "credential snapshot provider does not match model provider; dropping credentials"
         );
     }
-    let (resolved_api_key, resolved_base_url, resolved_auth_scheme) = if credentials_match_provider
-    {
-        (
-            credentials.api_key,
-            credentials.base_url,
-            credentials.auth_scheme,
-        )
-    } else {
-        (None, info.base_url.clone(), info.auth_scheme)
-    };
+    let (mut resolved_api_key, resolved_base_url, resolved_auth_scheme) =
+        if credentials_match_provider {
+            (
+                credentials.api_key,
+                credentials.base_url,
+                credentials.auth_scheme,
+            )
+        } else {
+            (None, info.base_url.clone(), info.auth_scheme)
+        };
+    let trusted_xai_origin = info.provider == ProviderId::Xai
+        && xai_grok_sampling_types::is_trusted_xai_inference_url(&resolved_base_url);
+    if info.provider == ProviderId::Xai && !trusted_xai_origin {
+        resolved_api_key = None;
+    }
     let mut extra_headers = info.extra_headers.clone();
-    if info.provider == ProviderId::Xai {
+    if trusted_xai_origin {
         inject_url_derived_headers(
             &mut extra_headers,
             alpha_test_key.as_deref(),
@@ -4859,6 +4889,9 @@ pub fn sampling_config_for_model(
             xai_grok_sampling_types::CredentialSourceId::StaticApiKey
         }
         ProviderId::Custom => xai_grok_sampling_types::CredentialSourceId::Unspecified,
+        ProviderId::Xai if !trusted_xai_origin => {
+            xai_grok_sampling_types::CredentialSourceId::Unspecified
+        }
         ProviderId::Xai => match credentials.auth_type {
             xai_chat_state::AuthType::SessionToken => {
                 xai_grok_sampling_types::CredentialSourceId::XaiSession
@@ -4896,12 +4929,8 @@ pub fn sampling_config_for_model(
         stream_tool_calls: info.stream_tool_calls.unwrap_or(false),
         idle_timeout_secs: None,
         client_identifier: None,
-        deployment_id: (info.provider == ProviderId::Xai)
-            .then_some(deployment_id)
-            .flatten(),
-        user_id: (info.provider == ProviderId::Xai)
-            .then_some(user_id)
-            .flatten(),
+        deployment_id: trusted_xai_origin.then_some(deployment_id).flatten(),
+        user_id: trusted_xai_origin.then_some(user_id).flatten(),
         origin_client: None,
         attribution_callback: None,
         bearer_resolver: None,
@@ -5925,7 +5954,7 @@ reasoning_effort = "low"
             std::env::remove_var(primary);
             std::env::set_var(alias, "token-via-lc-alias");
         }
-        let mut model = test_model_entry("m", "https://inference.example/v1", None, None, None);
+        let mut model = test_model_entry("m", "https://api.x.ai/v1", None, None, None);
         model.env_key = Some(EnvKeys::new([primary, alias]));
         assert!(
             model.has_own_credentials(),
@@ -5959,7 +5988,7 @@ reasoning_effort = "low"
         let alias = "GROK_TEST_EMPTY_ENV_LC_ALIAS";
         let _primary = EnvGuard::set(primary, "");
         let _alias = EnvGuard::set(alias, "");
-        let mut model = test_model_entry("m", "https://inference.example/v1", None, None, None);
+        let mut model = test_model_entry("m", "https://api.x.ai/v1", None, None, None);
         model.env_key = Some(EnvKeys::new([primary, alias]));
         assert!(!model.has_own_credentials());
         let creds = resolve_credentials(&model, Some("session-jwt"));
@@ -5979,7 +6008,7 @@ reasoning_effort = "low"
         let _alias = EnvGuard::set(alias, "");
         let _global = EnvGuard::set(XAI_API_KEY_ENV_VAR, sentinel);
         let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
-        let mut model = test_model_entry("m", "https://inference.example/v1", None, None, None);
+        let mut model = test_model_entry("m", "https://api.x.ai/v1", None, None, None);
         model.env_key = Some(EnvKeys::new([primary, alias]));
         assert!(!model.has_own_credentials());
         let creds = resolve_credentials(&model, None);
@@ -5989,7 +6018,7 @@ reasoning_effort = "low"
     #[test]
     fn resolve_credentials_empty_api_key_falls_through_to_session() {
         use xai_chat_state::AuthType;
-        let model = test_model_entry("m", "https://inference.example/v1", Some(""), None, None);
+        let model = test_model_entry("m", "https://api.x.ai/v1", Some(""), None, None);
         assert!(!model.has_own_credentials());
         let creds = resolve_credentials(&model, Some("session-jwt"));
         assert_eq!(creds.auth_type, AuthType::SessionToken);
@@ -6043,6 +6072,42 @@ reasoning_effort = "low"
         model.api_key = Some("custom-key".to_owned());
         let credentials = resolve_credentials(&model, Some("xai-session-sentinel"));
         assert_eq!(credentials.api_key.as_deref(), Some("custom-key"));
+    }
+
+    #[test]
+    fn xai_label_on_arbitrary_custom_origin_drops_every_xai_credential_source() {
+        let model = test_model_entry(
+            "legacy-xai-label",
+            "https://custom.example/v1",
+            Some("synthetic-model-key"),
+            None,
+            None,
+        );
+        let credentials = resolve_credentials(&model, Some("synthetic-session-key"));
+        assert_eq!(credentials.provider, ProviderId::Xai);
+        assert!(credentials.api_key.is_none());
+
+        let config = sampling_config_for_model(
+            &model,
+            credentials,
+            Some("synthetic-alpha".to_owned()),
+            None,
+            Some("synthetic-deployment".to_owned()),
+            Some("synthetic-user".to_owned()),
+        );
+        assert!(config.api_key.is_none());
+        assert_eq!(
+            config.credential_source,
+            xai_grok_sampling_types::CredentialSourceId::Unspecified
+        );
+        assert!(config.deployment_id.is_none());
+        assert!(config.user_id.is_none());
+        assert!(
+            !config
+                .extra_headers
+                .keys()
+                .any(|name| name.to_ascii_lowercase().starts_with("x-xai-"))
+        );
     }
 
     #[test]
@@ -6105,10 +6170,10 @@ reasoning_effort = "low"
     #[test]
     fn resolve_credentials_sets_auth_type() {
         use xai_chat_state::AuthType;
-        let model = test_model_entry("m", "https://example.com/v1", None, None, None);
+        let model = test_model_entry("m", "https://api.x.ai/v1", None, None, None);
         let creds = resolve_credentials(&model, Some("tok"));
         assert_eq!(creds.auth_type, AuthType::SessionToken);
-        let byok = test_model_entry("m", "https://example.com/v1", Some("key"), None, None);
+        let byok = test_model_entry("m", "https://api.x.ai/v1", Some("key"), None, None);
         let creds = resolve_credentials(&byok, Some("tok"));
         assert_eq!(creds.auth_type, AuthType::ApiKey);
     }
@@ -6122,13 +6187,14 @@ reasoning_effort = "low"
         unsafe {
             std::env::set_var(env_var, "sk-byok-test-value");
         }
-        let model = test_model_entry(
+        let mut model = test_model_entry(
             "byok-gpt-test",
             "https://llm.example.com/v1",
             None,
             Some(env_var),
             None,
         );
+        model.info.provider = ProviderId::Custom;
         assert!(model.has_own_credentials());
         let creds = resolve_credentials(&model, Some("session-jwt"));
         assert_eq!(
@@ -6180,7 +6246,7 @@ reasoning_effort = "low"
     /// when their auth manager has only a buffered/expired token.
     #[test]
     fn resolve_credentials_no_session_key_returns_api_key() {
-        let model = test_model_entry("m", "https://example.com/v1", None, None, None);
+        let model = test_model_entry("m", "https://api.x.ai/v1", None, None, None);
         let creds = resolve_credentials(&model, None);
         assert_eq!(creds.auth_type, xai_chat_state::AuthType::ApiKey);
     }
