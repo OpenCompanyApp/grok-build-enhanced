@@ -116,6 +116,10 @@ pub struct BillingConfigResponse {
     /// provider or a Codex-backed session. Never populated on the xAI path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_usage: Option<crate::auth::codex::CodexUsageSnapshot>,
+    /// Authoritative Kimi Code plan limits for a Kimi-backed session. Never
+    /// populated on xAI or Codex paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kimi_usage: Option<crate::auth::kimi_code::KimiCodeUsageSnapshot>,
     /// Informational API-price comparison from actual session token counters.
     /// This is explicitly not ChatGPT subscription spend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,7 +314,63 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
         return to_raw_response(&BillingConfigResponse {
             config: None,
             codex_usage: Some(codex_usage),
+            kimi_usage: None,
             codex_api_equivalent_cost,
+            on_demand_enabled: None,
+            subscription_tier: None,
+        });
+    }
+
+    if provider == xai_grok_sampling_types::ProviderId::KimiCode {
+        let grok_home = crate::util::grok_home::grok_home();
+        let (credentials, current_binding) =
+            crate::auth::kimi_code::current_credentials_and_binding(&grok_home).map_err(
+                |error| {
+                    acp::Error::auth_required()
+                        .data(format!("Kimi Code usage unavailable: {error}"))
+                },
+            )?;
+        if let Some(sampling) = session_sampling.as_ref() {
+            let expected = sampling.credential_binding.as_ref().ok_or_else(|| {
+                acp::Error::auth_required().data(
+                    "Kimi Code session credential binding is unavailable; restart or select the model again",
+                )
+            })?;
+            let valid = expected.provider == xai_grok_sampling_types::ProviderId::KimiCode
+                && expected.source == xai_grok_sampling_types::CredentialSourceId::KimiCodeApiKey
+                && expected.same_record(&current_binding)
+                && current_binding.generation >= expected.generation;
+            if !valid {
+                return Err(acp::Error::auth_required().data(
+                    "Kimi Code usage authentication changed; restart or select the model again",
+                ));
+            }
+        }
+        let kimi_usage = crate::auth::kimi_code::fetch_usage(&credentials)
+            .await
+            .map_err(|error| {
+                let display = error.to_string();
+                if matches!(
+                    error,
+                    crate::auth::kimi_code::KimiCodeAuthError::Unavailable
+                        | crate::auth::kimi_code::KimiCodeAuthError::InvalidCredential
+                        | crate::auth::kimi_code::KimiCodeAuthError::Http(
+                            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+                        )
+                ) {
+                    acp::Error::auth_required()
+                        .data(format!("Kimi Code usage authentication failed: {display}"))
+                } else {
+                    acp::Error::internal_error()
+                        .data(format!("Failed to fetch Kimi Code usage: {display}"))
+                }
+            })?;
+        tracing::info!("billing: fetched Kimi Code plan limits");
+        return to_raw_response(&BillingConfigResponse {
+            config: None,
+            codex_usage: None,
+            kimi_usage: Some(kimi_usage),
+            codex_api_equivalent_cost: None,
             on_demand_enabled: None,
             subscription_tier: None,
         });
@@ -590,6 +650,7 @@ mod tests {
                 ],
             }),
             codex_usage: None,
+            kimi_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: Some(true),
             subscription_tier: Some("SuperGrok".into()),
@@ -637,6 +698,7 @@ mod tests {
         let resp = BillingConfigResponse {
             config: Some(config),
             codex_usage: None,
+            kimi_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: None,
             subscription_tier: None,

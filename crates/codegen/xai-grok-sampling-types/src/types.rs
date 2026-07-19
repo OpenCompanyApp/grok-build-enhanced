@@ -477,7 +477,7 @@ pub struct ChatChoice {
     pub finish_reason: Option<FinishReason>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
     Stop,
@@ -485,6 +485,10 @@ pub enum FinishReason {
     ToolCalls,
     ContentFilter,
     FunctionCall,
+    /// Preserve provider values introduced after this client shipped instead
+    /// of failing the entire response or terminal stream chunk.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -600,13 +604,14 @@ pub struct ChatChunkChoice {
 /// - The first chunk carries `id`, `type`, `index`, and the `function.name` + start of `arguments`.
 /// - Subsequent chunks only carry `index` and a `function.arguments` fragment (no `id`, no `name`).
 ///
-/// All fields except `index` are therefore optional so we can deserialize every chunk.
+/// Every field is optional because some OpenAI-compatible servers omit the
+/// positional index or delay the function name until a later chunk.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ToolCallDelta {
     /// The positional index of the tool call being streamed.
-    /// Used to correlate delta chunks belonging to the same tool call.
-    #[serde(default)]
-    pub index: u32,
+    /// Used to correlate delta chunks belonging to the same tool call when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
     /// Only present in the first chunk for this tool call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1187,6 +1192,10 @@ pub struct MessagesRequestWrapper {
     pub x_grok_deployment_id: Option<String>,
     pub x_grok_user_id: Option<String>,
 
+    /// Provider-normalized reasoning effort retained outside the Anthropic
+    /// request schema for adapters, such as Kimi Code, with wire extensions.
+    pub wire_reasoning_effort: Option<ReasoningEffort>,
+
     /// Optional tracing context (e.g., where to persist the finalized request payload).
     pub trace: Option<Box<dyn TraceContext>>,
 }
@@ -1203,6 +1212,7 @@ impl MessagesRequestWrapper {
             x_grok_agent_id: None,
             x_grok_deployment_id: None,
             x_grok_user_id: None,
+            wire_reasoning_effort: None,
             trace: None,
         }
     }

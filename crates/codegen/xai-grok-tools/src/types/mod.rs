@@ -21,9 +21,13 @@ pub mod tool;
 pub mod tool_index;
 pub mod tool_io;
 pub mod tool_metadata;
+pub(crate) use api_key_provider::{
+    resolve_kimi_code_request_auth, resolve_zai_coding_plan_request_auth,
+};
 pub use api_key_provider::{
     AUTH_RECOVERY_EXHAUSTED_DETAILS_KEY, AUTH_RECOVERY_PROVIDER_DETAILS_KEY, ApiKeyProvider,
-    OPENAI_CODEX_PROVIDER_ID, RequestAuth, RequestCredentialSnapshot, SharedApiKeyProvider,
+    KIMI_CODE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, RequestAuth, RequestCredentialSnapshot,
+    SharedApiKeyProvider, ZAI_CODING_PLAN_PROVIDER_ID,
 };
 pub use claude_alias::{claude_names_for, grok_names, grok_names_for, kind_for};
 pub use compat::{

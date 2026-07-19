@@ -7,7 +7,7 @@ purpose is deliberately narrow:
 
 - preserve Grok Build's agent loop, sessions, tools, permissions, TUI, headless
   mode, and Agent Client Protocol behavior;
-- add an explicit, isolated ChatGPT Codex subscription provider;
+- add explicit, isolated ChatGPT Codex subscription and Kimi Code providers;
 - package the audited Warp theme corpus and retain terminal-native theme
   behavior;
 - present clear Enhanced branding without renaming compatibility surfaces;
@@ -22,13 +22,16 @@ braille symbol.
 
 ## Scope and non-goals
 
-- Treat direct ChatGPT Codex backend integration as experimental. It is a scoped
-  provider adapter, not a replacement application or embedded Codex app-server.
-- Keep xAI, OpenAI Codex, and generic custom-provider identities explicit.
-  Codex auth, refresh, retry, model discovery, usage, tools, and logout must
-  never fall through to xAI auth or static API keys.
-- Kimi Code and Z.AI GLM Coding Plan documents are research only. They do not
-  establish runtime providers, login commands, credentials, or product claims.
+- Treat direct ChatGPT Codex and Kimi Code backend integrations as
+  experimental. They are scoped provider adapters, not replacement applications
+  or embedded upstream app servers.
+- Keep xAI, OpenAI Codex, Kimi Code, and generic custom-provider identities
+  explicit. Provider auth, retry, model discovery, usage, tools, and logout must
+  never fall through to another provider's credentials or static API keys.
+- Kimi Code is an experimental API-key provider with authenticated catalog
+  discovery and provider-hosted web capabilities. Z.AI GLM Coding Plan remains
+  research only and does not establish a runtime provider, login command,
+  credentials, or product claims.
 - Do not introduce fork policy that suppresses or reshapes ordinary upstream
   telemetry and permission details. Users decide whether to enable supported
   telemetry. Security boundaries that prevent credentials from being logged or
@@ -38,9 +41,9 @@ braille symbol.
 
 ## Credential and data safety
 
-Never log, upload, place in hooks, or include in diagnostics bearer, refresh, or
-ID tokens; token prefixes; account IDs; FedRAMP state; Codex turn state; or raw
-credential headers. Mark credential `HeaderValue`s sensitive and test
+Never log, upload, place in hooks, or include in diagnostics API keys; bearer,
+refresh, or ID tokens; token prefixes; account IDs; FedRAMP state; Codex turn
+state; or raw credential headers. Mark credential `HeaderValue`s sensitive and test
 redaction. Do not import or commit `~/.codex/auth.json`, `~/.grok/auth.json`,
 private approval messages, authenticated response captures, or any other
 secret-bearing material.
@@ -65,8 +68,8 @@ Primary sources and inspiration repositories are:
 | OpenCode interoperability reference | `https://github.com/anomalyco/opencode.git` `dev` |
 | OpenCode Codex auth reference | `https://github.com/numman-ali/opencode-openai-codex-auth.git` `main` |
 | Warp themes | `https://github.com/warpdotdev/themes.git` `main` |
-| Kimi Code research | `https://github.com/MoonshotAI/kimi-code.git` `main` |
-| Kimi CLI legacy research | `https://github.com/MoonshotAI/kimi-cli.git` `main` |
+| Kimi Code provider reference | `https://github.com/MoonshotAI/kimi-code.git` `main` |
+| Kimi CLI legacy reference | `https://github.com/MoonshotAI/kimi-cli.git` `main` |
 | Z.AI SDK research | `https://github.com/zai-org/z-ai-sdk-python.git` `main` |
 | Z.AI coding-plugin research | `https://github.com/zai-org/zai-coding-plugins.git` `main` |
 | GLM-5 model research | `https://github.com/zai-org/GLM-5.git` `main` |

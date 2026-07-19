@@ -18,6 +18,14 @@ use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
 use crate::types::RequestId;
 
+#[derive(Default)]
+struct BufferedToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+    announced: bool,
+}
+
 /// Transform a raw Chat Completions chunk stream into a stream of
 /// [`SamplingEvent`]s.
 ///
@@ -69,11 +77,14 @@ pub fn stream_chat_completions<'a>(
 
         let mut content_acc = String::new();
         let mut reasoning_acc = String::new();
-        // Tool call deltas keyed by positional index. Each entry is
-        // (id, name, arguments_buffer); the first chunk for an index
-        // carries id+name and starts the arguments buffer, subsequent
-        // chunks append to arguments only.
-        let mut tool_call_acc: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
+        let mut reasoning_seen = false;
+        // Provider stream indexes are mapped to dense internal indexes in
+        // first-seen order. Kimi and other OpenAI-compatible backends can
+        // delay a function name or omit the index entirely.
+        let mut tool_call_acc: BTreeMap<u32, BufferedToolCall> = BTreeMap::new();
+        let mut provider_to_tool_index: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut next_tool_index = 0_u32;
+        let mut last_unindexed_tool_index: Option<u32> = None;
 
         // Index counter spanning text + reasoning chunks (matches the
         // shell's chunk_index used for notification correlation).
@@ -174,59 +185,131 @@ pub fn stream_chat_completions<'a>(
                     };
                 }
 
-                if let Some(thought) = delta.reasoning_content
-                    && !thought.is_empty()
-                {
-                    if !first_token_emitted {
-                        first_token_emitted = true;
-                        yield SamplingEvent::FirstToken {
+                if let Some(thought) = delta.reasoning_content {
+                    // Presence is semantically distinct from absence: Kimi
+                    // uses an explicit empty reasoning delta to preserve a
+                    // thinking turn before a tool call.
+                    reasoning_seen = true;
+                    if !thought.is_empty() {
+                        if !first_token_emitted {
+                            first_token_emitted = true;
+                            yield SamplingEvent::FirstToken {
+                                request_id: request_id.clone(),
+                            };
+                        }
+                        chunk_has_content = true;
+                        chunk_index += 1;
+                        reasoning_acc.push_str(&thought);
+                        yield SamplingEvent::ChannelToken {
                             request_id: request_id.clone(),
+                            channel: SamplingChannel::Reasoning,
+                            text: thought,
+                            chunk_index,
                         };
                     }
-                    chunk_has_content = true;
-                    chunk_index += 1;
-                    reasoning_acc.push_str(&thought);
-                    yield SamplingEvent::ChannelToken {
-                        request_id: request_id.clone(),
-                        channel: SamplingChannel::Reasoning,
-                        text: thought,
-                        chunk_index,
-                    };
                 }
 
                 for tc_delta in delta.tool_calls.into_iter() {
+                    let function_name = tc_delta
+                        .function
+                        .as_ref()
+                        .and_then(|function| function.name.as_deref())
+                        .filter(|name| !name.is_empty());
+                    let arguments_delta = tc_delta
+                        .function
+                        .as_ref()
+                        .and_then(|function| function.arguments.as_deref())
+                        .filter(|arguments| !arguments.is_empty());
+                    let has_meaningful_delta = tc_delta
+                        .id
+                        .as_deref()
+                        .is_some_and(|id| !id.is_empty())
+                        || function_name.is_some()
+                        || arguments_delta.is_some();
+                    if !has_meaningful_delta {
+                        continue;
+                    }
                     chunk_has_content = true;
 
-                    let entry = tool_call_acc
-                        .entry(tc_delta.index)
-                        .or_insert_with(|| (String::new(), String::new(), String::new()));
-
-                    let mut id_for_event: Option<String> = None;
-                    let mut name_for_event: Option<String> = None;
-                    let mut args_for_event: Option<String> = None;
-
-                    if let Some(id) = tc_delta.id {
-                        entry.0 = id.clone();
-                        id_for_event = Some(id);
-                    }
-                    if let Some(func) = tc_delta.function {
-                        if let Some(name) = func.name {
-                            entry.1 = name.clone();
-                            name_for_event = Some(name);
+                    let tool_index = if let Some(provider_index) = tc_delta.index {
+                        if let Some(index) = provider_to_tool_index.get(&provider_index) {
+                            *index
+                        } else {
+                            let index = next_tool_index;
+                            next_tool_index = next_tool_index.saturating_add(1);
+                            provider_to_tool_index.insert(provider_index, index);
+                            index
                         }
-                        if let Some(args) = func.arguments {
-                            entry.2.push_str(&args);
-                            args_for_event = Some(args);
+                    } else if function_name.is_some() {
+                        // A delayed name belongs to the most recent incomplete
+                        // unindexed call. A new concrete name after an announced
+                        // call starts the next sequential call.
+                        match last_unindexed_tool_index.filter(|index| {
+                            tool_call_acc
+                                .get(index)
+                                .is_some_and(|call| !call.announced)
+                        }) {
+                            Some(index) => index,
+                            None => {
+                                let index = next_tool_index;
+                                next_tool_index = next_tool_index.saturating_add(1);
+                                last_unindexed_tool_index = Some(index);
+                                index
+                            }
                         }
-                    }
-
-                    yield SamplingEvent::ToolCallDelta {
-                        request_id: request_id.clone(),
-                        tool_index: tc_delta.index,
-                        id: id_for_event,
-                        name: name_for_event,
-                        arguments_delta: args_for_event,
+                    } else if let Some(index) = last_unindexed_tool_index {
+                        index
+                    } else {
+                        let index = next_tool_index;
+                        next_tool_index = next_tool_index.saturating_add(1);
+                        last_unindexed_tool_index = Some(index);
+                        index
                     };
+
+                    let entry = tool_call_acc.entry(tool_index).or_default();
+                    if !entry.announced
+                        && let Some(id) = tc_delta.id.filter(|id| !id.is_empty())
+                    {
+                        entry.id = Some(id);
+                    }
+                    if !entry.announced
+                        && let Some(name) = function_name
+                    {
+                        entry.name = Some(name.to_owned());
+                    }
+                    if let Some(arguments) = arguments_delta {
+                        entry.arguments.push_str(arguments);
+                    }
+
+                    if !entry.announced
+                        && entry.name.is_some()
+                    {
+                        let id = entry
+                            .id
+                            .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
+                            .clone();
+                        let name = entry.name.clone();
+                        let arguments_delta = (!entry.arguments.is_empty())
+                            .then(|| entry.arguments.clone());
+                        entry.announced = true;
+                        yield SamplingEvent::ToolCallDelta {
+                            request_id: request_id.clone(),
+                            tool_index,
+                            id: Some(id),
+                            name,
+                            arguments_delta,
+                        };
+                    } else if entry.announced
+                        && let Some(arguments) = arguments_delta
+                    {
+                        yield SamplingEvent::ToolCallDelta {
+                            request_id: request_id.clone(),
+                            tool_index,
+                            id: None,
+                            name: None,
+                            arguments_delta: Some(arguments.to_owned()),
+                        };
+                    }
                 }
             }
 
@@ -247,10 +330,13 @@ pub fn stream_chat_completions<'a>(
         // ── Build the final response ─────────────────────────────────
         let tool_calls: Vec<ToolCall> = tool_call_acc
             .into_values()
-            .map(|(id, name, arguments)| ToolCall {
-                id: std::sync::Arc::<str>::from(id),
-                name,
-                arguments: std::sync::Arc::<str>::from(arguments),
+            .filter(|call| call.announced)
+            .map(|call| ToolCall {
+                id: std::sync::Arc::<str>::from(
+                    call.id.expect("announced tool call has an id"),
+                ),
+                name: call.name.expect("announced tool call has a name"),
+                arguments: std::sync::Arc::<str>::from(call.arguments),
             })
             .collect();
 
@@ -263,7 +349,7 @@ pub fn stream_chat_completions<'a>(
         // Build the trailing Assistant + any reasoning sibling.
         let mut items: Vec<ConversationItem> = Vec::new();
         if first_choice_seen {
-            if !reasoning_acc.is_empty() {
+            if reasoning_seen {
                 items.push(ConversationItem::Reasoning(
                     xai_grok_sampling_types::synthesized_reasoning_item(reasoning_acc),
                 ));
@@ -500,7 +586,7 @@ mod tests {
             content: None,
             reasoning_content: None,
             tool_calls: vec![ChunkToolCallDelta {
-                index: 0,
+                index: Some(0),
                 id: Some("call_abc".into()),
                 kind: Some("function".into()),
                 function: Some(ToolCallFunctionDelta {
@@ -516,7 +602,7 @@ mod tests {
             content: None,
             reasoning_content: None,
             tool_calls: vec![ChunkToolCallDelta {
-                index: 0,
+                index: Some(0),
                 id: None,
                 kind: None,
                 function: Some(ToolCallFunctionDelta {
@@ -577,6 +663,242 @@ mod tests {
                 assert_eq!(calls[0].arguments.as_ref(), "{\"x\":1}");
                 // Tool calls force ToolCalls stop reason.
                 assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn explicitly_empty_reasoning_is_preserved_in_the_completed_response() {
+        let chunk = make_chunk(vec![ChatChunkDelta {
+            role: Some(Role::Assistant),
+            content: None,
+            reasoning_content: Some(String::new()),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }]);
+        let raw = stream::iter(vec![Ok(chunk)]).boxed();
+
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+        ))
+        .await;
+
+        match events.last().unwrap() {
+            SamplingEvent::Completed { response, .. } => {
+                let reasoning = response
+                    .reasoning_items()
+                    .next()
+                    .expect("explicit reasoning presence is preserved");
+                let rs::SummaryPart::SummaryText(summary) = &reasoning.summary[0];
+                assert_eq!(summary.text, "");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn indexed_arguments_are_buffered_until_a_delayed_tool_name_arrives() {
+        let chunks = vec![
+            make_chunk(vec![ChatChunkDelta {
+                tool_calls: vec![ChunkToolCallDelta {
+                    index: Some(0),
+                    id: Some("call_delayed".into()),
+                    kind: Some("function".into()),
+                    function: Some(ToolCallFunctionDelta {
+                        name: Some(String::new()),
+                        arguments: Some(String::new()),
+                    }),
+                }],
+                ..Default::default()
+            }]),
+            make_chunk(vec![ChatChunkDelta {
+                tool_calls: vec![ChunkToolCallDelta {
+                    index: Some(0),
+                    function: Some(ToolCallFunctionDelta {
+                        arguments: Some("{\"a".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]),
+            make_chunk(vec![ChatChunkDelta {
+                tool_calls: vec![ChunkToolCallDelta {
+                    index: Some(0),
+                    function: Some(ToolCallFunctionDelta {
+                        name: Some("foo".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]),
+            make_chunk(vec![ChatChunkDelta {
+                tool_calls: vec![ChunkToolCallDelta {
+                    index: Some(0),
+                    function: Some(ToolCallFunctionDelta {
+                        arguments: Some("\":1}".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]),
+        ];
+        let raw = stream::iter(chunks.into_iter().map(Ok)).boxed();
+
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+        ))
+        .await;
+        let deltas: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::ToolCallDelta {
+                    tool_index,
+                    id,
+                    name,
+                    arguments_delta,
+                    ..
+                } => Some((
+                    *tool_index,
+                    id.as_deref(),
+                    name.as_deref(),
+                    arguments_delta.as_deref(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            deltas,
+            vec![
+                (0, Some("call_delayed"), Some("foo"), Some("{\"a")),
+                (0, None, None, Some("\":1}")),
+            ]
+        );
+        match events.last().unwrap() {
+            SamplingEvent::Completed { response, .. } => {
+                let calls = response.tool_calls();
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].id.as_ref(), "call_delayed");
+                assert_eq!(calls[0].name, "foo");
+                assert_eq!(calls[0].arguments.as_ref(), "{\"a\":1}");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn interleaved_indexed_tool_calls_keep_their_own_argument_streams() {
+        let chunks = vec![
+            make_chunk(vec![ChatChunkDelta {
+                tool_calls: vec![
+                    ChunkToolCallDelta {
+                        index: Some(3),
+                        id: Some("call_a".into()),
+                        function: Some(ToolCallFunctionDelta {
+                            name: Some("read_file".into()),
+                            arguments: Some(String::new()),
+                        }),
+                        ..Default::default()
+                    },
+                    ChunkToolCallDelta {
+                        index: Some(7),
+                        id: Some("call_b".into()),
+                        function: Some(ToolCallFunctionDelta {
+                            name: Some("read_file".into()),
+                            arguments: Some(String::new()),
+                        }),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }]),
+            make_chunk(vec![ChatChunkDelta {
+                tool_calls: vec![
+                    ChunkToolCallDelta {
+                        index: Some(7),
+                        function: Some(ToolCallFunctionDelta {
+                            arguments: Some("{\"path\":\"b\"}".into()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    ChunkToolCallDelta {
+                        index: Some(3),
+                        function: Some(ToolCallFunctionDelta {
+                            arguments: Some("{\"path\":\"a\"}".into()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }]),
+        ];
+        let raw = stream::iter(chunks.into_iter().map(Ok)).boxed();
+
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+        ))
+        .await;
+
+        match events.last().unwrap() {
+            SamplingEvent::Completed { response, .. } => {
+                let calls = response.tool_calls();
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0].id.as_ref(), "call_a");
+                assert_eq!(calls[0].arguments.as_ref(), "{\"path\":\"a\"}");
+                assert_eq!(calls[1].id.as_ref(), "call_b");
+                assert_eq!(calls[1].arguments.as_ref(), "{\"path\":\"b\"}");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unindexed_named_tool_call_without_an_id_gets_a_continuous_generated_id() {
+        let chunk = make_chunk(vec![ChatChunkDelta {
+            tool_calls: vec![ChunkToolCallDelta {
+                index: None,
+                function: Some(ToolCallFunctionDelta {
+                    name: Some("lookup".into()),
+                    arguments: Some("{}".into()),
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+        let raw = stream::iter(vec![Ok(chunk)]).boxed();
+
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+        ))
+        .await;
+        let streamed_id = events.iter().find_map(|event| match event {
+            SamplingEvent::ToolCallDelta { id: Some(id), .. } => Some(id.as_str()),
+            _ => None,
+        });
+        match events.last().unwrap() {
+            SamplingEvent::Completed { response, .. } => {
+                let call = &response.tool_calls()[0];
+                assert!(!call.id.is_empty());
+                assert_eq!(streamed_id, Some(call.id.as_ref()));
+                assert_eq!(call.name, "lookup");
+                assert_eq!(call.arguments.as_ref(), "{}");
             }
             other => panic!("expected Completed, got {other:?}"),
         }

@@ -277,7 +277,10 @@ impl SamplingError {
             SamplingError::Http(err) => is_retryable_reqwest(err),
             SamplingError::Serialization(_) => false,
             SamplingError::Api { status, .. } => {
-                matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504 | 520)
+                matches!(
+                    status.as_u16(),
+                    408 | 409 | 429 | 500 | 502 | 503 | 504 | 520 | 529
+                )
             }
             SamplingError::EventStreamError(_) => true,
             SamplingError::StreamError { error_type, .. } => error_type != "usage_limit_reached",

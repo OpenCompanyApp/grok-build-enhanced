@@ -10,7 +10,8 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{
     ApiBackend, CompactionAtTokens, CompactionsRemaining, CredentialBinding, CredentialSourceId,
-    DoomLoopRecoveryPolicy, OPENAI_CODEX_BASE_URL, ProviderId, ReasoningEffort,
+    DoomLoopRecoveryPolicy, KIMI_CODE_BASE_URL, OPENAI_CODEX_BASE_URL, ProviderId, ReasoningEffort,
+    ZAI_CODING_PLAN_BASE_URL,
 };
 
 use crate::attribution::SharedAttributionCallback;
@@ -209,6 +210,42 @@ impl SamplerConfig {
             base_url: OPENAI_CODEX_BASE_URL.to_string(),
             model: model.into(),
             api_backend: ApiBackend::Responses,
+            ..Self::default()
+        }
+    }
+
+    /// Build the provider-safe baseline for a catalog-resolved Kimi Code
+    /// model. Authentication must be attached through `request_auth` before
+    /// constructing a client.
+    pub fn kimi_code(model: impl Into<String>, api_backend: ApiBackend) -> Self {
+        let auth_scheme = if matches!(api_backend, ApiBackend::Messages) {
+            AuthScheme::XApiKey
+        } else {
+            AuthScheme::Bearer
+        };
+        Self {
+            provider: ProviderId::KimiCode,
+            credential_source: CredentialSourceId::KimiCodeApiKey,
+            credential_binding: Some(CredentialBinding::kimi_code(None)),
+            base_url: KIMI_CODE_BASE_URL.to_string(),
+            model: model.into(),
+            api_backend,
+            auth_scheme,
+            ..Self::default()
+        }
+    }
+
+    /// Build the provider-safe baseline for a global personal Z.AI Coding
+    /// Plan model. Authentication must be attached through `request_auth`.
+    pub fn zai_coding_plan(model: impl Into<String>) -> Self {
+        Self {
+            provider: ProviderId::ZaiCodingPlan,
+            credential_source: CredentialSourceId::ZaiCodingPlanApiKey,
+            credential_binding: Some(CredentialBinding::zai_coding_plan(None)),
+            base_url: ZAI_CODING_PLAN_BASE_URL.to_string(),
+            model: model.into(),
+            api_backend: ApiBackend::ChatCompletions,
+            auth_scheme: AuthScheme::Bearer,
             ..Self::default()
         }
     }

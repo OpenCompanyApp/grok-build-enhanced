@@ -12,6 +12,7 @@ pub mod client;
 pub mod config;
 pub mod domain;
 pub mod error;
+mod hosted_kimi;
 mod http;
 pub(crate) mod overflow;
 mod ssrf;

@@ -162,6 +162,10 @@ pub enum AuthProviderArg {
     Xai,
     #[value(name = "openai-codex", alias = "openai_codex")]
     OpenAiCodex,
+    #[value(name = "kimi-code", alias = "kimi_code")]
+    KimiCode,
+    #[value(name = "zai-coding-plan", alias = "zai_coding_plan")]
+    ZaiCodingPlan,
 }
 
 /// ChatGPT Codex standalone-search access mode selected at launch.

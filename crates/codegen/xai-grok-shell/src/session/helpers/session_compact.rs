@@ -398,20 +398,17 @@ where
 }
 
 /// Keep ordinary providers' tool-prefix alignment, but never expose callable
-/// tools to a Codex local-summary request. The Responses Lite transport moves
-/// the supplied definitions into `additional_tools` and, for normal turns,
-/// forces `tool_choice: auto`. That is correct for the agent loop but not for
-/// compaction: a tool-call-only response contains no summary text and used to
-/// look like an intermittent empty response. Current openai/codex uses a
-/// dedicated remote compaction contract; while Grok Build retains its local
-/// full-replace summarizer, a tool-free Codex request is the compatible and
-/// deterministic shape.
+/// tools to subscription-provider local-summary requests. Codex Responses Lite
+/// makes supplied definitions callable, while Kimi's Messages route has no
+/// `tool_choice: none`; either can otherwise return a tool-call-only response
+/// that contains no summary text. A tool-free local compaction request is the
+/// deterministic shape for both isolated provider adapters.
 fn provider_safe_compaction_tools(
     provider: xai_grok_sampling_types::ProviderId,
     tools: Vec<ToolSpec>,
     hosted_tools: Vec<HostedTool>,
 ) -> (Vec<ToolSpec>, Vec<HostedTool>) {
-    if provider.is_openai_codex() {
+    if provider.is_openai_codex() || provider.is_kimi_code() {
         (Vec::new(), Vec::new())
     } else {
         (tools, hosted_tools)
@@ -429,9 +426,9 @@ fn provider_safe_compaction_tools(
 /// For ordinary providers, `tools` / `hosted_tools` are the same effective
 /// definitions the turn loop attaches, retaining prefix-cache alignment while
 /// forbidding tool use with `tool_choice: none` where the backend supports it.
-/// Codex is deliberately tool-free here because its Responses Lite turn
-/// contract makes supplied tools callable; compaction must always return text.
-/// The Messages wire enum has no `none`, so that path relies on the prompt.
+/// Codex and Kimi are deliberately tool-free: Codex Responses Lite makes
+/// supplied tools callable, and Kimi's Messages route has no `none` choice.
+/// Compaction must always return summary text rather than a tool call.
 ///
 /// Errors carry a [`CompactFailure`] classification so the caller can
 /// short-circuit retries on deterministic failures (4xx schema violations,
@@ -540,7 +537,7 @@ pub(crate) async fn generate_session_compact(
                                 timing.record_delta();
                                 content.push_str(delta_content);
                             }
-                            if let Some(fr) = choice.finish_reason {
+                            if let Some(fr) = choice.finish_reason.clone() {
                                 let sr = xai_grok_sampling_types::StopReason::from(fr);
                                 truncated =
                                     matches!(sr, xai_grok_sampling_types::StopReason::Length);
@@ -1017,6 +1014,28 @@ mod classify_tests {
         assert!(codex_tools.is_empty());
         assert!(codex_hosted.is_empty());
     }
+
+    #[test]
+    fn kimi_compaction_drops_tools_that_cannot_be_forbidden_on_messages() {
+        let tool = ToolSpec {
+            name: "read_file".to_string(),
+            description: Some("read a file".to_string()),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let hosted = HostedTool::WebSearch {
+            allowed_domains: None,
+        };
+
+        let (kimi_tools, kimi_hosted) = provider_safe_compaction_tools(
+            xai_grok_sampling_types::ProviderId::KimiCode,
+            vec![tool],
+            vec![hosted],
+        );
+
+        assert!(kimi_tools.is_empty());
+        assert!(kimi_hosted.is_empty());
+    }
+
     #[test]
     fn sampling_api_4xx_is_deterministic_except_408_and_429() {
         let det = |s: StatusCode| {

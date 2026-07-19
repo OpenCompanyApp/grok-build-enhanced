@@ -46,13 +46,21 @@ struct MemoryEmbeddingRoute {
 /// embeddings endpoint. Keep memory available through local FTS while making
 /// it impossible to attach either Codex request auth or the xAI AuthManager to
 /// a guessed `/embeddings` URL on the Codex backend.
+fn persisted_provider_binding(
+    config: &xai_grok_sampler::SamplerConfig,
+) -> Option<xai_grok_sampling_types::CredentialBinding> {
+    (config.provider.is_openai_codex() || config.provider.is_kimi_code())
+        .then(|| config.credential_binding.clone())
+        .flatten()
+}
+
 fn resolve_memory_embedding_route(
     provider: xai_grok_sampling_types::ProviderId,
     config: Option<&crate::config::MemoryEmbeddingConfig>,
     base_url: &str,
     api_key: Option<&str>,
 ) -> MemoryEmbeddingRoute {
-    if provider.is_openai_codex() {
+    if provider.is_openai_codex() || provider.is_kimi_code() {
         return MemoryEmbeddingRoute {
             config: None,
             base_url: String::new(),
@@ -111,6 +119,25 @@ mod cli_catchall_drop_tests {
         let (kept, dropped) = drop_cli_catchall_allows(rules, None);
         assert_eq!(kept.len(), 3);
         assert!(dropped.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod provider_binding_persistence_tests {
+    use super::persisted_provider_binding;
+    use xai_grok_sampling_types::{ApiBackend, CredentialBinding};
+
+    #[test]
+    fn kimi_session_start_persists_the_bound_api_key_record() {
+        let mut config =
+            xai_grok_sampler::SamplerConfig::kimi_code("k3", ApiBackend::ChatCompletions);
+        let mut binding = CredentialBinding::kimi_code(Some("opaque-kimi-record".to_owned()));
+        binding.generation = 4;
+        config.credential_binding = Some(binding.clone());
+
+        let persisted = persisted_provider_binding(&config);
+
+        assert_eq!(persisted, Some(binding));
     }
 }
 
@@ -312,11 +339,7 @@ pub(crate) async fn spawn_session_actor(
             .map_err(|error| xai_grok_agent::AgentBuildError::InvalidConfig(error.to_string()))?;
     let sampling_config = bound_runtime.sampler_config;
     let api_key_provider = bound_runtime.api_key_provider;
-    let persisted_binding = sampling_config
-        .provider
-        .is_openai_codex()
-        .then(|| sampling_config.credential_binding.clone())
-        .flatten();
+    let persisted_binding = persisted_provider_binding(&sampling_config);
     let initial_reasoning_effort = (conversation.is_empty() || startup_hints.is_subagent)
         .then_some(sampling_config.reasoning_effort);
     let _ = persistence.tx.send(PersistenceMsg::CurrentModel {
@@ -347,7 +370,10 @@ pub(crate) async fn spawn_session_actor(
         (handle, dummy_rx, deny_read_globs)
     } else {
         let web_fetch_allowed_domains = web_fetch_config
-            .params_for_codex_subscription(sampling_config.provider.is_openai_codex())
+            .params_for_codex_subscription(
+                sampling_config.provider.is_openai_codex()
+                    || sampling_config.provider.is_kimi_code(),
+            )
             .map_or_else(Vec::new, |params| params.allowed_domains());
         let mut permission_config =
             xai_grok_workspace::permission::resolution::resolve_permission_config_with_fallback(
@@ -497,6 +523,18 @@ pub(crate) async fn spawn_session_actor(
         } else {
             tracing::warn!(
                 provider = "openai_codex",
+                "web_search disabled: provider-scoped request authentication is unavailable"
+            );
+            xai_grok_tools::implementations::WebSearchConfig::Disabled
+        }
+    } else if sampling_config.provider.is_kimi_code() {
+        if api_key_provider.is_some() {
+            xai_grok_tools::implementations::WebSearchConfig::KimiCode {
+                base_url: xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned(),
+            }
+        } else {
+            tracing::warn!(
+                provider = "kimi_code",
                 "web_search disabled: provider-scoped request authentication is unavailable"
             );
             xai_grok_tools::implementations::WebSearchConfig::Disabled
@@ -816,12 +854,17 @@ pub(crate) async fn spawn_session_actor(
     let (user_question_tx, user_question_rx) = tokio::sync::mpsc::unbounded_channel::<
         xai_grok_tools::implementations::grok_build::ask_user_question::types::UserQuestionRequest,
     >();
-    let attribution_callback_for_spec = auth_manager.as_ref().map(|am| {
-        crate::auth::attribution::ShellAttribution::new_tool_callback(
-            am.clone(),
-            Some(session_info.id.0.to_string()),
-        )
-    });
+    let attribution_callback_for_spec =
+        if sampling_config.provider == xai_grok_sampling_types::ProviderId::Xai {
+            auth_manager.as_ref().map(|am| {
+                crate::auth::attribution::ShellAttribution::new_tool_callback(
+                    am.clone(),
+                    Some(session_info.id.0.to_string()),
+                )
+            })
+        } else {
+            None
+        };
     let memory_storage_for_session = memory_config.as_ref().filter(|mc| mc.enabled).map(|mc| {
         if mc.flat_memory_root
             && let Some(ref root) = mc.root_dir_override
@@ -1020,6 +1063,9 @@ pub(crate) async fn spawn_session_actor(
             xai_grok_tools::implementations::WebSearchConfig::Disabled => None,
             xai_grok_tools::implementations::WebSearchConfig::CodexSubscription { .. } => {
                 Some(xai_grok_sampling_types::ProviderId::OpenAiCodex)
+            }
+            xai_grok_tools::implementations::WebSearchConfig::KimiCode { .. } => {
+                Some(xai_grok_sampling_types::ProviderId::KimiCode)
             }
             xai_grok_tools::implementations::WebSearchConfig::Enabled { .. } => {
                 configured_web_search_provider

@@ -1,59 +1,47 @@
-//! Cached HTTP client with atomic invalidation for `web_fetch`.
+//! Per-hop HTTP client builder for `web_fetch`.
 //!
-//! The `reqwest::Client` is held behind an `ArcSwapOption` so it can be
-//! atomically invalidated on transport errors, forcing the next call to rebuild
-//! with a fresh connection pool. This prevents connection pool poisoning
-//! (half-read connections being returned to the pool and corrupting subsequent
-//! requests).
-
-use std::sync::Arc;
-
-use arc_swap::ArcSwapOption;
+//! Every direct request uses a fresh client whose resolver is pinned to the
+//! addresses that passed SSRF validation for that exact hop. A fresh pool also
+//! prevents a connection validated for one hop from being reused after a
+//! redirect or later DNS change.
 
 use super::config::WebFetchParams;
 use super::error::WebFetchError;
+use super::ssrf::ValidatedTarget;
 
-/// Cached, invalidatable HTTP client for web fetching.
-///
-/// - **Normal path:** `get_or_rebuild()` returns the cached client via a
-///   lock-free atomic load.
-/// - **On transport error:** call `invalidate()` to atomically set the
-///   client to `None`. The next `get_or_rebuild()` falls through and
-///   builds a fresh client with a clean connection pool.
+/// Validated parameters used to build a fresh, DNS-pinned client per hop.
 #[derive(Clone, Debug)]
 pub(crate) struct HttpClient {
-    inner: Arc<ArcSwapOption<reqwest::Client>>,
     params: WebFetchParams,
 }
 
 impl HttpClient {
     pub(crate) fn new(params: &WebFetchParams) -> Result<Self, WebFetchError> {
-        let client = Self::build(params)?;
+        // Validate TLS/proxy/client configuration at tool construction time.
+        let _ = Self::build(params)?;
         Ok(Self {
-            inner: Arc::new(ArcSwapOption::from(Some(Arc::new(client)))),
             params: params.clone(),
         })
     }
 
-    /// Get the current client, rebuilding if it was invalidated.
-    pub(crate) fn get_or_rebuild(&self) -> Result<Arc<reqwest::Client>, WebFetchError> {
-        // Fast path: lock-free atomic load.
-        if let Some(client) = self.inner.load_full() {
-            return Ok(client);
-        }
-        // Client was invalidated — rebuild with a fresh connection pool.
-        let fresh = Arc::new(Self::build(&self.params)?);
-        self.inner.store(Some(Arc::clone(&fresh)));
-        Ok(fresh)
-    }
-
-    /// Atomically invalidate the cached client. The next `get_or_rebuild()`
-    /// will construct a fresh one with a clean connection pool.
-    pub(crate) fn invalidate(&self) {
-        self.inner.store(None);
+    /// Build a one-hop client whose DNS map is pinned to the exact address set
+    /// that passed SSRF validation. The original hostname remains in the URL,
+    /// preserving HTTP Host and TLS SNI/certificate verification.
+    pub(crate) fn build_for_target(
+        &self,
+        target: &ValidatedTarget,
+    ) -> Result<reqwest::Client, WebFetchError> {
+        Self::build_with_target(&self.params, Some(target))
     }
 
     fn build(params: &WebFetchParams) -> Result<reqwest::Client, WebFetchError> {
+        Self::build_with_target(params, None)
+    }
+
+    fn build_with_target(
+        params: &WebFetchParams,
+        target: Option<&ValidatedTarget>,
+    ) -> Result<reqwest::Client, WebFetchError> {
         let mut builder = reqwest::Client::builder()
             .timeout(params.timeout_secs())
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -67,11 +55,24 @@ impl HttpClient {
             .brotli(true)
             .deflate(true);
 
-        // Route all traffic through the egress proxy when configured.
+        if let Some(target) = target
+            && target.host.parse::<std::net::IpAddr>().is_err()
+        {
+            builder = builder.resolve_to_addrs(&target.host, &target.addrs);
+        }
+
+        // Route all traffic through the egress proxy when configured. A
+        // configured proxy is an explicit trusted egress boundary; direct
+        // connections use the pinned resolver above.
         if let Some(ref endpoint) = params.proxy_endpoint {
             let proxy =
                 reqwest::Proxy::all(endpoint).map_err(|_| WebFetchError::ProxyConfigError)?;
             builder = builder.proxy(proxy);
+        } else {
+            // DNS pinning protects direct egress only. Do not silently adopt an
+            // ambient process proxy that would perform a second, unvalidated
+            // target lookup; proxies must be configured explicitly above.
+            builder = builder.no_proxy();
         }
 
         builder.build().map_err(|_| WebFetchError::ClientBuildError)
@@ -82,26 +83,39 @@ impl HttpClient {
 mod tests {
     use super::*;
 
-    #[test]
-    fn get_or_rebuild_returns_client() {
-        let client = HttpClient::new(&WebFetchParams::default()).unwrap();
-        let http = client.get_or_rebuild().unwrap();
-        assert!(Arc::strong_count(&http) >= 1);
-    }
+    #[tokio::test]
+    async fn validated_hostname_connects_only_to_the_pinned_address() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-    #[test]
-    fn invalidate_forces_rebuild() {
-        let client = HttpClient::new(&WebFetchParams::default()).unwrap();
-        let first = client.get_or_rebuild().unwrap();
-        let first_ptr = Arc::as_ptr(&first);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+        let target = ValidatedTarget {
+            host: "validated-target.invalid".to_owned(),
+            addrs: vec![address],
+        };
+        let managed = HttpClient::new(&WebFetchParams::default()).unwrap();
+        let client = managed.build_for_target(&target).unwrap();
 
-        client.invalidate();
+        let response = client
+            .get(format!(
+                "http://validated-target.invalid:{}/",
+                address.port()
+            ))
+            .send()
+            .await
+            .unwrap();
 
-        let second = client.get_or_rebuild().unwrap();
-        let second_ptr = Arc::as_ptr(&second);
-
-        // After invalidation, we should get a different client instance.
-        assert_ne!(first_ptr, second_ptr);
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        server.await.unwrap();
     }
 
     #[test]

@@ -1,35 +1,44 @@
-# Kimi Code plan integration research
+# Kimi Code plan provider reference and research
 
-> Status: research and implementation design only. Kimi Code support described
-> here is not yet implemented. The source revisions below are prior research
-> already recorded in [`UPSTREAM_VERSIONS.md`](../../UPSTREAM_VERSIONS.md); this
-> reconciliation did not fetch or re-review them and leaves the upstream ledger
-> unchanged.
+> Status: **implemented, experimental** as of 2026-07-19. The runtime follows
+> the API-key, catalog, inference, usage, hosted-search, and hosted-fetch design
+> below. Initial credential-gated qualification now covers the currently
+> entitled Chat Completions catalog, K3 inference, usage, and model-driven web
+> tools; the broader protocol/session matrix remains before this can be called
+> production-ready. On 2026-07-18 the ignored Kimi Code and OpenCode checkouts
+> were fast-forwarded and their exact latest fetched revisions were recorded in
+> [`UPSTREAM_VERSIONS.md`](../../UPSTREAM_VERSIONS.md) and
+> [`fork/manifest.json`](../../fork/manifest.json). The reviewed revisions
+> remain pinned separately: a latest-fetched revision is a review queue, not an
+> accepted implementation baseline.
 >
-> This repository is an unofficial Grok Build fork. Any future Kimi Code
-> integration must identify itself truthfully and must not imply endorsement by
+> This repository is an unofficial Grok Build fork. Its Kimi Code integration
+> identifies itself truthfully as Grok Build and does not imply endorsement by
 > Moonshot AI.
 
 ## Executive conclusion
 
-Kimi Code could fit this fork as a possible future provider alongside xAI and
-OpenAI Codex. Every identifier and command in this document is proposed design
-notation only: the checked-in provider and CLI enums contain no Kimi variant,
-and no runtime path can select or load Kimi credentials. The recommended future
-integration path is:
+Kimi Code is implemented as a first-class provider alongside xAI and OpenAI
+Codex while retaining Grok Build's existing agent loop, tools, sessions,
+permissions, subagents, ACP, headless mode, and TUI. The implementation uses:
 
-- Proposed provider ID: `kimi_code`.
+- Runtime provider ID: `kimi_code`.
 - Credential source: a Kimi Code subscription API key created in the Kimi Code
-  Console.
-- Protocol: OpenAI-compatible Chat Completions.
-- Base URL: `https://api.kimi.com/coding/v1`.
-- Dynamic model discovery from authenticated `GET /models`.
+  Console, stored under the isolated `kimi::code` scope.
+- Provider identity and protocol are separate: the provider is always
+  `kimi_code`, while each authenticated catalog entry selects either
+  OpenAI-compatible Chat Completions or Anthropic-compatible Messages.
+- Canonical Kimi REST base URL: `https://api.kimi.com/coding/v1`; a Messages
+  adapter must account for Anthropic SDK-style base-path and beta routing
+  semantics without changing provider identity.
+- Dynamic model discovery from authenticated `GET /models`; the catalog's
+  `protocol` field is authoritative and must never be guessed from a model ID.
 - Grok Build retains its existing agent loop, tools, sessions, subagents,
   compaction, permissions, and TUI.
 - Kimi-specific handling is added for preserved reasoning, cache affinity,
   streaming usage, quotas, web services, and model entitlements.
 
-The initial implementation should not ship official-CLI-style OAuth. The
+The implementation deliberately does not ship official-CLI-style OAuth. The
 open-source CLI has a correct device-code flow, but Kimi's public third-party
 documentation directs other coding agents to use a Console API key, and its
 policy explicitly forbids spoofing client identity. Grok Build must identify
@@ -39,14 +48,23 @@ itself honestly. See the [Kimi Code overview][kimi-overview] and
 ## Source snapshot
 
 Moonshot AI's current upstream reference implementation is
-[MoonshotAI/kimi-code][kimi-code-github], a TypeScript monorepo. This research
-reviewed:
+[MoonshotAI/kimi-code][kimi-code-github], a TypeScript monorepo. This research reviewed:
 
 - `MoonshotAI/kimi-code` main snapshot
   `ada523ae6a06726c02ffcc7f35d01ee2216d309c`, whose package version was
   `0.27.0`, dated 2026-07-17. The `0.27.0` release tag points to a different
   commit, so this is intentionally described as a main snapshot rather than
   the release commit.
+- Latest fetched Kimi Code main
+  `4f3c7240c4adc7c748e536bf578e468c1b5bcd7b`, dated 2026-07-18. The three
+  intervening commits change web-command foreground behavior, permission copy,
+  and the VS Code package release; they do not change the provider, catalog,
+  authentication, inference, usage, hosted-search, fetch, or files adapters.
+- OpenCode's reviewed reference remains
+  `1d2a7b4c860f6a29eb90bdda07757b2adf34ab61`; latest fetched is
+  `b8142c7aa8f88222873fb79d636e312e28037c2d`. Its relevant drift confirms that
+  explicit Anthropic-compatible effort metadata, including K3 `max`, should be
+  passed through rather than replaced with a legacy token-budget guess.
 - The legacy Python [MoonshotAI/kimi-cli][kimi-cli-github] at
   `4a550effdfcb29a25a5d325bf935296cc50cd417`, release `1.49.0`, dated
   2026-07-16.
@@ -90,10 +108,14 @@ The shared-membership pricing published at the time of research is:
 | Allegro | $99 | $79/month | 15x |
 | Vivace | $199 | $159/month | 30x |
 
-Kimi says a separate coding-focused membership system is coming, with dedicated
-coding quota and removal of the shared monthly total cap. Prices, plan names,
-and quota multipliers must therefore remain documentation, not compiled
-behavior. See [current pricing][kimi-membership-pricing] and the
+The official pages are currently in a product transition and disagree on the
+quota pool: the Kimi Code membership page still describes a coming dedicated
+coding plan and shared membership limits, while the current Help Center pricing
+page says Kimi Code already has its own separate credit pool. Prices, plan
+names, pool semantics, and quota multipliers must therefore remain dated
+product documentation, not compiled behavior. Runtime truth must come from
+authenticated usage and model responses. See
+[current pricing][kimi-membership-pricing] and the
 [transition notice and quota rules][kimi-membership].
 
 Quota behavior at the time of research includes:
@@ -151,7 +173,7 @@ rather than maintaining a stale list. See the current client implementation in
 | Purpose | Request | Stability |
 | --- | --- | --- |
 | Chat Completions | `POST https://api.kimi.com/coding/v1/chat/completions` | Public Kimi Code contract |
-| Anthropic Messages | `POST https://api.kimi.com/coding/v1/messages` | Public, but unnecessary for initial Grok support |
+| Anthropic Messages | Effective request `POST https://api.kimi.com/coding/v1/messages`; catalog-routed models currently use beta Messages semantics | Public third-party protocol and required whenever `/models` selects `protocol: anthropic` |
 | Model catalog | `GET https://api.kimi.com/coding/v1/models` | Current official client behavior |
 | Subscription usage | `GET https://api.kimi.com/coding/v1/usages` | Current official client behavior; not a stable public API |
 | Hosted web search | `POST https://api.kimi.com/coding/v1/search` | Current official managed-client behavior |
@@ -173,23 +195,26 @@ The current Kimi CLI adds `X-Msh-Platform: kimi_code_cli` and stable device
 headers for its own OAuth requests. Grok must not send `kimi_code_cli`. See the
 current [`identity.ts` implementation][kimi-identity].
 
-## Authentication recommendation
+## Authentication and CLI
 
-A future first-class UX could be:
+The shipped provider UX is:
 
 ```text
-grok login --provider kimi-code
-grok logout --provider kimi-code
+KIMI_API_KEY="<plan-key>" grok login --provider kimi-code
 grok models --provider kimi-code
+grok -m kimi-code/<model-id>
+grok logout --provider kimi-code
 ```
 
-These are proposed commands; the current binary does not accept the
-`kimi-code` provider.
-
-Login should direct the user to the Kimi Code Console, prompt for the
-one-time-visible plan API key, validate it against `/models`, and store it under
-a separate scope such as `kimi::code`. This consumes the user's subscription;
-it is not a pay-as-you-go Open Platform key.
+For safer automation, the login command also accepts the API key on piped
+standard input. It deliberately refuses an interactive echoed prompt. Login
+validates the key against authenticated `GET /models` before storing it under
+the separate `kimi::code` scope in `~/.grok/auth.json`. The model cache is bound
+to a random local credential-record ID, contains no API key, and is removed on
+logout. `KIMI_API_KEY` is also a runtime fallback, but running the login command
+is required to persist the authenticated catalog for normal model selection.
+This consumes the user's subscription; it is not a pay-as-you-go Open Platform
+key.
 
 The official client's OAuth implementation includes:
 
@@ -237,10 +262,47 @@ adapter deliberately emits even an empty reasoning field when preserved
 thinking requires it. See [`kimi.ts`][kimi-provider] and the
 [official error reference][kimi-errors].
 
-One compatibility seam needs live verification: Kimi Code documentation
+The current official client enables preserved thinking by default when
+thinking is on. For the Kimi Chat Completions protocol it sends
+`thinking: {"type":"enabled","effort":...,"keep":"all"}` and replays even an
+explicitly empty `reasoning_content` field on historical assistant tool-call
+messages. Disabling thinking sends `thinking.type = "disabled"` and, according
+to the product documentation, changes the effective backing model.
+
+One compatibility seam needs live verification: Kimi Code documentation also
 describes K3 using `reasoning_effort`, while the current official Kimi adapter
-sends a `thinking` object through Chat Completions. The implementation should be
-model-aware and mock-tested, then confirmed with a real plan key before release.
+sends the `thinking` object. The implementation should follow authenticated
+catalog metadata, be mock-tested for both shapes, and be confirmed with a real
+plan key before release.
+
+### Anthropic Messages compatibility requirements
+
+`GET /models` can select `protocol: anthropic` for an entitled model, including
+when the credential is a hand-configured plan API key. That selection must not
+be silently routed through Chat Completions. The Messages adapter must:
+
+- Keep `ProviderId::KimiCode` while selecting `ApiBackend::Messages`.
+- Use Kimi's `x-api-key` authentication shape, suppress `Authorization`, and
+  add only the required Anthropic protocol version/beta metadata plus the
+  truthful Grok Build `User-Agent`.
+- Reproduce the effective `/coding/v1/messages` beta route used by the official
+  client without treating an SDK base-URL convention as a provider URL.
+- Send Kimi-compatible thinking enable/disable and `output_config.effort`
+  values from the catalog's valid/default efforts.
+- Preserve prior thinking blocks. The current official client represents
+  `keep = "all"` on this route with a beta `context_management`
+  `clear_thinking_20251015` edit.
+- Use `metadata.user_id` as the Messages cache-affinity analogue of
+  `prompt_cache_key`, populated only from a Grok-generated opaque session key.
+- Preserve tool-use/result pairing, thinking signatures, cache-token usage,
+  cancellation, and beta stream events through the existing normalized
+  conversation model.
+
+Both protocols should be designed in the first inference milestone. A
+developer-preview build may ship Chat Completions first only if it fails closed
+with an actionable error for every catalog entry that selects Anthropic. General
+availability should require live qualification of both protocols unless real
+plan-key catalogs prove no entitled selectable entry uses Messages.
 
 ## Caching
 
@@ -285,17 +347,28 @@ managed OAuth, while its hand-configured API-key refresh only updates model
 aliases and leaves services untouched. These endpoints are therefore not yet a
 guaranteed public contract for plan API keys.
 
-Grok should consequently:
+The implementation consequently:
 
-1. Preserve its existing `WebSearch`, `open`, `find`, and `WebFetch` tool UX.
-2. Add a Kimi-hosted backend, but enable it only after live API-key verification.
-3. Retain Grok's local SSRF-safe fetch fallback.
-4. Map `open` and `find` through fetched content rather than inventing
-   unsupported Kimi operations.
-5. Preserve source URLs and citations through the normal Grok event stream.
-6. Surface quota and auth failures distinctly instead of silently looping.
-7. Keep an alternate configurable search backend if hosted Kimi search is
-   unavailable.
+1. Preserves Grok's existing `web_search` and `web_fetch` tool UX.
+2. Enables Kimi-hosted `POST /search` automatically for a Kimi session unless
+   the user or managed policy explicitly disables web access.
+3. Tries Kimi-hosted `POST /fetch` first and retains Grok's local SSRF-safe
+   fetcher as the fallback for transport and ordinary service failures.
+4. Applies Grok's URL validation and SSRF checks before hosted fetch, and maps
+   unsupported navigation commands to explicit errors rather than inventing
+   Kimi operations.
+5. Preserves bounded source URLs and citations through the normal Grok event
+   stream.
+6. Surfaces `401`, membership (`402`/`403`), and quota/concurrency (`429`)
+   failures distinctly; hosted fetch does not silently mask these with local
+   fallback.
+7. Sends only a truthful Grok `User-Agent` and bearer auth. It does not send the
+   official client's `X-Msh-Platform`, device identity, or tool-call identity
+   headers.
+
+Hosted search is intentionally **not default-disabled**: it is part of the
+experimental provider contract and is ready for the credential-gated live test
+specified below.
 
 Kimi Open Platform also has a `$web_search` built-in, but its documentation
 currently warns that this functionality is being updated. Using Grok's explicit
@@ -410,73 +483,101 @@ retry-once behavior.
 This distinction is essential to avoid blind retry loops. See the
 [Kimi Code error reference][kimi-errors].
 
-## Mapping into this fork
+## Mapping implemented in this fork
 
-1. Add `ProviderId::KimiCode` and a Kimi subscription API-key credential source
-   beside the existing definitions in
-   [`provider.rs`](../../crates/codegen/xai-grok-sampling-types/src/provider.rs).
-2. Store credentials under `kimi::code`, entirely separate from
-   `openai::codex` and xAI.
-3. Add `SamplerConfig::kimi_code(model)` using Chat Completions and the
-   canonical Kimi Code URL. The existing request-auth hook in
-   [`config.rs`](../../crates/codegen/xai-grok-sampler/src/config.rs) is the
-   correct seam.
-4. Generalize provider-owned 401 recovery. It is currently explicitly gated to
-   Codex in
-   [`request_task.rs`](../../crates/codegen/xai-grok-sampler/src/actor/request_task.rs).
-   The abstraction should support "provider owns recovery," while Kimi API keys
-   return "not refreshable."
-5. Add a Kimi Chat Completions request shaper and stream parser.
-6. Add an authenticated dynamic Kimi catalog.
-7. Make model switching, spawn, compaction, media, usage, and web configuration
-   capability-driven. Adding a matching set of `is_kimi_code()` branches beside
-   every `is_openai_codex()` branch would become brittle.
-8. Add Kimi-hosted search and fetch backends behind an experimental capability
-   until plan-key access is verified.
-9. Extend `/usage` and API-equivalent pricing with Kimi-specific data.
-10. Add login, logout, and model UX without replacing the user's xAI or Codex
-    credentials.
+1. `ProviderId::KimiCode` and `CredentialSourceId::KimiCodeApiKey` establish a
+   first-class provider/credential boundary.
+2. Provider-aware auth storage keeps `kimi::code` separate from `openai::codex`
+   and every xAI scope, preserves unknown records, writes atomically, and marks
+   wire header values sensitive.
+3. The Kimi sampler constructor and session binder seal the canonical endpoint,
+   select bearer versus `x-api-key` from the catalog protocol, and reject xAI,
+   Codex, official-Kimi-CLI, or user-supplied protected headers.
+4. Static Kimi keys return “not refreshable” after `401`; retries never route
+   through xAI or Codex authentication.
+5. Dedicated Chat Completions and beta Messages policies reuse Grok's normalized
+   conversation and streaming layers. They shape completion limits, thinking,
+   effort, preserved-thinking context management, streaming usage, cache
+   affinity, body limits, and redacted diagnostics.
+6. Authenticated `GET /models` is cached under an opaque local credential ID.
+   The per-model `protocol`, context window, reasoning menu, image capability,
+   and user-visible identity are authoritative; model IDs are namespaced as
+   `kimi-code/<id>`.
+7. Model switching, persistence, compaction, subagents, memory isolation, and
+   web resources preserve provider ownership without replacing Grok's native
+   runtime.
+8. Hosted search is enabled for Kimi sessions. Hosted fetch is preferred with a
+   local safe fallback, except auth/membership/quota failures remain explicit.
+9. `GET /usages` feeds the interactive `/usage` presentation with weekly and
+   rolling-window limits, reset hints, and Extra Usage wallet/cap data. A dated
+   API-equivalent cost estimate remains intentionally unavailable while the
+   published hosted-search prices conflict.
+10. Login, logout, and model discovery coexist with xAI and Codex credentials.
+    Catalog image-input capability is honored; Kimi video upload and standalone
+    generation are not claimed or implemented.
 
-## Delivery sequence
+## Delivery and qualification status
 
-### Phase 1: provider and credentials
+### Phase 1: provider and credentials — implemented
 
 - Provider identity and scoped API-key storage.
 - Login, logout, account switching, and redaction.
 - Exact URL and header tests proving provider isolation.
 
-### Phase 2: models and inference
+### Phase 2: models and inference — implemented, Chat live-qualified
 
 - Authenticated dynamic catalog.
 - Entitlement-aware model picker.
-- Kimi Chat Completions shaping.
-- Reasoning, streaming, parallel tools, stops, cancellation, and usage parsing.
+- Catalog-selected Kimi Chat Completions and beta Messages shaping.
+- Preserved thinking, reasoning effort, streaming, parallel tools, stops,
+  cancellation, and usage parsing across both protocols.
+- The 2026-07-19 entitled catalog exposed three Chat Completions models; K3
+  completed a real headless turn through the provider-isolated ACP auth path.
+  Messages remains contract-tested but awaits an entitled catalog entry for a
+  live protocol qualification.
 
-### Phase 3: caching and sessions
+### Phase 3: caching and sessions — implemented at the transport/session layer
 
 - Stable cache keys across resume.
 - Cached-token accounting.
 - Model and effort cache invalidation.
 - Provider-aware compaction and context limits.
 
-### Phase 4: tools and media
+### Phase 4: tools and media — hosted web and image input implemented
 
-- Image input and optional video upload.
-- Web search and fetch with hosted-first and safe fallback behavior.
-- Citation, permission, cancellation, and tool-call correlation tests.
+- Catalog-gated image input uses Grok's existing multimodal path.
+- Web search and fetch use hosted-first behavior, explicit auth/quota errors,
+  bounded citations, redirect blocking, and the SSRF-safe local fetch fallback.
+- Kimi video upload through `/files` remains unimplemented; the fork does not
+  expose Kimi video or image generation.
 
-### Phase 5: usage and UX
+### Phase 5: usage and UX — plan usage implemented
 
-- Plan `/usage`, resets, and Extra Usage.
-- API-equivalent cost estimates with dated pricing metadata.
-- User guide, experimental-contract disclaimer, and troubleshooting guidance.
+- Interactive `/usage` shows plan windows, reset hints, and Extra Usage wallet
+  and monthly-cap data; `/usage manage` opens the Kimi Code Console.
+- API-equivalent costs remain labeled unavailable instead of choosing between
+  conflicting hosted-search prices or conflating plan usage with API spend.
+- The user guide documents the experimental contract and troubleshooting
+  boundaries.
 
-### Phase 6: live qualification
+### Phase 6: live qualification — initial matrix completed 2026-07-19
 
-- Headless live testing with a real Kimi Code plan key.
-- Long tool loops, session resume, compaction, cache hits, rate limits, model
-  switching, web access, and media input.
-- Device OAuth only after Moonshot approval.
+Completed without logging credentials, authenticated bodies, prompts, account
+identifiers, or local credential-record identifiers:
+
+- Piped-stdin login and authenticated discovery of three entitled models.
+- K3 headless inference through ACP with no xAI-auth fallthrough.
+- Successful `/usages`, hosted `/search`, and hosted `/fetch` response-shape
+  checks.
+- One real model-driven `web_search` call and one `web_fetch` call, each with a
+  nonempty, non-error tool result persisted through the ordinary agent loop.
+- Capture scans found no credential or identity material in process output or
+  persisted tool events.
+
+Still pending are long tool loops, resume, compaction, measurable cache hits,
+rate-limit/quota qualification, same-provider model switching, media input, and
+a live Messages route if an entitled catalog exposes one. Device OAuth remains
+out of scope unless Moonshot approves third-party client use.
 
 ## Acceptance gates
 
@@ -486,8 +587,12 @@ Tests should cover:
 - No xAI or Codex-specific headers on Kimi requests.
 - Simultaneous xAI, Codex, and Kimi credentials.
 - Account switching without replacing another provider's login.
-- Dynamic K3, Standard, and HighSpeed discovery and entitlements.
-- Reasoning preservation across tool calls.
+- Dynamic K3, Standard, and HighSpeed discovery, entitlements, and per-model
+  Chat Completions versus Messages routing.
+- Fail-closed behavior for unknown catalog protocols and unqualified beta
+  Messages routes.
+- Reasoning preservation across tool calls, including empty preserved-thinking
+  fields and Messages context-management replay.
 - Interleaved parallel tool-call streams.
 - Correct stop, truncation, cancellation, and retry exhaustion behavior.
 - Invalid-key versus entitlement `401` classification.
@@ -497,13 +602,16 @@ Tests should cover:
 - Image input, format conversion, limits, and model capability gating.
 - Hosted web search, citations, fetch fallback, and SSRF protection.
 - Weekly, five-hour, reset, and Extra Usage payload drift.
-- API-equivalent cost calculations and stale-pricing warnings.
+- Clear unavailable labeling for API-equivalent cost until the hosted-tool
+  pricing conflict is resolved and a dated estimator is implemented.
 - Complete credential, token, identity, and request-body redaction.
 
-The remaining credential-gated unknowns are whether `/usages`, `/search`,
-`/fetch`, and video uploads accept a third-party Kimi Code plan API key exactly
-as they accept managed OAuth. They must be live-tested without printing or
-recording the credential before those features are considered production-ready.
+The 2026-07-19 live qualification confirmed that `/usages`, `/search`, and
+`/fetch` accept the stored third-party Kimi Code plan API key. Remaining
+credential-gated unknowns include video upload, an entitled Messages route, and
+the longer-running session, cache, and quota cases listed above. Any future
+qualification must keep the same no-credential, no-identity, and no-authenticated-
+payload logging boundary.
 
 [kimi-overview]: https://www.kimi.com/code/docs/en/
 [kimi-guidelines]: https://www.kimi.com/code/docs/en/kimi-code/community-guidelines.html

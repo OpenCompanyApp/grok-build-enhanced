@@ -1,6 +1,6 @@
 # Authentication
 
-Grok supports several authentication methods, including interactive browser login, ChatGPT Codex subscription login, enterprise single sign-on (SSO), and headless CI/CD runners. xAI and ChatGPT Codex credentials are stored in separate scopes and can remain signed in at the same time.
+Grok supports several authentication methods, including interactive browser login, ChatGPT Codex subscription login, experimental Kimi Code plan API keys, enterprise single sign-on (SSO), and headless CI/CD runners. xAI, ChatGPT Codex, and Kimi Code credentials are stored in separate scopes and can remain signed in at the same time.
 
 ---
 
@@ -157,6 +157,75 @@ external-data boundary and review their destinations accordingly.
 > behavior of the current public `openai/codex` client and is not a stable,
 > general-purpose OpenAI API contract. Availability depends on the authenticated
 > account and can change independently of this fork.
+
+---
+
+## Kimi Code Plan (Experimental)
+
+Kimi Code uses a plan API key from the Kimi Code Console. It is a distinct
+provider from Kimi Open Platform and from xAI, Codex, and generic custom-model
+credentials.
+
+Validate and store a key without putting it in a command argument:
+
+```bash
+# Prefer a credential manager so the key does not enter shell history:
+secure-key-command | grok login --provider kimi-code
+
+# Or export it from a protected environment source, then clear it afterward:
+export KIMI_API_KEY="$(secure-key-command)"
+grok login --provider kimi-code
+unset KIMI_API_KEY
+```
+
+The command calls authenticated `GET /models` before writing anything. It stores
+the key under `kimi::code` in `~/.grok/auth.json` and caches only the entitled
+model metadata under an opaque local credential-record ID. It deliberately does
+not reuse the official Kimi CLI OAuth identity or import official-client
+credentials.
+
+List/refetch the catalog and select a namespaced model:
+
+```bash
+grok models --provider kimi-code
+grok -m kimi-code/<model-id>
+```
+
+The authenticated catalog controls each model's context window, reasoning menu,
+image-input capability, and whether inference uses Chat Completions or beta
+Messages. Grok keeps the Kimi provider identity in either case. `KIMI_API_KEY`
+is also accepted as a runtime fallback, but normal catalog-based selection
+requires running login so the entitled model list can be persisted.
+
+Kimi sessions automatically enable the provider-hosted `web_search` backend
+(`POST /search`) unless `--disable-web-search` or managed/local policy disables
+web access. `web_fetch` tries Kimi's hosted extractor first, applies Grok's URL
+and SSRF checks, and falls back to Grok's local protected fetcher for ordinary
+service/transport failures. Authentication, membership, and quota errors remain
+visible instead of being hidden by fallback. The clients send a truthful Grok
+`User-Agent`; they do not send official-Kimi-CLI platform or device headers.
+
+Kimi catalog image flags apply to model input only. This integration does not
+claim Kimi plan image generation, video generation, or official third-party
+OAuth support.
+
+Use `/usage` to fetch the current Kimi plan windows, reset hints, and available
+Extra Usage wallet/cap data. `/usage manage` opens the Kimi Code Console. The
+summary deliberately does not guess an API-equivalent cost or merge plan quota
+with hosted-tool fees.
+
+Disconnect Kimi without changing xAI or Codex credentials:
+
+```bash
+grok logout --provider kimi-code
+```
+
+> [!WARNING]
+> Kimi Code support is experimental. On 2026-07-19, an entitled third-party plan
+> key live-qualified the current Chat Completions catalog, K3 inference,
+> `/usages`, hosted `/search`, and hosted `/fetch`. Messages and longer-running
+> session, cache, quota, and media cases still require qualification when the
+> relevant entitlement or test condition is available.
 
 ---
 

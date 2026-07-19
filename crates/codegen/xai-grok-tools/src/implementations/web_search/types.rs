@@ -227,6 +227,10 @@ pub enum WebSearchConfig {
         #[serde(default)]
         settings: CodexWebSearchSettings,
     },
+    /// Kimi Code hosted search through the provider-owned `/search` service.
+    /// Authentication is resolved per request from the Kimi-scoped provider;
+    /// no API key is serialized into this configuration.
+    KimiCode { base_url: String },
 }
 
 impl std::fmt::Debug for WebSearchConfig {
@@ -253,6 +257,10 @@ impl WebSearchConfig {
 
     pub fn is_codex_subscription(&self) -> bool {
         matches!(self, Self::CodexSubscription { .. })
+    }
+
+    pub fn is_kimi_code(&self) -> bool {
+        matches!(self, Self::KimiCode { .. })
     }
 
     /// Return a copy safe for returning to clients.
@@ -290,6 +298,9 @@ impl WebSearchConfig {
                 model: model.clone(),
                 session_id: "***REDACTED***".to_owned(),
                 settings: settings.clone(),
+            },
+            Self::KimiCode { base_url } => Self::KimiCode {
+                base_url: sanitize_redacted_base_url(base_url),
             },
         }
     }

@@ -5,9 +5,14 @@
 use super::*;
 
 const OPENAI_CODEX_MODEL_PREFIX: &str = "openai-codex/";
+const KIMI_CODE_MODEL_PREFIX: &str = "kimi-code/";
 
 fn is_strict_openai_codex_model_id(model_id: &acp::ModelId) -> bool {
     model_id.0.starts_with(OPENAI_CODEX_MODEL_PREFIX)
+}
+
+fn is_strict_kimi_code_model_id(model_id: &acp::ModelId) -> bool {
+    model_id.0.starts_with(KIMI_CODE_MODEL_PREFIX)
 }
 
 async fn refresh_openai_codex_catalog_for_selection(
@@ -27,6 +32,23 @@ async fn resolve_explicit_model_for_selection(
     agent: &MvpAgent,
     requested: &acp::ModelId,
 ) -> Result<ModelEntry, acp::Error> {
+    if is_strict_kimi_code_model_id(requested) {
+        agent
+            .ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::KimiCode)
+            .await?;
+        let model = agent.resolve_model_id(requested).map_err(|_| {
+            acp::Error::invalid_params().data(format!(
+                "Kimi Code model \"{}\" is not available in the authenticated catalog. Run `grok models --provider kimi-code` to refresh discovery.",
+                requested.0
+            ))
+        })?;
+        if model.info().provider != xai_grok_sampling_types::ProviderId::KimiCode {
+            return Err(acp::Error::invalid_params().data(
+                "The requested kimi-code model did not resolve to the Kimi Code provider.",
+            ));
+        }
+        return Ok(model);
+    }
     if !is_strict_openai_codex_model_id(requested) {
         return agent.resolve_model_id(requested);
     }
@@ -75,6 +97,41 @@ async fn resolve_persisted_openai_codex_model_for_load(
 
     Err(acp::Error::invalid_params().data(format!(
         "ChatGPT Codex model \"{}\" is unavailable and no entitled Codex fallback model is available. Re-authenticate with `grok login --provider openai-codex` or retry model discovery.",
+        persisted.0
+    )))
+}
+
+async fn resolve_persisted_kimi_code_model_for_load(
+    agent: &MvpAgent,
+    persisted: &acp::ModelId,
+) -> Result<acp::ModelId, acp::Error> {
+    debug_assert!(is_strict_kimi_code_model_id(persisted));
+    agent
+        .ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::KimiCode)
+        .await?;
+
+    let models = agent.models_manager.models();
+    let available = agent.models_manager.available();
+    let provider = xai_grok_sampling_types::ProviderId::KimiCode;
+    if let Some(exact) = crate::agent::models::selectable_catalog_key_for_persisted_provider(
+        &models,
+        &available,
+        persisted,
+        agent.models_manager.is_session_auth(),
+        provider,
+    ) {
+        return Ok(exact);
+    }
+    if let Some(fallback) = crate::agent::models::first_available_catalog_key_for_provider(
+        &models,
+        &available,
+        provider,
+    ) {
+        return Ok(fallback);
+    }
+
+    Err(acp::Error::invalid_params().data(format!(
+        "Kimi Code model \"{}\" is unavailable and no entitled Kimi fallback model is cached. Run `grok models --provider kimi-code` to refresh discovery.",
         persisted.0
     )))
 }
@@ -388,27 +445,26 @@ impl acp::Agent for MvpAgent {
         });
         // The shared method drives xAI proactive refresh and 401 recovery.
         // Preserve it independently from the provider presented as the ACP
-        // default below: selecting Codex must not demote a live xAI session.
+        // default below: selecting a provider-scoped backend must not demote a
+        // live xAI session.
         let xai_default_auth_method_id = built.default_auth_method_id.clone();
-        let codex_selected = self.sampling_config.borrow().provider
+        let selected_provider = self.sampling_config.borrow().provider;
+        let codex_selected = selected_provider
             == xai_grok_sampling_types::ProviderId::OpenAiCodex;
-        let codex_configured = crate::auth::codex::CodexAuthManager::new(
-            &crate::util::grok_home::grok_home(),
-        )
-        .ok()
-        .and_then(|manager| manager.current())
-        .is_some();
-        if codex_selected {
-            built.methods.insert(0, auth_method::openai_codex_auth_method());
-            built.default_auth_method_id = codex_configured.then(|| {
-                acp::AuthMethodId::new(auth_method::OPENAI_CODEX_METHOD_ID)
-            });
-        } else {
-            built.methods.push(auth_method::openai_codex_auth_method());
-            // Codex remains discoverable, but it is never the default for an
-            // xAI-selected session. A successful ChatGPT login cannot satisfy
-            // an xAI model's independent credential requirement.
-        }
+        let kimi_selected = selected_provider
+            == xai_grok_sampling_types::ProviderId::KimiCode;
+        let grok_home = crate::util::grok_home::grok_home();
+        let codex_configured = crate::auth::codex::CodexAuthManager::new(&grok_home)
+            .ok()
+            .and_then(|manager| manager.current())
+            .is_some();
+        let kimi_configured =
+            crate::auth::kimi_code::current_credentials_and_binding(&grok_home).is_ok();
+        auth_method::add_provider_scoped_auth_methods(
+            &mut built,
+            selected_provider,
+            codex_configured,
+        );
         let auth_methods = built.methods;
         xai_grok_telemetry::unified_log::info(
             "auth: initialize() built auth_methods for ACP response",
@@ -420,7 +476,8 @@ impl acp::Agent for MvpAgent {
                     "(unset)".into()), "has_external_api_key" : has_external_api_key,
                     "disable_api_key_auth" : disable_api_key_auth, "has_cached_token" :
                     has_cached_token, "has_enterprise_oidc" : has_enterprise_oidc,
-                    "init_has_current" : init_has_current, "init_is_expired" :
+                    "codex_configured" : codex_configured, "kimi_configured" :
+                    kimi_configured, "init_has_current" : init_has_current, "init_is_expired" :
                     init_is_expired, "auth_mode" : self.auth_manager.current().map(| a |
                     format!("{:?}", a.auth_mode)), "methods" : auth_methods.iter().map(|
                     m | m.id().0.as_ref()).collect::< Vec < _ >> (),
@@ -430,7 +487,7 @@ impl acp::Agent for MvpAgent {
             ),
         );
         debug_assert!(
-            codex_selected || ! has_external_api_key || matches!(auth_methods.first().map(| m |
+            codex_selected || kimi_selected || ! has_external_api_key || matches!(auth_methods.first().map(| m |
             auth_method::AuthMethodKind::from_id(m.id())),
             Some(auth_method::AuthMethodKind::XaiApiKey)),
             "BYOK invariant violated: xai.api_key MUST be auth_methods.first() \
@@ -539,7 +596,7 @@ impl acp::Agent for MvpAgent {
         );
         if let Some(preferred) = self.cfg.borrow().grok_com_config.preferred_method {
             let kind = auth_method::AuthMethodKind::from_id(&arguments.method_id);
-            let allowed = kind.is_openai_codex() || match preferred {
+            let allowed = kind.is_provider_scoped() || match preferred {
                 crate::auth::PreferredAuthMethod::ApiKey => kind.is_api_key(),
                 crate::auth::PreferredAuthMethod::Oidc => kind.is_session_based(),
             };
@@ -617,6 +674,42 @@ impl acp::Agent for MvpAgent {
                     );
                 }
                 emit_login_span(true, auth_method::OPENAI_CODEX_METHOD_ID, None, None);
+                Ok(Default::default())
+            }
+            auth_method::KIMI_CODE_METHOD_ID => {
+                let grok_home = crate::util::grok_home::grok_home();
+                let (credentials, binding) =
+                    crate::auth::kimi_code::current_credentials_and_binding(&grok_home)
+                        .map_err(|error| {
+                            emit_login_span(
+                                false,
+                                auth_method::KIMI_CODE_METHOD_ID,
+                                None,
+                                Some("credentials_unavailable"),
+                            );
+                            acp::Error::auth_required().data(format!(
+                                "Kimi Code authentication failed: {error}. Run `grok login --provider kimi-code` to configure an API key."
+                            ))
+                        })?;
+                if self.sampling_config.borrow().provider
+                    == xai_grok_sampling_types::ProviderId::KimiCode
+                {
+                    let store = crate::auth::kimi_code::KimiCodeCredentialStore::new(
+                        &grok_home,
+                    );
+                    let mut sampling_config = self.sampling_config.borrow_mut();
+                    let backend = sampling_config.api_backend.clone();
+                    sampling_config.credential_binding = Some(binding.clone());
+                    sampling_config.request_auth = Some(
+                        crate::auth::kimi_code::shared_sampler_request_auth(
+                            store,
+                            credentials,
+                            backend,
+                            binding,
+                        ),
+                    );
+                }
+                emit_login_span(true, auth_method::KIMI_CODE_METHOD_ID, None, None);
                 Ok(Default::default())
             }
             auth_method::XAI_API_KEY_METHOD_ID => {
@@ -1057,6 +1150,7 @@ impl acp::Agent for MvpAgent {
         let resolved_custom_model = if let Some(custom_model) = build_custom_model_id {
             let requested = acp::ModelId::new(custom_model);
             let strict_codex = is_strict_openai_codex_model_id(&requested);
+            let strict_kimi = is_strict_kimi_code_model_id(&requested);
             match resolve_explicit_model_for_selection(self, &requested).await {
                 Ok(model) if model.info.user_selectable => {
                     model_agent_type = Some(model.info().agent_type.clone());
@@ -1067,10 +1161,11 @@ impl acp::Agent for MvpAgent {
                     );
                     Some(custom_model)
                 }
-                Ok(_) if strict_codex => {
+                Ok(_) if strict_codex || strict_kimi => {
+                    let provider = if strict_kimi { "Kimi Code" } else { "ChatGPT Codex" };
                     return Err(
                         acp::Error::invalid_params()
-                            .data("This ChatGPT Codex model isn't allowed by your allowed_models setting."),
+                            .data(format!("This {provider} model isn't allowed by your allowed_models setting.")),
                     );
                 }
                 Ok(_) => {
@@ -1081,7 +1176,7 @@ impl acp::Agent for MvpAgent {
                     disallowed_custom = Some(custom_model.to_string());
                     None
                 }
-                Err(error) if strict_codex => return Err(error),
+                Err(error) if strict_codex || strict_kimi => return Err(error),
                 Err(_) => {
                     tracing::warn!(
                         requested_model = custom_model, fallback_model = % self
@@ -1524,35 +1619,47 @@ impl acp::Agent for MvpAgent {
         } = persistence_info;
         // A provider-qualified persisted model is an authentication boundary,
         // not merely a display id. Resolve it before replay/spawn so a missing
-        // Codex catalog can never cause this session to be constructed with the
+        // subscription catalog can never construct this session with the
         // process-wide xAI default sampler and tools.
-        let persisted_codex_model = if is_strict_openai_codex_model_id(
+        let persisted_provider_model = if is_strict_openai_codex_model_id(
             &summary.current_model_id,
         ) {
-            Some(
+            Some((
+                xai_grok_sampling_types::ProviderId::OpenAiCodex,
                 resolve_persisted_openai_codex_model_for_load(
                     self,
                     &summary.current_model_id,
                 )
                 .await?,
-            )
+            ))
+        } else if is_strict_kimi_code_model_id(&summary.current_model_id) {
+            Some((
+                xai_grok_sampling_types::ProviderId::KimiCode,
+                resolve_persisted_kimi_code_model_for_load(
+                    self,
+                    &summary.current_model_id,
+                )
+                .await?,
+            ))
         } else {
             None
         };
         // `load_light` must start before the summary is available. Replace its
         // provisional title route now, while no session actor can have emitted
         // a content chunk yet. Provider and model are resolved together, and a
-        // Codex fallback is pinned to the restored credential record.
-        let restored_summary_model_id = persisted_codex_model
+        // provider-local fallback is pinned to the restored credential record.
+        let restored_summary_model_id = persisted_provider_model
             .as_ref()
+            .map(|(_, model)| model)
             .unwrap_or(&summary.current_model_id);
         let mut restored_sampling = self.resolve_sampling_config_for_model(
             restored_summary_model_id,
             origin_client.clone(),
         );
-        restored_sampling.credential_binding = restored_sampling
-            .provider
-            .is_openai_codex()
+        restored_sampling.credential_binding = (
+            restored_sampling.provider.is_openai_codex()
+                || restored_sampling.provider.is_kimi_code()
+        )
             .then(|| summary.credential_binding.clone())
             .flatten();
         let (summary_client, summary_model) =
@@ -1787,8 +1894,9 @@ impl acp::Agent for MvpAgent {
                 "session.spawn_and_register_session"
             );
             spawn_timer.with_field("session_id", session_id.0.as_ref());
-            let spawn_model_id = persisted_codex_model
-                .clone()
+            let spawn_model_id = persisted_provider_model
+                .as_ref()
+                .map(|(_, model)| model.clone())
                 .unwrap_or_else(|| summary.current_model_id.clone());
             let persisted_agent_name: Option<String> = summary
                 .agent_name
@@ -1960,26 +2068,31 @@ impl acp::Agent for MvpAgent {
             &persisted_model,
             self.models_manager.is_session_auth(),
         );
-        let model_id = if let Some(codex_model) = persisted_codex_model {
-            if codex_model != persisted_model {
+        let model_id = if let Some((provider, provider_model)) = persisted_provider_model {
+            if provider_model != persisted_model {
+                let (provider_name, fallback_name) = if provider.is_kimi_code() {
+                    ("Kimi Code", "Kimi")
+                } else {
+                    ("ChatGPT Codex", "Codex")
+                };
                 tracing::warn!(
                     session_id = % session_id.0, previous = % persisted_model.0, new = %
-                    codex_model.0,
-                    "Persisted ChatGPT Codex model no longer available; switching within the Codex provider"
+                    provider_model.0, provider = %provider,
+                    "Persisted provider model no longer available; switching within the same provider"
                 );
                 let reason = format!(
-                    "ChatGPT Codex model \"{}\" is no longer available for your account; this session is using another entitled Codex model.",
+                    "{provider_name} model \"{}\" is no longer available for your account; this session is using another entitled {fallback_name} model.",
                     persisted_model.0,
                 );
                 self.send_model_auto_switched(
                         &session_id,
                         &persisted_model,
-                        &codex_model,
+                        &provider_model,
                         &reason,
                     )
                     .await;
             }
-            codex_model
+            provider_model
         } else if let Some(catalog_key) = selectable_catalog_key {
             if catalog_key != persisted_model {
                 tracing::info!(

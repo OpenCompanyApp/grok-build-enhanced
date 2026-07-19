@@ -32,6 +32,41 @@ type SubagentProviderTools = (
     Option<xai_grok_tools::types::SharedApiKeyProvider>,
 );
 
+fn local_resume_credential_binding(
+    source: &ResumeSourceData,
+    provider: xai_grok_sampling_types::ProviderId,
+) -> Result<Option<xai_grok_sampling_types::CredentialBinding>, &'static str> {
+    if !provider.is_openai_codex() && !provider.is_kimi_code() {
+        return Ok(None);
+    }
+    let summary = crate::session::persistence::find_summary_by_session_id(
+        &source.child_session_id,
+    )
+    .ok_or("source child session summary is unavailable")?;
+    validate_local_resume_credential_binding(
+        source,
+        provider,
+        summary.info.id.0.as_ref(),
+        summary.credential_binding,
+    )
+}
+
+pub(super) fn validate_local_resume_credential_binding(
+    source: &ResumeSourceData,
+    provider: xai_grok_sampling_types::ProviderId,
+    summary_session_id: &str,
+    binding: Option<xai_grok_sampling_types::CredentialBinding>,
+) -> Result<Option<xai_grok_sampling_types::CredentialBinding>, &'static str> {
+    if summary_session_id != source.child_session_id {
+        return Err("source child session identity does not match its local summary");
+    }
+    let binding = binding.ok_or("provider-bound source child has no local credential binding")?;
+    if binding.provider != provider {
+        return Err("source child credential binding belongs to another provider");
+    }
+    Ok(Some(binding))
+}
+
 /// Resolve provider-owned media/auth resources from the child's effective
 /// model, not the parent model it happened to inherit its spawn context from.
 /// Cross-provider overrides are uncommon but security-sensitive: a Codex
@@ -144,6 +179,13 @@ fn resolve_effective_provider_tools(
             };
             (image, video, bound_api_key_provider)
         }
+        ProviderId::KimiCode => (
+            // Catalog image/video flags describe inference input modalities,
+            // not standalone generation endpoints. Keep hosted web auth only.
+            ImageGenConfig::Disabled,
+            VideoGenConfig::Disabled,
+            bound_api_key_provider,
+        ),
         // A custom model may have arbitrary provider semantics. Fail closed
         // for provider-owned media rather than guessing from its URL/key.
         ProviderId::Custom => (ImageGenConfig::Disabled, VideoGenConfig::Disabled, None),
@@ -632,11 +674,34 @@ pub(crate) async fn handle_subagent_request(
                     .model_default_reasoning_effort(effective_model_id.0.as_ref())
             });
     }
-    crate::session::provider::pin_codex_candidate_to_active_record(
-        &mut effective_sampling_config,
-        ctx.sampling_config.provider,
-        ctx.sampling_config.credential_binding.as_ref(),
-    );
+    let source_binding = match resume_source.as_ref() {
+        Some(source) => match local_resume_credential_binding(
+            source,
+            effective_sampling_config.provider,
+        ) {
+            Ok(binding) => binding,
+            Err(reason) => {
+                send_failure(
+                    request,
+                    &format!(
+                        "Cannot resume from subagent '{}': {reason}.",
+                        source.subagent_id
+                    ),
+                );
+                return;
+            }
+        },
+        None => None,
+    };
+    if let Some(binding) = source_binding {
+        effective_sampling_config.credential_binding = Some(binding);
+    } else {
+        crate::session::provider::pin_provider_candidate_to_active_record(
+            &mut effective_sampling_config,
+            ctx.sampling_config.provider,
+            ctx.sampling_config.credential_binding.as_ref(),
+        );
+    }
     let generic_api_key_provider =
         (effective_sampling_config.provider == xai_grok_sampling_types::ProviderId::Xai)
             .then(|| {

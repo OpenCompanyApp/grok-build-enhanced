@@ -2589,6 +2589,30 @@ async fn prepare_image_gen_config_uses_explicit_session_sampling_config() {
         xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig::Disabled
     ));
 }
+
+/// Kimi supports catalog-qualified image input, not Grok's xAI-owned media
+/// generation tools. Selecting Kimi must leave both generation clients off.
+#[tokio::test(flavor = "current_thread")]
+async fn kimi_sampling_disables_unsupported_media_tools() {
+    use xai_grok_sampling_types::ProviderId;
+    use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
+    use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
+
+    let agent = build_minimal_agent_for_tests();
+    let mut sampling = agent.sampling_config.borrow().clone();
+    sampling.provider = ProviderId::KimiCode;
+    sampling.api_key = None;
+
+    assert!(matches!(
+        agent.prepare_image_gen_config_for_sampling_config(&sampling),
+        ImageGenConfig::Disabled
+    ));
+    assert!(matches!(
+        agent.prepare_video_gen_config_for_sampling_config(&sampling),
+        VideoGenConfig::Disabled
+    ));
+}
+
 #[tokio::test]
 async fn data_collection_enabled_for_normal_user() {
     let agent = build_agent_with_auth(crate::auth::GrokAuth::test_default());

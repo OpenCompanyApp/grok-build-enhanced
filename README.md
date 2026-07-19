@@ -9,10 +9,10 @@ carefully scoped provider, theme, tool, and user-experience enhancements.
 > [!IMPORTANT]
 > **Unofficial and independent.** Grok Build Enhanced is an unofficial
 > daily-driver fork maintained independently by OpenCompanyApp. It is not
-> affiliated with, endorsed by, or supported by xAI, SpaceXAI, OpenAI, or their
-> affiliates. ChatGPT Codex subscription support follows current public
-> open-source Codex client behavior and uses an experimental backend contract
-> that may change without notice.
+> affiliated with, endorsed by, or supported by xAI, SpaceXAI, OpenAI,
+> Moonshot AI, or their affiliates. ChatGPT Codex subscription and Kimi Code
+> support follow current public client/documented behavior and use experimental
+> backend contracts that may change without notice.
 
 The executable remains `grok`. Existing `~/.grok` configuration, sessions,
 model IDs, environment variables, Agent Client Protocol (ACP) identity, and the
@@ -25,7 +25,7 @@ responsive Grok braille symbol remain compatible.
 | ChatGPT Codex subscription login, catalog, usage, fast mode, web/image tools | Implemented, experimental, and isolated from xAI credentials |
 | Custom OpenAI-compatible endpoint path | Retained with explicit provider identity; custom entries use only their own configured credentials |
 | Bundled Warp themes and theme UX | Implemented |
-| Kimi Code managed provider | Researched/planned only; no Kimi runtime provider or login is shipped |
+| Kimi Code plan provider | Implemented and experimental: isolated API-key login, dynamic models, Chat/Messages inference, plan usage, and hosted web tools; the current Chat/K3/usage/web matrix was live-qualified on 2026-07-19 |
 | Z.AI GLM Coding Plan provider | Researched/planned only; no GLM runtime provider or login is shipped |
 | Enhanced release artifacts | Fork-owned stable `v0.2.3` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
 | Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
@@ -269,27 +269,99 @@ catalog metadata that is currently descriptive rather than enforced, and
 feature-gated image generation/editing. Availability remains dependent on
 account metadata and server-side feature gates.
 
+Inside a Codex session, inspect subscription limits or control Fast mode with:
+
+```text
+/usage
+/usage manage
+/fast status
+/fast on
+/fast off
+```
+
 Read the implemented
 [OpenAI Codex subscription provider reference](docs/providers/openai-codex-subscription-provider-reference.md)
 and the
 [authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)
 for experimental-contract and code-mode limitations.
 
+### Kimi Code subscription provider (experimental)
+
+Kimi Code uses an API key from an entitled Kimi Code plan. Create or copy the
+plan key in the [Kimi Code Console](https://www.kimi.com/code/console). This is
+not a Kimi Open Platform pay-per-token key; the two products use different
+credentials and endpoints.
+
+1. Validate and store the plan key without placing it in a command argument:
+
+   ```sh
+   # Recommended: have your credential manager emit the key on standard input.
+   secure-key-command | grok login --provider kimi-code
+   ```
+
+   Alternatively, load it from a protected environment source and clear it
+   immediately after login:
+
+   ```sh
+   export KIMI_API_KEY="$(secure-key-command)"
+   grok login --provider kimi-code
+   unset KIMI_API_KEY
+   ```
+
+   Avoid typing a literal key into shell history. Login validates the key by
+   fetching its entitled model catalog before storing it in the isolated Kimi
+   credential scope.
+
+2. List or refresh the models available to that plan:
+
+   ```sh
+   grok models --provider kimi-code
+   ```
+
+3. Start Grok with one of the returned namespaced model IDs:
+
+   ```sh
+   grok -m kimi-code/<model-id>
+   ```
+
+Inside a Kimi session, `/usage` shows the current plan windows and Extra Usage
+wallet/cap data, while `/usage manage` opens the Kimi Code Console. Kimi's
+provider-hosted web search and fetch integrations are enabled for supported
+sessions unless Grok is launched with `--disable-web-search` or policy disables
+web access.
+
+Disconnect only Kimi Code, without changing xAI or ChatGPT Codex credentials,
+with:
+
+```sh
+grok logout --provider kimi-code
+```
+
+The authenticated catalog remains authoritative for model IDs, protocols,
+context windows, reasoning options, and image-input support. This integration
+does not claim Kimi image/video generation or official Kimi CLI OAuth support.
+See the
+[Kimi Code provider reference](docs/providers/kimi-code-integration-research.md)
+and the
+[authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)
+for current qualification boundaries and credential-handling details.
+
 ### Themes, tools, and UX
 
-Enhanced includes the packaged Warp theme corpus, provider-scoped Codex web and
-image integrations, and focused terminal UX additions while preserving Grok
-Build's existing tool names, permission model, sessions, and responsive braille
-symbol. Third-party attribution is recorded in
+Enhanced includes the packaged Warp theme corpus, provider-scoped Codex and
+Kimi web integrations, Codex image integration, and focused terminal UX
+additions while preserving Grok Build's existing tool names, permission model,
+sessions, and responsive braille symbol. Third-party attribution is recorded in
 [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) and crate-local notices.
 
-### Candidate providers: research, not implementation
+### Additional provider status
 
-Kimi and GLM documents are integration research only. They do not register
-provider IDs, add login commands, store credentials, or claim working managed
-service support:
+Kimi Code is now an experimental runtime provider; Z.AI GLM remains research
+only. An entitled plan key live-qualified Kimi's current Chat/K3 inference,
+usage, hosted-search, and hosted-fetch matrix on 2026-07-19. Broader Messages,
+session, cache, quota, and media qualification remains before production claims:
 
-- [Kimi Code integration research — researched/planned, not implemented](docs/providers/kimi-code-integration-research.md)
+- [Kimi Code provider reference and research — implemented, experimental](docs/providers/kimi-code-integration-research.md)
 - [Z.AI GLM Coding Plan integration research — researched/planned, not implemented](docs/providers/zai-glm-coding-plan-integration-research.md)
 - [Provider documentation index](docs/providers/README.md)
 - [Reviewed upstream revisions](UPSTREAM_VERSIONS.md)

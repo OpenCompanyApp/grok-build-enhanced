@@ -87,6 +87,13 @@ impl ModelState {
             .is_some_and(|model| model.starts_with("openai-codex/"))
     }
 
+    /// Whether the active model belongs to the isolated Kimi Code plan
+    /// provider rather than xAI or a same-named custom model.
+    pub fn current_model_is_kimi_code(&self) -> bool {
+        self.current_model_id_str()
+            .is_some_and(|model| model.starts_with("kimi-code/"))
+    }
+
     /// Total context window tokens for the current model (if available).
     fn current_context_window_tokens(&self) -> Option<u64> {
         let meta = self.available.get(self.current.as_ref()?)?.meta.as_ref()?;

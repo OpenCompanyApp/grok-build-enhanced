@@ -699,13 +699,19 @@ impl JsonlStorageAdapter {
             .new_model_id
             .map(acp::ModelId::new)
             .unwrap_or(source_summary.current_model_id);
-        // A forked Codex route remains pinned to the source session's local
-        // credential record. Switching the fork to any other provider clears
-        // the binding before the new session can be restored.
-        let target_credential_binding = target_model_id
-            .0
-            .strip_prefix("openai-codex/")
-            .and(source_summary.credential_binding);
+        // A provider-qualified fork remains pinned only when the target route
+        // belongs to the same provider as the source's local credential
+        // record. Actual provider switches clear the binding.
+        let target_provider = if target_model_id.0.starts_with("openai-codex/") {
+            Some(xai_grok_sampling_types::ProviderId::OpenAiCodex)
+        } else if target_model_id.0.starts_with("kimi-code/") {
+            Some(xai_grok_sampling_types::ProviderId::KimiCode)
+        } else {
+            None
+        };
+        let target_credential_binding = source_summary
+            .credential_binding
+            .filter(|binding| Some(binding.provider) == target_provider);
         let target_summary = crate::session::persistence::Summary {
             info: target_info.clone(),
             session_summary: source_summary.session_summary,

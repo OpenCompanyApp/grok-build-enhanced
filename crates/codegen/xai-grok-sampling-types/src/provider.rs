@@ -26,6 +26,15 @@ pub enum ProviderId {
     Xai,
     #[serde(rename = "openai_codex")]
     OpenAiCodex,
+    /// Kimi Code subscription provider. This identity remains Kimi Code even
+    /// when an authenticated model catalog routes a model through the
+    /// Anthropic-compatible Messages protocol.
+    #[serde(rename = "kimi_code")]
+    KimiCode,
+    /// Global personal Z.AI GLM Coding Plan subscription. This must never
+    /// share credentials or endpoints with Z.AI Open Platform or BigModel CN.
+    #[serde(rename = "zai_coding_plan")]
+    ZaiCodingPlan,
     /// Existing custom-model behavior. The provider-specific request policy
     /// remains caller-defined unless a more specific provider is selected.
     Custom,
@@ -36,10 +45,29 @@ impl ProviderId {
         matches!(self, Self::OpenAiCodex)
     }
 
+    pub const fn is_kimi_code(self) -> bool {
+        matches!(self, Self::KimiCode)
+    }
+
+    pub const fn is_zai_coding_plan(self) -> bool {
+        matches!(self, Self::ZaiCodingPlan)
+    }
+
+    /// Whether requests cross a first-class subscription-provider boundary
+    /// whose payloads and response diagnostics must remain redacted.
+    pub const fn requires_redacted_provider_diagnostics(self) -> bool {
+        matches!(
+            self,
+            Self::OpenAiCodex | Self::KimiCode | Self::ZaiCodingPlan
+        )
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Xai => "xai",
             Self::OpenAiCodex => "openai_codex",
+            Self::KimiCode => "kimi_code",
+            Self::ZaiCodingPlan => "zai_coding_plan",
             Self::Custom => "custom",
         }
     }
@@ -63,6 +91,10 @@ pub enum CredentialSourceId {
     XaiApiKey,
     #[serde(rename = "openai_codex_subscription")]
     OpenAiCodexSubscription,
+    #[serde(rename = "kimi_code_api_key")]
+    KimiCodeApiKey,
+    #[serde(rename = "zai_coding_plan_api_key")]
+    ZaiCodingPlanApiKey,
     StaticApiKey,
     External,
 }
@@ -98,6 +130,24 @@ impl CredentialBinding {
         Self {
             provider: ProviderId::OpenAiCodex,
             source: CredentialSourceId::OpenAiCodexSubscription,
+            record_id,
+            generation: 0,
+        }
+    }
+
+    pub fn kimi_code(record_id: Option<String>) -> Self {
+        Self {
+            provider: ProviderId::KimiCode,
+            source: CredentialSourceId::KimiCodeApiKey,
+            record_id,
+            generation: 0,
+        }
+    }
+
+    pub fn zai_coding_plan(record_id: Option<String>) -> Self {
+        Self {
+            provider: ProviderId::ZaiCodingPlan,
+            source: CredentialSourceId::ZaiCodingPlanApiKey,
             record_id,
             generation: 0,
         }

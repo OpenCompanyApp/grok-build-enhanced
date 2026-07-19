@@ -256,9 +256,10 @@ async fn refresh_provider_memory_resource(
     params.embed_base_url = sampling_config.base_url.clone();
     params.embed_api_key = sampling_config.api_key.clone();
     match sampling_config.provider {
-        xai_grok_sampling_types::ProviderId::OpenAiCodex => {
-            // ChatGPT Codex auth is not a general OpenAI API credential and
-            // its backend does not expose a supported embeddings endpoint.
+        xai_grok_sampling_types::ProviderId::OpenAiCodex
+        | xai_grok_sampling_types::ProviderId::KimiCode => {
+            // Provider-owned Codex/Kimi auth is not a general xAI credential,
+            // and neither scoped backend exposes a supported embeddings route.
             params.embed_config = None;
             params.embed_base_url.clear();
             params.embed_api_key = None;
@@ -324,6 +325,11 @@ fn web_search_config_for_provider(
             settings: codex_settings.clone(),
         };
     }
+    if sampling_config.provider.is_kimi_code() {
+        return WebSearchConfig::KimiCode {
+            base_url: xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned(),
+        };
+    }
 
     // Preserve a dedicated provider-owned web-search model when returning to
     // the provider that originally supplied it. Crossing to a different
@@ -378,7 +384,7 @@ fn web_fetch_params_for_provider(
         return None;
     }
     configured
-        .params_for_codex_subscription(provider.is_openai_codex())
+        .params_for_codex_subscription(provider.is_openai_codex() || provider.is_kimi_code())
         .cloned()
 }
 
@@ -466,15 +472,20 @@ impl SessionActor {
                 // does not erase the preference before switching back.
                 sampling_config.service_tier = Some(previous_tier);
             }
-            // A Codex-to-Codex switch belongs to the existing session record;
-            // never adopt a process-current account from model resolution.
-            if let Some(previous) = previous_sampling_config.as_ref() {
-                crate::session::provider::pin_codex_candidate_to_active_record(
-                    &mut sampling_config,
-                    previous.provider,
-                    previous.credential_binding.as_ref(),
-                );
-            }
+        }
+        // A same-provider Codex/Kimi switch belongs to the existing session
+        // record. Model resolution must not silently adopt a process-current
+        // account or Kimi API-key record.
+        if let Some(previous) = previous_sampling_config.as_ref()
+            && previous.provider == sampling_config.provider
+            && (sampling_config.provider.is_openai_codex()
+                || sampling_config.provider.is_kimi_code())
+        {
+            crate::session::provider::pin_provider_candidate_to_active_record(
+                &mut sampling_config,
+                previous.provider,
+                previous.credential_binding.as_ref(),
+            );
         }
         let generic_api_key_provider = (sampling_config.provider
             == xai_grok_sampling_types::ProviderId::Xai)
@@ -495,12 +506,18 @@ impl SessionActor {
         let sampling_config = bound_runtime.sampler_config;
         let provider_api_key_provider = bound_runtime.api_key_provider;
 
-        let model_id =
-            if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
+        let model_id = match sampling_config.provider {
+            xai_grok_sampling_types::ProviderId::OpenAiCodex => {
                 acp::ModelId::new(format!("openai-codex/{}", sampling_config.model))
-            } else {
+            }
+            xai_grok_sampling_types::ProviderId::KimiCode => {
+                acp::ModelId::new(format!("kimi-code/{}", sampling_config.model))
+            }
+            xai_grok_sampling_types::ProviderId::Xai
+            | xai_grok_sampling_types::ProviderId::Custom => {
                 acp::ModelId::new(sampling_config.model.clone())
-            };
+            }
+        };
         let new_context_window = self.compaction.context_window_override.unwrap_or_else(|| {
             std::num::NonZeroU64::new(sampling_config.context_window).unwrap_or_else(|| {
                 std::num::NonZeroU64::new(DEFAULT_CONTEXT_WINDOW)
@@ -635,11 +652,10 @@ impl SessionActor {
             );
         }
         let agent_name = self.agent.borrow().definition().name.clone();
-        let persisted_binding = sampling_config
-            .provider
-            .is_openai_codex()
-            .then(|| sampling_config.credential_binding.clone())
-            .flatten();
+        let persisted_binding = (sampling_config.provider.is_openai_codex()
+            || sampling_config.provider.is_kimi_code())
+        .then(|| sampling_config.credential_binding.clone())
+        .flatten();
         let _ = self
             .notifications
             .persistence_tx
@@ -675,9 +691,11 @@ impl SessionActor {
             self.session_info.id.0.as_ref(),
             alpha_test_key,
         );
-        if sampling_config.provider.is_openai_codex() && api_key_provider.is_none() {
+        if (sampling_config.provider.is_openai_codex() || sampling_config.provider.is_kimi_code())
+            && api_key_provider.is_none()
+        {
             tracing::warn!(
-                provider = "openai_codex",
+                provider = %sampling_config.provider,
                 "web_search disabled after provider switch: scoped request authentication is unavailable"
             );
             web_search_config = WebSearchConfig::Disabled;
@@ -685,8 +703,9 @@ impl SessionActor {
 
         let codex_subscription_search = web_search_config.is_codex_subscription();
         let hosted_web_search_enabled = web_search_config.allows_hosted_responses_tool();
-        let backend_search_enabled =
-            self.rebuild_spec.backend_search && !sampling_config.provider.is_openai_codex();
+        let backend_search_enabled = self.rebuild_spec.backend_search
+            && !sampling_config.provider.is_openai_codex()
+            && !sampling_config.provider.is_kimi_code();
         self.agent.borrow_mut().refresh_backend_search_config(
             backend_search_enabled,
             hosted_web_search_enabled,
@@ -700,7 +719,7 @@ impl SessionActor {
                 } else {
                     None
                 };
-            match WebSearchClient::new(&web_search_config, api_key_provider) {
+            match WebSearchClient::new(&web_search_config, api_key_provider.clone()) {
                 Ok(client) => {
                     bridge
                         .update_resource(client.with_attribution_callback(attribution_callback))
@@ -744,6 +763,23 @@ impl SessionActor {
         if let Some(params) = fetch_params {
             match WebFetchClient::new(&params) {
                 Ok(client) => {
+                    let client = if sampling_config.provider.is_kimi_code() {
+                        api_key_provider
+                            .clone()
+                            .ok_or(xai_grok_tools::implementations::grok_build::web_fetch::WebFetchError::HostedAuthentication)
+                            .and_then(|provider| client.with_kimi_hosted_fetch(provider))
+                    } else {
+                        Ok(client)
+                    };
+                    let Ok(client) = client else {
+                        tracing::warn!(
+                            provider = %sampling_config.provider,
+                            "failed to bind provider web-fetch authentication after model switch"
+                        );
+                        remove_web_fetch_tool_definition(&bridge).await;
+                        bridge.remove_resource::<WebFetchClient>().await;
+                        return;
+                    };
                     bridge.update_resource(client).await;
                     if let Err(error) = ensure_web_fetch_tool_definition(&bridge).await {
                         tracing::warn!(
@@ -1130,6 +1166,34 @@ mod provider_media_switch_tests {
     }
 
     #[test]
+    fn kimi_hosted_search_is_enabled_independently_of_codex_search_mode() {
+        let sampling = xai_grok_sampler::SamplerConfig::kimi_code(
+            "k3",
+            xai_grok_sampling_types::ApiBackend::ChatCompletions,
+        );
+        let disabled_codex = CodexWebSearchSettings {
+            mode: CodexWebSearchMode::Disabled,
+            ..Default::default()
+        };
+
+        let config = web_search_config_for_provider(
+            &WebSearchConfig::Disabled,
+            &disabled_codex,
+            false,
+            None,
+            &sampling,
+            "session-public-id",
+            None,
+        );
+
+        assert!(matches!(
+            config,
+            WebSearchConfig::KimiCode { ref base_url }
+                if base_url == xai_grok_sampling_types::KIMI_CODE_BASE_URL
+        ));
+    }
+
+    #[test]
     fn unavailable_xai_search_does_not_block_later_codex_subscription_search() {
         let sampling = xai_grok_sampler::SamplerConfig::openai_codex("gpt-5.6-luna");
         let config = web_search_config_for_provider(
@@ -1249,6 +1313,26 @@ mod provider_media_switch_tests {
                 "explicit provider-independent fetch must survive {provider:?}"
             );
         }
+    }
+
+    #[test]
+    fn implicit_fetch_remains_enabled_for_kimi_when_codex_search_is_disabled() {
+        let implicit = WebFetchConfig::CodexDefault {
+            params: WebFetchParams::default(),
+        };
+        let disabled_codex = CodexWebSearchSettings {
+            mode: CodexWebSearchMode::Disabled,
+            ..Default::default()
+        };
+
+        assert!(
+            web_fetch_params_for_provider(
+                &implicit,
+                &disabled_codex,
+                xai_grok_sampling_types::ProviderId::KimiCode,
+            )
+            .is_some()
+        );
     }
 
     #[test]

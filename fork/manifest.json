@@ -175,7 +175,7 @@
         "commit": "1d2a7b4c860f6a29eb90bdda07757b2adf34ab61"
       },
       "latest_fetched": {
-        "commit": "efb6cc2d4bf6332eb156709795d2b3a649198b65"
+        "commit": "b8142c7aa8f88222873fb79d636e312e28037c2d"
       }
     },
     {
@@ -223,7 +223,7 @@
         "commit": "ada523ae6a06726c02ffcc7f35d01ee2216d309c"
       },
       "latest_fetched": {
-        "commit": "ada523ae6a06726c02ffcc7f35d01ee2216d309c"
+        "commit": "4f3c7240c4adc7c748e536bf578e468c1b5bcd7b"
       }
     },
     {
@@ -671,8 +671,139 @@
       ]
     },
     {
-      "id": "kimi-provider-research",
-      "description": "Research and implementation design for a possible, currently unimplemented Kimi Code provider.",
+      "id": "kimi-code-provider-auth",
+      "description": "Provider-scoped Kimi Code API-key storage, login, catalog discovery, usage lookup, request authentication, and logout integration.",
+      "source_ids": [
+        "grok-build-upstream",
+        "kimi-code"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md",
+        "crates/codegen/xai-grok-shell/src/auth/kimi_code/**",
+        "crates/codegen/xai-grok-shell/src/auth/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/model.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/auth/kimi_code/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/kimi_code/request_auth.rs",
+        "crates/codegen/xai-grok-shell/src/auth/model.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "kimi-code-provider-runtime",
+      "description": "First-class Kimi Code provider identity, credential-bound dynamic models, catalog-selected inference protocols, reasoning controls, cache affinity, and isolated session routing.",
+      "source_ids": [
+        "grok-build-upstream",
+        "kimi-code"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/app/cli.rs",
+        "crates/codegen/xai-grok-sampler/Cargo.toml",
+        "crates/codegen/xai-grok-sampler/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/config.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/kimi_code/**",
+        "crates/codegen/xai-grok-sampler/src/provider/mod.rs",
+        "crates/codegen/xai-grok-sampling-types/src/kimi_code.rs",
+        "crates/codegen/xai-grok-sampling-types/src/lib.rs",
+        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
+        "crates/codegen/xai-grok-sampling-types/src/types.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/handle_request.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sampler/src/provider/kimi_code/mod.rs",
+        "crates/codegen/xai-grok-sampling-types/src/kimi_code.rs",
+        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-sampler/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "kimi-code-hosted-web",
+      "description": "Enabled-by-default Kimi hosted search and SSRF-screened hosted fetch with explicit authentication and quota errors plus safe local fallback.",
+      "source_ids": [
+        "grok-build-upstream",
+        "kimi-code"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-shell/src/agent/subagent/handle_request.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/client.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/error.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/hosted_kimi.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/kimi_code.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/client.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/types.rs",
+        "crates/codegen/xai-grok-tools/src/registry/types.rs",
+        "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs",
+        "crates/codegen/xai-grok-tools/src/types/mod.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/hosted_kimi.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/kimi_code.rs",
+        "crates/codegen/xai-grok-tools/src/registry/types.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "kimi-code-usage-ux",
+      "description": "Provider-bound Kimi plan usage retrieval, drift-tolerant quota and Extra Usage parsing, interactive usage summaries, and provider-console routing.",
+      "source_ids": [
+        "grok-build-upstream",
+        "kimi-code"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/acp/model_state.rs",
+        "crates/codegen/xai-grok-pager/src/app/actions.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/billing.rs",
+        "crates/codegen/xai-grok-pager/src/app/effects/mod.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/usage.rs",
+        "crates/codegen/xai-grok-pager/src/views/credit_bar.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/billing.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/usage.rs",
+        "crates/codegen/xai-grok-pager/src/views/credit_bar.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/billing.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "kimi-code-provider-reference",
+      "description": "Implemented experimental Kimi Code provider contract, capability boundaries, security policy, and source-reviewed behavior.",
       "source_ids": [
         "grok-build-upstream",
         "kimi-code",

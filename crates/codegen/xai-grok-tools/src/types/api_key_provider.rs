@@ -10,6 +10,13 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 /// drift or accidentally accept credentials belonging to another provider.
 pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
 
+/// Canonical provider identity for Kimi Code-owned tool authentication.
+pub const KIMI_CODE_PROVIDER_ID: &str = "kimi_code";
+
+/// Canonical provider identity for global Z.AI Coding Plan-owned tool and MCP
+/// authentication. This must never be accepted by pay-go or China endpoints.
+pub const ZAI_CODING_PLAN_PROVIDER_ID: &str = "zai_coding_plan";
+
 /// Key in `ToolError::details` naming the provider that owns auth recovery
 /// for the failed request. Hosts must not route such an error through a
 /// different provider's credential manager.
@@ -250,8 +257,13 @@ pub type SharedApiKeyProvider = Arc<dyn ApiKeyProvider>;
 /// Resolve the bearer for the next request from the provider.
 pub(crate) async fn resolve_bearer(provider: Option<&SharedApiKeyProvider>) -> Option<String> {
     match provider {
-        Some(p) => p.current_api_key_async().await,
-        None => None,
+        // Provider-marked credentials require their dedicated validator and
+        // endpoint contract. Never downgrade them into a generic bearer for
+        // an unrelated xAI-compatible tool client.
+        Some(provider) if provider.request_auth_provider_id().is_none() => {
+            provider.current_api_key_async().await
+        }
+        Some(_) | None => None,
     }
 }
 
@@ -357,6 +369,189 @@ pub(crate) fn validate_openai_codex_request_auth(
         headers,
         credential_snapshot,
     })
+}
+
+/// Fixed-shape failures for provider-owned Kimi Code tool authentication.
+/// No variant carries credential, header, or credential-record material.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KimiCodeRequestAuthError {
+    Unavailable,
+    ProviderMismatch,
+    MissingCredentialGeneration,
+    DuplicateAuthorization,
+    InvalidAuthorization,
+    UnsupportedHeader,
+    InvalidHeader,
+}
+
+impl std::fmt::Debug for KimiCodeRequestAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KimiCodeRequestAuthError")
+    }
+}
+
+impl std::fmt::Display for KimiCodeRequestAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Kimi Code provider authentication is unavailable")
+    }
+}
+
+impl std::error::Error for KimiCodeRequestAuthError {}
+
+/// Validated Kimi Code bearer authentication for one hosted-tool request.
+#[derive(Clone)]
+pub(crate) struct ValidatedKimiCodeRequestAuth {
+    headers: HeaderMap,
+}
+
+impl ValidatedKimiCodeRequestAuth {
+    pub(crate) fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        request.headers(self.headers.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
+}
+
+impl std::fmt::Debug for ValidatedKimiCodeRequestAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValidatedKimiCodeRequestAuth")
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) async fn resolve_kimi_code_request_auth(
+    provider: &SharedApiKeyProvider,
+) -> Result<ValidatedKimiCodeRequestAuth, KimiCodeRequestAuthError> {
+    if provider.request_auth_provider_id() != Some(KIMI_CODE_PROVIDER_ID) {
+        return Err(KimiCodeRequestAuthError::ProviderMismatch);
+    }
+    let auth = provider
+        .current_request_auth_async()
+        .await
+        .ok_or(KimiCodeRequestAuthError::Unavailable)?;
+    validate_kimi_code_request_auth(&auth)
+}
+
+pub(crate) fn validate_kimi_code_request_auth(
+    auth: &RequestAuth,
+) -> Result<ValidatedKimiCodeRequestAuth, KimiCodeRequestAuthError> {
+    if auth.provider() != Some(KIMI_CODE_PROVIDER_ID) {
+        return Err(KimiCodeRequestAuthError::ProviderMismatch);
+    }
+    auth.credential_snapshot()
+        .filter(|snapshot| !snapshot.opaque_id().trim().is_empty() && snapshot.generation() > 0)
+        .ok_or(KimiCodeRequestAuthError::MissingCredentialGeneration)?;
+
+    let mut headers = HeaderMap::new();
+    let mut has_authorization = false;
+    for (name, value) in auth.headers() {
+        if !name.eq_ignore_ascii_case("authorization") {
+            return Err(KimiCodeRequestAuthError::UnsupportedHeader);
+        }
+        if has_authorization {
+            return Err(KimiCodeRequestAuthError::DuplicateAuthorization);
+        }
+        if value
+            .strip_prefix("Bearer ")
+            .is_none_or(|token| token.trim().is_empty())
+        {
+            return Err(KimiCodeRequestAuthError::InvalidAuthorization);
+        }
+        let mut value =
+            HeaderValue::from_str(value).map_err(|_| KimiCodeRequestAuthError::InvalidHeader)?;
+        value.set_sensitive(true);
+        headers.insert(HeaderName::from_static("authorization"), value);
+        has_authorization = true;
+    }
+    if !has_authorization {
+        return Err(KimiCodeRequestAuthError::InvalidAuthorization);
+    }
+    Ok(ValidatedKimiCodeRequestAuth { headers })
+}
+
+/// Fixed-shape failure for provider-owned Z.AI Coding Plan bearer auth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ZaiCodingPlanRequestAuthError {
+    Unavailable,
+    ProviderMismatch,
+    MissingCredentialGeneration,
+    DuplicateAuthorization,
+    InvalidAuthorization,
+    UnsupportedHeader,
+    InvalidHeader,
+}
+
+impl std::fmt::Display for ZaiCodingPlanRequestAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Z.AI Coding Plan provider authentication is unavailable")
+    }
+}
+
+impl std::error::Error for ZaiCodingPlanRequestAuthError {}
+
+#[derive(Clone)]
+pub(crate) struct ValidatedZaiCodingPlanRequestAuth {
+    headers: HeaderMap,
+}
+
+impl ValidatedZaiCodingPlanRequestAuth {
+    pub(crate) fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        request.headers(self.headers.clone())
+    }
+}
+
+impl std::fmt::Debug for ValidatedZaiCodingPlanRequestAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValidatedZaiCodingPlanRequestAuth")
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) async fn resolve_zai_coding_plan_request_auth(
+    provider: &SharedApiKeyProvider,
+) -> Result<ValidatedZaiCodingPlanRequestAuth, ZaiCodingPlanRequestAuthError> {
+    if provider.request_auth_provider_id() != Some(ZAI_CODING_PLAN_PROVIDER_ID) {
+        return Err(ZaiCodingPlanRequestAuthError::ProviderMismatch);
+    }
+    let auth = provider
+        .current_request_auth_async()
+        .await
+        .ok_or(ZaiCodingPlanRequestAuthError::Unavailable)?;
+    if auth.provider() != Some(ZAI_CODING_PLAN_PROVIDER_ID) {
+        return Err(ZaiCodingPlanRequestAuthError::ProviderMismatch);
+    }
+    auth.credential_snapshot()
+        .filter(|snapshot| !snapshot.opaque_id().trim().is_empty() && snapshot.generation() > 0)
+        .ok_or(ZaiCodingPlanRequestAuthError::MissingCredentialGeneration)?;
+
+    let mut headers = HeaderMap::new();
+    let mut has_authorization = false;
+    for (name, value) in auth.headers() {
+        if !name.eq_ignore_ascii_case("authorization") {
+            return Err(ZaiCodingPlanRequestAuthError::UnsupportedHeader);
+        }
+        if has_authorization {
+            return Err(ZaiCodingPlanRequestAuthError::DuplicateAuthorization);
+        }
+        if value
+            .strip_prefix("Bearer ")
+            .is_none_or(|token| token.trim().is_empty())
+        {
+            return Err(ZaiCodingPlanRequestAuthError::InvalidAuthorization);
+        }
+        let mut value = HeaderValue::from_str(value)
+            .map_err(|_| ZaiCodingPlanRequestAuthError::InvalidHeader)?;
+        value.set_sensitive(true);
+        headers.insert(HeaderName::from_static("authorization"), value);
+        has_authorization = true;
+    }
+    if !has_authorization {
+        return Err(ZaiCodingPlanRequestAuthError::InvalidAuthorization);
+    }
+    Ok(ValidatedZaiCodingPlanRequestAuth { headers })
 }
 
 #[cfg(test)]
@@ -469,12 +664,104 @@ mod tests {
         }
     }
 
+    fn valid_kimi_auth() -> RequestAuth {
+        RequestAuth::for_provider_snapshot(
+            KIMI_CODE_PROVIDER_ID,
+            RequestCredentialSnapshot::new("sentinel-kimi-record", 3),
+            [(
+                "authorization".to_owned(),
+                "Bearer sentinel-kimi-secret".to_owned(),
+            )],
+        )
+    }
+
+    #[test]
+    fn kimi_auth_validation_marks_the_bearer_sensitive() {
+        let validated = validate_kimi_code_request_auth(&valid_kimi_auth())
+            .expect("provider-owned auth should validate");
+
+        assert!(validated.headers()["authorization"].is_sensitive());
+        assert_eq!(
+            format!("{validated:?}"),
+            "ValidatedKimiCodeRequestAuth { .. }"
+        );
+    }
+
+    #[test]
+    fn kimi_auth_validation_requires_a_credential_snapshot() {
+        let auth = RequestAuth::for_provider(
+            KIMI_CODE_PROVIDER_ID,
+            [(
+                "authorization".to_owned(),
+                "Bearer sentinel-kimi-secret".to_owned(),
+            )],
+        );
+
+        let error = validate_kimi_code_request_auth(&auth)
+            .expect_err("unbound auth must fail")
+            .to_string();
+
+        assert_eq!(error, "Kimi Code provider authentication is unavailable");
+        assert!(!error.contains("sentinel-kimi-secret"));
+    }
+
+    #[test]
+    fn kimi_auth_validation_rejects_extra_headers() {
+        let auth = RequestAuth::for_provider_snapshot(
+            KIMI_CODE_PROVIDER_ID,
+            RequestCredentialSnapshot::new("sentinel-kimi-record", 3),
+            [
+                (
+                    "authorization".to_owned(),
+                    "Bearer sentinel-kimi-secret".to_owned(),
+                ),
+                ("x-msh-device-id".to_owned(), "sentinel-device".to_owned()),
+            ],
+        );
+
+        let error = validate_kimi_code_request_auth(&auth)
+            .expect_err("official-client identity headers must fail")
+            .to_string();
+
+        assert_eq!(error, "Kimi Code provider authentication is unavailable");
+        assert!(!error.contains("sentinel-device"));
+    }
+
     struct StaticKeyProvider;
 
     impl ApiKeyProvider for StaticKeyProvider {
         fn current_api_key(&self) -> Option<String> {
             Some("sentinel-static-key".to_owned())
         }
+    }
+
+    struct ProviderMarkedKeyProvider;
+
+    impl ApiKeyProvider for ProviderMarkedKeyProvider {
+        fn current_api_key(&self) -> Option<String> {
+            Some("sentinel-provider-key".to_owned())
+        }
+
+        fn request_auth_provider_id(&self) -> Option<&str> {
+            Some(KIMI_CODE_PROVIDER_ID)
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_bearer_resolution_accepts_an_unmarked_static_provider() {
+        let provider: SharedApiKeyProvider = Arc::new(StaticKeyProvider);
+
+        assert_eq!(
+            resolve_bearer(Some(&provider)).await.as_deref(),
+            Some("sentinel-static-key")
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_bearer_resolution_rejects_provider_marked_credentials() {
+        let provider: SharedApiKeyProvider = Arc::new(ProviderMarkedKeyProvider);
+
+        assert!(resolve_bearer(Some(&provider)).await.is_none());
     }
 
     #[tokio::test]

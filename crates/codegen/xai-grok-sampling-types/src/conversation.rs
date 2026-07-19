@@ -675,6 +675,7 @@ impl From<FinishReason> for StopReason {
             FinishReason::Length => StopReason::Length,
             FinishReason::ToolCalls | FinishReason::FunctionCall => StopReason::ToolCalls,
             FinishReason::ContentFilter => StopReason::ContentFilter,
+            FinishReason::Unknown(_) => StopReason::Stop,
         }
     }
 }
@@ -3336,14 +3337,16 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 let signature = r
                     .encrypted_content
                     .as_deref()
-                    .map(str::to_owned)
-                    .unwrap_or_default();
-                if !thinking.is_empty() || !signature.is_empty() {
-                    pending_assistant.push(ContentBlock::Thinking {
-                        thinking,
-                        signature,
-                    });
-                }
+                    .filter(|signature| !signature.is_empty())
+                    .map(str::to_owned);
+                // Preserve even an empty unsigned thinking block. Kimi's
+                // Messages endpoint can emit that shape immediately before a
+                // tool call and requires it to survive the next-turn replay.
+                // `signature: None` deliberately omits the wire field.
+                pending_assistant.push(ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                });
             }
         }
     }
@@ -5457,6 +5460,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn messages_request_replays_empty_unsigned_thinking_before_tool_use() {
+        let reasoning = ConversationItem::Reasoning(rs::ReasoningItem {
+            id: String::new(),
+            summary: vec![],
+            content: None,
+            encrypted_content: None,
+            status: None,
+        });
+        let tool_call = ToolCall {
+            id: "call_1".into(),
+            name: "read_file".to_owned(),
+            arguments: r#"{"path":"README.md"}"#.into(),
+        };
+        let req = ConversationRequest {
+            reasoning_effort: Some(crate::ReasoningEffort::High),
+            ..ConversationRequest::from_items(vec![
+                ConversationItem::user("inspect the file"),
+                reasoning,
+                ConversationItem::assistant_tool_calls(vec![tool_call]),
+            ])
+            .with_model("messages-compatible-model")
+        };
+
+        let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+        let thinking = &json["messages"][1]["content"][0];
+        assert_eq!(thinking["type"], "thinking");
+        assert_eq!(thinking["thinking"], "");
+        assert!(thinking.get("signature").is_none());
+    }
+
     /// When reasoning_effort is unset, thinking is omitted entirely so the wire stays
     /// clean for older servers that don't recognize the field.
     #[test]
@@ -7132,6 +7166,10 @@ mod tests {
         assert_eq!(
             StopReason::from(FinishReason::ContentFilter),
             StopReason::ContentFilter
+        );
+        assert_eq!(
+            StopReason::from(FinishReason::Unknown("future_reason".to_owned())),
+            StopReason::Stop
         );
     }
 

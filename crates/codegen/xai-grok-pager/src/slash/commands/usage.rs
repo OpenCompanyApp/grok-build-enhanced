@@ -41,6 +41,8 @@ impl SlashCommand for UsageCommand {
     fn suggest_args(&self, ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
         let manage_description = if ctx.models.current_model_is_openai_codex() {
             "Open ChatGPT Codex usage settings"
+        } else if ctx.models.current_model_is_kimi_code() {
+            "Open Kimi Code Console"
         } else {
             "Open billing management page"
         };
@@ -66,6 +68,9 @@ impl SlashCommand for UsageCommand {
             "" | "show" => CommandResult::Action(Action::ShowUsage),
             "manage" if ctx.models.current_model_is_openai_codex() => CommandResult::Action(
                 Action::OpenUrl("https://chatgpt.com/codex/settings/usage".to_string()),
+            ),
+            "manage" if ctx.models.current_model_is_kimi_code() => CommandResult::Action(
+                Action::OpenUrl("https://www.kimi.com/code/console".to_string()),
             ),
             "manage" => {
                 CommandResult::Action(Action::OpenUrl("https://grok.com/?_s=usage".to_string()))
