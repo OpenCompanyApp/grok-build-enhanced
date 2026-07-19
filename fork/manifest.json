@@ -1478,6 +1478,24 @@
       "legal_paths": [
         "LICENSE"
       ]
+    },
+    {
+      "id": "upstream-repository-trust-boundaries",
+      "description": "Repository instruction framing and fail-closed trust markers for project roles, personas, and hooks.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-agent/src/prompt/agents_md.rs",
+        "crates/codegen/xai-grok-workspace/src/folder_trust.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-agent/src/prompt/agents_md.rs",
+        "crates/codegen/xai-grok-workspace/src/folder_trust.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
     }
   ]
 }
