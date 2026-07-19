@@ -616,19 +616,14 @@ pub struct MvpAgent {
     loading_sessions: RefCell<
         HashMap<acp::SessionId, tokio::sync::watch::Receiver<bool>>,
     >,
-    /// Per-session prompt-intake serialization lock. LEADER-SAFE(per-session):
-    /// keyed by SessionId, mirrors `sessions` lifecycle.
-    ///
-    /// Each incoming `session/prompt` RPC is dispatched as its own task by the
-    /// ACP message loop, and [`Self::prompt`] runs an async preamble (prompt-mode
-    /// query, trace context, model lookup) BEFORE it enqueues
-    /// `SessionCommand::Prompt` onto the actor's FIFO mailbox. Without
-    /// serialization those preambles interleave across tasks, so the mailbox —
-    /// and therefore the authoritative prompt queue — receives prompts out of
-    /// submission order. `prompt()` holds this lock across the preamble and
-    /// releases it immediately after the enqueue (the turn itself runs unlocked),
-    /// which makes intake order match arrival order.
-    prompt_intake_locks: RefCell<
+    /// Per-session lock ordering dispatch onto the actor's mailbox:
+    /// [`Self::prompt`] holds it across its intake preamble and
+    /// [`Self::cancel`] around its `Cancel` send, so prompts land in
+    /// submission order and a cancel cannot overtake the prompt it targets.
+    /// Cancels wait out preambles held ahead of them, so keep preambles lean;
+    /// bridge cancels remain unordered. LEADER-SAFE(per-session): mirrors
+    /// `sessions` lifecycle.
+    dispatch_locks: RefCell<
         HashMap<acp::SessionId, std::rc::Rc<tokio::sync::Mutex<()>>>,
     >,
     /// LEADER-SAFE(per-session): keyed by SessionId. Mirrors `sessions` lifecycle.

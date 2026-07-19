@@ -1399,6 +1399,27 @@
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/LICENSE",
         "third_party/NOTICE"
       ]
+    },
+    {
+      "id": "upstream-agent-dispatch-ordering",
+      "description": "Provider-neutral per-session ordering for prompt and cancel dispatch onto the actor mailbox.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_lifecycle.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
     }
   ]
 }
