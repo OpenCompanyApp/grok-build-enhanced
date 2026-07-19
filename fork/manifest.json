@@ -1215,6 +1215,7 @@
       ],
       "paths": [
         ".gitignore",
+        ".grok/skills/refresh-upstreams/SKILL.md",
         "AGENTS.md",
         "README.md",
         "THIRD-PARTY-NOTICES",
