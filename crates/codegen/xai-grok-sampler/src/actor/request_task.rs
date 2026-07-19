@@ -61,8 +61,13 @@ enum AttemptOutcome {
     /// error is what the retry loop classifies; if no rich error was
     /// captured (e.g. the failure was synthesised inside the L2
     /// transform), `error` was reconstructed from the
-    /// [`SamplingErrorInfo`].
-    Failed { error: SamplingError },
+    /// [`SamplingErrorInfo`]. `emitted_model_visible_output` records whether
+    /// text, reasoning, or tool-call data was already forwarded to the caller;
+    /// provider retry policy can use it to avoid replaying visible output.
+    Failed {
+        error: SamplingError,
+        emitted_model_visible_output: bool,
+    },
     /// `cancel_token` fired mid-attempt. The retry loop bails out
     /// without further attempts.
     Cancelled,
@@ -216,6 +221,7 @@ pub(crate) async fn run_request_task(
                     &mut request,
                     &mut client,
                     &config,
+                    false,
                     &mut completion_tx,
                 )
                 .await
@@ -223,7 +229,10 @@ pub(crate) async fn run_request_task(
                     return request_id;
                 }
             }
-            AttemptOutcome::Failed { error } => {
+            AttemptOutcome::Failed {
+                error,
+                emitted_model_visible_output,
+            } => {
                 // Doom-loop resamples run on their own budget and never
                 // consult the transport classifier, so no classifier change
                 // can silently debit the transport budget for a doom failure.
@@ -247,6 +256,23 @@ pub(crate) async fn run_request_task(
                     );
                     tokio::time::sleep(backoff).await;
                     continue;
+                }
+                // A Codex Responses retry would replay the whole prompt. Once
+                // model-visible data has been forwarded, replay can duplicate
+                // prose, reasoning, or a tool call in the session. Keep this
+                // provider-scoped: the other providers retain their established
+                // retry behavior.
+                if config.provider.is_openai_codex() && emitted_model_visible_output {
+                    let kind = SamplingErrorInfo::from(&error).kind;
+                    tracing::warn!(
+                        target: crate::sampling_log::TARGET,
+                        provider = "openai_codex",
+                        failure_kind = kind.as_str(),
+                        "not retrying Codex attempt after model-visible output"
+                    );
+                    emit_failed(&event_tx, &request_id, &error);
+                    send_completion(&mut completion_tx, Err(clone_error(&error)));
+                    return request_id;
                 }
                 if maybe_recover_provider_auth(
                     &error,
@@ -272,6 +298,7 @@ pub(crate) async fn run_request_task(
                     &mut request,
                     &mut client,
                     &config,
+                    emitted_model_visible_output,
                     &mut completion_tx,
                 )
                 .await
@@ -308,6 +335,7 @@ pub(crate) async fn run_request_task(
                     &mut request,
                     &mut client,
                     &config,
+                    false,
                     &mut completion_tx,
                 )
                 .await
@@ -359,6 +387,27 @@ async fn maybe_recover_provider_auth(
     true
 }
 
+/// Treat an idle timeout before Codex has emitted visible output like the
+/// existing generic transport class. This keeps the same bounded counter,
+/// jittered backoff, and first-retry HTTP/1.1 rebuild without changing the
+/// historical provider-neutral classification of [`SamplingError::IdleTimeout`].
+fn classify_pre_output_idle_timeout(
+    err: &SamplingError,
+    retry_count: u32,
+    max_retries: u32,
+) -> RetryDecision {
+    let next_attempt = retry_count + 1;
+    if next_attempt >= max_retries {
+        return RetryDecision::Fatal(clone_error(err));
+    }
+    let backoff = retry_mod::retry_backoff_with_jitter(next_attempt);
+    if next_attempt == 1 {
+        RetryDecision::RetryWithClientRebuild { backoff }
+    } else {
+        RetryDecision::Retry { backoff }
+    }
+}
+
 /// Apply a [`RetryDecision`]. Returns `true` if the loop should
 /// continue, `false` if the request is finished (either fatal or
 /// emit-to-session). Performs the side-effects of the decision:
@@ -375,6 +424,7 @@ async fn apply_retry_decision(
     request: &mut ConversationRequest,
     client: &mut SamplingClient,
     config: &SamplerConfig,
+    attempt_emitted_model_visible_output: bool,
     completion_tx: &mut Option<oneshot::Sender<CompletionResult>>,
 ) -> bool {
     let rate_limit_threshold = if retry_policy.rate_limit_retry_threshold == 0 {
@@ -382,7 +432,14 @@ async fn apply_retry_decision(
     } else {
         retry_policy.rate_limit_retry_threshold
     };
-    let decision = classify_error(err, *retry_count, max_retries, rate_limit_threshold);
+    let codex_pre_output_idle_timeout = config.provider.is_openai_codex()
+        && !attempt_emitted_model_visible_output
+        && matches!(err, SamplingError::IdleTimeout { .. });
+    let decision = if codex_pre_output_idle_timeout {
+        classify_pre_output_idle_timeout(err, *retry_count, max_retries)
+    } else {
+        classify_error(err, *retry_count, max_retries, rate_limit_threshold)
+    };
 
     // Connection-reset / broken-pipe on body upload often means nginx
     // rejected an oversized payload before responding 413. Strip
@@ -462,7 +519,8 @@ async fn apply_retry_decision(
                 && if err.is_rate_limited() {
                     next_attempt >= max_retries.min(rate_limit_threshold)
                 } else {
-                    err.is_retryable() && next_attempt >= max_retries
+                    (err.is_retryable() || codex_pre_output_idle_timeout)
+                        && next_attempt >= max_retries
                 };
             if budget_exhausted {
                 let exhausted_span = tracing::info_span!(
@@ -610,6 +668,7 @@ async fn drive_l2(
     doom_check: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
 ) -> AttemptOutcome {
     let mut l2 = pin!(l2);
+    let mut emitted_model_visible_output = false;
     loop {
         tokio::select! {
             biased;
@@ -628,12 +687,14 @@ async fn drive_l2(
                                     triggers,
                                     aborted_at_chunk: None,
                                 },
+                                emitted_model_visible_output,
                             };
                         }
                     }
                     if response.stop_reason == Some(xai_grok_sampling_types::StopReason::Length) {
                         return AttemptOutcome::Failed {
                             error: SamplingError::MaxTokensTruncation,
+                            emitted_model_visible_output,
                         };
                     }
                     // A content-filtered turn (Anthropic refusal, OpenAI
@@ -653,9 +714,13 @@ async fn drive_l2(
                         .ok()
                         .and_then(|mut g| g.take());
                     let error = raw.unwrap_or_else(|| synthesize_from_info(&info));
-                    return AttemptOutcome::Failed { error };
+                    return AttemptOutcome::Failed {
+                        error,
+                        emitted_model_visible_output,
+                    };
                 }
                 Some(other) => {
+                    emitted_model_visible_output |= event_has_model_visible_output(&other);
                     let _ = event_tx.send(retag(other, &request_id));
                 }
                 None => {
@@ -667,10 +732,30 @@ async fn drive_l2(
                         error: SamplingError::EventStreamError(
                             "stream dropped without terminal event".to_string(),
                         ),
+                        emitted_model_visible_output,
                     };
                 }
             }
         }
+    }
+}
+
+/// Whether forwarding this event makes any model generation visible to the
+/// caller. Transport establishment, response creation, metadata, and the
+/// synthetic first-token marker are deliberately excluded.
+fn event_has_model_visible_output(event: &SamplingEvent) -> bool {
+    match event {
+        SamplingEvent::ChannelToken { text, .. } => !text.is_empty(),
+        SamplingEvent::ToolCallDelta {
+            id,
+            name,
+            arguments_delta,
+            ..
+        } => [id.as_deref(), name.as_deref(), arguments_delta.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|part| !part.is_empty()),
+        _ => false,
     }
 }
 
@@ -956,6 +1041,293 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codex_visible_text_reasoning_or_tool_data_prevents_retry_after_disconnect() {
+        use axum::Router;
+        use axum::response::sse::{Event, Sse};
+        use axum::routing::post;
+        use std::convert::Infallible;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cases = [
+            (
+                "text",
+                r#"{"type":"response.output_text.delta","delta":"visible text"}"#,
+            ),
+            (
+                "reasoning",
+                r#"{"type":"response.reasoning_summary_text.delta","delta":"visible reasoning"}"#,
+            ),
+            (
+                "tool",
+                r#"{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","name":"read_file","arguments":""}}"#,
+            ),
+        ];
+
+        for (case, payload) in cases {
+            let hits = std::sync::Arc::new(AtomicUsize::new(0));
+            let handler_hits = std::sync::Arc::clone(&hits);
+            let payload = payload.to_owned();
+            let app = Router::new().route(
+                "/responses",
+                post(move || {
+                    let hits = std::sync::Arc::clone(&handler_hits);
+                    let payload = payload.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Sse::new(stream::iter([Ok::<_, Infallible>(
+                            Event::default().data(payload),
+                        )]))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+            let recoveries = std::sync::Arc::new(AtomicUsize::new(0));
+            let mut config = SamplerConfig::openai_codex("gpt-5-codex");
+            config.base_url = format!("http://{address}");
+            config.max_retries = Some(3);
+            config.request_auth = Some(std::sync::Arc::new(CountingRequestAuth::new(
+                std::sync::Arc::clone(&recoveries),
+            )));
+
+            let request_id = RequestId::from(format!("visible-{case}"));
+            let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+            let (completion_tx, completion_rx) = oneshot::channel();
+            run_request_task(
+                request_id,
+                ConversationRequest::default(),
+                config,
+                CodexTurnStateStore::default(),
+                RetryPolicy::default(),
+                event_tx,
+                CancellationToken::new(),
+                Some(completion_tx),
+            )
+            .await;
+            server.abort();
+
+            completion_rx
+                .await
+                .expect("request task must report completion")
+                .expect_err("a disconnected partial response must fail");
+            assert_eq!(hits.load(Ordering::SeqCst), 1, "{case} was replayed");
+            assert_eq!(recoveries.load(Ordering::SeqCst), 0);
+
+            let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+            let visible_event_seen = match case {
+                "text" => events.iter().any(|event| {
+                    matches!(
+                        event,
+                        SamplingEvent::ChannelToken {
+                            channel: crate::events::SamplingChannel::Text,
+                            text,
+                            ..
+                        } if text == "visible text"
+                    )
+                }),
+                "reasoning" => events.iter().any(|event| {
+                    matches!(
+                        event,
+                        SamplingEvent::ChannelToken {
+                            channel: crate::events::SamplingChannel::Reasoning,
+                            text,
+                            ..
+                        } if text == "visible reasoning"
+                    )
+                }),
+                "tool" => events.iter().any(|event| {
+                    matches!(
+                        event,
+                        SamplingEvent::ToolCallDelta {
+                            name: Some(name),
+                            ..
+                        } if name == "read_file"
+                    )
+                }),
+                _ => unreachable!(),
+            };
+            assert!(visible_event_seen, "{case} data was not forwarded");
+            assert!(
+                events
+                    .iter()
+                    .all(|event| !matches!(event, SamplingEvent::Retrying { .. })),
+                "{case} disconnect emitted Retrying"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn codex_pre_output_disconnect_retries_with_bounded_transport_budget() {
+        use axum::Router;
+        use axum::http::HeaderValue;
+        use axum::response::{IntoResponse, sse::Event, sse::Sse};
+        use axum::routing::post;
+        use std::convert::Infallible;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let handler_hits = std::sync::Arc::clone(&hits);
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                let hits = std::sync::Arc::clone(&handler_hits);
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    let mut response = Sse::new(stream::iter([Ok::<_, Infallible>(
+                        Event::default()
+                            .data(r#"{"type":"response.created","response":{"id":"resp_1"}}"#),
+                    )]))
+                    .into_response();
+                    response
+                        .headers_mut()
+                        .insert("x-models-etag", HeaderValue::from_static("contract-etag"));
+                    response
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let recoveries = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut config = SamplerConfig::openai_codex("gpt-5-codex");
+        config.base_url = format!("http://{address}");
+        config.max_retries = Some(2);
+        config.request_auth = Some(std::sync::Arc::new(CountingRequestAuth::new(
+            std::sync::Arc::clone(&recoveries),
+        )));
+
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        run_request_task(
+            RequestId::from("pre-output-disconnect"),
+            ConversationRequest::default(),
+            config,
+            CodexTurnStateStore::default(),
+            RetryPolicy::default(),
+            event_tx,
+            CancellationToken::new(),
+            Some(completion_tx),
+        )
+        .await;
+        server.abort();
+
+        completion_rx
+            .await
+            .expect("request task must report completion")
+            .expect_err("bounded disconnect retries must end in failure");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(recoveries.load(Ordering::SeqCst), 0);
+        let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SamplingEvent::Retrying { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SamplingEvent::StreamStarted { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SamplingEvent::ModelMetadata { .. }))
+                .count(),
+            2
+        );
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            SamplingEvent::ChannelToken { .. } | SamplingEvent::ToolCallDelta { .. }
+        )));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn codex_pre_output_idle_timeout_retries_with_bounded_transport_budget() {
+        use axum::Router;
+        use axum::response::sse::{Event, Sse};
+        use axum::routing::post;
+        use futures_util::StreamExt as _;
+        use std::convert::Infallible;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let handler_hits = std::sync::Arc::clone(&hits);
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                let hits = std::sync::Arc::clone(&handler_hits);
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    let created = Ok::<_, Infallible>(
+                        Event::default()
+                            .data(r#"{"type":"response.created","response":{"id":"resp_1"}}"#),
+                    );
+                    Sse::new(
+                        stream::once(std::future::ready(created))
+                            .chain(stream::pending::<Result<Event, Infallible>>()),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let recoveries = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut config = SamplerConfig::openai_codex("gpt-5-codex");
+        config.base_url = format!("http://{address}");
+        config.max_retries = Some(2);
+        config.idle_timeout_secs = Some(1);
+        config.request_auth = Some(std::sync::Arc::new(CountingRequestAuth::new(
+            std::sync::Arc::clone(&recoveries),
+        )));
+
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        run_request_task(
+            RequestId::from("pre-output-idle"),
+            ConversationRequest::default(),
+            config,
+            CodexTurnStateStore::default(),
+            RetryPolicy::default(),
+            event_tx,
+            CancellationToken::new(),
+            Some(completion_tx),
+        )
+        .await;
+        server.abort();
+
+        let terminal = completion_rx
+            .await
+            .expect("request task must report completion")
+            .expect_err("bounded idle retries must end in failure");
+        assert!(matches!(terminal, SamplingError::IdleTimeout { .. }));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(recoveries.load(Ordering::SeqCst), 0);
+        let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    SamplingEvent::Retrying {
+                        kind: SamplingErrorKind::IdleTimeout,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn codex_provider_auth_recovery_is_exactly_once() {
         let recoveries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut config = SamplerConfig::openai_codex("gpt-5-codex");
@@ -1004,22 +1376,33 @@ mod tests {
         assert_eq!(rejected_for_retry.as_ref(), Some(&rejected_binding()));
     }
 
-    #[tokio::test]
-    async fn codex_successor_binding_gets_one_request_and_second_401_is_terminal() {
+    #[tokio::test(start_paused = true)]
+    async fn codex_second_401_is_terminal_and_auth_retry_preserves_transport_budget() {
         use axum::Router;
         use axum::extract::State;
         use axum::http::StatusCode;
+        use axum::response::{IntoResponse, Response, sse::Event, sse::Sse};
         use axum::routing::post;
+        use std::convert::Infallible;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        async fn reject(State(hits): State<std::sync::Arc<AtomicUsize>>) -> StatusCode {
-            hits.fetch_add(1, Ordering::SeqCst);
-            StatusCode::UNAUTHORIZED
+        async fn respond(State(hits): State<std::sync::Arc<AtomicUsize>>) -> Response {
+            let attempt = hits.fetch_add(1, Ordering::SeqCst);
+            if attempt == 1 {
+                // This pre-output disconnect consumes the one transport retry.
+                // It occurs after auth recovery to prove the budgets are separate.
+                Sse::new(stream::iter([Ok::<_, Infallible>(Event::default().data(
+                    r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                ))]))
+                .into_response()
+            } else {
+                StatusCode::UNAUTHORIZED.into_response()
+            }
         }
 
         let hits = std::sync::Arc::new(AtomicUsize::new(0));
         let app = Router::new()
-            .route("/responses", post(reject))
+            .route("/responses", post(respond))
             .with_state(std::sync::Arc::clone(&hits));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1028,6 +1411,7 @@ mod tests {
         let recoveries = std::sync::Arc::new(AtomicUsize::new(0));
         let mut config = SamplerConfig::openai_codex("gpt-5-codex");
         config.base_url = format!("http://{address}");
+        config.max_retries = Some(2);
         config.request_auth = Some(std::sync::Arc::new(CountingRequestAuth::new(
             std::sync::Arc::clone(&recoveries),
         )));
@@ -1049,7 +1433,7 @@ mod tests {
         server.abort();
 
         assert_eq!(returned_id, request_id);
-        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
         assert_eq!(recoveries.load(Ordering::SeqCst), 1);
         let terminal = completion_rx
             .await
@@ -1060,13 +1444,16 @@ mod tests {
             .expect("terminal rejection must retain its non-secret binding");
         assert_eq!(credential.generation, 8);
 
-        let mut retry_events = 0;
-        while let Ok(event) = event_rx.try_recv() {
-            if matches!(event, SamplingEvent::Retrying { .. }) {
-                retry_events += 1;
-            }
-        }
-        assert_eq!(retry_events, 1);
+        let retry_kinds: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok())
+            .filter_map(|event| match event {
+                SamplingEvent::Retrying { kind, .. } => Some(kind),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            retry_kinds,
+            vec![SamplingErrorKind::Auth, SamplingErrorKind::Api]
+        );
     }
 
     #[tokio::test]

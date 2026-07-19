@@ -503,6 +503,23 @@
       ]
     },
     {
+      "id": "codex-progress-aware-retries",
+      "description": "Codex Responses retry safety that distinguishes pre-output failures from attempts that already emitted model-visible text, reasoning, or tool-call data.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-sampler/src/actor/request_task.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sampler/src/actor/request_task.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "codex-standalone-tools",
       "description": "Codex-authenticated read, search, fetch, image, and provider-key tool adapters.",
       "source_ids": [
