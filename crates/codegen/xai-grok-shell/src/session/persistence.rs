@@ -124,6 +124,8 @@ mod feedback_tests {
         FeedbackSubmission {
             session_id: "session-abc".into(),
             user_id: None,
+            author_name: None,
+            author_email: None,
             client_type: ClientType::Tui,
             feedback_type: if thumbs_up {
                 FeedbackType::Rating
@@ -308,7 +310,8 @@ pub enum PersistenceMsg {
     Update(SessionUpdate),
     AppendUpdateDurablyAndAck {
         update: SessionUpdate,
-        respond_to: tokio::sync::oneshot::Sender<io::Result<()>>,
+        respond_to:
+            tokio::sync::oneshot::Sender<Result<(), crate::session::storage::AppendUpdateError>>,
     },
     ContentChunk(PersistenceContentChunk),
     Chat(ConversationItem),
@@ -1413,6 +1416,36 @@ pub struct PersistenceHandle {
     unobserved_codex_summary: bool,
 }
 
+#[derive(Debug)]
+pub enum DurableAppendError {
+    NotCommitted(io::Error),
+    Committed(io::Error),
+    AcknowledgementLost(io::Error),
+}
+
+impl std::fmt::Display for DurableAppendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotCommitted(error)
+            | Self::Committed(error)
+            | Self::AcknowledgementLost(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for DurableAppendError {}
+
+impl From<crate::session::storage::AppendUpdateError> for DurableAppendError {
+    fn from(error: crate::session::storage::AppendUpdateError) -> Self {
+        match error {
+            crate::session::storage::AppendUpdateError::NotCommitted(error) => {
+                Self::NotCommitted(error)
+            }
+            crate::session::storage::AppendUpdateError::Committed(error) => Self::Committed(error),
+        }
+    }
+}
+
 impl PersistenceHandle {
     /// Create a no-op persistence handle that silently discards all messages.
     ///
@@ -1430,6 +1463,39 @@ impl PersistenceHandle {
     /// `true` only for handles created via [`Self::noop`].
     pub fn is_noop(&self) -> bool {
         self.noop
+    }
+
+    /// Append after all older buffered updates and wait for the durability
+    /// barrier. The error disposition refers specifically to the requested
+    /// update, not to an older buffered notification drained ahead of it.
+    pub async fn append_update_durably(
+        &self,
+        update: SessionUpdate,
+    ) -> Result<(), DurableAppendError> {
+        if self.noop {
+            return Err(DurableAppendError::NotCommitted(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "durable session update append is unsupported by a no-op persistence handle",
+            )));
+        }
+        let (respond_to, response) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistenceMsg::AppendUpdateDurablyAndAck { update, respond_to })
+            .map_err(|_| {
+                DurableAppendError::NotCommitted(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "session persistence actor stopped before durable append dispatch",
+                ))
+            })?;
+        response
+            .await
+            .map_err(|_| {
+                DurableAppendError::AcknowledgementLost(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "session persistence actor stopped before durable append acknowledgement",
+                ))
+            })?
+            .map_err(DurableAppendError::from)
     }
 
     pub fn has_unobserved_codex_summary(&self) -> bool {
@@ -1611,6 +1677,61 @@ impl SessionPersistence {
         Ok(())
     }
 
+    /// Drain older buffered notifications before a durable target. Any failure
+    /// is reported as `NotCommitted` for the target because that target was not
+    /// attempted, even if an older notification committed before its
+    /// bookkeeping failed.
+    async fn drain_pending_before_durable(
+        &mut self,
+    ) -> Result<(), crate::session::storage::AppendUpdateError> {
+        while let Some(notification) = self.pending_notifications.pop_front() {
+            match self
+                .write_update(&SessionUpdate::Acp(Box::new(notification.clone())))
+                .await
+            {
+                Ok(()) => self.queue_acp_sync(notification),
+                Err(crate::session::storage::AppendUpdateError::NotCommitted(error)) => {
+                    self.pending_notifications.push_front(notification);
+                    return Err(crate::session::storage::AppendUpdateError::NotCommitted(
+                        error,
+                    ));
+                }
+                Err(crate::session::storage::AppendUpdateError::Committed(error)) => {
+                    self.queue_acp_sync(notification);
+                    return Err(crate::session::storage::AppendUpdateError::NotCommitted(
+                        io::Error::new(
+                            error.kind(),
+                            format!(
+                                "an older buffered update committed but bookkeeping failed before the durable target was attempted: {error}"
+                            ),
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_durable_append(
+        &mut self,
+        update: SessionUpdate,
+    ) -> Result<(), crate::session::storage::AppendUpdateError> {
+        self.drain_pending_before_durable().await?;
+        let result = self
+            .storage
+            .append_update_durable_commit_aware(&self.info, &update)
+            .await;
+        match (&update, &result) {
+            (SessionUpdate::Acp(notification), Ok(()))
+            | (
+                SessionUpdate::Acp(notification),
+                Err(crate::session::storage::AppendUpdateError::Committed(_)),
+            ) => self.queue_acp_sync((**notification).clone()),
+            _ => {}
+        }
+        result
+    }
+
     /// Flush any pending merged ACP notification to disk and remote sync.
     async fn flush_pending(&mut self) {
         if let Err(error) = self.drain_pending().await {
@@ -1672,17 +1793,7 @@ impl SessionPersistence {
                     }
                 }
                 PersistenceMsg::AppendUpdateDurablyAndAck { update, respond_to } => {
-                    let result = async {
-                        self.drain_pending().await?;
-                        self.storage
-                            .append_update_durable(&self.info, &update)
-                            .await?;
-                        if let SessionUpdate::Acp(notification) = update {
-                            self.queue_acp_sync(*notification);
-                        }
-                        Ok(())
-                    }
-                    .await;
+                    let result = self.handle_durable_append(update).await;
                     let _ = respond_to.send(result);
                 }
                 PersistenceMsg::Chat(chat_msg) => {

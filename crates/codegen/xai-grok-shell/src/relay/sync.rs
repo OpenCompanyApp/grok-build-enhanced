@@ -219,6 +219,39 @@ pub struct RelaySync {
 }
 
 impl RelaySync {
+    #[cfg(test)]
+    pub(crate) fn test_observer() -> (Self, mpsc::UnboundedReceiver<acp::SessionNotification>) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (observed_tx, observed_rx) = mpsc::unbounded_channel();
+        let (_state_tx, state_rx) = watch::channel(ConnectionState::Disconnected);
+        let cancel = CancellationToken::new();
+        let pending_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                match message {
+                    RelaySyncMsg::Queue(notification) => {
+                        let _ = observed_tx.send(*notification);
+                    }
+                    RelaySyncMsg::Flush => {}
+                    RelaySyncMsg::Shutdown => break,
+                }
+            }
+        });
+
+        (
+            Self {
+                tx,
+                session_id: "relay-test-observer".to_string(),
+                agent_type: AgentType::Tui,
+                connection_state_rx: state_rx,
+                cancel,
+                pending_count,
+            },
+            observed_rx,
+        )
+    }
+
     /// Create a new relay sync instance.
     ///
     /// Returns a `RelaySync` that queues notifications and syncs them to the relay

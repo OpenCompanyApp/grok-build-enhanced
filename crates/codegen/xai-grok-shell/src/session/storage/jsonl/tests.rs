@@ -1391,6 +1391,8 @@ async fn test_append_feedback_creates_file_and_persists() {
         submission: Some(FeedbackSubmission {
             session_id: "test-session-123".into(),
             user_id: None,
+            author_name: None,
+            author_email: None,
             client_type: ClientType::Tui,
             feedback_type: FeedbackType::Rating,
             turn_number: Some(3),
@@ -2094,6 +2096,7 @@ fn write_test_summary(
 fn scan_session_dirs_returns_empty_for_explicit_mode() {
     let adapter = JsonlStorageAdapter {
         dir_mode: SessionDirMode::Explicit(PathBuf::from("/fake")),
+        update_append_probe: None,
     };
     assert!(adapter.scan_session_dirs(None).is_empty());
 }
