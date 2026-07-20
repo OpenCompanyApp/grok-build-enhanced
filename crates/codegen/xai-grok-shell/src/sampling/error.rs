@@ -55,37 +55,51 @@ pub fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
         }
         SamplingError::Serialization(_) => acp::Error::invalid_params().data(err.to_string()),
         SamplingError::Api {
-            status, message, ..
-        } => match status {
-            StatusCode::UNAUTHORIZED => acp::Error::auth_required().data(message),
-            // 403 Forbidden is NOT an auth error — the request was
-            // authenticated, but the action is not permitted (content-safety
-            // blocks, ZDR-gated operations, remote-settings-blocked users).
-            // Surfacing the proxy's message via internal_error keeps the
-            // explanation visible to the user without triggering the client's
-            // re-auth flow on -32000.
-            StatusCode::FORBIDDEN => {
-                let message = if message.contains("requires a Grok subscription")
-                    && crate::agent::auth_method::has_xai_api_key_env()
-                {
-                    format!(
-                        "{message}\n\nYou have an API key set (XAI_API_KEY). \
+            status,
+            message,
+            model_metadata,
+            ..
+        } => {
+            let is_xai_failure = model_metadata.as_ref().is_some_and(|metadata| {
+                metadata.provider == xai_grok_sampling_types::ProviderId::Xai
+            });
+            match status {
+                StatusCode::UNAUTHORIZED => acp::Error::auth_required().data(message),
+                // 403 Forbidden is NOT an auth error — the request was
+                // authenticated, but the action is not permitted (content-safety
+                // blocks, ZDR-gated operations, remote-settings-blocked users).
+                // Surfacing the proxy's message via internal_error keeps the
+                // explanation visible to the user without triggering the client's
+                // re-auth flow on -32000.
+                StatusCode::FORBIDDEN => {
+                    let message = if is_xai_failure
+                        && message.contains("requires a Grok subscription")
+                        && crate::agent::auth_method::has_xai_api_key_env()
+                    {
+                        format!(
+                            "{message}\n\nYou have an API key set (XAI_API_KEY). \
                          Your cached OAuth session is being used instead. \
                          To use your API key, run `grok logout` or type /logout in the TUI."
-                    )
-                } else {
-                    message
-                };
-                acp::Error::internal_error().data(message)
+                        )
+                    } else {
+                        message
+                    };
+                    acp::Error::internal_error().data(message)
+                }
+                StatusCode::BAD_REQUEST => acp::Error::invalid_params().data(message),
+                StatusCode::NOT_FOUND => acp::Error::resource_not_found(None).data(message),
+                StatusCode::PAYLOAD_TOO_LARGE => acp::Error::invalid_params().data(message),
+                StatusCode::TOO_MANY_REQUESTS if is_xai_failure => {
+                    acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited".to_string())
+                        .data(message)
+                }
+                // Generic provider failures retain their status for diagnostics and
+                // classification, but never receive the xAI-only rate-limit code
+                // that clients turn into billing or upgrade guidance.
+                _ => acp::Error::internal_error()
+                    .data(error_data_with_status(message, Some(status.as_u16()))),
             }
-            StatusCode::BAD_REQUEST => acp::Error::invalid_params().data(message),
-            StatusCode::NOT_FOUND => acp::Error::resource_not_found(None).data(message),
-            StatusCode::PAYLOAD_TOO_LARGE => acp::Error::invalid_params().data(message),
-            StatusCode::TOO_MANY_REQUESTS => {
-                acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited".to_string()).data(message)
-            }
-            _ => acp::Error::internal_error().data(message),
-        },
+        }
         SamplingError::EventStreamError(message) => acp::Error::internal_error().data(message),
         SamplingError::StreamError {
             error_type,
@@ -251,6 +265,17 @@ pub fn prompt_complete_fields(
 mod tests {
     use super::*;
     use reqwest::StatusCode;
+    use xai_grok_sampling_types::ProviderId;
+
+    fn provider_metadata(provider: ProviderId) -> Option<ResponseModelMetadata> {
+        Some(ResponseModelMetadata {
+            provider,
+            credential_binding: None,
+            context_window: None,
+            max_completion_tokens: None,
+            models_etag: None,
+        })
+    }
 
     #[test]
     fn attach_prompt_usage_preserves_error_kind_and_round_trips() {
@@ -338,11 +363,11 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_error_uses_dedicated_code() {
+    fn rate_limit_error_uses_dedicated_code_for_positive_xai_identity() {
         let err = SamplingError::Api {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: "Rate limit exceeded".into(),
-            model_metadata: None,
+            model_metadata: provider_metadata(ProviderId::Xai),
             retry_after_secs: None,
             should_retry: None,
         };
@@ -360,7 +385,7 @@ mod tests {
         let err = SamplingError::Api {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: "Rate limit exceeded".into(),
-            model_metadata: None,
+            model_metadata: provider_metadata(ProviderId::Xai),
             retry_after_secs: Some(60),
             should_retry: None,
         };
@@ -375,7 +400,7 @@ mod tests {
         let rate_err = SamplingError::Api {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: "limited".into(),
-            model_metadata: None,
+            model_metadata: provider_metadata(ProviderId::Xai),
             retry_after_secs: None,
             should_retry: None,
         };
@@ -392,6 +417,49 @@ mod tests {
         assert_eq!(rate_acp.code, acp::ErrorCode::from(RATE_LIMITED_ERROR_CODE));
         assert_ne!(rate_acp.code, server_acp.code);
         assert_eq!(server_acp.code, acp::Error::internal_error().code);
+    }
+
+    #[test]
+    fn service_unavailable_retains_http_status_for_classification() {
+        let err = SamplingError::Api {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "at capacity".into(),
+            model_metadata: provider_metadata(ProviderId::Xai),
+            retry_after_secs: None,
+            should_retry: None,
+        };
+        let acp_err = map_sampling_err_to_acp(err);
+        assert_eq!(acp_err.code, acp::Error::internal_error().code);
+        assert_eq!(http_status_from_error(&acp_err), Some(503));
+    }
+
+    #[test]
+    fn non_xai_rate_limits_never_receive_xai_billing_presentation_code() {
+        for provider in [
+            None,
+            Some(ProviderId::OpenAiCodex),
+            Some(ProviderId::KimiCode),
+            Some(ProviderId::ZaiCodingPlan),
+            Some(ProviderId::Custom),
+        ] {
+            let err = SamplingError::Api {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                message: "provider quota exhausted".into(),
+                model_metadata: provider.and_then(provider_metadata),
+                retry_after_secs: None,
+                should_retry: None,
+            };
+            let acp_err = map_sampling_err_to_acp(err);
+            assert_eq!(
+                acp_err.code,
+                acp::Error::internal_error().code,
+                "provider={provider:?}"
+            );
+            assert_eq!(http_status_from_error(&acp_err), Some(429));
+            let (stop, detail) = prompt_complete_fields(&Err(acp_err));
+            assert_eq!(stop, serde_json::json!("error"));
+            assert_eq!(detail, serde_json::json!("provider quota exhausted"));
+        }
     }
 
     #[test]
@@ -477,7 +545,7 @@ mod tests {
             let err = SamplingError::Api {
                 status: StatusCode::FORBIDDEN,
                 message: "The model 'grok-build' requires a Grok subscription.".into(),
-                model_metadata: None,
+                model_metadata: provider_metadata(ProviderId::Xai),
                 retry_after_secs: None,
                 should_retry: None,
             };
@@ -502,7 +570,7 @@ mod tests {
             let err = SamplingError::Api {
                 status: StatusCode::FORBIDDEN,
                 message: "The model 'grok-build' requires a Grok subscription.".into(),
-                model_metadata: None,
+                model_metadata: provider_metadata(ProviderId::Xai),
                 retry_after_secs: None,
                 should_retry: None,
             };
@@ -518,12 +586,38 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn non_xai_subscription_failures_never_receive_xai_logout_guidance() {
+        with_api_key_env(Some("xai-test"), || {
+            for provider in [
+                None,
+                Some(ProviderId::OpenAiCodex),
+                Some(ProviderId::KimiCode),
+                Some(ProviderId::ZaiCodingPlan),
+                Some(ProviderId::Custom),
+            ] {
+                let err = SamplingError::Api {
+                    status: StatusCode::FORBIDDEN,
+                    message: "This provider requires a Grok subscription".into(),
+                    model_metadata: provider.and_then(provider_metadata),
+                    retry_after_secs: None,
+                    should_retry: None,
+                };
+                let acp_err = map_sampling_err_to_acp(err);
+                let message = error_detail_from_data(acp_err.data.as_ref().unwrap()).unwrap();
+                assert!(!message.contains("grok logout"), "provider={provider:?}");
+                assert!(!message.contains("/logout"), "provider={provider:?}");
+            }
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn forbidden_non_subscription_error_no_hint() {
         with_api_key_env(Some("xai-test"), || {
             let err = SamplingError::Api {
                 status: StatusCode::FORBIDDEN,
                 message: "Content violates usage guidelines.".into(),
-                model_metadata: None,
+                model_metadata: provider_metadata(ProviderId::Xai),
                 retry_after_secs: None,
                 should_retry: None,
             };
