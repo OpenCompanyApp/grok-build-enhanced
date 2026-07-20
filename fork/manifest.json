@@ -160,7 +160,7 @@
       "remote": "https://github.com/openai/codex.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "315195492c80fdade38e917c18f9584efd599304"
+        "commit": "3e2f79727a4e8ddfc8e3acb838d496b121094b9e"
       },
       "latest_fetched": {
         "commit": "3e2f79727a4e8ddfc8e3acb838d496b121094b9e"
@@ -172,7 +172,7 @@
       "remote": "https://github.com/anomalyco/opencode.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "1d2a7b4c860f6a29eb90bdda07757b2adf34ab61"
+        "commit": "67caf894e0843ee370e72839e8265e483233479b"
       },
       "latest_fetched": {
         "commit": "67caf894e0843ee370e72839e8265e483233479b"
@@ -220,7 +220,7 @@
       "remote": "https://github.com/MoonshotAI/kimi-code.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "ada523ae6a06726c02ffcc7f35d01ee2216d309c"
+        "commit": "df6899553962d1764c9f4c3bec1b63c811cb425e"
       },
       "latest_fetched": {
         "commit": "df6899553962d1764c9f4c3bec1b63c811cb425e"
@@ -280,7 +280,7 @@
       "remote": "https://github.com/steipete/CodexBar.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "e6b2ea490cec47d122ba14e32bfc41e53d98422c"
+        "commit": "f8636cb37eb0f96d261604ee94e6481496aadfeb"
       },
       "latest_fetched": {
         "commit": "f8636cb37eb0f96d261604ee94e6481496aadfeb"
@@ -1467,6 +1467,7 @@
         "UPSTREAM_VERSIONS.md",
         "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
         "docs/providers/README.md",
+        "docs/upstream-refresh-2026-07-19.md",
         "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md",
         "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md",
         "third_party/NOTICE",
