@@ -16,6 +16,7 @@ fn remove_managed_config_files(home: &std::path::Path) {
         "managed_config.toml",
         "requirements.toml",
         xai_grok_config::signed_policy::SIGNATURE_SIDECAR_FILE,
+        xai_grok_config::signed_policy::MANAGED_IDENTITY_SIDECAR_FILE,
         "managed_config_cache.json",
     ] {
         remove_synced_file(home, name, "removed managed config file");
@@ -29,7 +30,8 @@ fn remove_managed_config_files(home: &std::path::Path) {
             let name = name.to_string_lossy();
             let is_write_tmp = name.ends_with(".tmp")
                 && (name.starts_with("managed_config_cache.json.")
-                    || name.starts_with("managed_config.sig.json."));
+                    || name.starts_with("managed_config.sig.json.")
+                    || name.starts_with("managed_identity.sig.json."));
             if is_write_tmp {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -357,6 +359,8 @@ pub(crate) fn spawn_sync(cancel: tokio_util::sync::CancellationToken) {
             // Clear a logged-out team's files before deciding to fetch, so
             // stale enforced policy never outlives the tick.
             clear_orphan();
+            // Persist observed time so a later wall-clock rollback cannot un-expire policy.
+            bump_managed_rollback_floor();
 
             if !crate::config::is_managed_config_stale_for(&current_serving_identity())
                 || !is_fetch_enabled()
@@ -432,46 +436,24 @@ pub async fn sync() -> Result<bool, ManagedConfigError> {
 
 struct SyncOutcome {
     wrote: bool,
-    /// The server returned non-empty config for the consulted principal — true
-    /// even when a concurrent writer held the lock and our write was skipped, so
-    /// `grok setup` doesn't misreport a lock skip as "no config".
+    /// The server returned a config row for the consulted principal.
     served: bool,
-    /// Which credential was consulted, so callers word team-vs-deployment
-    /// messages by what actually served, not just what's configured.
+    /// Which credential was consulted, for team-vs-deployment presentation only.
     source: Option<ManagedConfigSource>,
-    /// Team id, or the deploy-key path's server `deployment_id` (deploy-key identity is `key_fingerprint`, not this).
-    principal: Option<String>,
-    /// Artifacts the server served, recorded so staleness can spot a later deletion.
-    had_managed_config: bool,
-    had_requirements: bool,
-    /// Deploy-key fingerprint that served, else `None` — the deploy-key identity (see [`crate::config::ServingIdentity`]).
-    key_fingerprint: Option<String>,
-    /// The served `fail_closed` opt-in, recorded in the marker for the gate.
-    fail_closed: bool,
-    /// Verification was active and the envelope was rejected, so nothing was persisted.
-    /// Suppresses the sync marker (it would describe a body never written).
+    /// Verification was active and the envelope was rejected.
     signature_rejected: bool,
 }
 
 impl SyncOutcome {
-    /// `principal` / `key_fingerprint` are the two dimensions that differ between the
-    /// deploy-key and team paths; everything else derives from the body and the outcome.
     fn from_fetch(
         body: &ManagedConfigResponse,
         source: ManagedConfigSource,
-        principal: Option<String>,
-        key_fingerprint: Option<String>,
         outcome: &ApplyOutcome,
     ) -> Self {
         Self {
             wrote: outcome.wrote(),
             served: body.config_exists(),
             source: Some(source),
-            principal,
-            had_managed_config: body.has_managed_config(),
-            had_requirements: body.has_requirements(),
-            key_fingerprint,
-            fail_closed: body.requirements_fail_closed(),
             signature_rejected: outcome.signature_rejected(),
         }
     }
@@ -497,20 +479,7 @@ async fn sync_with_budget(
     budget: SyncBudget,
     team_override: Option<GrokAuth>,
 ) -> Result<SyncOutcome, ManagedConfigError> {
-    let outcome = sync_inner(budget, team_override).await?;
-    // Mark only when a principal was consulted AND the fetch wasn't signature-rejected —
-    // a rejected fetch persisted nothing, so marking would claim an unwritten body. Lock
-    // contention still marks (the holder persists the same config).
-    if outcome.source.is_some() && !outcome.signature_rejected {
-        crate::config::mark_managed_config_synced(crate::config::SyncMarker {
-            principal: outcome.principal.as_deref(),
-            had_managed_config: outcome.had_managed_config,
-            had_requirements: outcome.had_requirements,
-            key_fingerprint: outcome.key_fingerprint.as_deref(),
-            fail_closed: outcome.fail_closed,
-        });
-    }
-    Ok(outcome)
+    sync_inner(budget, team_override).await
 }
 
 /// A server response paired with the credential that fetched it.
@@ -595,42 +564,17 @@ async fn sync_inner(
                 body.deployment_id.as_deref(),
                 Some(&fingerprint),
             )?;
-            // Record the served deployment as the marker principal so the load-time
-            // gate rejects a cross-tenant signed policy. The VERIFIED payload's id is
-            // preferred — the signed-empty response carries it only inside the payload.
-            let principal = outcome
-                .signed_deployment_id()
-                .map(str::to_owned)
-                .or_else(|| body.deployment_id.clone());
-            Ok(SyncOutcome::from_fetch(
-                &body,
-                source,
-                principal,
-                Some(fingerprint),
-                &outcome,
-            ))
+            Ok(SyncOutcome::from_fetch(&body, source, &outcome))
         }
         FetchedConfig::Team { auth, body } => {
             let source = ManagedConfigSource::TeamOauth;
             let outcome = apply_fetched(&body, source, auth.team_id.as_deref(), None)?;
-            // Team identity is bound via principal (team id), not a key fingerprint.
-            Ok(SyncOutcome::from_fetch(
-                &body,
-                source,
-                auth.team_id.clone(),
-                None,
-                &outcome,
-            ))
+            Ok(SyncOutcome::from_fetch(&body, source, &outcome))
         }
         FetchedConfig::NoPrincipal => Ok(SyncOutcome {
             wrote: false,
             served: false,
             source: None,
-            principal: None,
-            had_managed_config: false,
-            had_requirements: false,
-            key_fingerprint: None,
-            fail_closed: false,
             signature_rejected: false,
         }),
     }
@@ -665,20 +609,14 @@ fn apply_fetched(
     let home = crate::util::grok_home::grok_home();
     let Some(_lock) = try_lock_managed_config(&home) else {
         tracing::debug!("managed config locked by another process; skipping apply");
-        return Ok(ApplyOutcome::Applied {
-            wrote: false,
-            signed_deployment_id,
-        });
+        return Ok(ApplyOutcome::Skipped);
     };
     // Re-check under the lock that the credential still exists. A logout during
     // the fetch runs `clear_orphan`; without this, the in-flight write would
     // restore that principal's policy right after it was cleared.
     if !credential_present(source) {
         tracing::info!("credential gone since fetch started; skipping apply");
-        return Ok(ApplyOutcome::Applied {
-            wrote: false,
-            signed_deployment_id,
-        });
+        return Ok(ApplyOutcome::Skipped);
     }
     // On a confirmed switch, evict prior files before writing the new ones — else an artifact the old
     // principal served but the new one omits keeps enforcing. Never fires on first sync / signed-out / pre-upgrade.
@@ -692,26 +630,79 @@ fn apply_fetched(
     if let Some(verified) = verified {
         clear_squatting_dir(&home.join(xai_grok_config::signed_policy::SIGNATURE_SIDECAR_FILE));
         xai_grok_config::signed_policy::write_sidecar(&home, &verified.sidecar)?;
+        if let Some(claim_sidecar) =
+            verified_claim_sidecar(body, served_principal_of(&verified.payload))
+        {
+            clear_squatting_dir(
+                &home.join(xai_grok_config::signed_policy::MANAGED_IDENTITY_SIDECAR_FILE),
+            );
+            xai_grok_config::signed_policy::write_managed_identity_sidecar(&home, &claim_sidecar)?;
+        }
     }
-    Ok(ApplyOutcome::Applied {
-        wrote,
-        signed_deployment_id,
-    })
+
+    // Marker last and under the same lock: this successful trusted refresh resets
+    // the rollback floor to wall time without describing a skipped/partial apply.
+    clear_squatting_dir(&home.join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE));
+    xai_grok_config::mark_managed_config_synced_at(
+        &home,
+        xai_grok_config::SyncMarker {
+            principal: if new_key_fingerprint.is_some() {
+                signed_deployment_id.as_deref().or(new_principal)
+            } else {
+                new_principal
+            },
+            had_managed_config: body.has_managed_config(),
+            had_requirements: body.has_requirements(),
+            key_fingerprint: new_key_fingerprint,
+            fail_closed: body.requirements_fail_closed(),
+        },
+    );
+    Ok(ApplyOutcome::Applied { wrote })
+}
+
+/// Principal bound by a verified policy payload.
+fn served_principal_of(payload: &xai_grok_config::signed_policy::SignedPayload) -> Option<&str> {
+    payload
+        .deployment_id
+        .as_deref()
+        .or(payload.team_id.as_deref())
+}
+
+/// Return the fetched identity-claim sidecar only when authentic, unexpired, and
+/// bound to the principal served by the verified policy payload.
+fn verified_claim_sidecar(
+    body: &ManagedConfigResponse,
+    served_principal: Option<&str>,
+) -> Option<xai_grok_config::signed_policy::SignatureEnvelope> {
+    let sidecar = body.managed_identity_sidecar()?;
+    let claim = match xai_grok_config::signed_policy::verify_fetched_claim(
+        &sidecar,
+        xai_grok_config::signed_policy::now_unix(),
+    ) {
+        Ok(claim) => claim,
+        Err(error) => {
+            tracing::debug!(error = %error, "managed-identity claim was not persisted");
+            return None;
+        }
+    };
+    if served_principal != Some(claim.principal.as_str()) {
+        tracing::debug!("managed-identity claim did not bind the served principal");
+        return None;
+    }
+    Some(sidecar)
 }
 
 /// Remove the prior principal's policy artifacts on a confirmed identity switch. Leaves the marker
 /// (the next `mark_managed_config_synced` overwrites it) and never touches the user's `config.toml`.
 fn evict_prior_managed_config(home: &std::path::Path) {
-    remove_synced_file(
-        home,
+    for name in [
         "managed_config.toml",
-        "evicted prior principal's managed config",
-    );
-    remove_synced_file(
-        home,
         "requirements.toml",
-        "evicted prior principal's requirements",
-    );
+        xai_grok_config::signed_policy::SIGNATURE_SIDECAR_FILE,
+        xai_grok_config::signed_policy::MANAGED_IDENTITY_SIDECAR_FILE,
+    ] {
+        remove_synced_file(home, name, "evicted prior principal's managed artifact");
+    }
 }
 
 /// Whether the credential a fetch used is still present. Mirrors the
@@ -909,6 +900,8 @@ pub fn managed_policy_gate() -> Result<(), String> {
     }
     // Purge first: an offline team switch would otherwise read as a substituted cache and refuse.
     purge_prior_tenant_on_identity_change();
+    // Tick after purge so a purged marker stays absent.
+    bump_managed_rollback_floor();
     managed_policy_gate_decision(
         managed_principal_present(),
         // Expiry-IGNORING identity: a backdated `auth.json` must not resolve the team to
@@ -942,6 +935,18 @@ fn purge_prior_tenant_on_identity_change() {
             "identity changed; purging the prior tenant's managed config"
         );
         remove_managed_config_files(&home);
+    }
+}
+
+/// Best-effort floor tick under the same lock used by apply and purge.
+fn bump_managed_rollback_floor() {
+    if !xai_grok_config::signed_policy::verification_active() {
+        return;
+    }
+    let home = crate::util::grok_home::grok_home();
+    match try_lock_managed_config(&home) {
+        Some(_lock) => xai_grok_config::bump_rollback_floor(&home),
+        None => tracing::debug!("managed-config lock contended; skipping rollback-floor tick"),
     }
 }
 

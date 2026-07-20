@@ -91,6 +91,10 @@ pub(super) struct ManagedConfigResponse {
     /// signed payload's policy is the trusted copy when verification is on.
     #[serde(default)]
     pub(super) signatures: Option<Vec<xai_grok_config::signed_policy::SignatureEnvelope>>,
+    /// Independent managed-identity claim envelopes, using the same key rotation shape.
+    #[serde(default)]
+    pub(super) managed_identity_signatures:
+        Option<Vec<xai_grok_config::signed_policy::SignatureEnvelope>>,
 }
 
 impl ManagedConfigResponse {
@@ -105,21 +109,20 @@ impl ManagedConfigResponse {
     pub(super) fn signature_sidecar(
         &self,
     ) -> Option<xai_grok_config::signed_policy::SignatureEnvelope> {
-        self.signature_sidecar_with(xai_grok_config::signed_policy::embedded_key_id_trusted)
+        pick_trusted_envelope(
+            self.signatures.as_deref(),
+            xai_grok_config::signed_policy::embedded_key_id_trusted,
+        )
     }
 
-    /// Predicate-injected core of [`Self::signature_sidecar`] so tests can pick
-    /// without a compiled-in key set.
-    fn signature_sidecar_with(
+    /// The independent identity-claim envelope selected by the policy rotation rule.
+    pub(super) fn managed_identity_sidecar(
         &self,
-        key_id_trusted: impl Fn(&str) -> bool,
     ) -> Option<xai_grok_config::signed_policy::SignatureEnvelope> {
-        let envelopes = self.signatures.as_deref()?;
-        envelopes
-            .iter()
-            .find(|e| key_id_trusted(&e.key_id))
-            .or_else(|| envelopes.first())
-            .cloned()
+        pick_trusted_envelope(
+            self.managed_identity_signatures.as_deref(),
+            xai_grok_config::signed_policy::embedded_key_id_trusted,
+        )
     }
 
     /// Non-empty served content, recorded in the marker so staleness can later detect a deleted file.
@@ -142,39 +145,36 @@ impl ManagedConfigResponse {
     }
 }
 
+/// Pick the envelope whose hint-only key id is trusted, else the first envelope.
+fn pick_trusted_envelope(
+    envelopes: Option<&[xai_grok_config::signed_policy::SignatureEnvelope]>,
+    key_id_trusted: impl Fn(&str) -> bool,
+) -> Option<xai_grok_config::signed_policy::SignatureEnvelope> {
+    let envelopes = envelopes?;
+    envelopes
+        .iter()
+        .find(|envelope| key_id_trusted(&envelope.key_id))
+        .or_else(|| envelopes.first())
+        .cloned()
+}
+
 /// Result of [`apply_fetched`].
 pub(super) enum ApplyOutcome {
-    /// Persisted the policy (`wrote` = at least one artifact written or removed), or
-    /// skipped under lock contention / a vanished credential (`wrote` = false); the
-    /// marker should be recorded either way. `signed_deployment_id` is the VERIFIED
-    /// payload's `deployment_id` (`None` when unsigned) — stronger than the body's,
-    /// which is omitted on the signed-empty response.
-    Applied {
-        wrote: bool,
-        signed_deployment_id: Option<String>,
-    },
-    /// Verification is active and the envelope did not verify — nothing was persisted.
-    /// The marker must NOT be recorded: it would claim a body that was never written.
+    /// Policy and marker persisted while holding the managed-config lock.
+    Applied { wrote: bool },
+    /// Nothing persisted: another process held the lock or the credential vanished.
+    Skipped,
+    /// Verification failed, so no policy or marker was persisted.
     SignatureRejected,
 }
 
 impl ApplyOutcome {
     pub(super) fn wrote(&self) -> bool {
-        matches!(self, Self::Applied { wrote: true, .. })
+        matches!(self, Self::Applied { wrote: true })
     }
 
     pub(super) fn signature_rejected(&self) -> bool {
         matches!(self, Self::SignatureRejected)
-    }
-
-    pub(super) fn signed_deployment_id(&self) -> Option<&str> {
-        match self {
-            Self::Applied {
-                signed_deployment_id,
-                ..
-            } => signed_deployment_id.as_deref(),
-            Self::SignatureRejected => None,
-        }
     }
 }
 
@@ -218,29 +218,22 @@ mod tests {
             signature: format!("sig-{kid}"),
             key_id: kid.to_owned(),
         };
-        let body = ManagedConfigResponse {
-            signatures: Some(vec![envelope("v1"), envelope("v2")]),
-            ..Default::default()
-        };
+        let envelopes = vec![envelope("v1"), envelope("v2")];
 
         // A rotated client trusting only v2 picks the v2 envelope from the array.
-        let picked = body.signature_sidecar_with(|id| id == "v2").unwrap();
+        let picked = pick_trusted_envelope(Some(&envelopes), |id| id == "v2").unwrap();
         assert_eq!(picked.key_id, "v2");
         assert_eq!(picked.signed_payload, "payload-v2");
 
         // Trusting v1 picks the primary entry (first in the array).
-        let picked = body.signature_sidecar_with(|id| id == "v1").unwrap();
+        let picked = pick_trusted_envelope(Some(&envelopes), |id| id == "v1").unwrap();
         assert_eq!(picked.key_id, "v1");
 
         // No trusted id → the first entry, so verification reports UnknownKeyId.
-        let picked = body.signature_sidecar_with(|_| false).unwrap();
+        let picked = pick_trusted_envelope(Some(&envelopes), |_| false).unwrap();
         assert_eq!(picked.key_id, "v1");
 
         // Nothing signed at all → None.
-        assert!(
-            ManagedConfigResponse::default()
-                .signature_sidecar_with(|_| true)
-                .is_none()
-        );
+        assert!(pick_trusted_envelope(None, |_| true).is_none());
     }
 }

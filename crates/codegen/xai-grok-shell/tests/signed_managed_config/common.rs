@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use base64::Engine as _;
-use xai_grok_config::signed_policy::{self, SignedPayload};
+use xai_grok_config::signed_policy::{
+    self, MANAGED_IDENTITY_TYP, MANAGED_POLICY_TYP, ManagedIdentityClaim, SignedPayload,
+};
 
 pub const MANAGED: &str = "[cli]\ntheme = \"dark\"\n";
 pub const REQUIREMENTS_FAIL_CLOSED: &str = "fail_closed = true\n[features]\nweb_fetch = false\n";
@@ -61,6 +63,7 @@ pub fn reset(home: &std::path::Path) {
         "managed_config_cache.json",
         "managed_config.lock",
         "managed_config.sig.json",
+        "managed_identity.sig.json",
     ] {
         let _ = std::fs::remove_file(home.join(f));
     }
@@ -163,6 +166,20 @@ pub fn sign_envelope(
     })
 }
 
+fn sign_identity_claim(
+    kp: &ring::signature::Ed25519KeyPair,
+    claim: &ManagedIdentityClaim,
+) -> serde_json::Value {
+    let signed_payload = serde_json::to_string(claim).unwrap();
+    let signature = base64::engine::general_purpose::STANDARD
+        .encode(kp.sign(signed_payload.as_bytes()).as_ref());
+    serde_json::json!({
+        "signed_payload": signed_payload,
+        "signature": signature,
+        "key_id": claim.key_id.as_str(),
+    })
+}
+
 /// A team deployment-config response signed by `kp` under [`TEST_KEY_ID`]. The
 /// body's legacy fields mirror the payload exactly (the client rejects a divergence).
 pub fn signed_team_body(
@@ -172,6 +189,7 @@ pub fn signed_team_body(
     requirements: Option<&str>,
 ) -> String {
     let payload = SignedPayload {
+        typ: MANAGED_POLICY_TYP.into(),
         version: prod_mc_cli_chat_proxy_types::SIGNED_PAYLOAD_VERSION,
         deployment_id: None,
         team_id: Some(team_id.to_owned()),
@@ -181,12 +199,20 @@ pub fn signed_team_body(
         expires_at: TEST_EXPIRES_AT,
         key_id: TEST_KEY_ID.into(),
     };
+    let claim = ManagedIdentityClaim {
+        typ: MANAGED_IDENTITY_TYP.into(),
+        principal: team_id.to_owned(),
+        fail_closed: payload.fail_closed,
+        expires_at: TEST_EXPIRES_AT,
+        key_id: TEST_KEY_ID.into(),
+    };
     serde_json::json!({
         "deployment_id": serde_json::Value::Null,
         "team_id": team_id,
         "managed_config": managed,
         "requirements": requirements,
         "signatures": [sign_envelope(kp, &payload)],
+        "managed_identity_signatures": [sign_identity_claim(kp, &claim)],
     })
     .to_string()
 }

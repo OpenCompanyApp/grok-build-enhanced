@@ -26,6 +26,7 @@ fn signed_verdict_overrides_marker_both_ways() {
     // Signed says NOT compromised → proceed, overriding the marker's tamper signal.
     assert!(!managed_policy_compromised_decision(
         SignedVerdict::Trusted,
+        || false,
         false,
         Some(&cache),
         home,
@@ -39,6 +40,7 @@ fn signed_verdict_overrides_marker_both_ways() {
     };
     assert!(managed_policy_compromised_decision(
         SignedVerdict::Compromised,
+        || false,
         false,
         Some(&intact),
         home,
@@ -65,6 +67,7 @@ fn signed_verdict_does_not_skip_deploy_key_fingerprint() {
     // opted-in cache.
     assert!(managed_policy_compromised_decision(
         SignedVerdict::Trusted,
+        || false,
         true, // deploy-key fingerprint mismatch
         Some(&opted_in),
         home,
@@ -73,6 +76,7 @@ fn signed_verdict_does_not_skip_deploy_key_fingerprint() {
     // A matching fingerprint trusts the signed verdict as before.
     assert!(!managed_policy_compromised_decision(
         SignedVerdict::Trusted,
+        || false,
         false,
         Some(&opted_in),
         home,
@@ -87,6 +91,7 @@ fn signed_verdict_does_not_skip_deploy_key_fingerprint() {
     };
     assert!(!managed_policy_compromised_decision(
         SignedVerdict::Trusted,
+        || false,
         true,
         Some(&opted_out),
         home,
@@ -96,6 +101,7 @@ fn signed_verdict_does_not_skip_deploy_key_fingerprint() {
     // this opted-OUT marker.
     assert!(managed_policy_compromised_decision(
         SignedVerdict::Compromised,
+        || false,
         true,
         Some(&opted_out),
         home,
@@ -122,6 +128,7 @@ fn unreadable_sidecar_falls_back_to_marker() {
     assert!(
         !managed_policy_compromised_decision(
             SignedVerdict::SidecarUnreadable,
+            || false,
             false,
             Some(&served_fail_closed),
             home,
@@ -133,6 +140,7 @@ fn unreadable_sidecar_falls_back_to_marker() {
     std::fs::remove_file(home.join("requirements.toml")).unwrap();
     assert!(managed_policy_compromised_decision(
         SignedVerdict::SidecarUnreadable,
+        || false,
         false,
         Some(&served_fail_closed),
         home,
@@ -159,6 +167,7 @@ fn missing_sidecar_under_fail_closed_marker_refuses() {
     assert!(
         managed_policy_compromised_decision(
             SignedVerdict::NoAuthenticSidecar,
+            || false,
             false,
             Some(&served_fail_closed),
             home,
@@ -174,6 +183,7 @@ fn missing_sidecar_under_fail_closed_marker_refuses() {
     };
     assert!(!managed_policy_compromised_decision(
         SignedVerdict::NoAuthenticSidecar,
+        || false,
         false,
         Some(&served_nothing),
         home,
@@ -188,6 +198,7 @@ fn missing_sidecar_under_fail_closed_marker_refuses() {
     };
     assert!(!managed_policy_compromised_decision(
         SignedVerdict::NoAuthenticSidecar,
+        || false,
         false,
         Some(&opted_out),
         home,
@@ -196,6 +207,7 @@ fn missing_sidecar_under_fail_closed_marker_refuses() {
     // No marker at all → nothing to enforce.
     assert!(!managed_policy_compromised_decision(
         SignedVerdict::NoAuthenticSidecar,
+        || false,
         false,
         None,
         home,
@@ -219,6 +231,7 @@ fn inactive_verdict_falls_through_to_marker() {
     };
     assert!(managed_policy_compromised_decision(
         SignedVerdict::Inactive,
+        || false,
         false,
         Some(&missing),
         home,
@@ -233,6 +246,7 @@ fn inactive_verdict_falls_through_to_marker() {
     };
     assert!(!managed_policy_compromised_decision(
         SignedVerdict::Inactive,
+        || false,
         false,
         Some(&optout),
         home,
@@ -241,6 +255,7 @@ fn inactive_verdict_falls_through_to_marker() {
     // No marker at all → nothing to enforce.
     assert!(!managed_policy_compromised_decision(
         SignedVerdict::Inactive,
+        || false,
         false,
         None,
         home,
@@ -1010,3 +1025,103 @@ fn gate_retries_once_on_a_compromised_verdict() {
     assert!(refused);
     assert_eq!(evals, 1);
 }
+
+#[test]
+fn rollback_floor_ticks_up_never_down_and_never_creates_a_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let floor = |home: &Path| read_managed_config_cache(home).map_or(0, |c| c.rollback_floor);
+
+    raise_rollback_floor(home, 5_000);
+    assert!(read_managed_config_cache(home).is_none());
+
+    mark_managed_config_synced_at(
+        home,
+        SyncMarker {
+            principal: Some("synthetic-principal"),
+            had_managed_config: false,
+            had_requirements: false,
+            key_fingerprint: None,
+            fail_closed: false,
+        },
+    );
+    let base = floor(home);
+    raise_rollback_floor(home, base + 1_000);
+    assert_eq!(floor(home), base + 1_000);
+    raise_rollback_floor(home, base);
+    assert_eq!(floor(home), base + 1_000, "the floor must never fall");
+}
+
+#[test]
+fn floor_bump_preserves_unknown_marker_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    std::fs::write(
+        home.join(MANAGED_CONFIG_CACHE_FILE),
+        r#"{"synced_at":1700000000,"rollback_floor":1700000000,"future_field":true}"#,
+    )
+    .unwrap();
+
+    raise_rollback_floor(home, 1_700_000_100);
+    let marker = std::fs::read_to_string(home.join(MANAGED_CONFIG_CACHE_FILE)).unwrap();
+    let marker: serde_json::Value = serde_json::from_str(&marker).unwrap();
+    assert_eq!(marker["rollback_floor"].as_u64(), Some(1_700_000_100));
+    assert_eq!(marker["future_field"], serde_json::Value::Bool(true));
+}
+
+#[test]
+fn trusted_refresh_resets_an_inflated_rollback_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    std::fs::write(
+        home.join(MANAGED_CONFIG_CACHE_FILE),
+        r#"{"rollback_floor":9999999999}"#,
+    )
+    .unwrap();
+
+    mark_managed_config_synced_at(
+        home,
+        SyncMarker {
+            principal: Some("synthetic-principal"),
+            had_managed_config: false,
+            had_requirements: false,
+            key_fingerprint: None,
+            fail_closed: false,
+        },
+    );
+    let floor = read_managed_config_cache(home).unwrap().rollback_floor;
+    assert!(
+        (1_700_000_000..9_999_999_999).contains(&floor),
+        "trusted refresh must reset an inflated floor, got {floor}"
+    );
+}
+
+#[test]
+fn far_future_synced_at_is_stale_but_bounded_skew_is_fresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    std::fs::write(
+        home.join(MANAGED_CONFIG_CACHE_FILE),
+        r#"{"synced_at":32503680000}"#,
+    )
+    .unwrap();
+    assert!(managed_config_stale_at(Some(home), &ServingIdentity::None));
+
+    std::fs::write(
+        home.join(MANAGED_CONFIG_CACHE_FILE),
+        format!(r#"{{"synced_at":{}}}"#, u64::MAX),
+    )
+    .unwrap();
+    assert!(managed_config_stale_at(Some(home), &ServingIdentity::None));
+
+    let in_a_minute = crate::signed_policy::now_unix() + 60;
+    std::fs::write(
+        home.join(MANAGED_CONFIG_CACHE_FILE),
+        format!(r#"{{"synced_at":{in_a_minute}}}"#),
+    )
+    .unwrap();
+    assert!(!managed_config_stale_at(Some(home), &ServingIdentity::None));
+}
+
+#[path = "claim_tests.rs"]
+mod claim_tests;

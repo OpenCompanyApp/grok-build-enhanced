@@ -9,12 +9,21 @@ use serde::{Deserialize, Serialize};
 /// verifiers can distinguish generations; `0` means a pre-versioned payload.
 pub const SIGNED_PAYLOAD_VERSION: u32 = 1;
 
+/// Domain-separation tags inside the signed bytes: both message types share one
+/// signing key, so each verifier requires its own tag (no cross-substitution).
+pub const MANAGED_POLICY_TYP: &str = "grok.managed_policy.v1";
+pub const MANAGED_IDENTITY_TYP: &str = "grok.managed_identity.v1";
+
 /// The exact bytes the server signs: the served policy, the principal it is
 /// bound to, and an expiry. Serialized once on the server and shipped verbatim
 /// as `signed_payload`, so the client verifies the received bytes directly
 /// instead of re-canonicalizing (no cross-language serialization drift).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedPayload {
+    /// Domain-separation tag; the verifier requires [`MANAGED_POLICY_TYP`].
+    /// `default` so untagged JSON parses — verification still rejects it.
+    #[serde(default)]
+    pub typ: String,
     /// Payload format version ([`SIGNED_PAYLOAD_VERSION`]); `default` 0 so
     /// pre-versioned sidecars parse and verify unchanged.
     #[serde(default)]
@@ -34,6 +43,25 @@ pub struct SignedPayload {
     /// Unix seconds after which the signature is no longer trusted.
     pub expires_at: u64,
     /// Identifies the signing key, so a rotation can be distinguished.
+    pub key_id: String,
+}
+
+/// Server-signed claim that a principal is managed (+ fail-closed), persisted by
+/// the client as its own sidecar so deleting the policy marker and sidecar alone
+/// cannot downgrade the load-time gate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagedIdentityClaim {
+    /// Domain-separation tag; the verifier requires [`MANAGED_IDENTITY_TYP`].
+    #[serde(default)]
+    pub typ: String,
+    /// The managed principal (deployment or team id) this claim is bound to.
+    pub principal: String,
+    /// Strict opt-in from the same server policy source. Missing remains permissive.
+    #[serde(default)]
+    pub fail_closed: bool,
+    /// Unix seconds after which the claim is no longer trusted.
+    pub expires_at: u64,
+    /// Signing key id from the same rotation set as the policy envelope.
     pub key_id: String,
 }
 
@@ -83,6 +111,7 @@ mod tests {
     #[test]
     fn signed_payload_version_round_trips_and_defaults() {
         let versioned = SignedPayload {
+            typ: MANAGED_POLICY_TYP.to_owned(),
             version: SIGNED_PAYLOAD_VERSION,
             deployment_id: None,
             team_id: Some("team-007".into()),
@@ -101,5 +130,31 @@ mod tests {
         let legacy: SignedPayload =
             serde_json::from_str(r#"{"expires_at": 1, "key_id": "v1"}"#).unwrap();
         assert_eq!(legacy.version, 0, "pre-versioned payloads default to 0");
+        assert_eq!(
+            legacy.typ, "",
+            "an untagged payload parses but verifiers reject it"
+        );
+    }
+
+    #[test]
+    fn managed_identity_claim_round_trips_and_defaults() {
+        let claim = ManagedIdentityClaim {
+            typ: MANAGED_IDENTITY_TYP.to_owned(),
+            principal: "synthetic-principal".into(),
+            fail_closed: true,
+            expires_at: 4_000_000_000,
+            key_id: "v1".into(),
+        };
+        let json = serde_json::to_string(&claim).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ManagedIdentityClaim>(&json).unwrap(),
+            claim
+        );
+
+        let partial: ManagedIdentityClaim = serde_json::from_str(
+            r#"{"typ":"grok.managed_identity.v1","principal":"synthetic-principal","expires_at":1,"key_id":"v1"}"#,
+        )
+        .unwrap();
+        assert!(!partial.fail_closed, "a partial claim parses permissively");
     }
 }

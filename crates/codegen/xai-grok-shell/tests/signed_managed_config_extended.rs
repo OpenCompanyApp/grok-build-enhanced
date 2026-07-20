@@ -16,7 +16,7 @@ use common::{
     write_config, write_dk_config, write_team_auth,
 };
 use serial_test::serial;
-use xai_grok_config::signed_policy::{self, SignedPayload};
+use xai_grok_config::signed_policy::{self, MANAGED_POLICY_TYP, SignedPayload};
 
 /// The healthy fail-closed starting state the tamper/heal scenarios mutate;
 /// the mock keeps serving the same body, so a healing sync can refetch it.
@@ -40,6 +40,7 @@ async fn sync_fail_closed_policy(home: &std::path::Path, kp: &ring::signature::E
 /// provisioned key with no config row.
 fn signed_dk_empty_body(kp: &ring::signature::Ed25519KeyPair, deployment_id: &str) -> String {
     let payload = SignedPayload {
+        typ: MANAGED_POLICY_TYP.into(),
         version: prod_mc_cli_chat_proxy_types::SIGNED_PAYLOAD_VERSION,
         deployment_id: Some(deployment_id.to_owned()),
         team_id: None,
@@ -292,5 +293,63 @@ async fn sidecar_directory_squat_refuses_then_online_sync_heals() {
     assert!(
         xai_grok_shell::managed_config::managed_policy_gate().is_ok(),
         "enforcement is restored after the heal"
+    );
+}
+
+/// Removing both the forgeable marker and the policy sidecar must not downgrade
+/// a principal while its independent signed identity claim remains authentic.
+#[tokio::test]
+#[serial]
+async fn identity_claim_blocks_marker_and_policy_sidecar_removal_downgrade() {
+    let home = test_home().clone();
+    reset(&home);
+    let (kp, _pubkey) = install_test_key();
+
+    sync_fail_closed_policy(&home, &kp).await;
+    assert!(home.join("managed_identity.sig.json").is_file());
+
+    std::fs::remove_file(home.join("managed_config.sig.json")).unwrap();
+    std::fs::remove_file(home.join("managed_config_cache.json")).unwrap();
+
+    assert!(
+        xai_grok_shell::managed_config::managed_policy_gate().is_err(),
+        "the independent claim must preserve fail-closed enforcement"
+    );
+    assert!(
+        xai_grok_shell::config::is_managed_config_hard_stale_for(&team_identity("team-007")),
+        "the refusing state must request an online self-heal"
+    );
+
+    xai_grok_shell::managed_config::sync()
+        .await
+        .expect("trusted refresh should heal removed policy integrity state");
+    assert!(xai_grok_shell::managed_config::managed_policy_gate().is_ok());
+}
+
+/// A verified and persisted refresh resets a forward-inflated rollback floor.
+#[tokio::test]
+#[serial]
+async fn trusted_refresh_resets_the_persisted_rollback_floor() {
+    let home = test_home().clone();
+    reset(&home);
+    let (kp, _pubkey) = install_test_key();
+
+    sync_fail_closed_policy(&home, &kp).await;
+    let inflated = 9_999_999_999;
+    xai_grok_config::bump_rollback_floor_with_now(&home, inflated);
+    let marker = std::fs::read_to_string(home.join("managed_config_cache.json")).unwrap();
+    let marker: serde_json::Value = serde_json::from_str(&marker).unwrap();
+    assert_eq!(marker["rollback_floor"].as_u64(), Some(inflated));
+
+    let refresh_started = signed_policy::now_unix();
+    xai_grok_shell::managed_config::sync()
+        .await
+        .expect("trusted refresh should succeed");
+    let marker = std::fs::read_to_string(home.join("managed_config_cache.json")).unwrap();
+    let marker: serde_json::Value = serde_json::from_str(&marker).unwrap();
+    let reset = marker["rollback_floor"].as_u64().unwrap();
+    assert!(
+        (refresh_started..inflated).contains(&reset),
+        "trusted refresh must reset the floor to current wall time"
     );
 }

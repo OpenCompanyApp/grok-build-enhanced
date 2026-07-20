@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::paths::user_grok_home;
 
 /// Sync marker; staleness keys on this, not mtimes.
-const MANAGED_CONFIG_CACHE_FILE: &str = "managed_config_cache.json";
+pub const MANAGED_CONFIG_CACHE_FILE: &str = "managed_config_cache.json";
 
 /// The on-disk marker: unsigned, detects only deletion / identity change, not
 /// in-place edits (see the module doc).
@@ -33,6 +33,13 @@ struct ManagedConfigCache {
     /// Served opt-in (`fail_closed = true`); `default` false so a pre-upgrade or un-opted marker never fails closed.
     #[serde(default)]
     fail_closed: bool,
+    /// Local-clock high-water mark used by at-rest signed checks so a clock rollback
+    /// cannot un-expire trusted policy. A successful refresh resets it to wall time.
+    #[serde(default)]
+    rollback_floor: u64,
+    /// Preserve fields written by newer binaries when only the floor is raised.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// What the cache is bound to (one value, so a (team, key) combo can't form). The
@@ -87,7 +94,7 @@ fn managed_deployment_id_at(home: &Path, key_fingerprint: &str) -> Option<String
     cache.principal.filter(|p| !p.trim().is_empty())
 }
 
-fn mark_managed_config_synced_at(home: &Path, marker: SyncMarker<'_>) {
+pub fn mark_managed_config_synced_at(home: &Path, marker: SyncMarker<'_>) {
     let SyncMarker {
         principal,
         had_managed_config,
@@ -107,7 +114,40 @@ fn mark_managed_config_synced_at(home: &Path, marker: SyncMarker<'_>) {
         had_requirements,
         key_fingerprint: key_fingerprint.map(str::to_owned),
         fail_closed,
+        // Reset rather than max: a trusted online refresh heals an inflated floor.
+        rollback_floor: synced_at.unwrap_or(0),
+        extra: Default::default(),
     };
+    match serde_json::to_string(&cache) {
+        Ok(json) => write_marker_atomically(home, &json),
+        Err(e) => tracing::warn!("failed to serialize managed config cache: {e}"),
+    }
+}
+
+/// Raise an existing marker's rollback floor to the wall clock. Dark builds are inert.
+pub fn bump_rollback_floor(home: &Path) {
+    bump_rollback_floor_with_now(home, crate::signed_policy::now_unix());
+}
+
+/// Injected-clock seam used by contract tests.
+#[doc(hidden)]
+pub fn bump_rollback_floor_with_now(home: &Path, now: u64) {
+    if !crate::signed_policy::verification_active() {
+        return;
+    }
+    raise_rollback_floor(home, now);
+}
+
+/// Never lowers the floor and never recreates a removed marker.
+fn raise_rollback_floor(home: &Path, now: u64) {
+    let Some(mut cache) = read_managed_config_cache(home) else {
+        return;
+    };
+    let raised = cache.rollback_floor.max(now);
+    if raised == cache.rollback_floor {
+        return;
+    }
+    cache.rollback_floor = raised;
     match serde_json::to_string(&cache) {
         Ok(json) => write_marker_atomically(home, &json),
         Err(e) => tracing::warn!("failed to serialize managed config cache: {e}"),
@@ -271,19 +311,30 @@ fn expected_signed_principal<'a>(
     serving_team_id(identity).or_else(|| cache.and_then(|c| c.principal.as_deref()))
 }
 
-/// A signing-enabled build over a legacy unsigned / edited / forged or foreign-bound
-/// cache refetches a signed copy. Dark build or no policy on disk → false, so this is
-/// inert until a key is provisioned.
+/// At-rest signed checks use the greater of wall time and the persisted floor.
+fn effective_now(cache: Option<&ManagedConfigCache>) -> u64 {
+    crate::signed_policy::now_unix().max(cache.map_or(0, |cache| cache.rollback_floor))
+}
+
+/// A signing-enabled build refetches an invalid policy cache. It also refetches
+/// when an imposing identity claim no longer has an authentic policy sidecar.
 fn signed_cache_needs_refetch(
     home: &Path,
     cache: Option<&ManagedConfigCache>,
     identity: &ServingIdentity,
 ) -> bool {
-    crate::signed_policy::cloud_cache_signature_invalid(
-        home,
-        expected_signed_principal(cache, identity),
-        crate::signed_policy::now_unix(),
-    )
+    let expected_principal = expected_signed_principal(cache, identity);
+    let now = effective_now(cache);
+    crate::signed_policy::cloud_cache_signature_invalid(home, expected_principal, now)
+        || (matches!(
+            crate::signed_policy::signed_cache_compromised(home, expected_principal, now),
+            crate::signed_policy::SignedVerdict::NoAuthenticSidecar
+                | crate::signed_policy::SignedVerdict::SidecarUnreadable
+        ) && crate::signed_policy::managed_identity_claim_imposes(
+            home,
+            expected_principal,
+            now,
+        ))
 }
 
 fn is_managed_config_hard_stale_for_at(home: &Path, identity: &ServingIdentity) -> bool {
@@ -339,11 +390,10 @@ fn managed_policy_compromised_once(
     identity: &ServingIdentity,
 ) -> (bool, crate::signed_policy::SignedVerdict) {
     let cache = read_managed_config_cache(home);
-    let signed_verdict = crate::signed_policy::signed_cache_compromised(
-        home,
-        expected_signed_principal(cache.as_ref(), identity),
-        crate::signed_policy::now_unix(),
-    );
+    let expected_principal = expected_signed_principal(cache.as_ref(), identity);
+    let now = effective_now(cache.as_ref());
+    let signed_verdict =
+        crate::signed_policy::signed_cache_compromised(home, expected_principal, now);
     // The signature binds a deployment_id, not the local deploy key, so a Trusted verdict
     // can't attest the configured key — pass the fingerprint mismatch through so it gates
     // on every path.
@@ -352,6 +402,7 @@ fn managed_policy_compromised_once(
         .is_some_and(|c| cache_key_fingerprint_mismatch(c, identity));
     let compromised = managed_policy_compromised_decision(
         signed_verdict,
+        || crate::signed_policy::managed_identity_claim_imposes(home, expected_principal, now),
         key_fingerprint_mismatch,
         cache.as_ref(),
         home,
@@ -365,6 +416,7 @@ fn managed_policy_compromised_once(
 /// out so the signed↔marker integration is unit-testable without a compiled-in key.
 fn managed_policy_compromised_decision(
     signed_verdict: crate::signed_policy::SignedVerdict,
+    claim_imposes: impl FnOnce() -> bool,
     key_fingerprint_mismatch: bool,
     cache: Option<&ManagedConfigCache>,
     home: &Path,
@@ -411,11 +463,22 @@ fn managed_policy_compromised_decision(
         SignedVerdict::Compromised => true,
         // Trusted clears the gate — except the deploy-key fingerprint, which the signature can't attest.
         SignedVerdict::Trusted => key_fingerprint_mismatch && marker_compromised(),
-        SignedVerdict::NoAuthenticSidecar => sidecar_required_but_missing() || marker_compromised(),
+        SignedVerdict::NoAuthenticSidecar => {
+            let refused = claim_imposes();
+            if refused {
+                tracing::warn!(
+                    "managed policy fail-closed gate: refusing session — the signed managed-identity claim requires an authentic policy sidecar"
+                );
+            }
+            refused || sidecar_required_but_missing() || marker_compromised()
+        }
         SignedVerdict::SidecarUnreadable => marker_compromised(),
         SignedVerdict::Inactive => marker_compromised(),
     }
 }
+
+/// Same-machine markers tolerate only bounded forward clock skew.
+const MAX_FUTURE_SYNCED_AT_SKEW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// Stale when never synced, past the threshold, identity differs, a served artifact is now missing,
 /// or (keyed builds) the signed cache no longer verifies. No home → nothing to refresh into → not
@@ -436,13 +499,12 @@ fn managed_config_stale_at(home: Option<&Path>, identity: &ServingIdentity) -> b
         return true;
     }
     match cache.synced_at {
-        // `duration_since` errs when `synced_at` is in the future (clock skew);
-        // treat that as freshly synced rather than stale.
         Some(secs) => {
-            let synced_at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
-            std::time::SystemTime::now()
-                .duration_since(synced_at)
-                .is_ok_and(|age| age > managed_config_stale_threshold())
+            let now = effective_now(Some(&cache));
+            let age = now.saturating_sub(secs);
+            let skew = secs.saturating_sub(now);
+            age > managed_config_stale_threshold().as_secs()
+                || skew > MAX_FUTURE_SYNCED_AT_SKEW.as_secs()
         }
         None => true,
     }

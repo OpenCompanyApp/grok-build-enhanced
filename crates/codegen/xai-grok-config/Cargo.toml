@@ -33,6 +33,9 @@ core-foundation = { workspace = true }
 tempfile = { workspace = true }
 
 [features]
+default = []
+# Compile-time-only trusted-key override for external integration tests.
+test-support = []
 
 [lints]
 workspace = true

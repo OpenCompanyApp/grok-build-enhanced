@@ -335,6 +335,40 @@
       ]
     },
     {
+      "id": "provider-neutral-managed-policy-integrity",
+      "description": "Audited Grok Build ba76b0a managed-policy integrity compatibility: signed-message domain separation, independent managed-identity claims, downgrade resistance, rollback-floor persistence, bounded clock skew, and trusted-refresh reset.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-config/Cargo.toml",
+        "crates/codegen/xai-grok-config/src/lib.rs",
+        "crates/codegen/xai-grok-config/src/managed_cache.rs",
+        "crates/codegen/xai-grok-config/src/managed_cache/claim_tests.rs",
+        "crates/codegen/xai-grok-config/src/managed_cache/tests.rs",
+        "crates/codegen/xai-grok-config/src/signed_policy.rs",
+        "crates/codegen/xai-grok-config/src/signed_policy/claim_tests.rs",
+        "crates/codegen/xai-grok-config/src/signed_policy/tests.rs",
+        "crates/codegen/xai-grok-shell/Cargo.toml",
+        "crates/codegen/xai-grok-shell/src/managed_config.rs",
+        "crates/codegen/xai-grok-shell/src/managed_config/response.rs",
+        "crates/codegen/xai-grok-shell/tests/signed_managed_config/common.rs",
+        "crates/codegen/xai-grok-shell/tests/signed_managed_config_extended.rs",
+        "prod/mc/cli-chat-proxy-types/src/deployment_config_types.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-config/src/managed_cache.rs",
+        "crates/codegen/xai-grok-config/src/signed_policy.rs",
+        "crates/codegen/xai-grok-shell/src/managed_config.rs",
+        "crates/codegen/xai-grok-shell/src/managed_config/response.rs",
+        "crates/codegen/xai-grok-shell/tests/signed_managed_config_extended.rs",
+        "prod/mc/cli-chat-proxy-types/src/deployment_config_types.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "provider-neutral-session-durability-acp-import",
       "description": "Pinned Grok Build ba76b0a provider-neutral session append durability and ACP state/import contracts with Enhanced local credential-binding export/import isolation.",
       "source_ids": [
