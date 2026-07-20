@@ -477,7 +477,7 @@ pub(crate) struct CompletedSubagent {
     pub subagent_type: String,
     pub persona: Option<String>,
     pub started_at: std::time::Instant,
-    /// When the subagent moved to the completed map. Used for TTL eviction.
+    /// When the subagent moved to the completed map. Orders cap eviction.
     pub completed_at: std::time::Instant,
     pub result: SubagentResult,
     /// ID of the source subagent this session was resumed from.
@@ -586,6 +586,10 @@ pub(crate) struct SubagentCoordinator {
     /// Cleared on freeze/cancel. See AGENTS.md rule 3 for the completeness model.
     subagent_usage_not_applied_prompts: std::collections::HashSet<String>,
 }
+/// Cap on completed results retained for polling and `resume_from` fast-path
+/// lookup. Older entries remain durably resumable through their on-disk
+/// `meta.json` records after eviction.
+pub(crate) const MAX_COMPLETED_ENTRIES: usize = 1024;
 fn tracker_to_summary(t: &SubagentTracker) -> ActiveSubagentSummary {
     ActiveSubagentSummary {
         subagent_id: t.subagent_id.clone(),

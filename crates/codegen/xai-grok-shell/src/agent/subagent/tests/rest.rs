@@ -593,7 +593,7 @@ fn snapshot_ref_write_promotes_nonterminal_status_to_terminal() {
     assert_eq!("completed", reread.status);
 }
 /// The coordinator setter stamps the snapshot ref onto the in-memory
-/// completed entry so `resume_from` can rehydrate before TTL eviction.
+/// completed entry so `resume_from` can rehydrate before cap eviction.
 #[tokio::test]
 async fn set_completed_snapshot_ref_updates_in_memory_entry() {
     let mut coordinator = SubagentCoordinator::new();
@@ -621,7 +621,7 @@ async fn set_completed_snapshot_ref_updates_in_memory_entry() {
         .unwrap();
     assert_eq!(after.snapshot_ref.as_deref(), Some("refs/grok/subagents/sa-mem"));
 }
-/// Unknown id is a no-op (entry already TTL-evicted; meta.json still holds it).
+/// Unknown id is a no-op (entry already cap-evicted; meta.json still holds it).
 #[test]
 fn set_completed_snapshot_ref_unknown_id_is_noop() {
     let mut coordinator = SubagentCoordinator::new();

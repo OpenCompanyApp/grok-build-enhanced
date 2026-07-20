@@ -862,23 +862,23 @@ fn move_pending_to_cancelled_creates_cancelled_entry() {
     }
 }
 #[test]
-fn evict_stale_completed_uses_completion_time() {
+fn completed_entries_are_capped_oldest_first() {
     let mut coordinator = SubagentCoordinator::new();
-    coordinator
-        .completed
-        .insert(
-            "sub-recent".to_string(),
+    let base = std::time::Instant::now();
+    for i in 0..(MAX_COMPLETED_ENTRIES + 2) {
+        let id = format!("sub-{i}");
+        coordinator.completed.insert(
+            id.clone(),
             CompletedSubagent {
-                subagent_id: "sub-recent".into(),
-                parent_session_id: String::new(),
+                subagent_id: id,
+                parent_session_id: "parent".into(),
                 parent_prompt_id: None,
                 child_session_id: String::new(),
-                description: "long-running".into(),
+                description: "completed task".into(),
                 subagent_type: "explore".into(),
                 persona: None,
-                started_at: std::time::Instant::now()
-                    - std::time::Duration::from_secs(31 * 60),
-                completed_at: std::time::Instant::now(),
+                started_at: base,
+                completed_at: base + std::time::Duration::from_millis(i as u64),
                 result: SubagentResult {
                     success: true,
                     ..Default::default()
@@ -892,10 +892,21 @@ fn evict_stale_completed_uses_completion_time() {
                 explicitly_killed: false,
             },
         );
-    coordinator.evict_stale_completed();
+    }
+    coordinator.enforce_completed_cap();
+    assert_eq!(
+        coordinator.completed.len(),
+        MAX_COMPLETED_ENTRIES,
+        "the completed map must be capped at MAX_COMPLETED_ENTRIES"
+    );
     assert!(
-        coordinator.completed.contains_key("sub-recent"),
-        "recently completed subagent should not be evicted"
+        !coordinator.completed.contains_key("sub-0")
+            && !coordinator.completed.contains_key("sub-1"),
+        "the oldest completions must be evicted first"
+    );
+    assert!(
+        coordinator.completed.contains_key("sub-2"),
+        "entries within the cap must survive"
     );
 }
 #[test]

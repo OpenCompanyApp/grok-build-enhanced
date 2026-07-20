@@ -325,6 +325,7 @@ impl SubagentCoordinator {
                     explicitly_killed: false,
                 },
             );
+        self.enforce_completed_cap();
         if surface_completion {
             self.pending_completions
                 .push(SubagentCompletionSummary {
@@ -444,6 +445,7 @@ impl SubagentCoordinator {
                     output: completed.result.output.clone(),
                 });
         }
+        self.enforce_completed_cap();
         self.completion_notify.notify_waiters();
         tracker
     }

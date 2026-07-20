@@ -3006,6 +3006,58 @@ fn chat_session_spawn_options_matches_thin_profile() {
         "K10 thin profile must use PersistenceHandle::noop()"
     );
 }
+/// `remove_session` releases the workspace binding and drains the
+/// per-session side maps. Test agents default to `workspace_ops = None`,
+/// so no other test reaches the release.
+#[tokio::test]
+async fn remove_session_releases_workspace_binding_and_side_maps() {
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("test-session-workspace-release");
+    let ops = xai_grok_workspace::WorkspaceOps::for_test();
+    let toolset =
+        std::sync::Arc::new(xai_grok_tools::registry::types::FinalizedToolset::empty_for_test());
+    let toolset_weak = std::sync::Arc::downgrade(&toolset);
+    ops.bind_local_session(
+        sid.0.as_ref(),
+        std::env::temp_dir(),
+        xai_hunk_tracker::HunkTrackerHandle::noop(),
+        toolset,
+        None,
+    )
+    .expect("bind_local_session must succeed");
+    assert!(toolset_weak.upgrade().is_some());
+    *agent.workspace_ops.borrow_mut() = Some(ops);
+    agent.model_unavailable_sessions.borrow_mut().insert(
+        sid.0.to_string(),
+        acp::ModelId::new(std::sync::Arc::from("gone-model")),
+    );
+    agent
+        .session_turn_numbers
+        .borrow_mut()
+        .insert(sid.clone(), 3);
+    let (_permission_tx, permission_rx) =
+        tokio::sync::mpsc::unbounded_channel::<xai_grok_workspace::permission::PermissionEvent>();
+    agent
+        .permission_event_receivers
+        .borrow_mut()
+        .insert(sid.clone(), permission_rx);
+
+    agent.remove_session(&sid);
+
+    assert!(
+        toolset_weak.upgrade().is_none(),
+        "the workspace binding must release the toolset"
+    );
+    assert!(
+        !agent
+            .model_unavailable_sessions
+            .borrow()
+            .contains_key(sid.0.as_ref())
+    );
+    assert!(!agent.session_turn_numbers.borrow().contains_key(&sid));
+    assert!(!agent.permission_event_receivers.borrow().contains_key(&sid));
+}
+
 /// Without a bridge, `ext_method` falls through to the unchanged local
 /// dispatch (`rewind::handle`), which reports the missing session — proving
 /// the routing hook is skipped in local mode.
@@ -3049,6 +3101,89 @@ fn cancel_does_not_forward_to_bridge_in_local_mode() {
             saw_local_cancel,
             "local-mode cancel dispatches the local SessionCommand::Cancel with no bridge attached"
         );
+    });
+}
+
+/// Cancellation leaves the session resident until close; that close must drain
+/// every session-scoped registry while retaining the cancelled subagent result
+/// for polling and `resume_from`.
+#[test]
+fn cancel_then_close_drains_registries_and_preserves_cancelled_subagent_lookup() {
+    use acp::Agent as _;
+    use crate::agent::subagent::{PendingSubagent, SnapshotLookup};
+    use xai_grok_tools::implementations::grok_build::task::types::SubagentSnapshotStatus;
+
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("sess-cancel-cleanup");
+        let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.set_session_live_state(&sid, SessionLiveState::IdleResident);
+        agent.require_gateway_sessions.borrow_mut().insert(sid.clone());
+        agent
+            .session_turn_numbers
+            .borrow_mut()
+            .insert(sid.clone(), 7);
+        agent.model_unavailable_sessions.borrow_mut().insert(
+            sid.0.to_string(),
+            acp::ModelId::new("missing-model"),
+        );
+        let (_permission_tx, permission_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent
+            .permission_event_receivers
+            .borrow_mut()
+            .insert(sid.clone(), permission_rx);
+        {
+            let mut coordinator = agent.subagent_coordinator.borrow_mut();
+            coordinator.insert_pending(PendingSubagent {
+                subagent_id: "cancelled-child".into(),
+                subagent_type: "explore".into(),
+                description: "cancelled child".into(),
+                persona: None,
+                parent_prompt_id: Some("parent-prompt".into()),
+                parent_session_id: sid.0.to_string(),
+                started_at: std::time::Instant::now(),
+                run_in_background: true,
+                surface_completion: true,
+                color: None,
+                cancel_token: tokio_util::sync::CancellationToken::new(),
+            });
+            coordinator
+                .move_pending_to_cancelled("cancelled-child", "Subagent was cancelled");
+        }
+
+        agent
+            .cancel(acp::CancelNotification::new(sid.clone()))
+            .await
+            .expect("cancel must succeed");
+        assert!(
+            matches!(cmd_rx.try_recv(), Ok(SessionCommand::Cancel { .. })),
+            "cancel must reach the actor mailbox before cleanup"
+        );
+        assert_eq!(agent.registry_snapshot().dispatch_locks, 1);
+
+        agent.close_session_explicit(&sid);
+
+        let after = agent.registry_snapshot();
+        assert_eq!(after.sessions, 0);
+        assert_eq!(after.session_threads, 0);
+        assert_eq!(after.dispatch_locks, 0);
+        assert_eq!(after.session_turn_numbers, 0);
+        assert_eq!(after.permission_event_receivers, 0);
+        assert_eq!(after.model_unavailable_sessions, 0);
+        assert_eq!(after.session_live_state, 0);
+        assert_eq!(after.session_index_claims, 0);
+        assert_eq!(after.require_gateway_sessions, 0);
+        assert_eq!(after.subagent_pending, 0);
+        assert_eq!(after.subagent_active, 0);
+        assert_eq!(after.subagent_completed, 1);
+        match agent.subagent_coordinator.borrow().lookup("cancelled-child") {
+            Some(SnapshotLookup::Ready(snapshot)) => assert!(matches!(
+                snapshot.status,
+                SubagentSnapshotStatus::Cancelled { .. }
+            )),
+            _ => panic!("cancelled subagent must remain durably queryable after parent close"),
+        }
     });
 }
 

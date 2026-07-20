@@ -1633,6 +1633,37 @@
       ]
     },
     {
+      "id": "upstream-session-registry-cleanup",
+      "description": "Provider-neutral bounded completed-subagent retention, exhaustive per-session registry and workspace-binding cleanup, diagnostic counts, and serial/concurrent churn plus cancellation regressions.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_lifecycle.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/subagent_coordinator.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/coordinator_lifecycle.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/coordinator_query.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/mod.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/tests/mod.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/tests/rest.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/debug.rs",
+        "crates/codegen/xai-grok-shell/tests/test_registry_churn.rs",
+        "crates/codegen/xai-grok-workspace/src/handle.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_lifecycle.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/coordinator_lifecycle.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/coordinator_query.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/debug.rs",
+        "crates/codegen/xai-grok-workspace/src/handle.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "upstream-privacy-safe-retention-default",
       "description": "Fail-closed coding-data retention defaults shared by persisted auth, ACP auth metadata, and every fresh login path.",
       "source_ids": [
