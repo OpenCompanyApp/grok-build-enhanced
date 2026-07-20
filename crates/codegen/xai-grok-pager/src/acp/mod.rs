@@ -96,7 +96,7 @@ pub struct AcpConnection {
     /// resolves a fresh bearer per request via the refresh chain.
     pub auth_manager: std::sync::Arc<xai_grok_shell::auth::AuthManager>,
     /// Connection-local snapshot of positively identified xAI models and their
-    /// optional model-owned speech keys. The pager binds one active model before
+    /// optional model-owned speech keys. The pager passes the target model with
     /// each recording; no key is published through process-global state.
     pub voice_models: xai_grok_shell::agent::models::XaiSpeechModelCatalog,
 }

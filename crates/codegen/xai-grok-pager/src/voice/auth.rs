@@ -1,8 +1,8 @@
 //! Session/model-scoped credential bridge for canonical xAI speech.
 //!
 //! A pager connection receives a redacted snapshot of positively identified
-//! xAI models. Before every recording, the active target model is bound here;
-//! bearer resolution then uses only that model's own key, an eligible xAI auth
+//! xAI models. Every recording passes its target model directly; bearer
+//! resolution then uses only that model's own key, an eligible xAI auth
 //! session, or the ambient xAI API key. No model key is published through the
 //! shell `AuthManager` or any process-global mutable slot.
 
@@ -10,8 +10,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
-use xai_grok_shell::agent::models::{XaiSpeechModelCatalog, XaiSpeechModelCredential};
+use xai_grok_shell::agent::models::XaiSpeechModelCatalog;
 use xai_grok_shell::auth::{AuthManager, AuthMode, GrokAuth};
 use xai_grok_voice::{SharedVoiceAuth, VoiceAuthProvider};
 
@@ -19,25 +18,22 @@ use xai_grok_voice::{SharedVoiceAuth, VoiceAuthProvider};
 struct ScopedXaiVoiceAuth {
     auth_manager: Arc<AuthManager>,
     models: XaiSpeechModelCatalog,
-    active: RwLock<Option<XaiSpeechModelCredential>>,
 }
 
 impl std::fmt::Debug for ScopedXaiVoiceAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScopedXaiVoiceAuth")
             .field("models", &self.models)
-            .field("has_active_xai_model", &self.active.read().is_some())
             .finish()
     }
 }
 
 impl VoiceAuthProvider for ScopedXaiVoiceAuth {
-    fn bind_model(&self, model_id: Option<&str>) {
-        *self.active.write() = model_id.and_then(|id| self.models.credential_for(id));
-    }
-
-    fn bearer(&self) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
-        let credential = self.active.read().clone();
+    fn bearer(
+        &self,
+        model_id: Option<&str>,
+    ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
+        let credential = model_id.and_then(|id| self.models.credential_for(id));
         let auth_manager = self.auth_manager.clone();
         Box::pin(async move {
             let credential = credential?;
@@ -82,7 +78,6 @@ pub fn build_voice_auth(
     Arc::new(ScopedXaiVoiceAuth {
         auth_manager,
         models,
-        active: RwLock::new(None),
     })
 }
 
@@ -96,10 +91,9 @@ mod tests {
     fn model(provider: ProviderId, key: Option<&str>) -> ModelEntry {
         let mut entry = ModelEntry::fallback("model", &EndpointsConfig::default());
         entry.info.provider = provider;
-        entry.info.base_url = match provider {
-            ProviderId::Xai => xai_grok_sampling_types::XAI_API_BASE_URL.to_owned(),
-            _ => "https://custom.example/v1".to_owned(),
-        };
+        // Keep every fixture on the trusted xAI route so mixed-provider tests
+        // prove provider identity, rather than route rejection, is the gate.
+        entry.info.base_url = xai_grok_sampling_types::XAI_API_BASE_URL.to_owned();
         entry.api_key = key.map(str::to_owned);
         entry
     }
@@ -117,8 +111,7 @@ mod tests {
     }
 
     async fn resolved(auth: &SharedVoiceAuth, model: Option<&str>) -> Option<String> {
-        auth.bind_model(model);
-        auth.bearer().await
+        auth.bearer(model).await
     }
 
     #[tokio::test]
@@ -164,7 +157,7 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    async fn model_switching_rebinds_each_connection_without_stale_fallback() {
+    async fn model_switching_is_command_scoped_without_stale_fallback() {
         let _xai = xai_grok_test_support::EnvGuard::unset("XAI_API_KEY");
         let _legacy = xai_grok_test_support::EnvGuard::unset("GROK_CODE_XAI_API_KEY");
         let home = tempfile::tempdir().unwrap();
@@ -186,6 +179,25 @@ mod tests {
             resolved(&auth, Some("xai-b")).await.as_deref(),
             Some("model-b-key")
         );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn concurrent_model_lookups_are_command_scoped() {
+        let _xai = xai_grok_test_support::EnvGuard::unset("XAI_API_KEY");
+        let _legacy = xai_grok_test_support::EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+        let home = tempfile::tempdir().unwrap();
+        let auth = build_voice_auth(
+            manager(home.path()),
+            catalog(&[
+                ("xai-a", ProviderId::Xai, Some("model-a-key")),
+                ("xai-b", ProviderId::Xai, Some("model-b-key")),
+            ]),
+        );
+
+        let (a, b) = tokio::join!(auth.bearer(Some("xai-a")), auth.bearer(Some("xai-b")));
+        assert_eq!(a.as_deref(), Some("model-a-key"));
+        assert_eq!(b.as_deref(), Some("model-b-key"));
     }
 
     #[tokio::test]
@@ -236,12 +248,10 @@ mod tests {
         let auth = ScopedXaiVoiceAuth {
             auth_manager: manager(home.path()),
             models: catalog(&[("xai", ProviderId::Xai, Some("sentinel-model-secret"))]),
-            active: RwLock::new(None),
         };
-        auth.bind_model(Some("xai"));
 
         let rendered = format!("{auth:?}");
         assert!(!rendered.contains("sentinel-model-secret"));
-        assert!(rendered.contains("has_active_xai_model"));
+        assert!(rendered.contains("eligible_models"));
     }
 }

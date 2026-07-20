@@ -293,7 +293,7 @@ fn voice_toggle_starts_and_stops() {
     assert!(app.voice_listening());
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttPress)
+        Ok(xai_grok_voice::VoiceCommand::PttPress { .. })
     ));
 
     dispatch(Action::VoiceToggle, &mut app);
@@ -344,7 +344,7 @@ fn voice_toggle_starts_without_voice_mode_prereq() {
     );
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttPress)
+        Ok(xai_grok_voice::VoiceCommand::PttPress { .. })
     ));
 }
 
@@ -371,7 +371,7 @@ fn voice_mode_enable_starts_recording_and_stays_on() {
     );
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttPress)
+        Ok(xai_grok_voice::VoiceCommand::PttPress { .. })
     ));
 
     // `EnableVoiceMode` is start-only (not a toggle): running it again while

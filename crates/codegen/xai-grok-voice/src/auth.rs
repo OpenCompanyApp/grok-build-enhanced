@@ -17,13 +17,15 @@ use crate::config::VoiceConfig;
 use crate::error::VoiceError;
 
 pub trait VoiceAuthProvider: std::fmt::Debug + Send + Sync + 'static {
-    /// Bind the credential lookup to the model receiving this dictation.
+    /// Resolve a bearer for the model receiving this exact dictation command.
     ///
-    /// Standalone providers may ignore the binding. Provider-aware adapters
-    /// must fail closed for an absent or ineligible model id.
-    fn bind_model(&self, _model_id: Option<&str>) {}
-
-    fn bearer(&self) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>>;
+    /// Standalone providers may ignore the model id. Provider-aware adapters
+    /// must fail closed for an absent or ineligible model id. Passing the id
+    /// directly avoids mutable binding state racing queued recording commands.
+    fn bearer(
+        &self,
+        model_id: Option<&str>,
+    ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>>;
 }
 
 /// Shared provider handed to the voice pipeline.
@@ -32,12 +34,13 @@ pub type SharedVoiceAuth = Arc<dyn VoiceAuthProvider>;
 pub(crate) async fn require_bearer(
     auth: &SharedVoiceAuth,
     config: &VoiceConfig,
+    model_id: Option<&str>,
 ) -> Result<String, VoiceError> {
     // Validate the destination before invoking the credential provider. This
     // ordering guarantees that even an in-memory key is never resolved for a
     // noncanonical speech endpoint.
     config.stt_ws_url()?;
-    auth.bearer().await.ok_or_else(|| {
+    auth.bearer(model_id).await.ok_or_else(|| {
         VoiceError::Auth("voice requires an eligible xAI model and xAI session or API key".into())
     })
 }
@@ -57,7 +60,10 @@ impl std::fmt::Debug for StaticVoiceAuth {
 }
 
 impl VoiceAuthProvider for StaticVoiceAuth {
-    fn bearer(&self) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
+    fn bearer(
+        &self,
+        _model_id: Option<&str>,
+    ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
         Box::pin(ready(Some(self.0.clone())))
     }
 }
@@ -81,7 +87,7 @@ mod tests {
     #[tokio::test]
     async fn static_provider_resolves() {
         let provider = StaticVoiceAuth::shared("  sk-test  ").unwrap();
-        assert_eq!(provider.bearer().await.as_deref(), Some("sk-test"));
+        assert_eq!(provider.bearer(None).await.as_deref(), Some("sk-test"));
     }
 
     #[test]
@@ -101,7 +107,10 @@ mod tests {
     struct CountingAuth(std::sync::atomic::AtomicUsize);
 
     impl VoiceAuthProvider for CountingAuth {
-        fn bearer(&self) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
+        fn bearer(
+            &self,
+            _model_id: Option<&str>,
+        ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(ready(Some("must-not-resolve".into())))
         }
@@ -116,7 +125,9 @@ mod tests {
             ..VoiceConfig::default()
         };
 
-        let error = require_bearer(&shared, &config).await.unwrap_err();
+        let error = require_bearer(&shared, &config, Some("xai-model"))
+            .await
+            .unwrap_err();
 
         assert!(matches!(error, VoiceError::Config(_)));
         assert_eq!(auth.0.load(std::sync::atomic::Ordering::SeqCst), 0);

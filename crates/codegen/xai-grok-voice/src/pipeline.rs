@@ -22,7 +22,9 @@ use crate::stt::{StreamingSttEvent, StreamingSttSession};
 #[derive(Debug)]
 pub enum VoiceCommand {
     /// Begin streaming audio to STT (mic open until [`VoiceCommand::PttRelease`]).
-    PttPress,
+    /// The model id is captured with the command so credential selection cannot
+    /// race a later session/model switch while this press waits in the queue.
+    PttPress { model_id: Option<String> },
     /// End the current capture session (`audio.done`, release mic).
     PttRelease,
     /// Tear down the pipeline task.
@@ -46,7 +48,7 @@ pub async fn run_voice_pipeline(
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             VoiceCommand::Shutdown => break,
-            VoiceCommand::PttPress => {
+            VoiceCommand::PttPress { model_id } => {
                 // Supersede any prior session — including one still draining its
                 // trailing final after a `PttRelease` — rather than ignoring the
                 // press. A rapid stop→start would otherwise be dropped here while
@@ -73,7 +75,7 @@ pub async fn run_voice_pipeline(
                 // dropped, releasing the device right away.
                 tokio::select! {
                     biased;
-                    session = open_session(&config, &auth, &event_tx) => {
+                    session = open_session(&config, &auth, &event_tx, model_id.as_deref()) => {
                         active = session;
                     }
                     next = cmd_rx.recv() => match next {
@@ -82,8 +84,14 @@ pub async fn run_voice_pipeline(
                         Some(VoiceCommand::Shutdown) | None => break,
                         // Unreachable per the release-between-presses contract;
                         // start fresh defensively.
-                        Some(VoiceCommand::PttPress) => {
-                            active = open_session(&config, &auth, &event_tx).await;
+                        Some(VoiceCommand::PttPress { model_id }) => {
+                            active = open_session(
+                                &config,
+                                &auth,
+                                &event_tx,
+                                model_id.as_deref(),
+                            )
+                            .await;
                         }
                     },
                 }
@@ -112,8 +120,9 @@ async fn open_session(
     config: &VoiceConfig,
     auth: &SharedVoiceAuth,
     event_tx: &mpsc::Sender<VoiceEvent>,
+    model_id: Option<&str>,
 ) -> Option<ActivePtt> {
-    match start_capture_session(config, auth, event_tx).await {
+    match start_capture_session(config, auth, event_tx, model_id).await {
         Ok(session) => Some(session),
         Err(e) => {
             let _ = event_tx
@@ -131,6 +140,7 @@ async fn start_capture_session(
     _config: &VoiceConfig,
     _auth: &SharedVoiceAuth,
     _event_tx: &mpsc::Sender<VoiceEvent>,
+    _model_id: Option<&str>,
 ) -> Result<ActivePtt, VoiceError> {
     Err(VoiceError::Config(
         "voice audio capture disabled (build without `audio` feature)".into(),
@@ -195,6 +205,7 @@ async fn start_capture_session(
     config: &VoiceConfig,
     auth: &SharedVoiceAuth,
     event_tx: &mpsc::Sender<VoiceEvent>,
+    model_id: Option<&str>,
 ) -> Result<ActivePtt, VoiceError> {
     // Open the mic concurrently with the bearer + connect handshake (TLS +
     // WebSocket + `transcript.created`). Both legs take hundreds of ms and used
@@ -213,7 +224,7 @@ async fn start_capture_session(
     tokio::spawn(forward_pcm(mic_rx, audio_tx_rx));
 
     let connect = async {
-        let bearer = crate::auth::require_bearer(auth, config).await?;
+        let bearer = crate::auth::require_bearer(auth, config, model_id).await?;
         StreamingSttSession::connect(config, &bearer).await
     };
     let (connect_res, capture_res) = tokio::join!(connect, capture_task);

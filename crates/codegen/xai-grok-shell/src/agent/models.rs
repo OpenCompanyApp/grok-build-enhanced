@@ -3365,9 +3365,15 @@ mod tests {
             ("zai", ProviderId::ZaiCodingPlan),
             ("custom", ProviderId::Custom),
         ] {
+            // Even a non-xAI entry pointed at the canonical xAI route remains
+            // ineligible: provider identity and route identity are both required.
             models.insert(
                 id.to_owned(),
-                speech_model(provider, "https://custom.example/v1", "must-not-escape"),
+                speech_model(
+                    provider,
+                    xai_grok_sampling_types::XAI_API_BASE_URL,
+                    "must-not-escape",
+                ),
             );
         }
 
