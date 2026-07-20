@@ -9,6 +9,9 @@ pub enum SchedulerError {
 
     #[error("maximum of {0} scheduled tasks reached")]
     TaskLimitReached(usize),
+
+    #[error("no scheduled task with id {0}; call scheduler_list to see active task ids")]
+    TaskNotFound(String),
 }
 
 /// A single scheduled recurring or one-shot task.
@@ -18,11 +21,16 @@ pub struct ScheduledTask {
     pub id: String,
     pub interval_secs: u64,
     pub prompt: String,
+    #[serde(default = "default_recurring")]
     pub recurring: bool,
     pub durable: bool,
     pub created_at: DateTime<Utc>,
     pub last_fired_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
+}
+
+fn default_recurring() -> bool {
+    true
 }
 
 impl ScheduledTask {
@@ -97,6 +105,12 @@ pub enum SchedulerCommand {
         task: ScheduledTask,
         reply: oneshot::Sender<Result<ScheduledTask, SchedulerError>>,
     },
+    Update {
+        id: String,
+        prompt: Option<String>,
+        interval_secs: Option<u64>,
+        reply: oneshot::Sender<Result<ScheduledTask, SchedulerError>>,
+    },
     Delete {
         id: String,
         reply: oneshot::Sender<bool>,
@@ -158,6 +172,25 @@ mod tests {
     fn is_expired_returns_false_for_one_shot() {
         let task = ScheduledTask::new(300, "test".into(), false, false);
         assert!(!task.is_expired(Utc::now()));
+    }
+
+    #[test]
+    fn legacy_state_without_recurring_field_deserializes_as_recurring() {
+        let json = r#"{"id":"abc123","intervalSecs":300,"prompt":"check",
+                       "durable":true,"createdAt":"2026-01-01T00:00:00Z",
+                       "lastFiredAt":null,"expiresAt":null}"#;
+        let task: ScheduledTask = serde_json::from_str(json).unwrap();
+        assert!(task.recurring);
+    }
+
+    #[test]
+    fn legacy_one_shot_state_still_deserializes() {
+        let json = r#"{"id":"abc123","intervalSecs":300,"prompt":"check",
+                       "recurring":false,"durable":true,
+                       "createdAt":"2026-01-01T00:00:00Z",
+                       "lastFiredAt":null,"expiresAt":null}"#;
+        let task: ScheduledTask = serde_json::from_str(json).unwrap();
+        assert!(!task.recurring);
     }
 
     #[test]

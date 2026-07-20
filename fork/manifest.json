@@ -1727,6 +1727,32 @@
       "legal_paths": [
         "LICENSE"
       ]
+    },
+    {
+      "id": "upstream-scheduler-create-update-contract",
+      "description": "Pinned Grok Build ba76b0a scheduler create/update compatibility with strict in-place patches, stable task identity and phase, hidden legacy recurring input, rejected new one-shots, and retained foreground firing and persisted legacy one-shot retirement.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/scheduler/actor.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/scheduler/create.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/scheduler/types.rs",
+        "crates/codegen/xai-grok-tools/src/types/output.rs",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/scheduler/actor.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/scheduler/create.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/scheduler/types.rs",
+        "crates/codegen/xai-grok-tools/src/types/output.rs",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
     }
   ]
 }

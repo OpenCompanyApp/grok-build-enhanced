@@ -242,6 +242,34 @@ impl SchedulerActor {
                 state.tasks.push(task.clone());
                 let _ = reply.send(Ok(task));
             }
+            SchedulerCommand::Update {
+                id,
+                prompt,
+                interval_secs,
+                reply,
+            } => {
+                let mut res = self.resources.lock().await;
+                let state = res.get_or_default::<State<SchedulerState>>();
+                let Some(task) = state.tasks.iter_mut().find(|t| t.id == id) else {
+                    let _ = reply.send(Err(SchedulerError::TaskNotFound(id)));
+                    return;
+                };
+                if let Some(prompt) = prompt {
+                    task.prompt = prompt;
+                }
+                if let Some(interval_secs) = interval_secs {
+                    task.interval_secs = interval_secs;
+                    if task.next_fire_at() <= Utc::now() {
+                        task.last_fired_at = Some(Utc::now());
+                    }
+                }
+                let updated = task.clone();
+                drop(res);
+
+                self.notification_handle
+                    .send_scheduled_task_created(task_created_payload(&updated));
+                let _ = reply.send(Ok(updated));
+            }
             SchedulerCommand::Delete { id, reply } => {
                 let mut res = self.resources.lock().await;
                 let state = res.get_or_default::<State<SchedulerState>>();
@@ -419,6 +447,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_patches_in_place_preserving_identity_and_phase() {
+        let (handle, cancel, _notif_rx) = make_test_actor();
+
+        let task = ScheduledTask::new(300, "check deploy".into(), true, false);
+        let task_id = task.id.clone();
+        let created_at = task.created_at;
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        handle
+            .0
+            .send(SchedulerCommand::Create {
+                task,
+                reply: reply_tx,
+            })
+            .unwrap();
+        reply_rx.await.unwrap().unwrap();
+
+        let (up_tx, up_rx) = tokio::sync::oneshot::channel();
+        handle
+            .0
+            .send(SchedulerCommand::Update {
+                id: task_id.clone(),
+                prompt: None,
+                interval_secs: Some(600),
+                reply: up_tx,
+            })
+            .unwrap();
+        let updated = up_rx.await.unwrap().unwrap();
+        assert_eq!(updated.id, task_id, "identity preserved");
+        assert_eq!(updated.interval_secs, 600);
+        assert_eq!(updated.prompt, "check deploy");
+        assert_eq!(updated.created_at, created_at, "phase anchor preserved");
+        assert!(updated.last_fired_at.is_none());
+
+        let (up_tx, up_rx) = tokio::sync::oneshot::channel();
+        handle
+            .0
+            .send(SchedulerCommand::Update {
+                id: task_id,
+                prompt: Some("check rollback".into()),
+                interval_secs: None,
+                reply: up_tx,
+            })
+            .unwrap();
+        let updated = up_rx.await.unwrap().unwrap();
+        assert_eq!(updated.interval_secs, 600);
+        assert_eq!(updated.prompt, "check rollback");
+
+        let (list_tx, list_rx) = tokio::sync::oneshot::channel();
+        handle
+            .0
+            .send(SchedulerCommand::List { reply: list_tx })
+            .unwrap();
+        assert_eq!(list_rx.await.unwrap().len(), 1);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn update_unknown_id_errors_and_never_creates() {
+        let (handle, cancel, _notif_rx) = make_test_actor();
+
+        let (up_tx, up_rx) = tokio::sync::oneshot::channel();
+        handle
+            .0
+            .send(SchedulerCommand::Update {
+                id: "nonexistent".into(),
+                prompt: Some("new prompt".into()),
+                interval_secs: Some(300),
+                reply: up_tx,
+            })
+            .unwrap();
+        let result = up_rx.await.unwrap();
+        assert!(matches!(result, Err(SchedulerError::TaskNotFound(_))));
+
+        let (list_tx, list_rx) = tokio::sync::oneshot::channel();
+        handle
+            .0
+            .send(SchedulerCommand::List { reply: list_tx })
+            .unwrap();
+        assert!(
+            list_rx.await.unwrap().is_empty(),
+            "a failed update must not fall back to creating a task"
+        );
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
     async fn cancel_token_shuts_down_actor() {
         let (handle, cancel, _notif_rx) = make_test_actor();
         cancel.cancel();
@@ -562,51 +678,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missed_one_shots_all_fire_and_are_removed() {
+    async fn persisted_legacy_one_shot_fires_and_is_retired_on_restore() {
         let mut resources = Resources::new();
         resources.register_state::<SchedulerState>();
 
         let state = resources.get_or_default::<State<SchedulerState>>();
-        let past = chrono::Utc::now() - chrono::Duration::seconds(60);
-        for i in 0..3 {
-            let mut task = ScheduledTask::new(1, format!("missed-{i}"), false, false);
-            task.id = format!("missed-{i}");
-            task.created_at = past;
-            state.tasks.push(task);
-        }
+        let mut task = ScheduledTask::new(1, "legacy one-shot".into(), false, true);
+        task.id = "legacy-1".to_string();
+        task.created_at = chrono::Utc::now() - chrono::Duration::seconds(60);
+        state.tasks.push(task);
 
         let shared = Arc::new(Mutex::new(resources));
         let (notif_handle, mut notif_rx) = ToolNotificationHandle::channel();
         let (_cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let cancel_token = CancellationToken::new();
 
-        let mut actor = SchedulerActor {
+        let actor = SchedulerActor {
             resources: shared.clone(),
             notification_handle: notif_handle,
             cmd_rx,
             cancel_token: cancel_token.clone(),
         };
+        tokio::spawn(actor.run());
 
-        actor.handle_missed_tasks().await;
+        let fired = tokio::time::timeout(Duration::from_secs(2), notif_rx.recv())
+            .await
+            .expect("fire notification")
+            .expect("channel open");
+        let removed = tokio::time::timeout(Duration::from_secs(2), notif_rx.recv())
+            .await
+            .expect("remove notification")
+            .expect("channel open");
+        assert!(matches!(fired, ToolNotification::ScheduledTaskFired(_)));
+        assert!(matches!(removed, ToolNotification::ScheduledTaskRemoved(_)));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), notif_rx.recv())
+                .await
+                .is_err(),
+            "retired one-shot must not be re-announced"
+        );
 
-        // All three missed one-shots fire (fires first, then removes).
-        for _ in 0..3 {
-            let notif = notif_rx.try_recv().expect("missed task should fire");
-            assert!(matches!(notif, ToolNotification::ScheduledTaskFired(_)));
-        }
-        for _ in 0..3 {
-            let notif = notif_rx.try_recv().expect("missed task should be removed");
-            assert!(matches!(notif, ToolNotification::ScheduledTaskRemoved(_)));
-        }
-        assert!(notif_rx.try_recv().is_err());
-
-        // All fired missed one-shots are pruned from state.
         let res = shared.lock().await;
         let remaining = res
             .get::<State<SchedulerState>>()
             .map(|s| s.tasks.len())
             .unwrap_or(0);
-        assert_eq!(remaining, 0, "all fired missed one-shots should be removed");
+        assert_eq!(remaining, 0, "legacy one-shot removed after firing");
+        drop(res);
+        cancel_token.cancel();
     }
 
     #[tokio::test]

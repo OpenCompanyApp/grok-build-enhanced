@@ -2239,12 +2239,19 @@ impl SessionActor {
                 vec![],
                 vec![],
             ),
-            ToolInput::SchedulerCreate(ref sc) => (
-                format!("Create scheduled task (every {})", sc.interval),
-                acp::ToolKind::Other,
-                vec![],
-                vec![],
-            ),
+            ToolInput::SchedulerCreate(ref sc) => {
+                let title = match (&sc.task_id, &sc.interval) {
+                    (Some(id), Some(interval)) => {
+                        format!("Update scheduled task {id} (every {interval})")
+                    }
+                    (Some(id), None) => format!("Update scheduled task {id}"),
+                    (None, Some(interval)) => {
+                        format!("Create scheduled task (every {interval})")
+                    }
+                    (None, None) => "Create scheduled task".to_string(),
+                };
+                (title, acp::ToolKind::Other, vec![], vec![])
+            }
             ToolInput::SchedulerDelete(ref sd) => (
                 format!("Delete scheduled task: {}", sd.id),
                 acp::ToolKind::Other,
