@@ -114,24 +114,135 @@ without catalog evidence.
 - Kimi, Codex, Z.AI, xAI, and custom-provider credential identity remaining
   explicit.
 
-### Deliberately deferred
+### Parity correction and durable obligations
 
-- Grok scheduler background loop-subagents: this requires provider/model/binding
-  inheritance and parent-switch isolation coverage before it can replace the
-  existing foreground fire path.
-- Stop/SubagentStop resampling gates and full task/scheduler prompt projection:
-  this introduces a new external hook data surface. It needs a separate
-  credential-redaction and request-size design before adoption.
-- Minimal-mode `/btw`: this is a separate product feature cluster, not a
-  compatibility requirement for the audited provider and security contracts.
-- Declarative sandbox network-policy types without runtime enforcement.
-- Process-wide publication of a model-owned key for xAI speech services.
-- xAI billing/upsell wording on generic provider errors.
-- Codex audio/realtime/app-server and Kimi app-server/agent-engine/TUI behavior.
+A 2026-07-20 review found that the previous section incorrectly combined
+applicable Grok behavior, unsafe implementation mechanisms, and out-of-scope
+reference architectures in one terminal "deferred" bucket. The omissions were
+reviewed rather than accidental, but the first four decisions were inconsistent
+with the fork vision: integration or hardening work can justify only a tracked
+temporary deferral for behavior on a preserved Grok surface.
 
-These deferrals are explicit compatibility decisions, not unreviewed omissions.
-The immutable Grok baseline remains unchanged; the fetched snapshot is recorded
-as an audited source target rather than a replacement base.
+The following obligations are carried forward from Grok snapshot
+`ba76b0a683fa52e4e60685017b85905451be17bc`. Their owner is the Grok Build
+Enhanced maintainers, and none may disappear from a later refresh without the
+listed implementation and test evidence.
+
+#### Open Grok adoption obligations
+
+- **`GB-PARITY-001` — scheduler background loop-subagents**
+  - **Status:** temporarily deferred; adopt.
+  - **Source:**
+    `crates/codegen/xai-grok-tools/src/implementations/grok_build/scheduler/{actor,create,types}.rs`,
+    `crates/codegen/xai-grok-shell/src/tools/notification_bridge.rs`, and
+    `crates/codegen/xai-grok-shell/src/agent/subagent/handle_request.rs` in the
+    pinned Grok snapshot.
+  - **Blocker and impact:** v0.2.4 has foreground task firing but lacks recurring
+    background child execution, overlap prevention, bounded resume chains, and
+    the foreground compatibility option.
+  - **Target:** the corrective release after v0.2.4, before any later Grok
+    **Reviewed** advance.
+  - **Acceptance evidence:** provider/session-bound child creation, no-overlap
+    queries, completed-child resume, ten-iteration and prompt-change rollover,
+    4,000-character completion bounds, kill-switch behavior, persistence
+    migration, and TUI/minimal/headless/ACP tests.
+- **`GB-PARITY-002` — Stop/SubagentStop resampling gates**
+  - **Status:** temporarily deferred; adopt.
+  - **Source:** `crates/codegen/xai-grok-hooks/src/{event,dispatcher}.rs`,
+    `crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs`, and
+    `crates/codegen/xai-grok-shell/src/session/acp_session_impl/{stop_gate,turn}.rs`
+    in the pinned Grok snapshot.
+  - **Blocker and impact:** v0.2.4 observes these events but cannot let a hook
+    reject genuine completion and return feedback for another model round.
+  - **Target:** the corrective release after v0.2.4, after safe hook projection
+    and before any later Grok **Reviewed** advance.
+  - **Acceptance evidence:** deterministic hook aggregation, explicit
+    force-stop, failure-open timeout/error handling, an eight-round cap, correct
+    parent/subagent boundaries, and tests proving no resample on cancellation,
+    refusal, provider error, or max-turn termination.
+- **`GB-PARITY-003` — active task and scheduler context in stop hooks**
+  - **Status:** temporarily deferred; adopt with Enhanced safety adaptation.
+  - **Source:** `crates/codegen/xai-grok-hooks/src/event.rs`,
+    `crates/codegen/xai-grok-tools/src/implementations/grok_build/{task,scheduler}/types.rs`,
+    `crates/codegen/xai-grok-shell/src/tools/notification_bridge.rs`, and
+    `crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs` in the
+    pinned Grok snapshot.
+  - **Blocker and impact:** external stop hooks lack upstream work context, but
+    an unbounded raw prompt projection would create a credential and payload
+    exposure risk.
+  - **Target:** the corrective release after v0.2.4, before enabling
+    `GB-PARITY-002`.
+  - **Acceptance evidence:** structurally secret-free descriptors, exclusion of
+    provider-private turn state, Unicode-safe per-field clipping, an aggregate
+    envelope limit, deterministic ordering, aligned client/file/HTTP payloads,
+    and adversarial redaction and size tests.
+- **`GB-PARITY-004` — minimal-mode `/btw`**
+  - **Status:** temporarily deferred; adopt.
+  - **Source:** `crates/codegen/xai-grok-pager/src/minimal/api.rs`,
+    `crates/codegen/xai-grok-pager-minimal/src/live.rs`,
+    `crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs`, and the minimal
+    input, modal, geometry, and `/btw` correlation paths in the pinned Grok
+    snapshot.
+  - **Blocker and impact:** `/btw` exists in the full TUI, but minimal mode lacks
+    its panel lifecycle, making the same Grok command mode-dependent.
+  - **Target:** the corrective release after v0.2.4, before any later Grok
+    **Reviewed** advance.
+  - **Acceptance evidence:** request correlation, stale-response suppression,
+    modal suspension/restoration, focus/scroll/link behavior, native-scrollback
+    persistence, and deterministic narrow/normal-terminal rendering tests.
+
+#### Adapted capability obligation
+
+- **`GB-ADAPT-001` — xAI speech BYOK**
+  - **Status:** temporarily deferred capability; adopt without the upstream
+    process-global key-publication mechanism.
+  - **Source:** `crates/codegen/xai-grok-shell/src/auth/manager.rs` and
+    `crates/codegen/xai-grok-pager/src/voice/auth.rs` in the pinned Grok
+    snapshot.
+  - **Blocker and impact:** process-wide publication of the first model-owned key
+    is unsafe in a mixed-provider process, but an xAI user should still be able
+    to use an eligible xAI credential for speech.
+  - **Target:** a scoped follow-up after `GB-PARITY-001` through
+    `GB-PARITY-004`, reviewed again no later than the next Grok refresh.
+  - **Acceptance evidence:** xAI-only, canonical-endpoint, session/model-scoped
+    credential resolution with sensitive headers and tests for mixed providers,
+    concurrent sessions, model switching, logout, and missing credentials.
+
+#### Standing scope and safety decisions
+
+- **`GB-SCOPE-001` — declarative sandbox website policy:** **not applicable as
+  a security feature** while the upstream types have no runtime enforcement.
+  Exposing inert protection would violate truthful security boundaries. Reopen
+  only with platform enforcement and fail-closed tests, or for a narrowly
+  documented wire/schema need that cannot be mistaken for enforcement.
+- **`GB-SCOPE-002` — generic xAI billing/upsell wording:** **not applicable as
+  written** under explicit provider identity. Retain xAI guidance only for
+  positively identified xAI failures and add negative Codex, Kimi, custom, and
+  generic-provider tests before closing this audit correction.
+- **`CODEX-SCOPE-001` — Codex app-server architecture:** **not applicable**
+  because Codex is a provider compatibility reference, not a replacement Grok
+  application. Audio and realtime behavior must still be inspected separately
+  on future refreshes; adopt it only if it maps to an existing Grok surface and
+  an entitled subscription wire contract, not by importing the app server.
+- **`KIMI-SCOPE-001` — Kimi app server, agent engine, and replacement TUI:**
+  **not applicable** because they replace preserved Grok architecture. Kimi
+  auth, catalog, streaming, hosted tools, usage, retries, and logout remain
+  provider-adapter obligations.
+
+#### Separate policy inconsistency
+
+- **`ZAI-POLICY-001` — research-only policy versus runtime ownership:** open for
+  an explicit maintainer decision. `AGENTS.md` says Z.AI remains research-only
+  and must not establish runtime credentials or product claims, while
+  `fork/manifest.json` owns runtime auth, provider, web/vision, and usage feature
+  units for Z.AI Coding Plan. This correction does not silently choose either
+  policy. Reconcile the root scope statement, actual runtime behavior, provider
+  documentation, and manifest ownership in a separate reviewed change.
+
+The immutable Grok baseline remains unchanged. The fetched snapshot is still a
+review target rather than a replacement base, but the four open parity items
+above now make clear that path review and manifest ownership did not establish
+complete behavior parity for v0.2.4.
 
 ## Thematic implementation commits
 

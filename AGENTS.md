@@ -82,6 +82,44 @@ the fork. Preserve source licenses and update `THIRD-PARTY-NOTICES`, crate-local
 notices, and modification notices when code is ported rather than independently
 implemented.
 
+## Upstream functionality adoption and parity
+
+User-visible behavior from Grok Build on the agent loop, sessions, tools,
+permissions, hooks, scheduler, TUI, headless mode, and ACP defaults to **adopt**.
+Implementation difficulty or downstream integration work is not a reason to
+silently omit behavior on those preserved surfaces.
+
+Classify upstream architecture separately from observable behavior. An upstream
+mechanism may be replaced to preserve provider isolation, credential safety, or
+the existing Grok application architecture, but compatible behavior remains an
+adoption obligation when it belongs to a preserved surface.
+
+For every pinned Grok revision, maintain a checked-in behavior-parity ledger in
+addition to path ownership. Classify every changed behavior as:
+
+- **adopt**;
+- **already equivalent**, with local implementation and test evidence;
+- **not applicable**, citing a standing scope, security, or legal rule; or
+- **temporarily deferred**, with a stable ID, source revision and paths, owner,
+  blocker, user impact, target milestone or next-refresh deadline, acceptance
+  criteria, and intended tests.
+
+Temporary deferrals are open obligations, not terminal audit decisions. Carry
+them into every subsequent refresh until implementation and parity evidence
+close them. A deferral must not disappear merely because a later audit starts
+from a newer source revision.
+
+`fork/manifest.json` proves downstream path ownership; it does not prove
+behavioral parity. Advance a source's **Reviewed** revision only after its
+behavior ledger is exhaustive and has no unclassified changes. Any remaining
+temporary deferrals must stay explicit in that ledger and in refresh summaries.
+
+Grok Build is normative for behavior on preserved application surfaces. Codex,
+Kimi, OpenCode, Z.AI, and other inspiration sources are normative only within
+the provider-adapter, interoperability, or research scope declared here. They
+do not authorize replacement app servers, agent engines, TUI architectures, or
+cross-provider credential behavior.
+
 ## Immutable baselines and ownership manifest
 
 Treat `fork/manifest.json` as the authoritative machine-readable ownership and
@@ -95,9 +133,9 @@ history contract. At schema version 2 it records:
   `bbeaf9575ffa5f7bcd75b8352a178455f04c98c7`;
 - thematic tree-equivalent checkpoint
   `7ed3320c797852ed5894f1fc2fca7cee6827768f`, with the same frozen tree; and
-- latest fetched disconnected Grok Build snapshot
-  `8adf9013a0929e5c7f1d4e849492d2387837a28d`, which is a review target rather
-  than an automatically accepted base.
+- latest fetched disconnected Grok Build snapshot recorded in the
+  `grok-build-upstream` source entry of `fork/manifest.json`, which is a review
+  target rather than an automatically accepted base.
 
 Every downstream path between the baseline and a publication candidate must be
 owned by a focused manifest feature unit. Keep integration paths narrow and

@@ -9,8 +9,10 @@ Refresh source provenance, audit compatibility, and port confirmed gaps while pr
 
 ## Operating rules
 
-- Read repository `Agents.md` and any deeper instruction files first.
-- Treat `fork/manifest.json` as the ownership and source-history authority and `UPSTREAM_VERSIONS.md` as its human-readable ledger.
+- Read repository `AGENTS.md` and any deeper instruction files first.
+- Treat `fork/manifest.json` as the ownership and source-history authority and `UPSTREAM_VERSIONS.md` as its human-readable provenance ledger. Manifest coverage does not prove behavior parity.
+- Treat user-visible Grok Build behavior on the fork's preserved surfaces as adopt-by-default. Implementation difficulty is not a valid terminal exclusion.
+- Classify architecture separately from observable behavior. Replacing an unsafe or incompatible mechanism does not remove an applicable behavior obligation.
 - Never expose, copy, log, or commit credentials, authenticated payloads, account IDs, token state, or auth files from `~/.grok`, `~/.codex`, or inspiration repositories.
 - Keep **snapshot**, **refresh/audit**, and **publication** separate.
 - Never hand-edit root `Cargo.toml`.
@@ -42,12 +44,18 @@ Audit both:
 - the last reviewed/fork baseline to the previously fetched-but-unreviewed revision;
 - that revision to the newly pinned head.
 
-Map every changed path to a `fork/manifest.json` feature unit. Classify each change as:
+Map every changed path to a `fork/manifest.json` feature unit, then separately inventory every changed observable behavior. Path ownership is necessary but is not evidence that the local product is behaviorally equivalent.
 
-- `adopt now`;
-- `already equivalent`;
-- `not applicable`;
-- `defer`, with a concrete reason.
+Record the behavior inventory in a checked-in parity ledger for the pinned source revision. Use exactly these outcomes:
+
+- `adopt` — the default for Grok behavior on a preserved surface;
+- `already equivalent` — cite the local implementation and parity tests;
+- `not applicable` — cite a standing scope, security, or legal rule; or
+- `temporarily deferred` — create a durable open obligation rather than a terminal audit bucket.
+
+A temporary deferral must include a stable ID, pinned source revision and paths, owner, blocker, user impact, target milestone or next-refresh deadline, acceptance criteria, and intended tests. Carry every open ID into later refresh ledgers until implementation and evidence close it. Fail the audit if an earlier deferral disappears without closure evidence.
+
+Do not classify a behavior as inapplicable merely because its upstream architecture cannot be imported. First decide whether the observable behavior belongs on a preserved Grok surface; if it does, adopt it through an architecture and security model compatible with the fork.
 
 Review in dependency order:
 
@@ -76,11 +84,11 @@ Compare the last reviewed Codex revision with the pinned head using this matrix:
 - usage/limits and auxiliary accounting;
 - retries, idempotency, timeout, cancellation, and auth recovery.
 
-Record `upstream behavior -> local behavior -> action/test`. Do not port Codex app-server or TUI architecture unless it changes an Enhanced compatibility surface.
+Record `upstream behavior -> local behavior -> action/test`. Do not import Codex app-server or TUI architecture. Still audit the behavior delivered by those changes: when it maps to an existing Grok surface or provider-wire contract, record an adoption or adapted-implementation obligation instead of excluding it by architecture label.
 
 ### Kimi Code
 
-Check authenticated catalog/model metadata, API/auth headers, request/stream schema, thinking effort, hosted web search/fetch, usage, retry/errors, and logout isolation. Do not import Kimi's app server, agent engine, TUI, or telemetry policy unless the fork directly implements that surface.
+Check authenticated catalog/model metadata, API/auth headers, request/stream schema, thinking effort, hosted web search/fetch, usage, retry/errors, and logout isolation. Do not import Kimi's app server, agent engine, replacement TUI, or telemetry policy. Audit their observable behavior separately and adopt only behavior that belongs to the existing Grok application or Kimi provider-adapter surface.
 
 ### Z.AI and GLM
 
@@ -92,11 +100,12 @@ Audit OpenCode/auth references when Codex auth or interoperability changed, and 
 
 ## 5. Port confirmed gaps
 
-1. Present or internally record the audit matrix before implementation.
-2. Port only confirmed applicable behavior as small thematic commits; never make one broad `sync upstream` commit.
+1. Check in the exhaustive behavior-parity ledger before or with implementation; no changed behavior may remain unclassified.
+2. Port confirmed applicable behavior as small thematic commits; never make one broad `sync upstream` commit.
 3. Keep source licenses, crate-local notices, and modification notices current when code is ported.
 4. Add every newly changed downstream path to a focused manifest feature unit before committing.
-5. Advance **Reviewed** only after the relevant diff, compatibility effect, tests, notices, and ownership are complete.
+5. Close an `adopt` or `temporarily deferred` ledger item only with implementation and test evidence that satisfies its acceptance criteria.
+6. Advance **Reviewed** only after the relevant diff, behavior inventory, compatibility effect, tests, notices, and ownership are complete. Explicit temporary deferrals may remain open, but they must be visible in the checked-in ledger and refresh summary; **Reviewed** must never conceal an unclassified gap.
 
 ## 6. Validate
 
@@ -121,6 +130,7 @@ Live provider tests require explicitly entitled credentials. Assert only redacte
 ## 7. Finish safely
 
 1. Compare the candidate tree with the pre-refresh snapshot.
-2. Verify every changed path has manifest ownership and all source revisions match the ledgers.
-3. Summarize adopted, equivalent, inapplicable, and deferred changes; list commits and validation evidence.
-4. Merge/push/tag/release only when explicitly authorized for the current run. Never force-push from refresh tooling.
+2. Verify every changed path has manifest ownership, every changed behavior has a parity-ledger outcome, and all source revisions match the provenance records.
+3. Reconcile prior open deferral IDs: carry them forward, or cite the commit and tests that close them.
+4. Summarize adopted, equivalent, inapplicable, and temporarily deferred behavior; list stable deferral IDs, commits, and validation evidence.
+5. Merge/push/tag/release only when explicitly authorized for the current run. Never force-push from refresh tooling.
