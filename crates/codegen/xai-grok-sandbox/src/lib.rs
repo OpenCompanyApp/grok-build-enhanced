@@ -159,7 +159,7 @@ impl SandboxManager {
             .to_capability_set_with_config(workspace, &config)?;
         let mut resolved = self.profile.resolve_profile(workspace, &config)?;
         resolved.deny = deny::effective_deny_paths(workspace, &resolved.deny);
-        self.net_restricted = self.profile.restricts_network_resolved(&config);
+        self.net_restricted = resolved.restrict_network;
         match Sandbox::apply(&caps) {
             Ok(_) => {
                 self.applied = true;

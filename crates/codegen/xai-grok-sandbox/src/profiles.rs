@@ -73,16 +73,27 @@ impl ProfileName {
         matches!(self, Self::ReadOnly | Self::Strict)
     }
 
-    /// Resolve network restriction from config (handles Custom profiles).
+    /// Resolve the existing child-network restriction for custom profiles.
+    /// An explicit custom override wins; otherwise the selected built-in base
+    /// is inherited. Custom-to-custom inheritance remains invalid in `resolve`.
     pub fn restricts_network_resolved(&self, config: &SandboxConfig) -> bool {
         match self {
             Self::ReadOnly | Self::Strict => true,
             Self::Workspace | Self::Devbox | Self::Off => false,
-            Self::Custom(name) => config
-                .profiles
-                .get(name)
-                .and_then(|p| p.restrict_network)
-                .unwrap_or(false),
+            Self::Custom(name) => {
+                let Some(profile) = config.profiles.get(name) else {
+                    return false;
+                };
+                if let Some(restrict_network) = profile.restrict_network {
+                    return restrict_network;
+                }
+                profile
+                    .extends
+                    .as_deref()
+                    .and_then(|base| base.parse::<Self>().ok())
+                    .filter(|base| !matches!(base, Self::Custom(_)))
+                    .is_some_and(|base| base.restricts_network())
+            }
         }
     }
 }
@@ -531,6 +542,70 @@ mod tests {
         assert!(ProfileName::ReadOnly.restricts_network());
         assert!(ProfileName::Strict.restricts_network());
         assert!(!ProfileName::Off.restricts_network());
+    }
+
+    #[test]
+    fn custom_network_restriction_inherits_base_and_honors_override() {
+        let config: SandboxConfig = toml::from_str(
+            r#"
+[profiles.inherit_strict]
+extends = "strict"
+
+[profiles.inherit_read_only]
+extends = "read-only"
+
+[profiles.inherit_workspace]
+extends = "workspace"
+
+[profiles.override_strict]
+extends = "strict"
+restrict_network = false
+
+[profiles.override_workspace]
+extends = "workspace"
+restrict_network = true
+"#,
+        )
+        .unwrap();
+
+        for name in ["inherit_strict", "inherit_read_only", "override_workspace"] {
+            assert!(
+                ProfileName::Custom(name.to_owned()).restricts_network_resolved(&config),
+                "{name} must restrict child network"
+            );
+        }
+        for name in ["inherit_workspace", "override_strict"] {
+            assert!(
+                !ProfileName::Custom(name.to_owned()).restricts_network_resolved(&config),
+                "{name} must leave child network unrestricted"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "enforce", unix))]
+    fn resolved_custom_profile_inherits_child_network_restriction() {
+        let workspace = std::env::current_dir().unwrap();
+        let config: SandboxConfig = toml::from_str(
+            r#"
+[profiles.inherit]
+extends = "strict"
+
+[profiles.override]
+extends = "strict"
+restrict_network = false
+"#,
+        )
+        .unwrap();
+
+        let inherited = ProfileName::Custom("inherit".to_owned())
+            .resolve_profile(&workspace, &config)
+            .unwrap();
+        let overridden = ProfileName::Custom("override".to_owned())
+            .resolve_profile(&workspace, &config)
+            .unwrap();
+        assert!(inherited.restrict_network);
+        assert!(!overridden.restrict_network);
     }
 
     #[test]

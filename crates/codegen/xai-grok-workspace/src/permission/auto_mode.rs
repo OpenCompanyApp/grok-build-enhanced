@@ -14,7 +14,9 @@ use super::bash_command_splitting::{
     PlainCommand, is_wrapper_command, strip_wrapper_command, try_parse_shell,
     try_parse_word_only_commands_sequence, unwrap_wrappers,
 };
-use super::shell_access::{command_words_write_paths, command_write_paths_in_tree};
+use super::shell_access::{
+    command_words_write_paths, command_write_paths_in_tree, is_safe_write_sink,
+};
 use super::types::AccessKind;
 
 /// Classifier outcome for a single tool authorization.
@@ -391,7 +393,7 @@ fn classify_bash(cmd: &str) -> ClassifierVerdict {
     // (or any `env` option) can change which binary runs / how code resolves.
     // Read from the PARSED, quote-stripped tree so `env "LD_PRELOAD=..."` can't
     // hide the key.
-    if sets_unsafe_env(tree.root_node(), cmd, &cmds) {
+    if script_env_risk(tree.root_node(), cmd, &cmds) != EnvRisk::Safe {
         return ClassifierVerdict::Block;
     }
     // A routine command can still write an arbitrary destination via a redirect
@@ -540,7 +542,7 @@ fn package_manager_subcommand_is_routine(prog: &str, inner: &[String]) -> Option
         LaunchTarget::Unresolved => return Some(false),
         LaunchTarget::Inner(launched) => {
             return Some(
-                !command_env_is_unsafe(launched)
+                command_env_risk(launched) == EnvRisk::Safe
                     && !launched_writes_nonsink(launched)
                     && bash_command_is_routine(launched),
             );
@@ -723,17 +725,51 @@ fn explicit_launch_target<'a>(head: &str, inner: &'a [String]) -> LaunchTarget<'
     }
 }
 
-/// Default-deny env guard. True (→ Block) if the command assigns any env var
-/// whose KEY is not in [`SAFE_ENV_KEYS`], or passes an option to `env` (which can
-/// run a string, clear, or unset the environment). Reads the PARSED tree so
-/// quoting (`env "LD_PRELOAD=..."`) can't hide a key from the check.
-fn sets_unsafe_env(root: Node<'_>, src: &str, cmds: &[PlainCommand]) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum EnvRisk {
+    Safe,
+    Unvetted,
+    Injection,
+}
+
+const INJECTION_ENV_KEYS: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "BASH_ENV",
+    "ENV",
+    "IFS",
+    "PATH",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_PROXY_COMMAND",
+    "PROMPT_COMMAND",
+];
+
+const INJECTION_ENV_KEY_PREFIXES: &[&str] = &["DYLD_", "GIT_CONFIG"];
+
+fn env_key_risk(key: &str) -> EnvRisk {
+    if is_safe_env_key(key) {
+        EnvRisk::Safe
+    } else if INJECTION_ENV_KEYS.contains(&key)
+        || INJECTION_ENV_KEY_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+    {
+        EnvRisk::Injection
+    } else {
+        EnvRisk::Unvetted
+    }
+}
+
+/// Highest [`EnvRisk`] across the script's environment assignments. Only keys
+/// are classified; assignment values are never emitted or logged here.
+pub(crate) fn script_env_risk(root: Node<'_>, src: &str, cmds: &[PlainCommand]) -> EnvRisk {
+    let mut risk = EnvRisk::Safe;
     // (a) Inline `KEY=val cmd` assignments are `variable_assignment` nodes
     //     (stripped from PlainCommand words), so walk the tree for them.
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        if node.kind() == "variable_assignment" && !is_safe_env_key(assignment_key(node, src)) {
-            return true;
+        if node.kind() == "variable_assignment" {
+            risk = risk.max(env_key_risk(assignment_key(node, src)));
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -742,30 +778,30 @@ fn sets_unsafe_env(root: Node<'_>, src: &str, cmds: &[PlainCommand]) -> bool {
     }
     // (b) `env`-form assignments/options, even behind other wrappers
     //     (e.g. `timeout 5 env LD_PRELOAD=...`).
-    cmds.iter().any(|c| command_env_is_unsafe(c.words()))
+    cmds.iter().fold(risk, |risk, command| {
+        risk.max(command_env_risk(command.words()))
+    })
 }
 
-/// Walk a command's wrapper chain; for each `env` invocation treat any option
-/// flag (`-S`/`-i`/`-u`/`-C`/...) or an assignment KEY outside [`SAFE_ENV_KEYS`]
-/// as exec-affecting → unsafe. Covers nested wrappers like `timeout 5 env ...`.
-fn command_env_is_unsafe(words: &[String]) -> bool {
+/// Walk a command's wrapper chain and classify environment-affecting operands.
+/// Option forms such as `env -i`, `env -S`, and `env -u` are injection risk.
+fn command_env_risk(words: &[String]) -> EnvRisk {
+    let mut risk = EnvRisk::Safe;
     let mut current = words;
     for _ in 0..8 {
         if current.first().and_then(|w| w.rsplit(['/', '\\']).next()) == Some("env") {
+            let mut options_done = false;
             for arg in &current[1..] {
                 if arg == "--" {
-                    break; // end of env options; the rest is the command
+                    options_done = true;
+                    continue;
                 }
-                if arg.starts_with('-') {
-                    return true; // env option alters/clears the exec environment
+                if !options_done && arg.starts_with('-') {
+                    return EnvRisk::Injection;
                 }
                 match arg.split_once('=') {
-                    Some((key, _)) => {
-                        if !is_safe_env_key(key) {
-                            return true;
-                        }
-                    }
-                    None => break, // first plain word is the inner command
+                    Some((key, _)) => risk = risk.max(env_key_risk(key)),
+                    None => break,
                 }
             }
         }
@@ -774,7 +810,7 @@ fn command_env_is_unsafe(words: &[String]) -> bool {
             None => break,
         }
     }
-    false
+    risk
 }
 
 /// The variable name assigned by a `variable_assignment` node — its
@@ -804,12 +840,6 @@ fn is_safe_env_key(key: &str) -> bool {
 /// Delegates to the canonical wrapper set in `bash_command_splitting` (no drift).
 fn is_lone_wrapper(words: &[String]) -> bool {
     words.len() == 1 && is_wrapper_command(words)
-}
-
-/// Safe write sinks: writing to these discards/echoes output rather than
-/// touching a real file. Exact match.
-fn is_safe_write_sink(path: &str) -> bool {
-    matches!(path, "/dev/null" | "/dev/stdout" | "/dev/stderr")
 }
 
 /// `find` is routine ONLY when it has no action primary that deletes, executes,
@@ -1628,6 +1658,43 @@ mod tests {
         );
         assert_eq!(v("RUST_LOG=debug cargo test"), ClassifierVerdict::Allow);
         assert_eq!(v("cargo test"), ClassifierVerdict::Allow);
+    }
+
+    #[test]
+    fn env_risk_tiers_classify_keys_without_exposing_values() {
+        let risk = |cmd: &str| {
+            let tree = try_parse_shell(cmd).expect(cmd);
+            let commands = try_parse_word_only_commands_sequence(&tree, cmd).unwrap_or_default();
+            script_env_risk(tree.root_node(), cmd, &commands)
+        };
+
+        assert_eq!(risk("RUST_LOG=debug cargo test"), EnvRisk::Safe);
+        for cmd in [
+            "GH_HOST=github.example.com gh pr view 3135",
+            "FOO=bar make test",
+            "GIT_SSH_COMMAND=/x git fetch",
+            "PYTHONPATH=/x python s.py",
+            "NODE_OPTIONS=--require=/x npm test",
+            "KUBECONFIG=/x kubectl get pods",
+        ] {
+            assert_eq!(risk(cmd), EnvRisk::Unvetted, "{cmd}");
+        }
+        for cmd in [
+            "LD_PRELOAD=/x cargo test",
+            "env \"DYLD_INSERT_LIBRARIES=/x\" cargo test",
+            "GIT_CONFIG_COUNT=1 git status",
+            "PATH=/tmp cargo test",
+            "BASH_ENV=/x bash -c true",
+            "IFS=x sh -c cmd",
+            "env -i cargo test",
+            "env -S 'rm -rf ~' ls",
+            "env -- LD_PRELOAD=/x cargo test",
+            "GIT_EXTERNAL_DIFF=/x git diff",
+            "GIT_PROXY_COMMAND=/x git fetch",
+            "PROMPT_COMMAND=/x bash",
+        ] {
+            assert_eq!(risk(cmd), EnvRisk::Injection, "{cmd}");
+        }
     }
 
     /// `cp`/`mv` write/replace arbitrary destinations the redirect guard can't

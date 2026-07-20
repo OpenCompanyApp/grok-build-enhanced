@@ -22,12 +22,63 @@ struct CompiledRule<'a> {
 pub struct CompiledPolicy {
     config: PermissionConfig,
     matchers: Vec<Option<glob::Pattern>>,
+    /// Canonicalized aliases for absolute path patterns. This keeps managed
+    /// rules binding when the physical target crosses a platform/root symlink
+    /// such as macOS `/var -> /private/var`.
+    physical_path_matchers: Vec<Option<glob::Pattern>>,
     /// True if any Read/Edit/Any deny/ask rule exists, so the shell file-access
     /// gate (`shell_access.rs`) should run. Read by `evaluate_shell_file_access`.
     pub(crate) has_file_restrictions: bool,
     /// True if any Bash/Any deny/ask rule exists, so the per-segment Bash command
     /// gate should run. Read by `evaluate_bash_command_policy`.
     has_bash_command_restrictions: bool,
+}
+
+fn canonical_path_pattern(rule: &PermissionRule) -> Option<String> {
+    if rule.pattern_mode != PatternMode::Glob
+        || !matches!(
+            rule.tool,
+            ToolFilter::Read | ToolFilter::Edit | ToolFilter::Grep | ToolFilter::Any
+        )
+    {
+        return None;
+    }
+    let pattern = rule.pattern.as_deref()?;
+    let path = std::path::Path::new(pattern);
+    if !path.is_absolute() {
+        return None;
+    }
+
+    let mut fixed = std::path::PathBuf::new();
+    let mut tail = Vec::<std::ffi::OsString>::new();
+    let mut found_glob = false;
+    for component in path.components() {
+        let text = component.as_os_str().to_string_lossy();
+        found_glob |= text.chars().any(|ch| matches!(ch, '*' | '?' | '['));
+        if found_glob {
+            tail.push(component.as_os_str().to_owned());
+        } else {
+            fixed.push(component.as_os_str());
+        }
+    }
+
+    // Resolve the longest existing literal prefix, retaining both missing leaf
+    // components and the glob suffix. Rules often name files that do not exist
+    // yet, while their parent may still cross a physical root alias.
+    let mut unresolved = Vec::<std::ffi::OsString>::new();
+    let mut candidate = fixed;
+    let mut canonical = loop {
+        if let Ok(canonical) = dunce::canonicalize(&candidate) {
+            break canonical;
+        }
+        unresolved.push(candidate.file_name()?.to_owned());
+        candidate = candidate.parent()?.to_path_buf();
+    };
+    for component in unresolved.iter().rev().chain(tail.iter()) {
+        canonical.push(component);
+    }
+    let canonical = canonical.to_string_lossy().into_owned();
+    (canonical != pattern).then_some(canonical)
 }
 
 impl CompiledPolicy {
@@ -40,6 +91,13 @@ impl CompiledPolicy {
                     .as_deref()
                     .filter(|p| *p != "*")
                     .and_then(|p| glob::Pattern::new(p).ok())
+            })
+            .collect();
+        let physical_path_matchers = config
+            .rules
+            .iter()
+            .map(|rule| {
+                canonical_path_pattern(rule).and_then(|pattern| glob::Pattern::new(&pattern).ok())
             })
             .collect();
         let has_file_restrictions = config.rules.iter().any(|rule| {
@@ -56,6 +114,7 @@ impl CompiledPolicy {
         Self {
             config,
             matchers,
+            physical_path_matchers,
             has_file_restrictions,
             has_bash_command_restrictions,
         }
@@ -112,7 +171,7 @@ impl CompiledPolicy {
         let mut matched_ask = false;
         let mut matched_allow = false;
 
-        for (rule, matcher) in self.config.rules.iter().zip(&self.matchers) {
+        for (index, (rule, matcher)) in self.config.rules.iter().zip(&self.matchers).enumerate() {
             if !tool_filter_matches(access, &rule.tool) {
                 continue;
             }
@@ -120,7 +179,12 @@ impl CompiledPolicy {
                 rule,
                 matcher: matcher.as_ref(),
             };
-            if !pattern_matches(access, &cr) {
+            if !pattern_matches(access, &cr)
+                && !canonical_path_pattern_matches(
+                    access,
+                    self.physical_path_matchers[index].as_ref(),
+                )
+            {
                 continue;
             }
             match rule.action {
@@ -168,7 +232,7 @@ impl From<PermissionConfig> for CompiledPolicy {
 /// `dash`, `zsh`, `ksh`); `None` if the words are not such an invocation.
 /// Known residuals: option arguments (`-o pipefail`) and `+`-option words can
 /// mis-take the operand — escalation-only so a miss never allows; skipping `+…` would add a dodge.
-fn shell_dash_c_script(words: &[String]) -> Option<&str> {
+pub(crate) fn shell_dash_c_script(words: &[String]) -> Option<&str> {
     let program = words.first()?.rsplit(['/', '\\']).next()?;
     if !matches!(program, "bash" | "sh" | "dash" | "zsh" | "ksh") {
         return None;
@@ -241,6 +305,17 @@ fn pattern_matches(access: &AccessKind, cr: &CompiledRule<'_>) -> bool {
         AccessKind::WebSearch(query) => {
             glob_matches(query, MatchContext::Freeform, cr.matcher) || query.starts_with(pattern)
         }
+    }
+}
+
+fn canonical_path_pattern_matches(access: &AccessKind, matcher: Option<&glob::Pattern>) -> bool {
+    match access {
+        AccessKind::Edit(path) => glob_matches(path, MatchContext::Path, matcher),
+        AccessKind::Read(Some(path))
+        | AccessKind::Grep {
+            path: Some(path), ..
+        } => glob_matches(path, MatchContext::Path, matcher),
+        _ => false,
     }
 }
 

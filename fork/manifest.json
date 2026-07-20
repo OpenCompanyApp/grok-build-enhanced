@@ -1306,6 +1306,36 @@
       ]
     },
     {
+      "id": "provider-neutral-p0-permission-hardening",
+      "description": "Audited reconciliation of Grok Build ba76b0a provider-neutral execution and protected-workspace confirmation floors, indirect-writer policy enforcement, and inherited child-network sandbox restriction.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-sandbox/src/lib.rs",
+        "crates/codegen/xai-grok-sandbox/src/profiles.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs",
+        "crates/codegen/xai-grok-shell/tests/test_mcp_permission_persistence.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/auto_mode.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/bash_command_splitting.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/policy.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/resolution.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/shell_access.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/types.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sandbox/src/lib.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/shell_access.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "fork-compat-workspace-permissions",
       "description": "Downstream compatibility changes in environment, workspace, and permission handling.",
       "source_ids": [

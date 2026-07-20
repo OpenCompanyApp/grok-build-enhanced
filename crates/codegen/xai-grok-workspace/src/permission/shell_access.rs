@@ -62,10 +62,32 @@ impl CompiledPolicy {
             // Unpinnable after a preceding `cd`/`pushd`, or under an `env -C`.
             let cwd_unpinned =
                 cwd_unpinned_before(&cwd_changes, *start_byte) || wrapper_has_chdir(raw_words);
+
+            // Re-check every known write hidden behind ordinary wrappers and
+            // explicit package/command launchers. This is intentionally
+            // duplicated with the direct per-program handling below: the latter
+            // models reads as well, while this recursive pass ensures a managed
+            // Edit deny still wins before YOLO for `npm exec -- tee .env` and
+            // similar literal launcher forms. If launcher options make the inner
+            // command ambiguous, fail closed to Ask while file rules are active.
+            if explicit_launcher_is_unresolved(raw_words) {
+                forced_ask = true;
+            }
+            for path in command_words_write_paths(raw_words) {
+                if shell_arg_is_ambiguous(&path) {
+                    forced_ask = true;
+                }
+                decision = combine_decisions(
+                    decision,
+                    self.evaluate_shell_path(&path, cwd, ShellFileMode::Write),
+                );
+            }
+
             let candidates = shell_file_candidates(words);
             let path_operands = shell_path_command_operands(&program_lower, words);
             let is_known = program_lower == "dd"
                 || shell_file_mode(&program_lower).is_some()
+                || shell_editor_is_in_place(&program_lower, words)
                 || path_operands.is_some();
             if is_known && (cwd_unpinned || *arg_ambiguous || parse_failed) {
                 forced_ask = true;
@@ -92,14 +114,15 @@ impl CompiledPolicy {
                 }
                 continue;
             }
-            // In-place sed both reads and rewrites each operand.
-            let modes: &[ShellFileMode] = match shell_file_mode(&program_lower) {
-                Some(_) if program_lower == "sed" && shell_sed_in_place(words) => {
-                    &[ShellFileMode::Read, ShellFileMode::Write]
+            // In-place editors both read and rewrite each operand.
+            let modes: &[ShellFileMode] = if shell_editor_is_in_place(&program_lower, words) {
+                &[ShellFileMode::Read, ShellFileMode::Write]
+            } else {
+                match shell_file_mode(&program_lower) {
+                    Some(ShellFileMode::Read) => &[ShellFileMode::Read],
+                    Some(ShellFileMode::Write) => &[ShellFileMode::Write],
+                    None => continue,
                 }
-                Some(ShellFileMode::Read) => &[ShellFileMode::Read],
-                Some(ShellFileMode::Write) => &[ShellFileMode::Write],
-                None => continue,
             };
             for &token in &candidates {
                 if shell_arg_is_ambiguous(token) {
@@ -167,6 +190,12 @@ impl CompiledPolicy {
 /// command and to re-check the inner command of a package-manager launcher
 /// (`uv run`, `npm exec`, ...) whose writes the outer program name would hide.
 pub(crate) fn command_words_write_paths(words: &[String]) -> Vec<String> {
+    command_words_write_paths_inner(words, 0)
+}
+
+fn command_words_write_paths_inner(words: &[String], depth: usize) -> Vec<String> {
+    const MAX_LAUNCHER_DEPTH: usize = 8;
+
     let inner = unwrap_wrappers(words);
     let mut out = Vec::new();
     let Some(program) = inner.first().map(|w| shell_program_name(w)) else {
@@ -188,18 +217,75 @@ pub(crate) fn command_words_write_paths(words: &[String]) -> Vec<String> {
                 out.push(path.to_owned());
             }
         }
-        return out;
-    }
-    // Named-argument writers (`tee`/`truncate`/...) and in-place `sed -i`, which
-    // rewrites each file operand.
-    let writes_operands = matches!(shell_file_mode(&program), Some(ShellFileMode::Write))
-        || (program == "sed" && shell_sed_in_place(inner));
-    if writes_operands {
-        for token in shell_file_candidates(inner) {
-            out.push(token.to_owned());
+    } else {
+        // Named-argument writers (`tee`/`truncate`/...) and in-place editors.
+        let writes_operands = matches!(shell_file_mode(&program), Some(ShellFileMode::Write))
+            || shell_editor_is_in_place(&program, inner);
+        if writes_operands {
+            for token in shell_file_candidates(inner) {
+                out.push(token.to_owned());
+            }
         }
     }
+
+    // Explicit command/package launchers hide the real program from the outer
+    // AST command node. Re-run the same writer model over their literal inner
+    // command. Unknown launcher option layouts are handled by the manager's
+    // opaque-execution confirmation floor rather than guessed here.
+    if depth < MAX_LAUNCHER_DEPTH
+        && let Some(launched) = explicit_launched_command(&program, inner)
+    {
+        out.extend(command_words_write_paths_inner(launched, depth + 1));
+    }
+
     out
+}
+
+fn explicit_launched_command<'a>(program: &str, words: &'a [String]) -> Option<&'a [String]> {
+    let after_optional_double_dash = |start: usize| {
+        let start = start + usize::from(words.get(start).map(String::as_str) == Some("--"));
+        words
+            .get(start..)
+            .filter(|inner| inner.first().is_some_and(|word| !word.starts_with('-')))
+    };
+
+    match program {
+        "command" => {
+            let start = words
+                .iter()
+                .position(|word| !word.starts_with('-') && word != "command")?;
+            words.get(start..)
+        }
+        "uv" if words.get(1).map(String::as_str) == Some("run") => after_optional_double_dash(2),
+        "rustup" if words.get(1).map(String::as_str) == Some("run") => {
+            after_optional_double_dash(3)
+        }
+        "npm" | "pnpm" | "yarn"
+            if matches!(words.get(1).map(String::as_str), Some("exec" | "x" | "dlx")) =>
+        {
+            after_optional_double_dash(2)
+        }
+        "npx" | "uvx" | "bunx" => after_optional_double_dash(1),
+        _ => None,
+    }
+}
+
+fn explicit_launcher_is_unresolved(words: &[String]) -> bool {
+    let inner = unwrap_wrappers(words);
+    let Some(program) = inner
+        .first()
+        .map(|word| shell_program_name(word).to_ascii_lowercase())
+    else {
+        return false;
+    };
+    let is_launcher = matches!(program.as_str(), "npx" | "uvx" | "bunx")
+        || matches!(
+            (program.as_str(), inner.get(1).map(String::as_str)),
+            ("uv", Some("run"))
+                | ("rustup", Some("run"))
+                | ("npm" | "pnpm" | "yarn", Some("exec" | "x" | "dlx"))
+        );
+    is_launcher && explicit_launched_command(&program, inner).is_none()
 }
 
 /// Every path a shell command WRITES, from an ALREADY-PARSED tree (so a caller
@@ -223,6 +309,157 @@ pub(crate) fn command_write_paths_in_tree(root: Node<'_>, src: &str) -> Vec<Stri
         out.extend(command_words_write_paths(&raw_words));
     }
     out
+}
+
+/// Safe write sinks that do not touch a real file. Exact match.
+pub(crate) fn is_safe_write_sink(path: &str) -> bool {
+    matches!(path, "/dev/null" | "/dev/stdout" | "/dev/stderr")
+}
+
+/// Whether an already-resolved direct edit target needs explicit confirmation.
+///
+/// The caller uses the edit tools' shared model-path resolver first. This helper
+/// preserves its uncollapsed components for physical symlink + `..` resolution,
+/// while checking a separate lexical normalization for traversal aliases.
+pub(crate) fn edit_target_requires_prompt(path: &Path) -> bool {
+    if !path.is_absolute() {
+        return true;
+    }
+    let lexical = xai_grok_paths::normalize_lexically(path);
+    if protected_edit_path(&lexical) {
+        return true;
+    }
+    let Some(resolved) = resolve_edit_target(path) else {
+        return true;
+    };
+    protected_edit_path(&resolved) || resolved_path_is_within_root(&resolved, Path::new("/etc"))
+}
+
+/// Resolve a model-resolved edit path through every existing symlink while
+/// preserving not-yet-existing trailing components. Permission policy evaluates
+/// both the model path and this physical path so a managed deny cannot be
+/// bypassed through an in-workspace link.
+pub(crate) fn resolve_edit_target(path: &Path) -> Option<PathBuf> {
+    path.is_absolute()
+        .then(|| resolve_following_symlinks(path, 0))
+        .flatten()
+}
+
+fn protected_edit_path(path: &Path) -> bool {
+    let components: Vec<String> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    let string_components: Vec<&str> = components.iter().map(String::as_str).collect();
+    let file = string_components.last().copied().unwrap_or("");
+    const STARTUP_FILES: &[&str] = &[
+        ".bashrc",
+        ".bash_profile",
+        ".bash_login",
+        ".bash_logout",
+        ".profile",
+        ".zshrc",
+        ".zshenv",
+        ".zprofile",
+        ".zlogin",
+        ".zlogout",
+        ".kshrc",
+        ".cshrc",
+        ".tcshrc",
+        ".login",
+        ".logout",
+        ".inputrc",
+        ".xprofile",
+    ];
+
+    STARTUP_FILES.contains(&file)
+        || protected_credential_path(&string_components, file)
+        || protected_policy_path(&string_components, file)
+        || protected_hook_or_plugin_path(&string_components)
+        || protected_git_hooks_path(&string_components)
+        || path == Path::new("/etc")
+        || path.starts_with(Path::new("/etc"))
+}
+
+fn protected_credential_path(components: &[&str], file: &str) -> bool {
+    const CREDENTIAL_DIRS: &[&str] = &[".ssh", ".gnupg", ".aws", ".azure", ".kube"];
+    const CREDENTIAL_FILES: &[&str] = &[
+        ".git-credentials",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        "auth.json",
+        "credentials",
+        "credentials.json",
+        "id_rsa",
+        "id_ed25519",
+    ];
+
+    CREDENTIAL_DIRS
+        .iter()
+        .any(|protected| components.contains(protected))
+        || CREDENTIAL_FILES.contains(&file)
+        || file == ".env"
+        || file.starts_with(".env.")
+        || file.ends_with(".pem")
+        || file.ends_with(".key")
+}
+
+fn protected_policy_path(components: &[&str], file: &str) -> bool {
+    const POLICY_FILES: &[&str] = &[
+        "agents.md",
+        "agent.md",
+        "claude.md",
+        "requirements.toml",
+        "sandbox.toml",
+        ".mcp.json",
+    ];
+
+    let parent = components.iter().rev().nth(1).copied().unwrap_or("");
+    POLICY_FILES.contains(&file)
+        || matches!(
+            (parent, file),
+            (".grok" | ".codex", "config.toml")
+                | (".claude", "settings.json" | "settings.local.json")
+        )
+}
+
+fn protected_hook_or_plugin_path(components: &[&str]) -> bool {
+    components.windows(2).any(|pair| {
+        matches!(
+            pair,
+            [".grok", "hooks"]
+                | [".grok", "plugins"]
+                | [".claude", "hooks"]
+                | [".claude", "plugins"]
+                | [".codex", "hooks"]
+                | [".codex", "plugins"]
+        )
+    })
+}
+
+fn protected_git_hooks_path(components: &[&str]) -> bool {
+    components.windows(2).any(|pair| pair == [".git", "hooks"])
+        || components.iter().enumerate().any(|(git, component)| {
+            *component == ".git"
+                && components.get(git + 1) == Some(&"modules")
+                && components[git + 2..]
+                    .iter()
+                    .skip(1)
+                    .any(|component| *component == "hooks")
+        })
+}
+
+/// `resolved_path` is already physical; resolve `root` so platform aliases such
+/// as macOS `/etc -> /private/etc` compare in the same namespace. Resolution
+/// failure is conservative: the caller then requires confirmation.
+fn resolved_path_is_within_root(resolved_path: &Path, root: &Path) -> bool {
+    resolve_following_symlinks(root, 0)
+        .map(|resolved_root| resolved_path.starts_with(resolved_root))
+        .unwrap_or(true)
 }
 
 #[derive(Clone, Copy)]
@@ -432,28 +669,32 @@ pub(crate) fn shell_redirect_targets(
 }
 
 fn shell_redirect_one(node: Node<'_>, src: &str) -> Option<(Option<String>, ShellFileMode, bool)> {
-    let mut mode = None;
+    let mut redirect = None;
     for i in 0..node.child_count() {
         let kind = node.child(i)?.kind();
         // `<<`/`<<<` read from inline text, not a file.
         if kind.contains("<<") {
             return None;
         }
-        if kind.contains('>') {
-            mode = Some(ShellFileMode::Write);
-            break;
-        }
-        if kind.contains('<') {
-            mode = Some(ShellFileMode::Read);
+        if kind.contains('>') || kind.contains('<') {
+            redirect = Some(kind);
             break;
         }
     }
-    let mode = mode?;
+    let redirect = redirect?;
+    let mode = if redirect.contains('>') {
+        ShellFileMode::Write
+    } else {
+        ShellFileMode::Read
+    };
+    let duplicates_fd = matches!(redirect, ">&" | "<&");
     let dest = node.child_by_field_name("destination")?;
     match shell_node_arg(dest, src)? {
         ArgText::Literal(s) => {
-            // Skip fd duplications (`>&1`) and empty targets.
-            if s.is_empty() || s.starts_with('&') || s.bytes().all(|b| b.is_ascii_digit()) {
+            if s.is_empty()
+                || s.starts_with('&')
+                || (duplicates_fd && (s == "-" || s.bytes().all(|b| b.is_ascii_digit())))
+            {
                 None
             } else {
                 let ambiguous = shell_arg_is_ambiguous(&s);
@@ -471,6 +712,26 @@ fn shell_sed_in_place(words: &[String]) -> bool {
             // `i` is sed's only short flag with that letter → any `-…i…` is in-place.
             || (word.starts_with('-') && !word.starts_with("--") && word.contains('i'))
     })
+}
+
+fn shell_editor_is_in_place(program: &str, words: &[String]) -> bool {
+    match program {
+        "sed" | "gsed" | "perl" | "ruby" => shell_sed_in_place(words),
+        "rustfmt" | "black" => true,
+        "clang-format" => words
+            .iter()
+            .skip(1)
+            .any(|word| word == "-i" || word == "--in-place"),
+        "gofmt" | "shfmt" => words.iter().skip(1).any(|word| {
+            word == "-w" || (word.starts_with('-') && !word.starts_with("--") && word.contains('w'))
+        }),
+        "prettier" => words
+            .iter()
+            .skip(1)
+            .any(|word| matches!(word.as_str(), "--write" | "-w")),
+        "ruff" => words.get(1).map(String::as_str) == Some("format"),
+        _ => false,
+    }
 }
 
 fn shell_output_flag_values(words: &[String]) -> impl Iterator<Item = &str> {
@@ -729,8 +990,8 @@ fn resolve_symlink_target(absolute: &str) -> Option<String> {
 
 /// Resolve `path` following every symlink, including a *dangling* final link
 /// (which `canonicalize` alone rejects) and not-yet-existing trailing
-/// components. Depth-bounded against cycles; any fs error yields `None`.
-/// Blocking fs syscalls; runs per operand when file rules exist.
+/// components. Depth-bounded against cycles; unexpected fs errors yield `None`.
+/// Blocking fs syscalls; runs for shell operands under file rules and direct edits.
 fn resolve_following_symlinks(path: &Path, depth: usize) -> Option<PathBuf> {
     const MAX_SYMLINK_DEPTH: usize = 40;
     if depth > MAX_SYMLINK_DEPTH {
@@ -741,13 +1002,17 @@ fn resolve_following_symlinks(path: &Path, depth: usize) -> Option<PathBuf> {
         return Some(canonical);
     }
     // Resolve the parent, then the final component, so a dangling/new leaf still follows.
+    // Missing components are valid new paths; other metadata errors fail closed.
     let parent = path.parent()?;
     let file_name = path.file_name()?;
     let resolved_parent = resolve_following_symlinks(parent, depth + 1)?;
     let candidate = resolved_parent.join(file_name);
-    if let Ok(meta) = std::fs::symlink_metadata(&candidate)
-        && meta.file_type().is_symlink()
-    {
+    let metadata = match std::fs::symlink_metadata(&candidate) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return None,
+    };
+    if metadata.is_some_and(|metadata| metadata.file_type().is_symlink()) {
         // A symlink must be followed; if it can't be read, treat the whole path
         // as unresolved (`None`) rather than returning the link's own path.
         let target = std::fs::read_link(&candidate).ok()?;
@@ -807,6 +1072,157 @@ mod tests {
 
     fn cwd() -> &'static std::path::Path {
         std::path::Path::new("/work")
+    }
+
+    #[test]
+    fn sensitive_edit_targets_and_lexical_aliases_prompt() {
+        for path in [
+            "/home/user/.zshrc",
+            "/etc",
+            "/etc/grok-test",
+            "/work/subdir/../.git/hooks/pre-commit",
+        ] {
+            assert!(
+                edit_target_requires_prompt(Path::new(path)),
+                "protected edit target must prompt: {path}"
+            );
+        }
+        for path in [
+            "/work/src/main.rs",
+            "/work/project/.grok/config.toml/backup",
+        ] {
+            assert!(
+                !edit_target_requires_prompt(Path::new(path)),
+                "ordinary edit target should not prompt: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn protected_credentials_policies_hooks_plugins_and_relative_paths_prompt() {
+        for path in [
+            "/work/.env.production",
+            "/home/user/.aws/credentials",
+            "/home/user/.grok/auth.json",
+            "/work/AGENTS.md",
+            "/work/.grok/sandbox.toml",
+            "/work/.claude/settings.local.json",
+            "/work/.grok/hooks/pre-tool.sh",
+            "/work/.claude/plugins/checker/plugin.json",
+            "/work/.mcp.json",
+            "relative/path.txt",
+        ] {
+            assert!(
+                edit_target_requires_prompt(Path::new(path)),
+                "protected or unanchored target must prompt: {path}"
+            );
+        }
+        for path in [
+            "/work/src/main.rs",
+            "/work/plugins/checker/plugin.json",
+            "/work/docs/credentials-guide.md",
+        ] {
+            assert!(
+                !edit_target_requires_prompt(Path::new(path)),
+                "ordinary target should not prompt: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn sensitive_edit_targets_include_submodule_hooks() {
+        for path in [
+            "/work/.git/modules/foo/hooks/pre-commit",
+            "/work/.git/modules/submodules/sglang-private/hooks/pre-commit",
+            "/work/.git/modules/outer/modules/inner/hooks/pre-commit",
+            "/work/subdir/../.git/modules/foo/hooks/pre-commit",
+        ] {
+            assert!(
+                edit_target_requires_prompt(Path::new(path)),
+                "submodule hook target must prompt: {path}"
+            );
+        }
+        for path in [
+            "/work/.git/modules/hooks/pre-commit",
+            "/work/.git/module/foo/hooks/pre-commit",
+            "/work/.git/modules/foo/hook/pre-commit",
+            "/work/.git/modules/foo/hooks-disabled/pre-commit",
+            "/work/src/modules/foo/hooks/pre-commit",
+        ] {
+            assert!(
+                !edit_target_requires_prompt(Path::new(path)),
+                "non-hook control must not prompt: {path}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn sensitive_edit_targets_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let startup = outside.path().join(".zshrc");
+        std::fs::write(&startup, b"").unwrap();
+        symlink(&startup, ws.path().join("file-link")).unwrap();
+        std::fs::create_dir_all(outside.path().join(".git/hooks")).unwrap();
+        symlink(
+            outside.path().join(".git/hooks"),
+            ws.path().join("hooks-link"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(outside.path().join(".git/modules/foo/hooks")).unwrap();
+        symlink(
+            outside.path().join(".git/modules/foo/hooks"),
+            ws.path().join("module-hooks-link"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(outside.path().join(".aws")).unwrap();
+        std::fs::write(outside.path().join(".aws/credentials"), b"").unwrap();
+        symlink(
+            outside.path().join(".aws/credentials"),
+            ws.path().join("credential-link"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(outside.path().join(".grok/plugins/checker")).unwrap();
+        symlink(
+            outside.path().join(".grok/plugins"),
+            ws.path().join("plugin-link"),
+        )
+        .unwrap();
+
+        for path in [
+            ws.path().join("file-link"),
+            ws.path().join("hooks-link/new-hook"),
+            ws.path().join("module-hooks-link/new-hook"),
+            ws.path().join("credential-link"),
+            ws.path().join("plugin-link/checker/plugin.json"),
+        ] {
+            assert!(
+                edit_target_requires_prompt(&path),
+                "symlinked protected edit target must prompt: {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_root_alias_matches_physical_destination() {
+        let resolved_root = resolve_following_symlinks(Path::new("/etc"), 0).unwrap();
+        assert!(resolved_path_is_within_root(
+            &resolved_root.join("grok-test"),
+            Path::new("/etc")
+        ));
+        assert!(!resolved_path_is_within_root(
+            Path::new("/tmp/grok-test"),
+            Path::new("/etc")
+        ));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn private_etc_alias_requires_prompt() {
+        assert!(edit_target_requires_prompt(Path::new("/private/etc/hosts")));
     }
 
     #[test]
@@ -1008,6 +1424,10 @@ mod tests {
             "sort README.md -o .env",
             "truncate -s 0 .env",
             "Tee-Object .env",
+            "timeout 5 tee .env",
+            "command tee .env",
+            "npm exec -- tee .env",
+            "uv run dd if=payload of=.env",
         ] {
             assert!(
                 matches!(
@@ -1481,6 +1901,44 @@ mod tests {
                     Some(Decision::Reject(_))
                 ),
                 "write redirect must be denied: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn adversarial_fd_duplication_and_numeric_filenames() {
+        let parsed = |cmd: &str| {
+            let tree = try_parse_shell(cmd).expect("shell parses");
+            command_write_paths_in_tree(tree.root_node(), cmd)
+        };
+        assert!(parsed("cat payload 2>&1").is_empty());
+        assert!(parsed("cat payload 1>&-").is_empty());
+        assert!(parsed("cat payload 0<&3").is_empty());
+        assert_eq!(parsed("cat payload > 3"), vec!["3"]);
+    }
+
+    #[test]
+    fn indirect_writer_model_covers_wrappers_package_runners_and_in_place_editors() {
+        let parsed = |cmd: &str| {
+            let tree = try_parse_shell(cmd).expect("shell parses");
+            command_write_paths_in_tree(tree.root_node(), cmd)
+        };
+        for (cmd, target) in [
+            ("timeout 5 env FOO=1 tee out.txt", "out.txt"),
+            ("env dd if=input of=out.bin", "out.bin"),
+            ("nice sort input -o sorted.txt", "sorted.txt"),
+            ("sed -i.bak s/a/b/ file.txt", "file.txt"),
+            ("perl -pi -e s/a/b/ script.pl", "script.pl"),
+            ("prettier --write src/app.ts", "src/app.ts"),
+            ("npm exec -- tee package.out", "package.out"),
+            ("pnpm x -- sort input -o package.sorted", "package.sorted"),
+            ("uv run -- dd if=input of=uv.out", "uv.out"),
+            ("rustup run stable rustfmt src/lib.rs", "src/lib.rs"),
+        ] {
+            assert!(
+                parsed(cmd).iter().any(|path| path == target),
+                "indirect writer must expose {target}: {cmd} -> {:?}",
+                parsed(cmd)
             );
         }
     }

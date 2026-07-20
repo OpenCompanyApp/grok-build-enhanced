@@ -7,20 +7,26 @@ use chrono::Utc;
 use tokio::sync::{mpsc, oneshot};
 use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
+use crate::permission::auto_mode::{EnvRisk, script_env_risk};
 use crate::permission::bash_command_splitting::{
-    all_commands_from_script, is_setup_command, unwrap_wrappers,
+    is_setup_command, try_parse_shell, try_parse_word_only_commands_sequence, unwrap_wrappers,
 };
-use crate::permission::policy::CompiledPolicy;
+use crate::permission::policy::{CompiledPolicy, shell_dash_c_script};
 use crate::permission::prompter::{AcpPrompter, PromptOutcome};
-use crate::permission::shell_access::combine_decisions;
+use crate::permission::shell_access::{
+    combine_decisions, command_write_paths_in_tree, edit_target_requires_prompt,
+    is_safe_write_sink, resolve_edit_target,
+};
 use crate::permission::state::{PermissionState, load_state_from_disk, persist_state};
 use crate::permission::types::{
-    AccessKind, ClientType, Decision, EditPolicy, PermissionCommand, PermissionEvent, PromptPolicy,
+    AccessKind, ClientType, Decision, EditPathContext, EditPolicy, PermissionCommand,
+    PermissionEvent, PromptPolicy,
 };
 use xai_grok_paths::AbsPathBuf;
 use xai_grok_tools::implementations::grok_build::web_fetch::{
     DomainMatcher, domain::normalize_domain,
 };
+use xai_grok_tools::types::resources::resolve_model_path;
 
 /// Canonical `decision_reason` triggers for the uploaded artifact. Single source
 /// so the emit sites can't drift or misspell (the field doc lists these values).
@@ -40,6 +46,8 @@ mod reasons {
     pub const SESSION_DENY: &str = "session_deny";
     pub const PROMPT_DENY: &str = "prompt_deny";
     pub const NEEDS_USER: &str = "needs_user";
+    pub const BASH_REQUEST_FLOOR: &str = "bash_request_floor";
+    pub const OPAQUE_SHELL: &str = "opaque_shell";
 }
 
 /// Canonical permission-mode string for the uploaded artifact. Matches
@@ -338,8 +346,7 @@ fn matches_whitelist_prefix(segment_str: &str, allowed_prefix: &str) -> bool {
     matches_command_prefix(segment_str, allowed_prefix)
 }
 
-/// Result of evaluating a bash script's segments against the current
-/// permission state.
+/// Ordinary command-segment outcome, before script-level confirmation floors.
 #[derive(Debug)]
 pub(crate) enum SegmentEvaluation {
     /// All non-setup segments safe/always-safe or on an allow-prefix.
@@ -347,104 +354,186 @@ pub(crate) enum SegmentEvaluation {
     AutoAllow { via_session_grant: bool },
     /// Disallow-prefix matched; reject without prompting.
     Reject(String),
-    /// Needs a user decision (manager prompts once for the full script).
+    /// One or more segments need a user decision.
     NeedsPrompts {
         #[allow(dead_code)]
         segments: Vec<String>,
         any_dangerous: bool,
     },
-    /// Tree-sitter could not decompose the script (heredoc, `$(…)`,
-    /// backtick, single `&` background, …). Caller should fall back to a
-    /// single conservative prompt with the full script.
+    /// Tree-sitter could not decompose the script safely.
     Unparseable,
 }
 
-/// Walk every command in a chained script and classify the script as a whole
-/// against the current permission state.
-///
-/// This is the per-segment replacement for the previous primary-only check,
-/// closing the auto-allow bypass where a safe / whitelisted primary command
-/// could smuggle a dangerous follow-on through `&&`, `||`, `;`, or `|`.
-pub(crate) fn evaluate_bash_segments(cmd: &str, state: &PermissionState) -> SegmentEvaluation {
-    evaluate_bash_segments_inner(cmd, state, true)
+/// One Bash request's parsed authorization facts.
+#[derive(Debug)]
+struct BashEvaluation {
+    segments: SegmentEvaluation,
+    writes_real_file: bool,
+    env_risk: EnvRisk,
+    exact_grant: bool,
+    all_segments_granted: bool,
+    has_opaque_shell: bool,
 }
 
-/// Core of [`evaluate_bash_segments`]. When `honor_safe_lists` is `false`, the
-/// built-in safe / always-safe command lists are ignored, so only the user's
-/// explicit `allowed_bash_commands` grants auto-allow a segment. That mode lets
-/// an explicit "Always allow" grant satisfy an `ask` policy floor (ask once,
-/// then remember) without letting the floor be bypassed for commands the user
-/// never personally approved. Disallow and dangerous handling are identical in
-/// both modes.
-pub(crate) fn evaluate_bash_segments_inner(
-    cmd: &str,
-    state: &PermissionState,
-    honor_safe_lists: bool,
-) -> SegmentEvaluation {
-    let Some(segments) = all_commands_from_script(cmd) else {
-        return SegmentEvaluation::Unparseable;
+fn command_has_opaque_execution(words: &[String]) -> bool {
+    let Some(program) = words
+        .first()
+        .and_then(|word| word.rsplit(['/', '\\']).next())
+        .map(str::to_ascii_lowercase)
+    else {
+        return false;
     };
-    let mut needs_prompt: Vec<String> = Vec::new();
+    if shell_dash_c_script(words).is_some()
+        || matches!(
+            program.as_str(),
+            "eval" | "source" | "." | "xargs" | "sudo" | "doas" | "run0"
+        )
+    {
+        return true;
+    }
+    if matches!(
+        program.as_str(),
+        "python" | "python3" | "node" | "deno" | "ruby" | "perl"
+    ) && words
+        .iter()
+        .skip(1)
+        .any(|word| matches!(word.as_str(), "-c" | "-e" | "--eval") || word.starts_with("--eval="))
+    {
+        return true;
+    }
+    if program == "find"
+        && words
+            .iter()
+            .any(|word| matches!(word.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))
+    {
+        return true;
+    }
+    matches!(program.as_str(), "npx" | "uvx" | "bunx")
+        || matches!(
+            (program.as_str(), words.get(1).map(String::as_str)),
+            ("uv", Some("run" | "tool"))
+                | ("rustup", Some("run"))
+                | ("npm" | "pnpm" | "yarn", Some("exec" | "x" | "dlx"))
+        )
+}
+
+/// Parse and classify one Bash request once, keeping ordinary segment outcome
+/// separate from script-level writer, environment, and opaque-execution floors.
+fn evaluate_bash(cmd: &str, state: &PermissionState, honor_safe_lists: bool) -> BashEvaluation {
+    let exact_grant = state.allowed_bash_commands.contains(cmd);
+    let Some(tree) = try_parse_shell(cmd) else {
+        return BashEvaluation {
+            segments: SegmentEvaluation::Unparseable,
+            writes_real_file: false,
+            env_risk: EnvRisk::Safe,
+            exact_grant,
+            all_segments_granted: false,
+            has_opaque_shell: true,
+        };
+    };
+    let writes_real_file = command_write_paths_in_tree(tree.root_node(), cmd)
+        .into_iter()
+        .any(|path| !is_safe_write_sink(&path));
+    let segments = try_parse_word_only_commands_sequence(&tree, cmd);
+    let env_risk = script_env_risk(
+        tree.root_node(),
+        cmd,
+        segments.as_deref().unwrap_or_default(),
+    );
+    let Some(segments) = segments else {
+        return BashEvaluation {
+            segments: SegmentEvaluation::Unparseable,
+            writes_real_file,
+            env_risk,
+            exact_grant,
+            all_segments_granted: false,
+            has_opaque_shell: true,
+        };
+    };
+    let mut needs_prompt = Vec::new();
     let mut any_dangerous = false;
     let mut via_session_grant = false;
+    let mut all_segments_granted = true;
+    let mut has_opaque_shell = false;
     for parsed in segments {
         let raw_words = parsed.words();
-        // Peel wrapper commands like `timeout 30 …`, `env FOO=1 …`, `nice -n 5 …`
-        // so we classify the *inner* program. Without this, a single segment
-        // such as `timeout 30 rm -rf /tmp/foo` would be treated as a benign
-        // `timeout` invocation and silently auto-allowed.
+        // Peel canonical wrappers before classifying the actual program.
         let words = unwrap_wrappers(raw_words);
+        has_opaque_shell |= command_has_opaque_execution(words);
         if is_setup_command(words) {
             continue;
         }
-        let s = words.join(" ");
+        let segment = words.join(" ");
 
-        // 1. Disallow takes priority — reject the whole script.
-        if let Some(d) = state
+        // A remembered deny wins over every allow path.
+        if let Some(denied) = state
             .disallowed_bash_commands
             .iter()
-            .find(|d| matches_whitelist_prefix(&s, d))
+            .find(|denied| matches_whitelist_prefix(&segment, denied))
         {
-            return SegmentEvaluation::Reject(format!(
-                "User previously rejected `{d}` for this session"
-            ));
+            return BashEvaluation {
+                segments: SegmentEvaluation::Reject(format!(
+                    "User previously rejected `{denied}` for this session"
+                )),
+                writes_real_file,
+                env_risk,
+                exact_grant,
+                all_segments_granted,
+                has_opaque_shell,
+            };
         }
 
-        // 2. Dangerous commands must be prompted even if a whitelist prefix
-        //    would otherwise match. This preserves the historical invariant
-        //    that `is_dangerous_command` took precedence over auto-allow.
-        if is_dangerous_command_words(words) {
-            any_dangerous = true;
-            needs_prompt.push(s);
-            continue;
-        }
-
-        // 3. Auto-allow conditions. Built-in safe lists count only when
-        //    `honor_safe_lists` is set; an explicit user grant always counts.
         let matched_grant = state
             .allowed_bash_commands
             .iter()
-            .any(|a| matches_whitelist_prefix(&s, a));
-        let matched_safe = honor_safe_lists
-            && (is_safe_command_words(words) || is_always_safe_command_words(words));
-        if matched_grant || matched_safe {
-            if matched_grant {
-                via_session_grant = true;
-            }
+            .any(|allowed| matches_whitelist_prefix(&segment, allowed));
+        all_segments_granted &= matched_grant;
+
+        if is_dangerous_command_words(words) {
+            any_dangerous = true;
+            needs_prompt.push(segment);
             continue;
         }
 
-        // 4. Otherwise: prompt for this segment.
-        needs_prompt.push(s);
+        let matched_safe = honor_safe_lists
+            && (is_safe_command_words(words) || is_always_safe_command_words(words));
+        if matched_grant || matched_safe {
+            via_session_grant |= matched_grant;
+            continue;
+        }
+        needs_prompt.push(segment);
     }
-    if needs_prompt.is_empty() {
+
+    let segments = if needs_prompt.is_empty() {
         SegmentEvaluation::AutoAllow { via_session_grant }
     } else {
         SegmentEvaluation::NeedsPrompts {
             segments: needs_prompt,
             any_dangerous,
         }
+    };
+    BashEvaluation {
+        segments,
+        writes_real_file,
+        env_risk,
+        exact_grant,
+        all_segments_granted,
+        has_opaque_shell,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn evaluate_bash_segments(cmd: &str, state: &PermissionState) -> SegmentEvaluation {
+    evaluate_bash(cmd, state, true).segments
+}
+
+#[cfg(test)]
+pub(crate) fn evaluate_bash_segments_inner(
+    cmd: &str,
+    state: &PermissionState,
+    honor_safe_lists: bool,
+) -> SegmentEvaluation {
+    evaluate_bash(cmd, state, honor_safe_lists).segments
 }
 
 impl PermissionHandle {
@@ -629,18 +718,38 @@ impl PermissionHandle {
         subagent_type: Option<String>,
         subagent_description: Option<String>,
     ) -> Decision {
+        self.request_with_edit_path_context(
+            access,
+            tool_call_update,
+            None,
+            session_id,
+            subagent_type,
+            subagent_description,
+        )
+        .await
+    }
+
+    /// Request permission with the edit tool's per-session real/display cwd.
+    pub async fn request_with_edit_path_context(
+        &self,
+        access: AccessKind,
+        tool_call_update: acp::ToolCallUpdate,
+        edit_path_context: Option<EditPathContext>,
+        session_id: Option<String>,
+        subagent_type: Option<String>,
+        subagent_description: Option<String>,
+    ) -> Decision {
         match self {
             PermissionHandle::AllowAll => Decision::Allow,
             PermissionHandle::Actor {
                 cmd_tx, in_flight, ..
             } => {
-                // Count as in-flight before sending, so the actor's emit-time
-                // snapshot includes this request.
                 let _in_flight_guard = InFlightGuard::new(in_flight);
                 let (tx, rx) = oneshot::channel::<Decision>();
                 let msg = PermissionCommand::Request {
                     access,
                     tool_call_update,
+                    edit_path_context,
                     respond_to: tx,
                     session_id,
                     subagent_type,
@@ -688,6 +797,39 @@ fn persisted_bash_auto_allows(
     (state.allow_bash_execute && yolo_pin.is_none()) || state.allowed_bash_commands.contains(cmd)
 }
 
+fn bash_write_floor_requires_prompt(evaluation: Option<&BashEvaluation>) -> bool {
+    evaluation.is_some_and(|evaluation| evaluation.writes_real_file && !evaluation.exact_grant)
+}
+
+fn bash_unsafe_env_floor_requires_prompt(evaluation: Option<&BashEvaluation>) -> bool {
+    evaluation
+        .is_some_and(|evaluation| evaluation.env_risk != EnvRisk::Safe && !evaluation.exact_grant)
+}
+
+fn bash_opaque_shell_floor_requires_prompt(evaluation: Option<&BashEvaluation>) -> bool {
+    evaluation.is_some_and(|evaluation| evaluation.has_opaque_shell && !evaluation.exact_grant)
+}
+
+fn bash_request_floor_requires_prompt(evaluation: Option<&BashEvaluation>) -> bool {
+    bash_write_floor_requires_prompt(evaluation)
+        || bash_unsafe_env_floor_requires_prompt(evaluation)
+        || bash_opaque_shell_floor_requires_prompt(evaluation)
+}
+
+/// Unvetted (but non-injection) environment keys may still use the auto
+/// classifier. Injection keys, writers, and opaque execution always prompt.
+fn bash_request_floor_defers_to_classifier(evaluation: Option<&BashEvaluation>) -> bool {
+    evaluation.is_some_and(|evaluation| {
+        !evaluation.writes_real_file
+            && !evaluation.has_opaque_shell
+            && evaluation.env_risk == EnvRisk::Unvetted
+    })
+}
+
+fn sandbox_may_auto_allow_bash(evaluation: Option<&BashEvaluation>, sandbox_active: bool) -> bool {
+    sandbox_active && !bash_request_floor_requires_prompt(evaluation)
+}
+
 /// Policy knobs for [`bash_grant_pre_decision`].
 #[derive(Clone, Copy)]
 struct BashGrantOpts {
@@ -727,63 +869,60 @@ fn grant_allow(reason: &'static str) -> Option<(Decision, &'static str)> {
     Some((Decision::Allow, reason))
 }
 
-/// Shared bash grant path for pre-classifier short-circuit and post-classify arm.
+/// Shared Bash grant path for pre-classifier short-circuit and post-classify arm.
 fn bash_grant_pre_decision(
     cmd: &str,
+    evaluation: &BashEvaluation,
     state: &PermissionState,
     yolo_pin: Option<&'static str>,
     opts: BashGrantOpts,
 ) -> Option<(Decision, &'static str)> {
-    let eval = if opts.honor_safe_lists {
-        evaluate_bash_segments(cmd, state)
-    } else {
-        evaluate_bash_segments_inner(cmd, state, false)
-    };
-    match eval {
-        SegmentEvaluation::Reject(reason) => {
-            Some((Decision::Reject(reason), reasons::SESSION_DENY))
-        }
-        SegmentEvaluation::AutoAllow { via_session_grant } => grant_allow(if via_session_grant {
-            reasons::SESSION_GRANT
-        } else {
-            reasons::SAFE_COMMAND
-        }),
-        SegmentEvaluation::NeedsPrompts { any_dangerous, .. } => {
-            if !opts.allow_blanket {
-                return None;
-            }
-            if any_dangerous && opts.conservative_blanket {
-                return None;
-            }
-            if persisted_bash_auto_allows(state, cmd, yolo_pin) {
-                grant_allow(reasons::SESSION_GRANT)
-            } else {
+    if let SegmentEvaluation::Reject(reason) = &evaluation.segments {
+        return Some((Decision::Reject(reason.to_owned()), reasons::SESSION_DENY));
+    }
+    if bash_request_floor_requires_prompt(Some(evaluation)) {
+        return None;
+    }
+    match &evaluation.segments {
+        SegmentEvaluation::Reject(_) => unreachable!(),
+        SegmentEvaluation::AutoAllow { via_session_grant } => {
+            if !opts.honor_safe_lists && !evaluation.all_segments_granted {
                 None
+            } else {
+                grant_allow(if *via_session_grant {
+                    reasons::SESSION_GRANT
+                } else {
+                    reasons::SAFE_COMMAND
+                })
+            }
+        }
+        SegmentEvaluation::NeedsPrompts { any_dangerous, .. } => {
+            if !opts.allow_blanket || (*any_dangerous && opts.conservative_blanket) {
+                None
+            } else {
+                persisted_bash_auto_allows(state, cmd, yolo_pin)
+                    .then_some((Decision::Allow, reasons::SESSION_GRANT))
             }
         }
         SegmentEvaluation::Unparseable => {
             if !opts.allow_blanket {
-                return None;
-            }
-            // Conservative path: approve-all must not cover undecomposable scripts.
-            let allowed = if opts.conservative_blanket {
-                state.allowed_bash_commands.contains(cmd)
-            } else {
-                persisted_bash_auto_allows(state, cmd, yolo_pin)
-            };
-            if allowed {
-                grant_allow(reasons::SESSION_GRANT)
-            } else {
                 None
+            } else {
+                let allowed = if opts.conservative_blanket {
+                    evaluation.exact_grant
+                } else {
+                    persisted_bash_auto_allows(state, cmd, yolo_pin)
+                };
+                allowed.then_some((Decision::Allow, reasons::SESSION_GRANT))
             }
         }
     }
 }
 
 /// Session always-allow consulted before the auto classifier.
-/// Caller must skip under policy/shell Ask floors.
 fn session_grant_pre_decision(
     access: &AccessKind,
+    bash_evaluation: Option<&BashEvaluation>,
     state: &PermissionState,
     allow_edits_for_session: bool,
     static_domain_matcher: &DomainMatcher,
@@ -801,16 +940,19 @@ fn session_grant_pre_decision(
                 return grant_allow(reasons::STATIC_ALLOWLIST);
             }
             let domain = normalize_domain(parsed_url.host_str()?);
-            if state.allowed_web_fetch_domains.contains(&domain) {
-                grant_allow(reasons::SESSION_GRANT)
-            } else {
-                None
-            }
+            state
+                .allowed_web_fetch_domains
+                .contains(&domain)
+                .then_some((Decision::Allow, reasons::SESSION_GRANT))
         }
         AccessKind::Edit(_) if allow_edits_for_session => grant_allow(reasons::SESSION_GRANT),
-        AccessKind::Bash(cmd) => {
-            bash_grant_pre_decision(cmd, state, yolo_pin, BashGrantOpts::PRE_CLASSIFIER)
-        }
+        AccessKind::Bash(cmd) => bash_grant_pre_decision(
+            cmd,
+            bash_evaluation?,
+            state,
+            yolo_pin,
+            BashGrantOpts::PRE_CLASSIFIER,
+        ),
         AccessKind::Read(_)
         | AccessKind::Grep { .. }
         | AccessKind::WebSearch(_)
@@ -1051,6 +1193,7 @@ fn spawn_permission_manager_with_pin(
                 PermissionCommand::Request {
                     access,
                     tool_call_update,
+                    edit_path_context,
                     respond_to,
                     session_id: request_session_id,
                     subagent_type: request_subagent_type,
@@ -1136,12 +1279,59 @@ fn spawn_permission_manager_with_pin(
                             let _ = event_tx.send(event);
                         };
 
-                    // Evaluate managed policy (direct access + per-segment Bash command
-                    // rules + Bash shell-file args) up front so the YOLO/sandbox fast
-                    // paths below honor a deny or forced prompt.
+                    let bash_evaluation = match &access {
+                        AccessKind::Bash(cmd) => Some(evaluate_bash(cmd, &state, true)),
+                        _ => None,
+                    };
+                    let resolved_edit_path = match (&access, edit_path_context.as_ref()) {
+                        (AccessKind::Edit(path), Some(context)) => Some(resolve_model_path(
+                            &context.real_cwd,
+                            context.display_cwd.as_deref(),
+                            path,
+                        )),
+                        // Legacy/direct workspace callers execute against the
+                        // manager cwd when no per-request session context exists.
+                        (AccessKind::Edit(path), None) => {
+                            Some(resolve_model_path(cwd.as_path(), None, path))
+                        }
+                        _ => None,
+                    };
+                    let physical_edit_path =
+                        resolved_edit_path.as_deref().and_then(resolve_edit_target);
+                    let protected_edit = resolved_edit_path
+                        .as_deref()
+                        .is_some_and(edit_target_requires_prompt);
+
+                    // Evaluate managed policy (direct access + model/physical edit
+                    // destinations + per-segment Bash command rules + Bash shell-file
+                    // args) up front so the YOLO/sandbox fast paths below honor a deny
+                    // or forced prompt. A link that cannot be resolved fails closed when
+                    // file deny/ask rules exist instead of bypassing them under YOLO.
                     let direct_decision = compiled_policy
                         .as_ref()
                         .and_then(|policy| policy.evaluate(&access));
+                    let resolved_edit_decision = compiled_policy.as_ref().and_then(|policy| {
+                        let mut decision = resolved_edit_path.as_ref().and_then(|path| {
+                            policy.evaluate(&AccessKind::Edit(path.to_string_lossy().into_owned()))
+                        });
+                        decision = combine_decisions(
+                            decision,
+                            physical_edit_path.as_ref().and_then(|path| {
+                                policy.evaluate(&AccessKind::Edit(
+                                    path.to_string_lossy().into_owned(),
+                                ))
+                            }),
+                        );
+                        if resolved_edit_path.is_some()
+                            && physical_edit_path.is_none()
+                            && policy.has_file_restrictions
+                        {
+                            decision = combine_decisions(decision, Some(Decision::Ask));
+                        }
+                        decision
+                    });
+                    let direct_decision =
+                        combine_decisions(direct_decision, resolved_edit_decision);
                     let shell_command_decision = match (&compiled_policy, &access) {
                         (Some(policy), AccessKind::Bash(cmd)) => {
                             policy.evaluate_bash_command_policy(cmd)
@@ -1184,7 +1374,7 @@ fn spawn_permission_manager_with_pin(
                         continue;
                     }
 
-                    if yolo_mode && !shell_forced_prompt {
+                    if yolo_mode && !policy_forced_prompt {
                         tracing::debug!("YOLO mode: auto-approving permission request");
                         let decision = Decision::Allow;
                         emit_event(&decision, true, false, None, Some(reasons::YOLO));
@@ -1196,8 +1386,10 @@ fn spawn_permission_manager_with_pin(
                     // Ask floors fall through so managed Ask / shell-file Ask stay binding.
                     if !policy_forced_prompt
                         && !shell_forced_prompt
+                        && !protected_edit
                         && let Some((decision, reason)) = session_grant_pre_decision(
                             &access,
+                            bash_evaluation.as_ref(),
                             &state,
                             allow_edits_for_session,
                             &static_domain_matcher,
@@ -1214,17 +1406,41 @@ fn spawn_permission_manager_with_pin(
                         continue;
                     }
 
+                    if auto_mode
+                        && !policy_forced_prompt
+                        && !shell_forced_prompt
+                        && !protected_edit
+                        && !bash_request_floor_requires_prompt(bash_evaluation.as_ref())
+                        && matches!(policy_decision, Some(Decision::Allow))
+                    {
+                        tracing::info!(
+                            tool = ?tool_name,
+                            source = "policy",
+                            "permission policy: allow rule matched before auto classifier"
+                        );
+                        let decision = Decision::Allow;
+                        emit_event(&decision, true, false, None, Some(reasons::POLICY_ALLOW));
+                        let _ = respond_to.send(decision);
+                        continue;
+                    }
+
                     // Auto mode: classifier + fast-paths (not silent always-approve).
                     // Policy deny already handled; forced Ask falls through unless
                     // fast-path/classifier allows. Policy Ask still prompts below
                     // unless auto fast-path/classifier decides first for non-forced
                     // paths — we skip auto entirely when policy_forced_prompt.
-                    if auto_mode && !policy_forced_prompt && !shell_forced_prompt {
+                    if auto_mode
+                        && !policy_forced_prompt
+                        && !shell_forced_prompt
+                        && (!bash_request_floor_requires_prompt(bash_evaluation.as_ref())
+                            || bash_request_floor_defers_to_classifier(bash_evaluation.as_ref()))
+                    {
                         use crate::permission::auto_mode::{
                             AutoFastPath, ClassifierVerdict, access_requires_user_interaction,
                             auto_mode_fast_path,
                         };
-                        let needs_user = access_requires_user_interaction(&tool_name, &access);
+                        let needs_user =
+                            protected_edit || access_requires_user_interaction(&tool_name, &access);
                         let fast = auto_mode_fast_path(&access, &tool_name, needs_user);
                         match fast {
                             AutoFastPath::Allow => {
@@ -1301,7 +1517,10 @@ fn spawn_permission_manager_with_pin(
                     }
 
                     if matches!(&access, AccessKind::Bash(_))
-                        && xai_grok_sandbox::should_auto_allow_bash()
+                        && sandbox_may_auto_allow_bash(
+                            bash_evaluation.as_ref(),
+                            xai_grok_sandbox::should_auto_allow_bash(),
+                        )
                         && !policy_forced_prompt
                         && !auto_forced_prompt
                     {
@@ -1326,6 +1545,16 @@ fn spawn_permission_manager_with_pin(
                                 tool = ?tool_name,
                                 source = "policy",
                                 "permission policy: ask rule matched, prompting user"
+                            );
+                        }
+                        Some(Decision::Allow)
+                            if protected_edit
+                                || bash_request_floor_requires_prompt(bash_evaluation.as_ref()) =>
+                        {
+                            tracing::info!(
+                                tool = ?tool_name,
+                                source = "policy",
+                                "permission policy allow deferred to confirmation floor"
                             );
                         }
                         Some(decision) => {
@@ -1379,7 +1608,7 @@ fn spawn_permission_manager_with_pin(
                         )
                         .map(|d| (d, reasons::PERSISTED_GRANT)),
                         AccessKind::Edit(_) => {
-                            if allow_edits_for_session {
+                            if allow_edits_for_session && !protected_edit {
                                 Some((Decision::Allow, reasons::PERSISTED_GRANT))
                             } else {
                                 match state.edit_policy {
@@ -1396,16 +1625,20 @@ fn spawn_permission_manager_with_pin(
                             }
                         }
                         AccessKind::Bash(cmd) => {
-                            if policy_forced_prompt {
+                            let evaluation = bash_evaluation
+                                .as_ref()
+                                .expect("Bash access has an evaluation");
+                            if bash_request_floor_requires_prompt(Some(evaluation)) {
+                                None
+                            } else if policy_forced_prompt {
                                 // Ask floor: only explicit grants with remember on.
-                                // `!shell_file_forced_prompt` blocks bash grants from
-                                // satisfying a Read/Edit ask escalated from shell-file access.
                                 if remember_tool_approvals
                                     && !auto_forced_prompt
                                     && !shell_file_forced_prompt
                                 {
                                     bash_grant_pre_decision(
                                         cmd,
+                                        evaluation,
                                         &state,
                                         yolo_pin,
                                         BashGrantOpts::ASK_FLOOR_REMEMBER,
@@ -1416,6 +1649,7 @@ fn spawn_permission_manager_with_pin(
                             } else {
                                 bash_grant_pre_decision(
                                     cmd,
+                                    evaluation,
                                     &state,
                                     yolo_pin,
                                     BashGrantOpts::post_classify(auto_forced_prompt),
@@ -1498,8 +1732,14 @@ fn spawn_permission_manager_with_pin(
                     // A policy/shell `ask` wins; else the auto-mode reason; else unapproved.
                     let prompt_trigger = if policy_forced_prompt || shell_forced_prompt {
                         reasons::POLICY_ASK
+                    } else if let Some(reason) = auto_prompt_reason {
+                        reason
+                    } else if bash_opaque_shell_floor_requires_prompt(bash_evaluation.as_ref()) {
+                        reasons::OPAQUE_SHELL
+                    } else if bash_request_floor_requires_prompt(bash_evaluation.as_ref()) {
+                        reasons::BASH_REQUEST_FLOOR
                     } else {
-                        auto_prompt_reason.unwrap_or(reasons::NEEDS_USER)
+                        reasons::NEEDS_USER
                     };
                     let (decision, outcome_str, user_prompted) = match &access {
                         AccessKind::Bash(cmd) => {
@@ -1729,6 +1969,10 @@ mod tests {
     // ── Managed-policy pin: yolo clamp + persisted bash clamp ──
 
     const PIN: &str = crate::permission::resolution::YOLO_PIN_REASON_REQUIREMENTS;
+    const UNSAFE_GIT_STATUS: &str = concat!(
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor ",
+        "GIT_CONFIG_VALUE_0=/tmp/pwn git status"
+    );
 
     #[test]
     fn clamp_yolo_respects_pin() {
@@ -2637,6 +2881,719 @@ mod tests {
                     matches!(d, Decision::Reject(_)),
                     "decision must reflect the prompt answer (reject), not a silent auto-allow, got {d:?}"
                 );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn sourced_scripts_and_dot_prompt_once_in_ask_mode() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                for cmd in ["source ./setup.sh", ". ./setup.sh"] {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                    let client = RecordingClient::default();
+                    let prompts = client.prompts.clone();
+                    let (mgr, mut events) =
+                        manager_with_recording_client(&cwd, None, client, ClientType::Generic);
+                    let decision = mgr
+                        .request(AccessKind::Bash(cmd.into()), tool_call(), None, None, None)
+                        .await;
+                    assert!(
+                        matches!(decision, Decision::Reject(_)),
+                        "{cmd}: {decision:?}"
+                    );
+                    assert_eq!(prompts.borrow().len(), 1, "{cmd}");
+                    let event = events.try_recv().expect("floor event");
+                    assert_eq!(event.decision_reason.as_deref(), Some("opaque_shell"));
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn sourced_script_dont_ask_denies_without_prompt() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let mut config = crate::permission::types::PermissionConfig::new(vec![]);
+                config.prompt_policy = PromptPolicy::Deny;
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (mgr, _events) =
+                    manager_with_recording_client(&cwd, Some(config), client, ClientType::Generic);
+                let decision = mgr
+                    .request(
+                        AccessKind::Bash("source ./setup.sh".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert!(matches!(decision, Decision::PolicyDeny(_)));
+                assert!(prompts.borrow().is_empty());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn policy_and_remembered_allows_do_not_cross_bash_confirmation_floors() {
+        use crate::permission::types::{
+            PatternMode, PermissionConfig, PermissionRule, RuleAction, ToolFilter,
+        };
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let cases = [
+                    "cat payload > out",
+                    "tee out < payload",
+                    "dd if=payload of=out",
+                    "sort input -o out",
+                    "sed -i s/a/b/ file",
+                    "npm exec -- tee package.out",
+                    "timeout 5 env FOO=1 dd if=input of=wrapped.out",
+                    UNSAFE_GIT_STATUS,
+                    "bash -c 'echo hi'",
+                    "out=$(printf dynamic); echo \"$out\"",
+                ];
+                for cmd in cases {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                    let state = PermissionState {
+                        allow_bash_execute: true,
+                        allowed_bash_commands: HashSet::from([
+                            "cat".into(),
+                            "tee".into(),
+                            "dd".into(),
+                            "sort".into(),
+                            "sed".into(),
+                            "npm".into(),
+                            "timeout".into(),
+                            "git".into(),
+                            "bash".into(),
+                            "echo".into(),
+                        ]),
+                        ..Default::default()
+                    };
+                    persist_state(&cwd, &state, None).await;
+                    let config = PermissionConfig::new(vec![PermissionRule {
+                        action: RuleAction::Allow,
+                        tool: ToolFilter::Bash,
+                        pattern: Some("*".into()),
+                        pattern_mode: PatternMode::Glob,
+                    }]);
+                    let client = RecordingClient::default();
+                    let prompts = client.prompts.clone();
+                    let (mgr, _events) = manager_with_recording_client(
+                        &cwd,
+                        Some(config),
+                        client,
+                        ClientType::Generic,
+                    );
+                    let decision = mgr
+                        .request(AccessKind::Bash(cmd.into()), tool_call(), None, None, None)
+                        .await;
+                    assert!(
+                        matches!(decision, Decision::Reject(_)),
+                        "{cmd}: {decision:?}"
+                    );
+                    assert_eq!(prompts.borrow().len(), 1, "{cmd}");
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn auto_allow_does_not_cross_writer_injection_or_opaque_floors() {
+        use crate::permission::auto_mode::{ClassifierVerdict, FixedClassifier};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                for cmd in [
+                    "cat payload > out",
+                    "npm exec -- tee package.out",
+                    "LD_PRELOAD=/tmp/e.so ls",
+                    "env -i git status",
+                    "bash -c 'echo hi'",
+                    "printf %s \"$(cat payload)\"",
+                ] {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                    let client = RecordingClient::default();
+                    let prompts = client.prompts.clone();
+                    let (mgr, _events) =
+                        manager_with_recording_client(&cwd, None, client, ClientType::Generic);
+                    mgr.set_auto_mode(true);
+                    mgr.set_classifier(Some(Arc::new(FixedClassifier(ClassifierVerdict::Allow))));
+                    let decision = mgr
+                        .request(AccessKind::Bash(cmd.into()), tool_call(), None, None, None)
+                        .await;
+                    assert!(
+                        matches!(decision, Decision::Reject(_)),
+                        "{cmd}: {decision:?}"
+                    );
+                    assert_eq!(prompts.borrow().len(), 1, "{cmd}");
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn yolo_is_explicit_floor_override_but_managed_deny_still_wins() {
+        use crate::permission::types::{
+            PatternMode, PermissionConfig, PermissionRule, RuleAction, ToolFilter,
+        };
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (mgr, _events) =
+                    manager_with_recording_client(&cwd, None, client, ClientType::Generic);
+                mgr.set_yolo_mode(true);
+                let decision = mgr
+                    .request(
+                        AccessKind::Bash("LD_PRELOAD=/tmp/e.so tee out".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert_eq!(decision, Decision::Allow);
+                assert!(prompts.borrow().is_empty());
+
+                let deny = PermissionConfig::new(vec![PermissionRule {
+                    action: RuleAction::Deny,
+                    tool: ToolFilter::Bash,
+                    pattern: Some("*".into()),
+                    pattern_mode: PatternMode::Glob,
+                }]);
+                let (denied, _events) = test_manager_with_config(&cwd, deny, true);
+                let decision = denied
+                    .request(
+                        AccessKind::Bash("cat payload > out".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert!(matches!(decision, Decision::PolicyDeny(_)));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn managed_ask_blocks_yolo_for_direct_and_shell_access() {
+        use crate::permission::types::{PermissionConfig, PermissionRule, RuleAction, ToolFilter};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let ask = PermissionConfig::new(vec![PermissionRule {
+                    action: RuleAction::Ask,
+                    tool: ToolFilter::Any,
+                    pattern: None,
+                    pattern_mode: Default::default(),
+                }]);
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (mgr, _events) =
+                    manager_with_recording_client(&cwd, Some(ask), client, ClientType::Generic);
+                mgr.set_yolo_mode(true);
+
+                for access in [
+                    AccessKind::Edit("src/main.rs".into()),
+                    AccessKind::Bash("echo managed-ask".into()),
+                ] {
+                    let decision = mgr.request(access, tool_call(), None, None, None).await;
+                    assert!(matches!(decision, Decision::Reject(_)), "{decision:?}");
+                }
+                assert_eq!(prompts.borrow().len(), 2);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn managed_edit_deny_follows_physical_symlink_under_yolo() {
+        use crate::permission::types::{
+            PatternMode, PermissionConfig, PermissionRule, RuleAction, ToolFilter,
+        };
+        use std::os::unix::fs::symlink;
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let outside = tempfile::tempdir().unwrap();
+                let blocked = outside.path().join("blocked.txt");
+                std::fs::write(&blocked, b"blocked").unwrap();
+                symlink(&blocked, tmp.path().join("edit-link")).unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let deny = PermissionConfig::new(vec![PermissionRule {
+                    action: RuleAction::Deny,
+                    tool: ToolFilter::Edit,
+                    pattern: Some(blocked.to_string_lossy().into_owned()),
+                    pattern_mode: PatternMode::Glob,
+                }]);
+                let (mgr, _events) = test_manager_with_config(&cwd, deny, true);
+                let decision = mgr
+                    .request(
+                        AccessKind::Edit("edit-link".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert!(matches!(decision, Decision::PolicyDeny(_)), "{decision:?}");
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn protected_edit_floor_uses_display_relative_and_symlink_targets() {
+        use crate::permission::types::{PermissionConfig, PermissionRule, RuleAction, ToolFilter};
+        use std::os::unix::fs::symlink;
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                std::fs::create_dir_all(tmp.path().join(".grok")).unwrap();
+                let outside = tempfile::tempdir().unwrap();
+                std::fs::create_dir_all(outside.path().join(".aws")).unwrap();
+                std::fs::write(outside.path().join(".aws/credentials"), b"").unwrap();
+                symlink(
+                    outside.path().join(".aws/credentials"),
+                    tmp.path().join("credential-link"),
+                )
+                .unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let allow = PermissionConfig::new(vec![PermissionRule {
+                    action: RuleAction::Allow,
+                    tool: ToolFilter::Edit,
+                    pattern: None,
+                    pattern_mode: Default::default(),
+                }]);
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (mgr, _events) =
+                    manager_with_recording_client(&cwd, Some(allow), client, ClientType::Generic);
+                for path in ["/display/.grok/config.toml", "credential-link"] {
+                    let decision = mgr
+                        .request_with_edit_path_context(
+                            AccessKind::Edit(path.into()),
+                            tool_call(),
+                            Some(EditPathContext {
+                                real_cwd: tmp.path().to_path_buf(),
+                                display_cwd: Some(std::path::PathBuf::from("/display")),
+                            }),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+                    assert!(
+                        matches!(decision, Decision::Reject(_)),
+                        "{path}: {decision:?}"
+                    );
+                }
+                assert_eq!(prompts.borrow().len(), 2);
+            })
+            .await;
+    }
+
+    #[test]
+    fn evaluate_sourced_scripts_need_prompt() {
+        let state = PermissionState::default();
+        for (cmd, expected) in [
+            ("source ./setup.sh", "source ./setup.sh"),
+            (". ./setup.sh", ". ./setup.sh"),
+            ("cd repo && source ./setup.sh", "source ./setup.sh"),
+            ("timeout 5 source ./setup.sh", "source ./setup.sh"),
+        ] {
+            match evaluate_bash_segments(cmd, &state) {
+                SegmentEvaluation::NeedsPrompts { segments, .. } => {
+                    assert_eq!(segments, vec![expected.to_owned()]);
+                }
+                other => panic!("expected NeedsPrompts for `{cmd}`, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn real_file_writes_need_prompt() {
+        let state = PermissionState::default();
+        for cmd in [
+            "cat payload > ~/.zshrc",
+            "cat payload >> out",
+            "tee out < payload",
+            "dd if=payload of=out",
+            "sort -o out input",
+            "sed -i s/a/b/ file",
+            "npm exec -- tee package.out",
+            "timeout 5 env FOO=1 dd if=input of=wrapped.out",
+            "cat payload > 3",
+            "> out",
+        ] {
+            assert!(
+                evaluate_bash(cmd, &state, true).writes_real_file,
+                "real-file write must set the floor: {cmd}"
+            );
+        }
+        for cmd in ["grep text file 2>/dev/null", "cargo check 2>&1"] {
+            assert!(
+                !evaluate_bash(cmd, &state, true).writes_real_file,
+                "fd/sink control must not set the write floor: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_environment_detection_covers_script_forms() {
+        let state = PermissionState::default();
+        for (cmd, env_risk, defers_to_classifier) in [
+            (UNSAFE_GIT_STATUS, EnvRisk::Injection, false),
+            (
+                concat!(
+                    "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor ",
+                    "GIT_CONFIG_VALUE_0=/tmp/pwn git status"
+                ),
+                EnvRisk::Injection,
+                false,
+            ),
+            ("LD_PRELOAD=/tmp/e.so ls", EnvRisk::Injection, false),
+            ("env -i git status", EnvRisk::Injection, false),
+            (
+                "GH_HOST=github.example.com gh pr view 3135",
+                EnvRisk::Unvetted,
+                true,
+            ),
+            ("KUBECONFIG=/x kubectl get pods", EnvRisk::Unvetted, true),
+            (
+                "out=$(gh pr view 3135); echo \"$out\"",
+                EnvRisk::Unvetted,
+                false,
+            ),
+            ("RUST_LOG=debug git status", EnvRisk::Safe, false),
+        ] {
+            let evaluation = evaluate_bash(cmd, &state, true);
+            assert_eq!(evaluation.env_risk, env_risk, "{cmd}");
+            assert_eq!(
+                bash_unsafe_env_floor_requires_prompt(Some(&evaluation)),
+                env_risk != EnvRisk::Safe,
+                "{cmd}"
+            );
+            assert_eq!(
+                bash_request_floor_defers_to_classifier(Some(&evaluation)),
+                defers_to_classifier,
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn floors_block_broad_grants_but_preserve_exact_decisions() {
+        for cmd in [
+            UNSAFE_GIT_STATUS,
+            "cat payload > out",
+            "bash -c 'echo hi'",
+            "npm exec -- tee package.out",
+        ] {
+            let broad = PermissionState {
+                allow_bash_execute: true,
+                allowed_bash_commands: HashSet::from([
+                    "git".to_owned(),
+                    "cat".to_owned(),
+                    "bash".to_owned(),
+                    "npm".to_owned(),
+                ]),
+                ..Default::default()
+            };
+            let evaluation = evaluate_bash(cmd, &broad, true);
+            assert!(
+                bash_request_floor_requires_prompt(Some(&evaluation)),
+                "{cmd}"
+            );
+            assert!(
+                bash_grant_pre_decision(
+                    cmd,
+                    &evaluation,
+                    &broad,
+                    None,
+                    BashGrantOpts::PRE_CLASSIFIER,
+                )
+                .is_none(),
+                "broad grant crossed floor: {cmd}"
+            );
+
+            let exact = PermissionState {
+                allowed_bash_commands: HashSet::from([cmd.to_owned()]),
+                ..Default::default()
+            };
+            let evaluation = evaluate_bash(cmd, &exact, true);
+            assert!(
+                !bash_request_floor_requires_prompt(Some(&evaluation)),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn sandbox_auto_allow_respects_confirmation_floors() {
+        let state = PermissionState::default();
+        for cmd in [
+            "cat payload > out",
+            UNSAFE_GIT_STATUS,
+            "source ./setup.sh",
+            "npm exec -- tee package.out",
+        ] {
+            assert!(
+                !sandbox_may_auto_allow_bash(Some(&evaluate_bash(cmd, &state, true)), true),
+                "sandbox crossed floor: {cmd}"
+            );
+        }
+        for cmd in [
+            "cargo build > /dev/null",
+            "cargo build 2>&1",
+            "RUST_LOG=debug git status",
+        ] {
+            assert!(
+                sandbox_may_auto_allow_bash(Some(&evaluate_bash(cmd, &state, true)), true),
+                "sandbox control failed: {cmd}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn floor_prompt_records_bash_request_floor_reason() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let client = RecordingClient::default();
+                let (mgr, mut events) =
+                    manager_with_recording_client(&cwd, None, client, ClientType::Generic);
+                let decision = mgr
+                    .request(
+                        AccessKind::Bash("cat payload > out".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert!(matches!(decision, Decision::Reject(_)));
+                let event = events.try_recv().expect("floor event");
+                assert_eq!(event.decision_reason.as_deref(), Some("bash_request_floor"));
+                assert!(event.user_prompted);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn protected_edit_floor_covers_auto_config_allow_and_dont_ask() {
+        use crate::permission::types::{PermissionConfig, PermissionRule, RuleAction, ToolFilter};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut auto = PermissionConfig::new(vec![]);
+                auto.prompt_policy = PromptPolicy::Auto;
+                let allow = PermissionConfig::new(vec![PermissionRule {
+                    action: RuleAction::Allow,
+                    tool: ToolFilter::Edit,
+                    pattern: None,
+                    pattern_mode: Default::default(),
+                }]);
+                let mut deny = PermissionConfig::new(vec![]);
+                deny.prompt_policy = PromptPolicy::Deny;
+
+                for (name, config, expected_prompts, policy_deny) in [
+                    ("auto", auto, 1, false),
+                    ("configured allow", allow, 1, false),
+                    ("dontAsk", deny, 0, true),
+                ] {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                    let client = RecordingClient::default();
+                    let prompts = client.prompts.clone();
+                    let (mgr, _events) = manager_with_recording_client(
+                        &cwd,
+                        Some(config),
+                        client,
+                        ClientType::Generic,
+                    );
+                    let decision = mgr
+                        .request(
+                            AccessKind::Edit("/etc/hosts".into()),
+                            tool_call(),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+                    assert_eq!(prompts.borrow().len(), expected_prompts, "{name}");
+                    if policy_deny {
+                        assert!(matches!(decision, Decision::PolicyDeny(_)), "{name}");
+                    } else {
+                        assert!(matches!(decision, Decision::Reject(_)), "{name}");
+                    }
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn managed_edit_deny_inside_package_runner_wins_over_yolo() {
+        use crate::permission::types::{
+            PatternMode, PermissionConfig, PermissionRule, RuleAction, ToolFilter,
+        };
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let config = PermissionConfig::new(vec![PermissionRule {
+                    action: RuleAction::Deny,
+                    tool: ToolFilter::Edit,
+                    pattern: Some("**/.env".into()),
+                    pattern_mode: PatternMode::Glob,
+                }]);
+                let (mgr, _events) = test_manager_with_config(&cwd, config, true);
+                let decision = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    mgr.request(
+                        AccessKind::Bash("npm exec -- tee .env".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    ),
+                )
+                .await
+                .expect("managed hidden-writer deny must resolve before prompting");
+                assert!(matches!(decision, Decision::PolicyDeny(_)), "{decision:?}");
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn unresolved_package_launcher_cannot_bypass_managed_edit_rules_under_yolo() {
+        use crate::permission::types::{
+            PatternMode, PermissionConfig, PermissionRule, RuleAction, ToolFilter,
+        };
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let config = PermissionConfig::new(vec![PermissionRule {
+                    action: RuleAction::Deny,
+                    tool: ToolFilter::Edit,
+                    pattern: Some("**/.env".into()),
+                    pattern_mode: PatternMode::Glob,
+                }]);
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (mgr, _events) =
+                    manager_with_recording_client(&cwd, Some(config), client, ClientType::Generic);
+                mgr.set_yolo_mode(true);
+                let decision = mgr
+                    .request(
+                        AccessKind::Bash("npm exec --package=fixture -- tee .env".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert!(matches!(decision, Decision::Reject(_)), "{decision:?}");
+                assert_eq!(prompts.borrow().len(), 1);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn auto_mode_unvetted_env_defers_to_classifier_allow() {
+        use crate::permission::auto_mode::{ClassifierVerdict, FixedClassifier};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (mgr, mut events) =
+                    manager_with_recording_client(&cwd, None, client, ClientType::Generic);
+                mgr.set_auto_mode(true);
+                mgr.set_classifier(Some(Arc::new(FixedClassifier(ClassifierVerdict::Allow))));
+                for cmd in [
+                    "GH_HOST=github.example.com gh pr view 3135 --json title",
+                    "PYTHONPATH=/x python s.py",
+                ] {
+                    let decision = mgr
+                        .request(AccessKind::Bash(cmd.into()), tool_call(), None, None, None)
+                        .await;
+                    assert_eq!(decision, Decision::Allow, "{cmd}");
+                    let event = events.try_recv().expect("classifier event");
+                    assert_eq!(
+                        event.decision_reason.as_deref(),
+                        Some("auto_classifier_allow"),
+                        "{cmd}"
+                    );
+                }
+                assert!(prompts.borrow().is_empty());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn auto_mode_opaque_substitution_does_not_defer_to_classifier() {
+        use crate::permission::auto_mode::{ClassifierVerdict, FixedClassifier};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (mgr, _events) =
+                    manager_with_recording_client(&cwd, None, client, ClientType::Generic);
+                mgr.set_auto_mode(true);
+                mgr.set_classifier(Some(Arc::new(FixedClassifier(ClassifierVerdict::Allow))));
+
+                let decision = mgr
+                    .request(
+                        AccessKind::Bash("out=$(gh pr view 3135); echo \"$out\"".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert!(matches!(decision, Decision::Reject(_)), "{decision:?}");
+                assert_eq!(prompts.borrow().len(), 1);
             })
             .await;
     }
@@ -4198,10 +5155,9 @@ mod tests {
             .await;
     }
 
-    /// Auto mode accepts ALL file edits via the fast path regardless of location
-    /// (the accept-all-edits product decision, no workspace restriction): both an
-    /// in-cwd edit and an absolute path clearly OUTSIDE cwd fast-path Allow. The
-    /// fast path is path-independent, so the target file need not exist.
+    /// Auto mode accepts ordinary file edits via the fast path regardless of
+    /// workspace location. Protected system, credential, policy, hook, and plugin
+    /// destinations retain their explicit-confirmation floor.
     #[tokio::test]
     async fn auto_mode_edit_fast_path_allows() {
         let local = tokio::task::LocalSet::new();
@@ -4228,10 +5184,11 @@ mod tests {
                     "in-cwd edit under auto must fast-path allow, got {d:?}"
                 );
 
-                // Out-of-workspace absolute edit → Allow too (no workspace restriction).
+                // An ordinary out-of-workspace absolute edit is still allowed;
+                // protected system and credential destinations have their own floor.
                 let d = mgr
                     .request(
-                        AccessKind::Edit("/etc/hosts".into()),
+                        AccessKind::Edit("/tmp/grok-build-auto-mode-outside.rs".into()),
                         mk("tc-edit-out"),
                         None,
                         None,
