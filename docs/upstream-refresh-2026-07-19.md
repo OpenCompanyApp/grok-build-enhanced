@@ -157,6 +157,7 @@ The reviewed refresh was integrated as the following linear, focused series:
 - `4b41e6e` `fix(session): bound and clean up session registries`
 - `f1a374a` `fix(security): harden managed policy integrity`
 - `df02c7b` `fix(plugins): redact credentials from git diagnostics`
+- `83700da` `test(clipboard): update welcome delivery fixtures`
 
 The final plugin diagnostic follow-up is deliberately separate from the pinned
 upstream port: it closes an Enhanced credential-safety gap where credentialed
@@ -175,11 +176,31 @@ The candidate also passed:
 - 63 fork-script unit tests;
 - fork branding, provider, updater, workflow, secret, Codex-search, and Warp
   contracts;
-- five release-pipeline tests and fifteen install-script tests; and
-- the `0.2.4` release contract for the exact four fork-owned native assets.
+- five release-pipeline tests and fifteen install-script tests;
+- the `0.2.4` release contract for the exact four fork-owned native assets;
+- the integrated managed-policy, marketplace, scheduler, clipboard, theme,
+  registry-churn, provider-isolation, version, updater, and welcome suites;
+- `CARGO_INCREMENTAL=0 cargo check --locked -p xai-grok-pager-bin`; and
+- strict manifest ownership at `83700da` with all 860 downstream paths covered.
 
-Final integrated provider-isolation tests, focused suites, full binary check,
-strict manifest check, safe credential-gated smoke tests, and release workflow
-asset/attestation verification are required immediately before and after
-publication. No validation may print credentials, account identifiers,
-authenticated payloads, or raw credential headers.
+The integrated matrix found three stale welcome-view test fixtures still
+passing the former clipboard boolean. Commit `83700da` updates only those
+fixtures to the delivery-aware optional value. All 53 welcome tests and the
+remaining binary and ownership gates then passed.
+
+Safe credential-gated headless qualification used the version-stamped candidate
+binary without printing credentials, account identifiers, authenticated
+payloads, session identifiers, or raw headers:
+
+- the authenticated Codex catalog exposed GPT-5.6 Luna, and a Luna turn in live
+  search mode reached `EndTurn` with two correlated nonempty `web_search`
+  results, no tool errors, and no credential-like captured material; and
+- the authenticated Kimi catalog exposed K3, and a K3 high-reasoning turn
+  reached `EndTurn` with one correlated nonempty hosted-search result and one
+  correlated nonempty hosted-fetch result, no tool errors, and no
+  credential-like captured material.
+
+The tag-triggered release workflow must still verify the frozen source binding,
+build all four native assets, assemble and check `SHA256SUMS` and
+`RELEASE-PROVENANCE.json`, create GitHub OIDC attestations, and publish the
+allowlisted release set.
