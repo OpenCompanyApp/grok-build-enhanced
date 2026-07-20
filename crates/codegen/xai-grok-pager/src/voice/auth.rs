@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use xai_grok_shell::agent::models::XaiSpeechModelCatalog;
-use xai_grok_shell::auth::{AuthManager, AuthMode, GrokAuth};
+use xai_grok_shell::auth::{AuthManager, xai_voice_bearer};
 use xai_grok_voice::{SharedVoiceAuth, VoiceAuthProvider};
 
 /// Model-scoped voice auth shared by the lazy pipeline.
@@ -41,16 +41,7 @@ impl VoiceAuthProvider for ScopedXaiVoiceAuth {
                 return nonempty(key.to_owned());
             }
 
-            if auth_manager
-                .current_or_expired()
-                .as_ref()
-                .is_some_and(eligible_xai_auth)
-                && let Ok(key) = auth_manager.get_valid_token().await
-                && auth_manager
-                    .current_or_expired()
-                    .as_ref()
-                    .is_some_and(eligible_xai_auth)
-            {
+            if let Some(key) = xai_voice_bearer(&auth_manager).await {
                 return nonempty(key);
             }
 
@@ -59,10 +50,6 @@ impl VoiceAuthProvider for ScopedXaiVoiceAuth {
                 .and_then(nonempty)
         })
     }
-}
-
-fn eligible_xai_auth(auth: &GrokAuth) -> bool {
-    auth.is_xai_auth() || matches!(auth.auth_mode, AuthMode::ApiKey | AuthMode::WebLogin)
 }
 
 fn nonempty(value: String) -> Option<String> {

@@ -36,7 +36,7 @@ pub use flow::{
 pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration};
 mod meta;
 pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
-pub use manager::{AuthManager, shared_api_key_provider};
+pub use manager::{AuthManager, shared_api_key_provider, xai_voice_bearer};
 pub use meta::{AuthMeta, GateInfo};
 pub use model::{AuthMode, GrokAuth, lookup_auth};
 pub(crate) use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired};

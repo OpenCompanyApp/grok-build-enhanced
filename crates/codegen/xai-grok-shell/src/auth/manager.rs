@@ -2223,6 +2223,32 @@ pub(crate) fn compute_proactive_sleep(this: &AuthManager) -> StdDuration {
     }
 }
 
+/// Resolve a refreshing bearer for canonical xAI speech.
+///
+/// This is deliberately narrower than the generic tool-provider bridge: only
+/// an xAI-issued OIDC session or the xAI API-key/web-login stores are eligible.
+/// External-command credentials are never exposed to the pager's voice path.
+pub async fn xai_voice_bearer(auth_manager: &Arc<AuthManager>) -> Option<String> {
+    fn eligible(auth: &GrokAuth) -> bool {
+        auth.is_xai_auth() || matches!(auth.auth_mode, AuthMode::ApiKey | AuthMode::WebLogin)
+    }
+
+    if !auth_manager
+        .current_or_expired()
+        .as_ref()
+        .is_some_and(eligible)
+    {
+        return None;
+    }
+
+    let key = auth_manager.get_valid_token().await.ok()?;
+    auth_manager
+        .current_or_expired()
+        .as_ref()
+        .is_some_and(eligible)
+        .then_some(key)
+}
+
 /// Bridges `Arc<AuthManager>` into the `ApiKeyProvider` trait used by
 /// tool clients (image_gen, video_gen, web_search, embedding). Sync callers
 /// get the buffered snapshot; async callers drive the refresh chain.
