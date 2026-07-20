@@ -1,6 +1,6 @@
 # Upstream versions
 
-Last checked: 2026-07-20T18:36:06Z
+Last checked: 2026-07-20T23:24:17Z
 
 This file records both the source revision last reviewed for this fork and the
 newest fetched revision. A difference is a review queue, not permission to
@@ -10,7 +10,7 @@ blindly copy upstream code.
 | --- | --- | --- | --- |
 | OpenAI Codex CLI | `https://github.com/openai/codex.git` `main` | [`3e2f79727a4e8ddfc8e3acb838d496b121094b9e`](https://github.com/openai/codex/commit/3e2f79727a4e8ddfc8e3acb838d496b121094b9e) | same |
 | OpenCode | `https://github.com/anomalyco/opencode.git` `dev` | [`67caf894e0843ee370e72839e8265e483233479b`](https://github.com/anomalyco/opencode/commit/67caf894e0843ee370e72839e8265e483233479b) | same |
-| Grok Build upstream | `https://github.com/xai-org/grok-build.git` `main` | Fork base [`c1b5909ec707c069f1d21a93917af044e71da0d7`](https://github.com/OpenCompanyApp/grok-build-enhanced/commit/c1b5909ec707c069f1d21a93917af044e71da0d7) | [`a881e6703f46b01d8c7d4a5437683546df30449d`](https://github.com/xai-org/grok-build/commit/a881e6703f46b01d8c7d4a5437683546df30449d) |
+| Grok Build upstream | `https://github.com/xai-org/grok-build.git` `main` | Reviewed [`a881e6703f46b01d8c7d4a5437683546df30449d`](https://github.com/xai-org/grok-build/commit/a881e6703f46b01d8c7d4a5437683546df30449d) | same |
 | OpenCode Codex auth reference | `https://github.com/numman-ali/opencode-openai-codex-auth.git` `main` | [`bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016`](https://github.com/numman-ali/opencode-openai-codex-auth/commit/bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016) | same |
 | Warp themes | `https://github.com/warpdotdev/themes.git` `main` | [`b385044250f1ed3c9379ab34a8fe82f02fdffaa4`](https://github.com/warpdotdev/themes/commit/b385044250f1ed3c9379ab34a8fe82f02fdffaa4) | same |
 | Kimi Code | `https://github.com/MoonshotAI/kimi-code.git` `main` | [`df6899553962d1764c9f4c3bec1b63c811cb425e`](https://github.com/MoonshotAI/kimi-code/commit/df6899553962d1764c9f4c3bec1b63c811cb425e) | same |

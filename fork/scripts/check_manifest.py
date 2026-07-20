@@ -34,6 +34,14 @@ SERIES_FORMAT = "git-linear-history-v1"
 DELTA_FORMAT = "git-tree-delta-v1"
 COVERAGE_HISTORY_FORMAT = "git-first-parent-with-audited-upstream-merges-v1"
 ACKNOWLEDGEMENT_TRAILER = "Fork-Upstream-Acknowledgement"
+LEDGER_OUTCOMES = frozenset(
+    {"adopt", "already equivalent", "not applicable", "temporarily deferred"}
+)
+LEDGER_ROW_RE = re.compile(
+    r"^\|\s*([0-9]+[a-z]?)\s*\|\s*`([AMD])`\s+`([^`]+)`\s*\|\s*"
+    r"(adopt|already equivalent|not applicable|temporarily deferred)\s*\|\s*"
+    r"`([A-Za-z0-9-]+)`\s*\|$"
+)
 MAX_ATTESTED_COMMITS = 10_000
 MAX_COVERAGE_COMMITS = 10_000
 
@@ -104,8 +112,10 @@ class UpstreamRecord:
 class CheckContext:
     document: dict[str, Any]
     repo_root: Path
+    manifest_path: Path
     upstream_versions: Path
     strict_coverage: bool
+    prepare_upstream_acknowledgements: bool = False
     git_binary: str = ""
     coverage_candidate: str = ""
     checked_out_head: str = ""
@@ -845,7 +855,14 @@ def validate_schema(document: dict[str, Any]) -> list[str]:
         )
         acknowledgement_commits: list[str] = []
         if acknowledgements is not None:
-            acknowledgement_keys = {"source_id", "commit", "tree", "evidence"}
+            acknowledgement_keys = {
+                "source_id",
+                "commit",
+                "tree",
+                "reviewed_from",
+                "target_parents",
+                "evidence",
+            }
             for index, item in enumerate(acknowledgements):
                 location = f"coverage.upstream_acknowledgements[{index}]"
                 acknowledgement = _as_object(item, location, errors)
@@ -866,15 +883,57 @@ def validate_schema(document: dict[str, Any]) -> list[str]:
                 _validate_full_sha(
                     acknowledgement.get("tree"), f"{location}.tree", errors
                 )
-                evidence = _string(
+                _validate_revision_object(
+                    acknowledgement.get("reviewed_from"),
+                    f"{location}.reviewed_from",
+                    errors,
+                )
+                target_parents = _as_list(
+                    acknowledgement.get("target_parents"),
+                    f"{location}.target_parents",
+                    errors,
+                )
+                if target_parents is not None:
+                    if not target_parents:
+                        errors.append(f"{location}.target_parents must not be empty")
+                    validated_parents: list[str] = []
+                    for parent_index, parent in enumerate(target_parents):
+                        validated = _validate_full_sha(
+                            parent,
+                            f"{location}.target_parents[{parent_index}]",
+                            errors,
+                        )
+                        if validated is not None:
+                            validated_parents.append(validated)
+                    for duplicate in sorted(
+                        {
+                            parent
+                            for parent in validated_parents
+                            if validated_parents.count(parent) > 1
+                        }
+                    ):
+                        errors.append(
+                            f"{location}.target_parents contains duplicate commit {duplicate!r}"
+                        )
+                evidence = _as_object(
                     acknowledgement.get("evidence"), f"{location}.evidence", errors
                 )
                 if evidence is not None:
-                    safety_error = validate_repo_path(evidence, allow_glob=False)
-                    if safety_error is not None:
-                        errors.append(
-                            f"{location}.evidence {safety_error}: {evidence!r}"
-                        )
+                    evidence_keys = {"path", "sha256"}
+                    _unknown_keys(evidence, evidence_keys, f"{location}.evidence", errors)
+                    _require_keys(evidence, evidence_keys, f"{location}.evidence", errors)
+                    evidence_path = _string(
+                        evidence.get("path"), f"{location}.evidence.path", errors
+                    )
+                    if evidence_path is not None:
+                        safety_error = validate_repo_path(evidence_path, allow_glob=False)
+                        if safety_error is not None:
+                            errors.append(
+                                f"{location}.evidence.path {safety_error}: {evidence_path!r}"
+                            )
+                    _validate_sha256(
+                        evidence.get("sha256"), f"{location}.evidence.sha256", errors
+                    )
                 if commit is not None:
                     acknowledgement_commits.append(commit)
             for duplicate in sorted(
@@ -1355,6 +1414,242 @@ def check_patch_stack_history(context: CheckContext) -> Outcome:
     )
 
 
+def _raw_path_delta(
+    context: CheckContext, before_tree: str, after_tree: str
+) -> tuple[dict[str, str], list[str]]:
+    before = context.tree_map(before_tree)
+    after = context.tree_map(after_tree)
+    result: dict[str, str] = {}
+    errors: list[str] = []
+    for path in sorted(set(before) | set(after)):
+        if before.get(path) == after.get(path):
+            continue
+        try:
+            decoded = path.decode("utf-8")
+        except UnicodeDecodeError:
+            errors.append(
+                "upstream raw tree delta contains a non-UTF-8 path that cannot be "
+                "represented by the checked-in parity ledger"
+            )
+            continue
+        if path not in before:
+            status = "A"
+        elif path not in after:
+            status = "D"
+        else:
+            status = "M"
+        result[decoded] = status
+    return result, errors
+
+
+def _manifest_declaration_errors(
+    context: CheckContext,
+    acknowledgement: dict[str, Any],
+    tree: str,
+    tree_label: str,
+) -> list[str]:
+    """Require the exact declaration in the marker's reviewed first-parent tree."""
+
+    try:
+        relative = context.manifest_path.relative_to(context.repo_root).as_posix()
+    except ValueError:
+        # Unit-test fixtures may supply an external manifest. Production uses the
+        # checked-in fork/manifest.json and therefore always exercises this bind.
+        return []
+    entry = context.tree_map(tree).get(relative.encode("utf-8"))
+    if entry is None:
+        return [f"{tree_label} does not contain manifest path {relative!r}"]
+    if entry.object_type != "blob" or entry.mode not in REGULAR_GIT_MODES:
+        return [f"{tree_label} manifest path {relative!r} must be a regular blob"]
+    payload = context.git("cat-file", "blob", entry.oid).stdout
+    try:
+        document = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys
+        )
+    except (UnicodeError, json.JSONDecodeError, DuplicateKeyError) as error:
+        return [f"{tree_label} manifest path {relative!r} is invalid JSON: {error}"]
+    if not isinstance(document, dict):
+        return [f"{tree_label} manifest path {relative!r} is not a JSON object"]
+    declared = document.get("coverage", {}).get("upstream_acknowledgements", [])
+    if acknowledgement not in declared:
+        return [
+            f"{tree_label} does not contain the exact upstream acknowledgement "
+            f"declaration for {acknowledgement['commit']}"
+        ]
+    return []
+
+
+def _acknowledgement_evidence_errors(
+    context: CheckContext,
+    acknowledgement: dict[str, Any],
+    tree: str,
+    tree_label: str,
+) -> list[str]:
+    commit = acknowledgement["commit"]
+    evidence = acknowledgement["evidence"]
+    evidence_path = evidence["path"]
+    errors: list[str] = []
+    entry = context.tree_map(tree).get(evidence_path.encode("utf-8"))
+    if entry is None:
+        return [
+            f"acknowledged upstream commit {commit} evidence path {evidence_path!r} "
+            f"is absent from {tree_label}"
+        ]
+    if entry.object_type != "blob" or entry.mode not in REGULAR_GIT_MODES:
+        return [
+            f"acknowledged upstream commit {commit} evidence path {evidence_path!r} "
+            f"must be a regular blob in {tree_label}"
+        ]
+    payload = context.git("cat-file", "blob", entry.oid).stdout
+    actual_sha256 = hashlib.sha256(payload).hexdigest()
+    if actual_sha256 != evidence["sha256"]:
+        errors.append(
+            f"acknowledged upstream commit {commit} evidence digest mismatch: "
+            f"expected {evidence['sha256']}, got {actual_sha256}"
+        )
+
+    reviewed_from = acknowledgement["reviewed_from"]
+    identity_values = (
+        acknowledgement["source_id"],
+        reviewed_from["commit"],
+        reviewed_from["tree"],
+        commit,
+        acknowledgement["tree"],
+        *acknowledgement["target_parents"],
+    )
+    for value in identity_values:
+        if value.encode("ascii") not in payload:
+            errors.append(
+                f"acknowledged upstream commit {commit} evidence path "
+                f"{evidence_path!r} does not cite required identity {value!r}"
+            )
+
+    expected_paths, delta_errors = _raw_path_delta(
+        context, reviewed_from["tree"], acknowledgement["tree"]
+    )
+    errors.extend(delta_errors)
+    rows: list[tuple[str, str, str, str]] = []
+    try:
+        evidence_text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        errors.append(
+            f"acknowledged upstream commit {commit} evidence path {evidence_path!r} "
+            f"is not UTF-8: {error}"
+        )
+        return errors
+    expected_heading = f"## Complete {len(expected_paths)} raw-path ledger"
+    if expected_heading not in evidence_text.splitlines():
+        errors.append(
+            f"acknowledged upstream commit {commit} evidence must contain heading "
+            f"{expected_heading!r}"
+        )
+    for line in evidence_text.splitlines():
+        match = LEDGER_ROW_RE.fullmatch(line)
+        if match is not None:
+            row_id, status, path, outcome, _evidence_id = match.groups()
+            rows.append((row_id, status, path, outcome))
+
+    row_ids = [row[0] for row in rows]
+    for duplicate in sorted({row_id for row_id in row_ids if row_ids.count(row_id) > 1}):
+        errors.append(f"evidence ledger contains duplicate row ID {duplicate!r}")
+    ledger_paths = [row[2] for row in rows]
+    for duplicate in sorted({path for path in ledger_paths if ledger_paths.count(path) > 1}):
+        errors.append(f"evidence ledger contains duplicate raw path {duplicate!r}")
+    actual_paths = {path: status for _row_id, status, path, _outcome in rows}
+    for path in sorted(set(expected_paths) - set(actual_paths)):
+        errors.append(f"evidence ledger is missing upstream raw path {path!r}")
+    for path in sorted(set(actual_paths) - set(expected_paths)):
+        errors.append(f"evidence ledger includes unchanged upstream path {path!r}")
+    for path in sorted(set(expected_paths) & set(actual_paths)):
+        if actual_paths[path] != expected_paths[path]:
+            errors.append(
+                f"evidence ledger status mismatch for {path!r}: expected "
+                f"{expected_paths[path]}, got {actual_paths[path]}"
+            )
+    deferred = sorted(
+        path for _row_id, _status, path, outcome in rows if outcome == "temporarily deferred"
+    )
+    for path in deferred:
+        errors.append(
+            f"evidence ledger leaves Grok adoption temporarily deferred for {path!r}"
+        )
+    if len(rows) != len(expected_paths):
+        errors.append(
+            f"evidence ledger has {len(rows)} classified raw path row(s), expected "
+            f"{len(expected_paths)}"
+        )
+    return errors
+
+
+def _acknowledgement_source_errors(
+    context: CheckContext, acknowledgement: dict[str, Any]
+) -> list[str]:
+    errors: list[str] = []
+    commit = acknowledgement["commit"]
+    source_id = acknowledgement["source_id"]
+    source = next(
+        (item for item in context.document["sources"] if item["id"] == source_id),
+        None,
+    )
+    if source is None:
+        return [f"acknowledgement {commit} references unknown source {source_id!r}"]
+    if source["reviewed"]["commit"] != commit:
+        errors.append(
+            f"acknowledgement {commit} must equal source {source_id!r} reviewed revision"
+        )
+    if source["latest_fetched"]["commit"] != commit:
+        errors.append(
+            f"acknowledgement {commit} must equal source {source_id!r} latest-fetched revision"
+        )
+
+    exists, detail = _git_object_exists(context, f"{commit}^{{commit}}")
+    if not exists:
+        return [f"acknowledged upstream commit {commit} is unavailable: {detail}"]
+    actual_tree, actual_parents = context.commit_metadata(commit)
+    if actual_tree != acknowledgement["tree"]:
+        errors.append(
+            f"acknowledged upstream commit {commit} tree mismatch: expected "
+            f"{acknowledgement['tree']}, got {actual_tree}"
+        )
+    expected_parents = tuple(acknowledgement["target_parents"])
+    if actual_parents != expected_parents:
+        errors.append(
+            f"acknowledged upstream commit {commit} parent mismatch: expected "
+            f"{list(expected_parents)!r}, got {list(actual_parents)!r}"
+        )
+
+    reviewed_from = acknowledgement["reviewed_from"]
+    from_commit = reviewed_from["commit"]
+    exists, detail = _git_object_exists(context, f"{from_commit}^{{commit}}")
+    if not exists:
+        errors.append(
+            f"acknowledgement {commit} previous reviewed commit {from_commit} "
+            f"is unavailable: {detail}"
+        )
+        return errors
+    actual_from_tree = context.commit_tree(from_commit)
+    if actual_from_tree != reviewed_from["tree"]:
+        errors.append(
+            f"acknowledgement {commit} previous reviewed tree mismatch: expected "
+            f"{reviewed_from['tree']}, got {actual_from_tree}"
+        )
+    ancestor = context.git(
+        "merge-base", "--is-ancestor", from_commit, commit, check=False
+    )
+    if ancestor.returncode == 1:
+        errors.append(
+            f"acknowledgement {commit} does not descend from previous reviewed "
+            f"commit {from_commit}"
+        )
+    elif ancestor.returncode != 0:
+        detail = ancestor.stderr.decode("utf-8", errors="backslashreplace").strip()
+        errors.append(
+            f"could not authenticate acknowledgement transition {from_commit}..{commit}: "
+            f"{detail or f'git exited with status {ancestor.returncode}'}"
+        )
+    return errors
+
+
 def check_coverage_candidate(context: CheckContext) -> Outcome:
     """Authenticate first-parent history plus declared zero-delta upstream merges."""
 
@@ -1383,46 +1678,9 @@ def check_coverage_candidate(context: CheckContext) -> Outcome:
 
     # Reading the tree up front proves that the resolved candidate is a usable
     # immutable commit/tree pair; feature and coverage checks reuse this cache.
-    candidate_entries = context.tree_map(context.coverage_tree)
-
+    context.tree_map(context.coverage_tree)
     for acknowledgement in acknowledgements:
-        commit = acknowledgement["commit"]
-        exists, detail = _git_object_exists(context, f"{commit}^{{commit}}")
-        if not exists:
-            errors.append(
-                f"acknowledged upstream commit {commit} is unavailable: {detail}"
-            )
-            continue
-        actual_tree = context.commit_tree(commit)
-        if actual_tree != acknowledgement["tree"]:
-            errors.append(
-                f"acknowledged upstream commit {commit} tree mismatch: expected "
-                f"{acknowledgement['tree']}, got {actual_tree}"
-            )
-        evidence = acknowledgement["evidence"]
-        evidence_entry = candidate_entries.get(evidence.encode("utf-8"))
-        if evidence_entry is None:
-            errors.append(
-                f"acknowledged upstream commit {commit} evidence path {evidence!r} "
-                "is absent from the candidate tree"
-            )
-        elif (
-            evidence_entry.object_type != "blob"
-            or evidence_entry.mode not in REGULAR_GIT_MODES
-        ):
-            errors.append(
-                f"acknowledged upstream commit {commit} evidence path {evidence!r} "
-                "must be a regular blob"
-            )
-        else:
-            evidence_payload = context.git(
-                "cat-file", "blob", evidence_entry.oid
-            ).stdout
-            if commit.encode("ascii") not in evidence_payload:
-                errors.append(
-                    f"acknowledged upstream commit {commit} evidence path {evidence!r} "
-                    "does not cite the full commit ID"
-                )
+        errors.extend(_acknowledgement_source_errors(context, acknowledgement))
 
     while current not in checkpoints:
         if current in seen:
@@ -1468,7 +1726,8 @@ def check_coverage_candidate(context: CheckContext) -> Outcome:
                 "one post-checkpoint merge"
             )
             break
-        if tree != context.commit_tree(first_parent):
+        first_parent_tree = context.commit_tree(first_parent)
+        if tree != first_parent_tree:
             errors.append(
                 f"upstream acknowledgement merge {current} changes the first-parent "
                 "tree instead of preserving the reviewed Enhanced tree"
@@ -1478,39 +1737,84 @@ def check_coverage_candidate(context: CheckContext) -> Outcome:
             f"{ACKNOWLEDGEMENT_TRAILER}: "
             f"{acknowledgement['source_id']}@{upstream_parent}"
         )
+        message = context.commit_message(current).rstrip()
         trailer_lines = [
             line
-            for line in context.commit_message(current).splitlines()
+            for line in message.splitlines()
             if line.startswith(f"{ACKNOWLEDGEMENT_TRAILER}:")
         ]
-        if trailer_lines != [expected_trailer]:
+        paragraphs = re.split(r"\n[ \t]*\n", message)
+        trailer_block = paragraphs[-1].splitlines() if paragraphs else []
+        if trailer_lines != [expected_trailer] or expected_trailer not in trailer_block:
             errors.append(
                 f"upstream acknowledgement merge {current} must contain exactly "
-                f"the trailer {expected_trailer!r}"
+                f"the trailer {expected_trailer!r} in its final trailer block"
             )
             break
+        errors.extend(
+            _manifest_declaration_errors(
+                context,
+                acknowledgement,
+                first_parent_tree,
+                f"acknowledgement merge {current} first-parent tree",
+            )
+        )
+        errors.extend(
+            _acknowledgement_evidence_errors(
+                context,
+                acknowledgement,
+                first_parent_tree,
+                f"acknowledgement merge {current} first-parent tree",
+            )
+        )
         seen_acknowledgements.add(upstream_parent)
         current = first_parent
         followup_count += 1
         merge_count += 1
 
     unused = sorted(set(acknowledgement_by_commit) - seen_acknowledgements)
-    for commit in unused:
+    if unused and context.prepare_upstream_acknowledgements:
+        for commit in unused:
+            acknowledgement = acknowledgement_by_commit[commit]
+            errors.extend(
+                _manifest_declaration_errors(
+                    context,
+                    acknowledgement,
+                    context.coverage_tree,
+                    "prospective first-parent tree",
+                )
+            )
+            errors.extend(
+                _acknowledgement_evidence_errors(
+                    context,
+                    acknowledgement,
+                    context.coverage_tree,
+                    "prospective first-parent tree",
+                )
+            )
+    else:
+        for commit in unused:
+            errors.append(
+                f"declared upstream acknowledgement {commit} is not present as a "
+                "validated post-checkpoint merge parent"
+            )
+    if context.prepare_upstream_acknowledgements and not unused:
         errors.append(
-            f"declared upstream acknowledgement {commit} is not present as a "
-            "validated post-checkpoint merge parent"
+            "--prepare-upstream-acknowledgements requires at least one declared "
+            "acknowledgement that is not yet present as a validated merge parent"
         )
 
     if errors:
         return Outcome("coverage candidate lineage could not be authenticated", errors)
 
     checkpoint = checkpoints[current]
+    prepared_count = len(unused) if context.prepare_upstream_acknowledgements else 0
     return Outcome(
         f"committed candidate {context.coverage_candidate} follows authenticated "
         f"first-parent history from the {checkpoint} through {followup_count} "
         f"post-checkpoint commit(s), including {merge_count} audited zero-delta "
-        "upstream acknowledgement merge(s); checkpoint history is authenticated "
-        "separately"
+        f"upstream acknowledgement merge(s) and {prepared_count} authenticated "
+        "prospective acknowledgement(s); checkpoint history is authenticated separately"
     )
 
 
@@ -1607,15 +1911,9 @@ def check_upstream_revisions(context: CheckContext) -> Outcome:
                     f"manifest {manifest_value!r}"
                 )
 
-    grok_source = sources.get("Grok Build upstream")
-    if grok_source is not None and (
-        grok_source["reviewed"]["commit"] != context.baseline
-    ):
-        errors.append(
-            "Grok Build upstream reviewed commit must equal patch_stack.baseline.commit"
-        )
     return Outcome(
-        f"{len(records)} upstream remote/ref/revision record(s) cross-checked; no external tree mappings claimed",
+        f"{len(records)} upstream remote/ref/revision record(s) cross-checked; "
+        "immutable fork baseline and advancing source-review revisions remain independent",
         sorted(errors),
     )
 
@@ -1778,6 +2076,14 @@ def _checker_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="assert the manifest's mandatory fail-closed coverage policy",
     )
+    parser.add_argument(
+        "--prepare-upstream-acknowledgements",
+        action="store_true",
+        help=(
+            "validate declared acknowledgements against the prospective first-parent "
+            "tree before their zero-delta merge markers exist"
+        ),
+    )
     return parser
 
 
@@ -1822,8 +2128,12 @@ def checker_main(arguments: list[str]) -> int:
         context = CheckContext(
             document=document,
             repo_root=repo_root,
+            manifest_path=manifest_path,
             upstream_versions=upstream_versions,
             strict_coverage=options.strict_coverage,
+            prepare_upstream_acknowledgements=(
+                options.prepare_upstream_acknowledgements
+            ),
         )
         checked_out_head = context.resolve_commit("HEAD")
         candidate_commit = _resolve_coverage_candidate(
@@ -2003,6 +2313,7 @@ def verifier_main(arguments: list[str]) -> int:
         context = CheckContext(
             document=document,
             repo_root=repo_root,
+            manifest_path=manifest_path,
             upstream_versions=repo_root / "UPSTREAM_VERSIONS.md",
             strict_coverage=True,
         )

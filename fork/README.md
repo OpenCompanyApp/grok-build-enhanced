@@ -52,11 +52,49 @@ Coverage-candidate authentication is deliberately separate from those frozen
 attestations. `check_manifest.py` resolves the checked-out committed `HEAD` by
 default, or resolves one explicitly supplied full OID or safe literal ref once,
 and then uses only the resulting commit ID. It walks raw parent headers until it
-reaches the exact frozen commit or a pinned thematic checkpoint. Every
-post-checkpoint commit must have exactly one parent; roots before a checkpoint,
-side-parent merges, grafts, and replacement objects fail. The checkpoint's
-complete exact/thematic attestation remains a separate mandatory check. The
-manifest therefore does not pin each evolving maintenance HEAD.
+reaches the exact frozen commit or a pinned thematic checkpoint. Ordinary
+post-checkpoint commits must have exactly one parent. The only merge exception is
+a declared two-parent upstream acknowledgement whose second parent is the exact
+audited source pin, whose tree equals its first-parent tree, and whose commit
+message ends in the exact acknowledgement trailer. Roots before a checkpoint,
+undeclared or content-changing side-parent merges, grafts, and replacement
+objects fail. The checkpoint's complete exact/thematic attestation remains a
+separate mandatory check. The manifest therefore does not pin each evolving
+maintenance HEAD.
+
+### Audited upstream acknowledgements
+
+An acknowledgement declaration binds a source ID and exact target commit/tree to
+its previous reviewed commit/tree, the target's exact parent list, and a regular
+checked-in evidence blob with a SHA-256 digest. The checker independently compares
+the two upstream trees as raw path entries and requires the Markdown evidence to
+classify every added, modified, or deleted raw path exactly once. Any missing,
+extra, duplicate, status-mismatched, unclassified, or temporarily deferred Grok
+path fails authentication.
+
+The declaration and evidence must be committed before the marker. Validate that
+prospective first parent with:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -I -B \
+  fork/scripts/check_manifest.py --strict-coverage \
+  --prepare-upstream-acknowledgements
+```
+
+The preparation flag permits declared-but-not-yet-merged acknowledgements only
+while checking their prospective first-parent tree. The marker is then created
+with Git's `ours` strategy (`-s ours`, never `-X ours`) and exactly two parents.
+Its final trailer block must contain exactly:
+
+```text
+Fork-Upstream-Acknowledgement: <source-id>@<40-hex-commit>
+```
+
+Normal strict validation after the marker rejects unused declarations. It also
+reads the declaration and evidence from the marker's own first-parent tree, so a
+later follow-up cannot retroactively authorize or rewrite an earlier merge.
+Source `reviewed` state may advance after an audit; `patch_stack.baseline` remains
+the immutable historical fork baseline and never moves with source review state.
 
 Feature-pattern matches, committed anchors, and fail-closed coverage all use
 the raw delta from the pinned baseline tree to the resolved coverage-candidate
@@ -87,11 +125,12 @@ non-authoritative and is never accepted as proof. Diagnostics are suppressed
 when local Git configuration declares an external diff or clean/smudge/process
 transform, rather than risk executing a configured command.
 
-The source records intentionally contain no reviewed/latest external tree IDs.
-Those external objects are not mapped into this repository, so the checker only
-cross-checks the ledger's remote, tracked ref, and commit text exactly. It
-reports that no external tree mappings are claimed; it does not print an OK
-claim for unverified external trees.
+Ordinary source records intentionally contain only reviewed/latest commit IDs;
+they do not claim external tree mappings. A Grok acknowledgement is the narrow
+exception: it records an exact audited target tree and previous reviewed tree,
+and the checker authenticates both available Git objects, exact target parents,
+ancestry, raw path delta, and evidence binding. The upstream ledger's remote,
+tracked ref, and reviewed/latest commit text remain cross-checked exactly.
 
 ## Ownership and anchors
 

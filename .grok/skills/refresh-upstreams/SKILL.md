@@ -132,8 +132,8 @@ Live provider tests require explicitly entitled credentials. Assert only redacte
 This stage is only for the tracked `grok-build-upstream` source and only after all earlier stages pass. It records reviewed ancestry so GitHub's fork comparison reflects the audit without importing the disconnected upstream tree.
 
 1. Require an exhaustive parity ledger for the exact pinned Grok commit, manifest ownership for every changed path, passing focused and binary validation, and **no open temporary Grok adoption deferral** for that snapshot.
-2. Add a `coverage.upstream_acknowledgements` record containing the `grok-build-upstream` source ID, exact full commit and tree IDs, and a checked-in evidence path that cites the full commit ID.
-3. Commit all implementation, policy, ledger, and manifest changes on the linear first-parent history before creating the marker.
+2. Add a `coverage.upstream_acknowledgements` record containing the `grok-build-upstream` source ID; exact target commit/tree; previous reviewed commit/tree; exact target parent list; and a checked-in evidence path plus SHA-256 digest. The evidence must classify every raw added, modified, or deleted upstream path exactly once and contain zero Grok deferrals.
+3. Commit all implementation, policy, ledger, source-review, and manifest changes on the linear prospective first-parent history. Validate that committed tree with `check_manifest.py --strict-coverage --prepare-upstream-acknowledgements`; never prepare from uncommitted evidence or a declaration absent from the candidate tree.
 4. Create one two-parent marker with Git's `ours` **strategy** (`-s ours`, never `-X ours`). Its first parent is the validated Enhanced commit; its second parent is the exact pinned Grok commit. Use `--allow-unrelated-histories` only for the first disconnected marker.
 5. Include exactly this trailer, substituting the full pinned commit:
 

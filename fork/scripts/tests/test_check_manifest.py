@@ -47,7 +47,7 @@ class CheckManifestTests(unittest.TestCase):
         self.assertIn("OK coverage-candidate:", result.stdout)
         self.assertIn("checkpoint history is authenticated separately", result.stdout)
         self.assertIn(
-            "remote/ref/revision record(s) cross-checked; no external tree mappings claimed",
+            "remote/ref/revision record(s) cross-checked; immutable fork baseline and advancing source-review revisions remain independent",
             result.stdout,
         )
         self.assertIn(
@@ -266,7 +266,15 @@ class CheckManifestTests(unittest.TestCase):
             "source_id": "fixture-source",
             "commit": self.fixture.upstream,
             "tree": self.fixture.tip_tree,
-            "evidence": "src/integration.txt",
+            "reviewed_from": {
+                "commit": self.fixture.previous_upstream,
+                "tree": self.fixture.baseline_tree,
+            },
+            "target_parents": [self.fixture.previous_upstream],
+            "evidence": {
+                "path": "src/integration.txt",
+                "sha256": "0" * 64,
+            },
         }
         duplicate_acknowledgement = self.fixture.make_document()
         duplicate_acknowledgement["coverage"]["upstream_acknowledgements"] = [
@@ -430,11 +438,14 @@ class CheckManifestTests(unittest.TestCase):
         self.fixture.write_manifest()
         result = self.fixture.run_checker()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("no external tree mappings claimed", result.stdout)
+        self.assertIn(
+            "immutable fork baseline and advancing source-review revisions remain independent",
+            result.stdout,
+        )
         self.assertNotIn("external tree verified", result.stdout.lower())
 
     def test_ledger_rejects_uppercase_and_inconsistent_link_revisions(self) -> None:
-        self.fixture.write_upstream_versions(reviewed=self.fixture.baseline.upper())
+        self.fixture.write_upstream_versions(reviewed=self.fixture.upstream.upper())
         uppercase = self.fixture.run_checker()
         self.assertEqual(uppercase.returncode, 1)
         self.assertIn("must use lowercase full 40-hex IDs", uppercase.stdout)
@@ -442,7 +453,7 @@ class CheckManifestTests(unittest.TestCase):
         self.fixture.write_upstream_versions()
         text = self.fixture.upstream_path.read_text(encoding="utf-8")
         text = text.replace(
-            f"commit/{self.fixture.baseline}", f"commit/{'e' * 40}", 1
+            f"commit/{self.fixture.upstream}", f"commit/{'e' * 40}", 1
         )
         self.fixture.upstream_path.write_text(text, encoding="utf-8")
         inconsistent = self.fixture.run_checker()
@@ -646,6 +657,66 @@ class CheckManifestTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("declared upstream acknowledgement", result.stdout)
         self.assertIn("is not present as a validated post-checkpoint merge parent", result.stdout)
+
+    def test_preparation_mode_authenticates_the_prospective_first_parent(self) -> None:
+        marker, acknowledgement = self.fixture.create_upstream_acknowledgement_merge()
+        first_parent = self.fixture.git_text("rev-parse", f"{marker}^1")
+        document = self.fixture.make_document()
+        document["coverage"]["upstream_acknowledgements"].append(acknowledgement)
+        self.fixture.write_manifest(document)
+
+        result = self.fixture.run_checker(
+            "--coverage-candidate",
+            first_parent,
+            "--strict-coverage",
+            "--prepare-upstream-acknowledgements",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("1 authenticated prospective acknowledgement(s)", result.stdout)
+
+    def test_upstream_acknowledgement_binds_evidence_digest_and_target_parents(self) -> None:
+        candidate, acknowledgement = self.fixture.create_upstream_acknowledgement_merge()
+        cases = (
+            (
+                "evidence digest",
+                lambda item: item["evidence"].__setitem__("sha256", "0" * 64),
+                "evidence digest mismatch",
+            ),
+            (
+                "target parents",
+                lambda item: item.__setitem__("target_parents", [self.fixture.baseline]),
+                "parent mismatch",
+            ),
+        )
+        for label, mutate, expected in cases:
+            with self.subTest(label=label):
+                document = self.fixture.make_document()
+                changed = copy.deepcopy(acknowledgement)
+                mutate(changed)
+                document["coverage"]["upstream_acknowledgements"].append(changed)
+                self.fixture.write_manifest(document)
+
+                result = self.fixture.run_checker("--coverage-candidate", candidate)
+
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(expected, result.stdout)
+
+    def test_upstream_acknowledgement_trailer_must_be_in_final_block(self) -> None:
+        expected = (
+            f"Fork-Upstream-Acknowledgement: fixture-source@{self.fixture.upstream}"
+        )
+        candidate, acknowledgement = self.fixture.create_upstream_acknowledgement_merge(
+            trailer=f"{expected}\n\nNot-A-Trailer: true"
+        )
+        document = self.fixture.make_document()
+        document["coverage"]["upstream_acknowledgements"].append(acknowledgement)
+        self.fixture.write_manifest(document)
+
+        result = self.fixture.run_checker("--coverage-candidate", candidate)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("in its final trailer block", result.stdout)
 
     def test_graft_cannot_forge_coverage_checkpoint_parentage(self) -> None:
         candidate = self.fixture.commit_tree(

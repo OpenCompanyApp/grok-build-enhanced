@@ -96,10 +96,15 @@ class ForkFixture:
             [self.baseline],
             "fixture unpinned same-tree history",
         )
+        self.previous_upstream = self.commit_tree(
+            self.baseline_tree,
+            [],
+            "fixture disconnected previous upstream snapshot",
+        )
         self.upstream = self.commit_tree(
             self.tip_tree,
-            [],
-            "fixture disconnected upstream snapshot",
+            [self.previous_upstream],
+            "fixture disconnected audited upstream snapshot",
         )
         self.document = self.make_document()
         self.write_manifest()
@@ -338,8 +343,8 @@ class ForkFixture:
                     "project": "Fixture Source",
                     "remote": "https://example.invalid/fixture.git",
                     "tracked_ref": "main",
-                    "reviewed": {"commit": self.baseline},
-                    "latest_fetched": {"commit": self.tip},
+                    "reviewed": {"commit": self.upstream},
+                    "latest_fetched": {"commit": self.upstream},
                 }
             ],
             "checks": list(KNOWN_CHECKS),
@@ -391,8 +396,8 @@ class ForkFixture:
         project_value = project or "Fixture Source"
         remote_value = remote or "https://example.invalid/fixture.git"
         ref_value = tracked_ref or "main"
-        reviewed_revision = reviewed or self.baseline
-        latest_revision = latest or self.tip
+        reviewed_revision = reviewed or self.upstream
+        latest_revision = latest or self.upstream
         self.upstream_path.write_text(
             "\n".join(
                 [
@@ -499,10 +504,28 @@ class ForkFixture:
         trailer: str | None = None,
     ) -> tuple[str, dict[str, str]]:
         self.git("checkout", "--quiet", "--detach", self.tip)
-        self.write_repo_file(
-            "src/integration.txt",
-            f"downstream\naudited upstream {self.upstream}\n",
+        evidence = "\n".join(
+            [
+                "# Fixture upstream parity ledger",
+                "",
+                "Source ID: `fixture-source`",
+                f"Previous commit: `{self.previous_upstream}`",
+                f"Previous tree: `{self.baseline_tree}`",
+                f"Target commit: `{self.upstream}`",
+                f"Target tree: `{self.tip_tree}`",
+                f"Target parent: `{self.previous_upstream}`",
+                "",
+                "## Complete 3 raw-path ledger",
+                "",
+                "| # | Upstream status and path | Outcome | Evidence |",
+                "| ---: | --- | --- | --- |",
+                "| 1 | `A` `src/a-owned.txt` | adopt | `FIXTURE` |",
+                "| 2 | `M` `src/integration.txt` | adopt | `FIXTURE` |",
+                "| 3 | `A` `src/z-owned.txt` | adopt | `FIXTURE` |",
+                "",
+            ]
         )
+        self.write_repo_file("src/integration.txt", evidence)
         self.git("add", "--", "src/integration.txt")
         self.git("commit", "--quiet", "-m", "fixture upstream audit evidence")
         first_parent = self.git_text("rev-parse", "HEAD")
@@ -521,7 +544,15 @@ class ForkFixture:
             "source_id": "fixture-source",
             "commit": self.upstream,
             "tree": self.tip_tree,
-            "evidence": "src/integration.txt",
+            "reviewed_from": {
+                "commit": self.previous_upstream,
+                "tree": self.baseline_tree,
+            },
+            "target_parents": [self.previous_upstream],
+            "evidence": {
+                "path": "src/integration.txt",
+                "sha256": hashlib.sha256(evidence.encode("utf-8")).hexdigest(),
+            },
         }
         return marker, acknowledgement
 

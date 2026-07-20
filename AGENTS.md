@@ -169,8 +169,11 @@ Keep these as separate operations:
    Grok adoption deferral remains, create one audited acknowledgement merge.
    It must have the reviewed Enhanced commit as first parent, the exact pinned
    Grok commit as second parent, the first-parent tree unchanged, the manifest
-   declaration and evidence required by the checker, and the exact
-   `Fork-Upstream-Acknowledgement` trailer. Use Git's `ours` merge strategy only
+   declaration and digest-bound exhaustive raw-path evidence required by the
+   checker, and the exact `Fork-Upstream-Acknowledgement` trailer. Commit and
+   validate the prospective first parent with
+   `--prepare-upstream-acknowledgements` before creating the marker. Use Git's
+   `ours` merge strategy only
    for this marker; `-X ours`, content merges, undeclared side parents, and
    fetched-only acknowledgement are forbidden.
 4. **Publish:** push only the validated first-parent candidate and its audited
