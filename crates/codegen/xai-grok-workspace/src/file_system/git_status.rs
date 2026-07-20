@@ -64,28 +64,31 @@ fn collapse_status_spaces(s: &str) -> String {
     out
 }
 
-/// Short git status for the templated user message.
+/// Short Git status for startup context.
 ///
-/// Runs `git status --short --branch` and returns its output with consecutive
-/// spaces collapsed via [`collapse_status_spaces`]: a leading `## <branch>`
-/// line followed by the file change list (or just `## <branch>` on a clean
-/// tree). This matches the body embedded in the `<git_status>` block
-/// byte-for-byte.
+/// Runs `git status --short --branch --untracked-files=normal` so user Git
+/// configuration cannot hide untracked paths from the startup snapshot. The
+/// output has consecutive spaces collapsed via [`collapse_status_spaces`].
 pub async fn git_status_short(working_directory: impl Into<PathBuf>) -> Result<String, FsError> {
     let working_directory = working_directory.into();
 
     tokio::task::spawn_blocking(move || {
         let output = xai_tty_utils::git_command()
-            .args(["status", "--short", "--branch"])
+            .args(["status", "--short", "--branch", "--untracked-files=normal"])
             .current_dir(&working_directory)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .output()
-            .map_err(|e| FsError::Other(format!("git status --short --branch failed: {}", e)))?;
+            .map_err(|e| {
+                FsError::Other(format!(
+                    "git status --short --branch --untracked-files=normal failed: {}",
+                    e
+                ))
+            })?;
 
         if !output.status.success() {
             return Err(FsError::Other(format!(
-                "git status --short --branch exited with code {:?}",
+                "git status --short --branch --untracked-files=normal exited with code {:?}",
                 output.status.code()
             )));
         }
@@ -94,7 +97,8 @@ pub async fn git_status_short(working_directory: impl Into<PathBuf>) -> Result<S
         // truncation handles the < 1 MiB case.
         if git_status_exceeds_buffer(output.stdout.len()) {
             return Err(FsError::Other(
-                "git status --short --branch output exceeded 1 MiB buffer".to_string(),
+                "git status --short --branch --untracked-files=normal output exceeded 1 MiB buffer"
+                    .to_string(),
             ));
         }
 
@@ -105,7 +109,12 @@ pub async fn git_status_short(working_directory: impl Into<PathBuf>) -> Result<S
         )))
     })
     .await
-    .map_err(|e| FsError::Other(format!("git status --short --branch task failed: {}", e)))?
+    .map_err(|e| {
+        FsError::Other(format!(
+            "git status --short --branch --untracked-files=normal task failed: {}",
+            e
+        ))
+    })?
 }
 
 fn git_status_impl(working_directory: &Path) -> Result<String, FsError> {
@@ -286,5 +295,24 @@ mod tests {
     fn collapse_status_spaces_preserves_newlines() {
         assert_eq!(collapse_status_spaces("a\n\n\nb"), "a\n\n\nb");
         assert_eq!(collapse_status_spaces(""), "");
+    }
+
+    #[tokio::test]
+    async fn short_status_reports_untracked_files_when_git_config_hides_them() {
+        let repository = tempfile::tempdir().unwrap();
+        let run_git = |args: &[&str]| {
+            xai_tty_utils::git_command()
+                .args(args)
+                .current_dir(repository.path())
+                .status()
+                .unwrap()
+        };
+        assert!(run_git(&["init", "--quiet"]).success());
+        assert!(run_git(&["config", "status.showUntrackedFiles", "no"]).success());
+        std::fs::write(repository.path().join("untracked.txt"), "untracked\n").unwrap();
+
+        let status = git_status_short(repository.path()).await.unwrap();
+
+        assert!(status.contains("?? untracked.txt"), "{status:?}");
     }
 }

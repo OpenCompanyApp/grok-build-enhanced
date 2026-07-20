@@ -104,26 +104,49 @@ pub async fn compute_vcs_status_block(
     working_directory: &Path,
     vcs_kind: VcsKind,
 ) -> Option<String> {
-    use xai_grok_workspace::file_system::{git_status, jj_status};
+    use xai_grok_workspace::file_system::{git_status_short, jj_status};
 
     if matches!(vcs_kind, VcsKind::None) {
         return None;
     }
-    let _timer = crate::instrumentation_timer!("session.user_prefix.vcs_status");
-    let timeout = std::time::Duration::from_secs(2);
+    let mut timer = crate::instrumentation_timer!("session.user_prefix.vcs_status");
+    timer.with_field("vcs", if vcs_kind.is_jj() { "jj" } else { "git" });
+    timer.with_field(
+        "status_mode",
+        if vcs_kind.is_jj() {
+            "jj"
+        } else {
+            "short_untracked_normal"
+        },
+    );
+    timer.with_field("timeout_ms", 5_000_u64);
+    let timeout = std::time::Duration::from_secs(5);
     let result = if vcs_kind.is_jj() {
         tokio::time::timeout(timeout, jj_status(working_directory)).await
     } else {
-        tokio::time::timeout(timeout, git_status(working_directory)).await
+        tokio::time::timeout(timeout, git_status_short(working_directory)).await
     };
     match result {
-        Ok(Ok(status)) => Some(format_vcs_status_block(&status, vcs_kind)),
+        Ok(Ok(status)) => {
+            timer.with_field("outcome", "success");
+            timer.with_field("output_bytes", status.len() as u64);
+            let status = if vcs_kind.is_jj() {
+                Some(status)
+            } else {
+                xai_grok_agent::prompt::user_message::normalize_git_status(&status)
+            };
+            status.map(|status| format_vcs_status_block(&status, vcs_kind))
+        }
         Ok(Err(e)) => {
+            timer.with_field("outcome", "error");
+            timer.with_field("output_bytes", 0_u64);
             tracing::warn!("user prefix VCS status failed: {e}");
             None
         }
         Err(_) => {
-            tracing::warn!(vcs = ?vcs_kind, "user prefix VCS status timed out after 2s");
+            timer.with_field("outcome", "timeout");
+            timer.with_field("output_bytes", 0_u64);
+            tracing::warn!(vcs = ?vcs_kind, "user prefix VCS status timed out after 5s");
             None
         }
     }
@@ -195,5 +218,24 @@ mod tests {
             user_info = format!("{user_info}\n<git_status>{git_status}</git_status>");
         }
         assert!(!user_info.contains("<git_status>"));
+    }
+
+    #[tokio::test]
+    async fn default_git_status_block_includes_untracked_worktree_paths() {
+        let repository = tempfile::tempdir().unwrap();
+        let status = xai_tty_utils::git_command()
+            .args(["init", "--quiet"])
+            .current_dir(repository.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::write(repository.path().join("untracked.txt"), "untracked\n").unwrap();
+
+        let block = compute_vcs_status_block(repository.path(), VcsKind::Git)
+            .await
+            .unwrap();
+
+        assert!(block.contains("<git_status>"));
+        assert!(block.contains("?? untracked.txt"), "{block:?}");
     }
 }
