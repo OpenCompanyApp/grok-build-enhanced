@@ -123,7 +123,7 @@ cross-provider credential behavior.
 ## Immutable baselines and ownership manifest
 
 Treat `fork/manifest.json` as the authoritative machine-readable ownership and
-history contract. At schema version 2 it records:
+history contract. At schema version 3 it records:
 
 - Grok Build fork baseline commit
   `c1b5909ec707c069f1d21a93917af044e71da0d7`, tree
@@ -132,14 +132,19 @@ history contract. At schema version 2 it records:
   `da3076874292c538bfc4efeede0cf517c2e975f0`, tree
   `bbeaf9575ffa5f7bcd75b8352a178455f04c98c7`;
 - thematic tree-equivalent checkpoint
-  `7ed3320c797852ed5894f1fc2fca7cee6827768f`, with the same frozen tree; and
+  `7ed3320c797852ed5894f1fc2fca7cee6827768f`, with the same frozen tree;
 - latest fetched disconnected Grok Build snapshot recorded in the
   `grok-build-upstream` source entry of `fork/manifest.json`, which is a review
-  target rather than an automatically accepted base.
+  target rather than an automatically accepted base; and
+- audited upstream acknowledgement records that authorize only exact,
+  evidence-linked, zero-tree-delta second-parent merges on the post-checkpoint
+  first-parent history.
 
 Every downstream path between the baseline and a publication candidate must be
-owned by a focused manifest feature unit. Keep integration paths narrow and
-legal paths explicit. Validate with:
+owned by a focused manifest feature unit. Coverage follows the candidate's
+first-parent history and separately authenticates every declared upstream
+acknowledgement parent; arbitrary merges remain forbidden. Keep integration
+paths narrow and legal paths explicit. Validate with:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -I -B \
@@ -155,13 +160,24 @@ Keep these as separate operations:
 
 1. **Snapshot:** create an immutable commit/tree identity without rebasing,
    moving a branch, or pushing.
-2. **Refresh/rebase:** work only in a disposable branch or isolated worktree;
+2. **Refresh/audit:** work only in a disposable branch or isolated worktree;
    preserve the frozen snapshot and compare raw `(mode,type,oid)` tree entries
-   when upstream history has no usable merge base.
-3. **Publish:** merge and push only the reviewed candidate. Never force-push
-   from snapshot or refresh tooling. If history rewriting is ever explicitly
-   approved, use `--force-with-lease` only against the reviewed destination and
-   never rewrite upstream, baseline, or frozen snapshot refs.
+   when upstream history has no usable merge base. Never merge an unreviewed
+   upstream tree into Enhanced.
+3. **Acknowledge:** only after the pinned Grok snapshot has an exhaustive parity
+   ledger, every applicable behavior has landed with tests, and no temporary
+   Grok adoption deferral remains, create one audited acknowledgement merge.
+   It must have the reviewed Enhanced commit as first parent, the exact pinned
+   Grok commit as second parent, the first-parent tree unchanged, the manifest
+   declaration and evidence required by the checker, and the exact
+   `Fork-Upstream-Acknowledgement` trailer. Use Git's `ours` merge strategy only
+   for this marker; `-X ours`, content merges, undeclared side parents, and
+   fetched-only acknowledgement are forbidden.
+4. **Publish:** push only the validated first-parent candidate and its audited
+   acknowledgement marker. Never force-push from snapshot or refresh tooling.
+   If history rewriting is ever explicitly approved, use `--force-with-lease`
+   only against the reviewed destination and never rewrite upstream, baseline,
+   or frozen snapshot refs.
 
 The fork release repository is `OpenCompanyApp/grok-build-enhanced`. Production
 update checks and downloads must use fork-owned release metadata and matching

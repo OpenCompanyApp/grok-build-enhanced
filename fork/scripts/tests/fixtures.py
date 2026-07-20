@@ -22,6 +22,8 @@ CHECK_MANIFEST = SCRIPTS_DIR / "check_manifest.py"
 VERIFY_PATCH_STACK = SCRIPTS_DIR / "verify_patch_stack.sh"
 SERIES_FORMAT = "git-linear-history-v1"
 DELTA_FORMAT = "git-tree-delta-v1"
+COVERAGE_HISTORY_FORMAT = "git-first-parent-with-audited-upstream-merges-v1"
+ACKNOWLEDGEMENT_TRAILER = "Fork-Upstream-Acknowledgement"
 KNOWN_CHECKS = [
     "patch-stack-objects",
     "patch-stack-history",
@@ -93,6 +95,11 @@ class ForkFixture:
             self.tip_tree,
             [self.baseline],
             "fixture unpinned same-tree history",
+        )
+        self.upstream = self.commit_tree(
+            self.tip_tree,
+            [],
+            "fixture disconnected upstream snapshot",
         )
         self.document = self.make_document()
         self.write_manifest()
@@ -306,7 +313,7 @@ class ForkFixture:
 
     def make_document(self) -> dict[str, Any]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "patch_stack": {
                 "baseline": {
                     "commit": self.baseline,
@@ -336,7 +343,11 @@ class ForkFixture:
                 }
             ],
             "checks": list(KNOWN_CHECKS),
-            "coverage": {"allow_uncovered": False},
+            "coverage": {
+                "allow_uncovered": False,
+                "history_format": COVERAGE_HISTORY_FORMAT,
+                "upstream_acknowledgements": [],
+            },
             "features": [
                 {
                     "id": "fixture-feature",
@@ -480,6 +491,39 @@ class ForkFixture:
             [self.baseline, self.unpinned],
             "fixture forbidden side-parent merge",
         )
+
+    def create_upstream_acknowledgement_merge(
+        self,
+        *,
+        preserve_first_parent_tree: bool = True,
+        trailer: str | None = None,
+    ) -> tuple[str, dict[str, str]]:
+        self.git("checkout", "--quiet", "--detach", self.tip)
+        self.write_repo_file(
+            "src/integration.txt",
+            f"downstream\naudited upstream {self.upstream}\n",
+        )
+        self.git("add", "--", "src/integration.txt")
+        self.git("commit", "--quiet", "-m", "fixture upstream audit evidence")
+        first_parent = self.git_text("rev-parse", "HEAD")
+        first_parent_tree = self.git_text("rev-parse", "HEAD^{tree}")
+        marker_tree = first_parent_tree if preserve_first_parent_tree else self.tip_tree
+        expected_trailer = (
+            f"{ACKNOWLEDGEMENT_TRAILER}: fixture-source@{self.upstream}"
+        )
+        marker = self.commit_tree(
+            marker_tree,
+            [first_parent, self.upstream],
+            "fixture audited upstream acknowledgement\n\n"
+            + (expected_trailer if trailer is None else trailer),
+        )
+        acknowledgement = {
+            "source_id": "fixture-source",
+            "commit": self.upstream,
+            "tree": self.tip_tree,
+            "evidence": "src/integration.txt",
+        }
+        return marker, acknowledgement
 
     def adopt_symlink_frozen_tip(self, relative_path: str, target: str) -> None:
         self.git("checkout", "--quiet", "--detach", self.tip)

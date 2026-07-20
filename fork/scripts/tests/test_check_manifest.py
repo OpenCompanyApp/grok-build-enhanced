@@ -262,6 +262,31 @@ class CheckManifestTests(unittest.TestCase):
             missing_source, "references unknown source ID 'missing-source'"
         )
 
+        acknowledgement = {
+            "source_id": "fixture-source",
+            "commit": self.fixture.upstream,
+            "tree": self.fixture.tip_tree,
+            "evidence": "src/integration.txt",
+        }
+        duplicate_acknowledgement = self.fixture.make_document()
+        duplicate_acknowledgement["coverage"]["upstream_acknowledgements"] = [
+            acknowledgement,
+            copy.deepcopy(acknowledgement),
+        ]
+        self.assert_schema_failure(
+            duplicate_acknowledgement,
+            "upstream_acknowledgements contains duplicate commit",
+        )
+
+        unknown_acknowledgement_source = self.fixture.make_document()
+        unknown_acknowledgement_source["coverage"][
+            "upstream_acknowledgements"
+        ] = [{**acknowledgement, "source_id": "missing-source"}]
+        self.assert_schema_failure(
+            unknown_acknowledgement_source,
+            "references unknown source ID 'missing-source'",
+        )
+
         duplicate_attestation = self.fixture.make_document()
         duplicate_attestation["patch_stack"]["history"][
             "thematic_equivalents"
@@ -367,7 +392,7 @@ class CheckManifestTests(unittest.TestCase):
         self.assert_schema_failure(document, "unsupported key 'command'")
 
         self.fixture.manifest_path.write_text(
-            '{"schema_version": 2, "schema_version": 2}\n', encoding="utf-8"
+            '{"schema_version": 3, "schema_version": 3}\n', encoding="utf-8"
         )
         result = self.fixture.run_checker()
         self.assertEqual(result.returncode, 1)
@@ -540,7 +565,7 @@ class CheckManifestTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("reached root commit", result.stdout)
 
-    def test_coverage_candidate_rejects_post_checkpoint_merges(self) -> None:
+    def test_coverage_candidate_rejects_undeclared_post_checkpoint_merge(self) -> None:
         candidate = self.fixture.commit_tree(
             self.fixture.tip_tree,
             [self.fixture.tip, self.fixture.thematic],
@@ -549,7 +574,78 @@ class CheckManifestTests(unittest.TestCase):
         result = self.fixture.run_checker("--coverage-candidate", candidate)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("ERROR coverage-candidate:", result.stdout)
-        self.assertIn("post-checkpoint merges are forbidden", result.stdout)
+        self.assertIn("has undeclared upstream parent", result.stdout)
+
+    def test_declared_zero_delta_upstream_acknowledgement_merge_is_accepted(self) -> None:
+        candidate, acknowledgement = (
+            self.fixture.create_upstream_acknowledgement_merge()
+        )
+        document = self.fixture.make_document()
+        document["coverage"]["upstream_acknowledgements"].append(
+            acknowledgement
+        )
+        self.fixture.write_manifest(document)
+
+        result = self.fixture.run_checker(
+            "--coverage-candidate", candidate, "--strict-coverage"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("OK coverage-candidate:", result.stdout)
+        self.assertIn(
+            "including 1 audited zero-delta upstream acknowledgement merge(s)",
+            result.stdout,
+        )
+        self.assertIn("3/3 baseline-to-candidate downstream path(s) covered", result.stdout)
+
+    def test_upstream_acknowledgement_merge_rejects_first_parent_tree_change(self) -> None:
+        candidate, acknowledgement = self.fixture.create_upstream_acknowledgement_merge(
+            preserve_first_parent_tree=False
+        )
+        document = self.fixture.make_document()
+        document["coverage"]["upstream_acknowledgements"].append(
+            acknowledgement
+        )
+        self.fixture.write_manifest(document)
+
+        result = self.fixture.run_checker("--coverage-candidate", candidate)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(
+            "changes the first-parent tree instead of preserving the reviewed Enhanced tree",
+            result.stdout,
+        )
+
+    def test_upstream_acknowledgement_merge_requires_exact_trailer(self) -> None:
+        candidate, acknowledgement = self.fixture.create_upstream_acknowledgement_merge(
+            trailer="Fork-Upstream-Acknowledgement: fixture-source@0000000000000000000000000000000000000000"
+        )
+        document = self.fixture.make_document()
+        document["coverage"]["upstream_acknowledgements"].append(
+            acknowledgement
+        )
+        self.fixture.write_manifest(document)
+
+        result = self.fixture.run_checker("--coverage-candidate", candidate)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("must contain exactly the trailer", result.stdout)
+
+    def test_declared_upstream_acknowledgement_must_appear_in_history(self) -> None:
+        _candidate, acknowledgement = self.fixture.create_upstream_acknowledgement_merge()
+        document = self.fixture.make_document()
+        document["coverage"]["upstream_acknowledgements"].append(
+            acknowledgement
+        )
+        self.fixture.write_manifest(document)
+
+        result = self.fixture.run_checker(
+            "--coverage-candidate", self.fixture.tip
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("declared upstream acknowledgement", result.stdout)
+        self.assertIn("is not present as a validated post-checkpoint merge parent", result.stdout)
 
     def test_graft_cannot_forge_coverage_checkpoint_parentage(self) -> None:
         candidate = self.fixture.commit_tree(

@@ -230,7 +230,7 @@ class VerifyPatchStackTests(unittest.TestCase):
         self.assertIn("ERROR schema:", malformed.stderr)
 
         self.fixture.manifest_path.write_text(
-            '{"schema_version": 2, "schema_version": 2}\n', encoding="utf-8"
+            '{"schema_version": 3, "schema_version": 3}\n', encoding="utf-8"
         )
         duplicate = self.fixture.run_verifier("--no-range-diff")
         self.assertEqual(duplicate.returncode, 2)

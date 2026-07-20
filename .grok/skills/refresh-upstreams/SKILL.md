@@ -25,7 +25,7 @@ Refresh source provenance, audit compatibility, and port confirmed gaps while pr
 2. If the worktree is dirty, determine whether it is coherent in-progress work. Never discard or overwrite it.
 3. Finish and validate the current thematic change or preserve it on a dedicated commit/worktree before refreshing sources.
 4. Record the pre-refresh commit and tree IDs. Create refresh work only in a disposable branch or isolated worktree based on that exact commit.
-5. Do not merge or rebase upstream into `main`.
+5. Do not content-merge or rebase upstream into `main`. After the audit and all applicable Grok behavior have landed, the narrowly authenticated zero-tree-delta acknowledgement in section 7 is the only permitted upstream merge.
 
 ## 2. Fetch and pin sources
 
@@ -127,10 +127,40 @@ Also run:
 
 Live provider tests require explicitly entitled credentials. Assert only redacted outcomes and never print authenticated request/response bodies. Codex coverage should include catalog, a normal turn, Fast off/on, compaction, usage, and supported hosted tools. Kimi coverage should include catalog, a normal turn, thinking effort, and hosted web search/fetch.
 
-## 7. Finish safely
+## 7. Acknowledge the audited Grok snapshot
+
+This stage is only for the tracked `grok-build-upstream` source and only after all earlier stages pass. It records reviewed ancestry so GitHub's fork comparison reflects the audit without importing the disconnected upstream tree.
+
+1. Require an exhaustive parity ledger for the exact pinned Grok commit, manifest ownership for every changed path, passing focused and binary validation, and **no open temporary Grok adoption deferral** for that snapshot.
+2. Add a `coverage.upstream_acknowledgements` record containing the `grok-build-upstream` source ID, exact full commit and tree IDs, and a checked-in evidence path that cites the full commit ID.
+3. Commit all implementation, policy, ledger, and manifest changes on the linear first-parent history before creating the marker.
+4. Create one two-parent marker with Git's `ours` **strategy** (`-s ours`, never `-X ours`). Its first parent is the validated Enhanced commit; its second parent is the exact pinned Grok commit. Use `--allow-unrelated-histories` only for the first disconnected marker.
+5. Include exactly this trailer, substituting the full pinned commit:
+
+   ```text
+   Fork-Upstream-Acknowledgement: grok-build-upstream@<40-hex-commit>
+   ```
+
+6. Prove the marker tree equals its first-parent tree, the second-parent tree equals the manifest record, the evidence cites the pin, and the strict checker authenticates the first-parent path plus marker. Also prove the pinned commit is now an ancestor of the candidate.
+7. Never acknowledge a merely fetched revision, an unclassified behavior set, a snapshot with an open Grok adoption deferral, or a remote head that advanced after the audit pin.
+
+## 8. Publish the release and Homebrew formula
+
+Run this stage only when the user explicitly authorizes publication and confirms the version for the current run. Snapshot, audit, acknowledgement, and publication remain separate decisions.
+
+1. Re-run the release contract for the selected version and verify the acknowledgement marker is the publication candidate. Push `main` without force, create and push the annotated version tag, and monitor the tag-triggered release workflow to completion.
+2. Verify the public release is neither draft nor prerelease and contains exactly the four native `grok-<version>-<os>-<arch>` binaries plus `SHA256SUMS` and `RELEASE-PROVENANCE.json`. Verify every checksum, source commit/provenance binding, and GitHub attestation without exposing authenticated data.
+3. Update the shared `OpenCompanyApp/homebrew-tap` formula for all four platform URLs and release digests. Read the formula before editing; change only the version, URLs, and hashes unless the install contract itself changed.
+4. Run `brew style`, `brew audit --strict --online`, and `brew test` for `opencompanyapp/tap/grok-build-enhanced`. Commit and push the tap only after those checks pass and only under the publication authorization.
+5. Run `brew update` and `brew upgrade opencompanyapp/tap/grok-build-enhanced`, then verify `brew list --versions`, both `grok version` and the `agent` symlink, and that Homebrew no longer reports the formula outdated.
+6. Never fall back to official xAI assets, npm packages, installer buckets, or mismatched release versions.
+
+## 9. Finish safely
 
 1. Compare the candidate tree with the pre-refresh snapshot.
 2. Verify every changed path has manifest ownership, every changed behavior has a parity-ledger outcome, and all source revisions match the provenance records.
 3. Reconcile prior open deferral IDs: carry them forward, or cite the commit and tests that close them.
-4. Summarize adopted, equivalent, inapplicable, and temporarily deferred behavior; list stable deferral IDs, commits, and validation evidence.
-5. Merge/push/tag/release only when explicitly authorized for the current run. Never force-push from refresh tooling.
+4. Summarize adopted, equivalent, inapplicable, and temporarily deferred behavior; list stable deferral IDs, commits, acknowledgement parent, and validation evidence.
+5. Remove every Cargo `target/` directory generated in the checkout or worktrees used for the refresh, plus temporary release downloads. Do not remove artifacts from unrelated active worktrees without explicit authorization.
+6. Confirm the project and tap are aligned with their remotes and preserve any pre-existing user-owned worktree changes exactly.
+7. Never force-push from refresh tooling.

@@ -32,6 +32,8 @@ UNSAFE_UNICODE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 REGULAR_GIT_MODES = frozenset({"100644", "100755"})
 SERIES_FORMAT = "git-linear-history-v1"
 DELTA_FORMAT = "git-tree-delta-v1"
+COVERAGE_HISTORY_FORMAT = "git-first-parent-with-audited-upstream-merges-v1"
+ACKNOWLEDGEMENT_TRAILER = "Fork-Upstream-Acknowledgement"
 MAX_ATTESTED_COMMITS = 10_000
 MAX_COVERAGE_COMMITS = 10_000
 
@@ -109,6 +111,7 @@ class CheckContext:
     checked_out_head: str = ""
     _tree_cache: dict[str, dict[bytes, TreeEntry]] = field(default_factory=dict)
     _commit_cache: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    _message_cache: dict[str, str] = field(default_factory=dict)
     _changed_paths: list[str] | None = None
 
     def __post_init__(self) -> None:
@@ -286,6 +289,21 @@ class CheckContext:
         metadata = (trees[0], tuple(parents))
         self._commit_cache[commit] = metadata
         return metadata
+
+    def commit_message(self, commit: str) -> str:
+        cached = self._message_cache.get(commit)
+        if cached is not None:
+            return cached
+        payload = self.git("cat-file", "commit", commit).stdout
+        _header, separator, message = payload.partition(b"\n\n")
+        if not separator:
+            raise GitError(f"commit {commit} has no header/message separator")
+        try:
+            decoded = message.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise GitError(f"commit {commit} has a non-UTF-8 message") from error
+        self._message_cache[commit] = decoded
+        return decoded
 
     def commit_tree(self, commit: str) -> str:
         return self.commit_metadata(commit)[0]
@@ -638,8 +656,8 @@ def validate_schema(document: dict[str, Any]) -> list[str]:
 
     if "schema_version" in document:
         version = document["schema_version"]
-        if isinstance(version, bool) or not isinstance(version, int) or version != 2:
-            errors.append("schema_version must be the integer 2")
+        if isinstance(version, bool) or not isinstance(version, int) or version != 3:
+            errors.append("schema_version must be the integer 3")
 
     patch_stack = _as_object(document.get("patch_stack"), "patch_stack", errors)
     frozen: dict[str, Any] | None = None
@@ -800,10 +818,76 @@ def validate_schema(document: dict[str, Any]) -> list[str]:
 
     coverage = _as_object(document.get("coverage"), "coverage", errors)
     if coverage is not None:
-        _unknown_keys(coverage, {"allow_uncovered"}, "coverage", errors)
-        _require_keys(coverage, {"allow_uncovered"}, "coverage", errors)
+        coverage_keys = {
+            "allow_uncovered",
+            "history_format",
+            "upstream_acknowledgements",
+        }
+        _unknown_keys(coverage, coverage_keys, "coverage", errors)
+        _require_keys(coverage, coverage_keys, "coverage", errors)
         if coverage.get("allow_uncovered") is not False:
             errors.append("coverage.allow_uncovered must be false for fail-closed ownership")
+        history_format = _string(
+            coverage.get("history_format"), "coverage.history_format", errors
+        )
+        if (
+            history_format is not None
+            and history_format != COVERAGE_HISTORY_FORMAT
+        ):
+            errors.append(
+                "coverage.history_format must be "
+                f"{COVERAGE_HISTORY_FORMAT!r}"
+            )
+        acknowledgements = _as_list(
+            coverage.get("upstream_acknowledgements"),
+            "coverage.upstream_acknowledgements",
+            errors,
+        )
+        acknowledgement_commits: list[str] = []
+        if acknowledgements is not None:
+            acknowledgement_keys = {"source_id", "commit", "tree", "evidence"}
+            for index, item in enumerate(acknowledgements):
+                location = f"coverage.upstream_acknowledgements[{index}]"
+                acknowledgement = _as_object(item, location, errors)
+                if acknowledgement is None:
+                    continue
+                _unknown_keys(acknowledgement, acknowledgement_keys, location, errors)
+                _require_keys(acknowledgement, acknowledgement_keys, location, errors)
+                source_id = _validate_id(
+                    acknowledgement.get("source_id"), f"{location}.source_id", errors
+                )
+                if source_id is not None and source_id not in set(source_ids):
+                    errors.append(
+                        f"{location}.source_id references unknown source ID {source_id!r}"
+                    )
+                commit = _validate_full_sha(
+                    acknowledgement.get("commit"), f"{location}.commit", errors
+                )
+                _validate_full_sha(
+                    acknowledgement.get("tree"), f"{location}.tree", errors
+                )
+                evidence = _string(
+                    acknowledgement.get("evidence"), f"{location}.evidence", errors
+                )
+                if evidence is not None:
+                    safety_error = validate_repo_path(evidence, allow_glob=False)
+                    if safety_error is not None:
+                        errors.append(
+                            f"{location}.evidence {safety_error}: {evidence!r}"
+                        )
+                if commit is not None:
+                    acknowledgement_commits.append(commit)
+            for duplicate in sorted(
+                {
+                    commit
+                    for commit in acknowledgement_commits
+                    if acknowledgement_commits.count(commit) > 1
+                }
+            ):
+                errors.append(
+                    "coverage.upstream_acknowledgements contains duplicate commit "
+                    f"{duplicate!r}"
+                )
 
     feature_items = _as_list(document.get("features"), "features", errors)
     feature_ids: list[str] = []
@@ -1272,7 +1356,7 @@ def check_patch_stack_history(context: CheckContext) -> Outcome:
 
 
 def check_coverage_candidate(context: CheckContext) -> Outcome:
-    """Require a raw, single-parent path from the candidate to an attested checkpoint."""
+    """Authenticate first-parent history plus declared zero-delta upstream merges."""
 
     checkpoints = {
         context.frozen_tip: "exact frozen checkpoint",
@@ -1285,14 +1369,60 @@ def check_coverage_candidate(context: CheckContext) -> Outcome:
             ]
         },
     }
+    acknowledgements = context.document["coverage"]["upstream_acknowledgements"]
+    acknowledgement_by_commit = {
+        acknowledgement["commit"]: acknowledgement
+        for acknowledgement in acknowledgements
+    }
     current = context.coverage_candidate
     seen: set[str] = set()
+    seen_acknowledgements: set[str] = set()
     followup_count = 0
+    merge_count = 0
     errors: list[str] = []
 
     # Reading the tree up front proves that the resolved candidate is a usable
     # immutable commit/tree pair; feature and coverage checks reuse this cache.
-    context.tree_map(context.coverage_tree)
+    candidate_entries = context.tree_map(context.coverage_tree)
+
+    for acknowledgement in acknowledgements:
+        commit = acknowledgement["commit"]
+        exists, detail = _git_object_exists(context, f"{commit}^{{commit}}")
+        if not exists:
+            errors.append(
+                f"acknowledged upstream commit {commit} is unavailable: {detail}"
+            )
+            continue
+        actual_tree = context.commit_tree(commit)
+        if actual_tree != acknowledgement["tree"]:
+            errors.append(
+                f"acknowledged upstream commit {commit} tree mismatch: expected "
+                f"{acknowledgement['tree']}, got {actual_tree}"
+            )
+        evidence = acknowledgement["evidence"]
+        evidence_entry = candidate_entries.get(evidence.encode("utf-8"))
+        if evidence_entry is None:
+            errors.append(
+                f"acknowledged upstream commit {commit} evidence path {evidence!r} "
+                "is absent from the candidate tree"
+            )
+        elif (
+            evidence_entry.object_type != "blob"
+            or evidence_entry.mode not in REGULAR_GIT_MODES
+        ):
+            errors.append(
+                f"acknowledged upstream commit {commit} evidence path {evidence!r} "
+                "must be a regular blob"
+            )
+        else:
+            evidence_payload = context.git(
+                "cat-file", "blob", evidence_entry.oid
+            ).stdout
+            if commit.encode("ascii") not in evidence_payload:
+                errors.append(
+                    f"acknowledged upstream commit {commit} evidence path {evidence!r} "
+                    "does not cite the full commit ID"
+                )
 
     while current not in checkpoints:
         if current in seen:
@@ -1305,30 +1435,82 @@ def check_coverage_candidate(context: CheckContext) -> Outcome:
                 f"post-checkpoint length of {MAX_COVERAGE_COMMITS} commits"
             )
             break
-        _tree, parents = context.commit_metadata(current)
-        if len(parents) != 1:
-            if not parents:
-                errors.append(
-                    f"coverage candidate history reached root commit {current} "
-                    "before an authenticated frozen or thematic checkpoint"
-                )
-            else:
-                errors.append(
-                    f"coverage candidate history commit {current} has {len(parents)} "
-                    "parents; post-checkpoint merges are forbidden"
-                )
+        tree, parents = context.commit_metadata(current)
+        if not parents:
+            errors.append(
+                f"coverage candidate history reached root commit {current} "
+                "before an authenticated frozen or thematic checkpoint"
+            )
             break
-        current = parents[0]
+        if len(parents) == 1:
+            current = parents[0]
+            followup_count += 1
+            continue
+        if len(parents) != 2:
+            errors.append(
+                f"coverage candidate history commit {current} has {len(parents)} "
+                "parents; only audited two-parent upstream acknowledgement merges "
+                "are permitted post-checkpoint"
+            )
+            break
+
+        first_parent, upstream_parent = parents
+        acknowledgement = acknowledgement_by_commit.get(upstream_parent)
+        if acknowledgement is None:
+            errors.append(
+                f"coverage candidate history commit {current} has undeclared "
+                f"upstream parent {upstream_parent}"
+            )
+            break
+        if upstream_parent in seen_acknowledgements:
+            errors.append(
+                f"upstream acknowledgement {upstream_parent} appears in more than "
+                "one post-checkpoint merge"
+            )
+            break
+        if tree != context.commit_tree(first_parent):
+            errors.append(
+                f"upstream acknowledgement merge {current} changes the first-parent "
+                "tree instead of preserving the reviewed Enhanced tree"
+            )
+            break
+        expected_trailer = (
+            f"{ACKNOWLEDGEMENT_TRAILER}: "
+            f"{acknowledgement['source_id']}@{upstream_parent}"
+        )
+        trailer_lines = [
+            line
+            for line in context.commit_message(current).splitlines()
+            if line.startswith(f"{ACKNOWLEDGEMENT_TRAILER}:")
+        ]
+        if trailer_lines != [expected_trailer]:
+            errors.append(
+                f"upstream acknowledgement merge {current} must contain exactly "
+                f"the trailer {expected_trailer!r}"
+            )
+            break
+        seen_acknowledgements.add(upstream_parent)
+        current = first_parent
         followup_count += 1
+        merge_count += 1
+
+    unused = sorted(set(acknowledgement_by_commit) - seen_acknowledgements)
+    for commit in unused:
+        errors.append(
+            f"declared upstream acknowledgement {commit} is not present as a "
+            "validated post-checkpoint merge parent"
+        )
 
     if errors:
         return Outcome("coverage candidate lineage could not be authenticated", errors)
 
     checkpoint = checkpoints[current]
     return Outcome(
-        f"committed candidate {context.coverage_candidate} descends linearly from "
-        f"the {checkpoint} through {followup_count} post-checkpoint commit(s); "
-        "checkpoint history is authenticated separately"
+        f"committed candidate {context.coverage_candidate} follows authenticated "
+        f"first-parent history from the {checkpoint} through {followup_count} "
+        f"post-checkpoint commit(s), including {merge_count} audited zero-delta "
+        "upstream acknowledgement merge(s); checkpoint history is authenticated "
+        "separately"
     )
 
 
