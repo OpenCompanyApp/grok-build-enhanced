@@ -20,7 +20,7 @@ fn test_actor(info: Info, storage: Arc<dyn StorageAdapter>) -> ActorGuard {
         SessionPersistence {
             info,
             storage,
-            pending_notification: None,
+            pending_notifications: std::collections::VecDeque::new(),
             rx,
             remote_sync: None,
             relay_sync: None,
@@ -60,46 +60,84 @@ fn neutral_update(info: &Info, text: &str) -> SessionUpdate {
     SessionUpdate::Acp(Box::new(notification(info, text)))
 }
 
-#[test]
-fn committed_error_does_not_restore_pending_notification() {
-    let notification = notification(
-        &Info {
-            id: acp::SessionId::new("committed-update"),
-            cwd: "/test".into(),
-        },
-        "committed",
-    );
-    let mut pending = None;
-    let result = SessionPersistence::finish_pending_append(
-        &mut pending,
-        notification,
-        Err(crate::session::storage::AppendUpdateError::Committed(
-            io::Error::other("summary patch failed"),
-        )),
-    );
-    assert_eq!(result.unwrap_err().to_string(), "summary patch failed");
-    assert!(pending.is_none());
+fn thought_update(info: &Info, text: &str) -> SessionUpdate {
+    SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+        info.id.clone(),
+        acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(acp::ContentBlock::Text(
+            acp::TextContent::new(text),
+        ))),
+    )))
 }
 
-#[test]
-fn uncommitted_error_restores_pending_notification() {
-    let notification = notification(
-        &Info {
-            id: acp::SessionId::new("uncommitted-update"),
-            cwd: "/test".into(),
-        },
-        "pending",
-    );
-    let mut pending = None;
-    let result = SessionPersistence::finish_pending_append(
-        &mut pending,
-        notification,
-        Err(crate::session::storage::AppendUpdateError::NotCommitted(
-            io::Error::other("append failed"),
-        )),
-    );
-    assert!(result.is_err());
-    assert!(pending.is_some());
+#[tokio::test]
+async fn actor_retries_precommit_failure_without_dropping_newer_update() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("retry-precommit-update"),
+        cwd: dir.path().to_string_lossy().into_owned(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_explicit_session_dir(
+        dir.path().to_path_buf(),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+
+    let updates_path = dir.path().join("updates.jsonl");
+    std::fs::create_dir(&updates_path).unwrap();
+    let actor = test_actor(info.clone(), storage.clone());
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::Update(neutral_update(&info, "before")))
+        .unwrap();
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::Update(thought_update(&info, "after")))
+        .unwrap();
+    let (first_ack, first_flush) = tokio::sync::oneshot::channel();
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::FlushAndAck {
+            respond_to: first_ack,
+        })
+        .unwrap();
+    first_flush.await.unwrap();
+
+    std::fs::remove_dir(&updates_path).unwrap();
+    let (second_ack, second_flush) = tokio::sync::oneshot::channel();
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::FlushAndAck {
+            respond_to: second_ack,
+        })
+        .unwrap();
+    second_flush.await.unwrap();
+
+    let updates = storage.load_session(&info).await.unwrap().updates;
+    let texts = updates
+        .iter()
+        .filter_map(|update| {
+            let SessionUpdate::Acp(notification) = update else {
+                return None;
+            };
+            let (kind, chunk) = match &notification.update {
+                acp::SessionUpdate::AgentMessageChunk(chunk) => ("message", chunk),
+                acp::SessionUpdate::AgentThoughtChunk(chunk) => ("thought", chunk),
+                _ => return None,
+            };
+            let acp::ContentBlock::Text(text) = &chunk.content else {
+                return None;
+            };
+            Some(format!("{kind}:{}", text.text))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["message:before", "thought:after"]);
+    actor.stop().await;
 }
 
 #[tokio::test]
