@@ -51,6 +51,20 @@ pub struct SchedulerCreateInput {
     )]
     pub durable: Option<bool>,
 
+    /// Compatibility option for tasks that require the main conversation's
+    /// accumulated context. New recurring tasks otherwise run in background
+    /// loop subagents by default.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::schema::deserialize_lenient_option_bool"
+    )]
+    #[schemars(
+        description = "Run each fire as a main-conversation turn instead of a background \
+                       subagent; set true only when runs need the conversation's context. \
+                       Default: false. Create-only: ignored with task_id"
+    )]
+    pub foreground: Option<bool>,
+
     /// Whether to fire immediately on creation. Default false (wait for the
     /// first interval — a "scheduled" task should not run on creation unless
     /// explicitly asked to).
@@ -94,6 +108,8 @@ impl crate::types::tool_metadata::ToolMetadata for SchedulerCreateTool {
 
     fn description_template(&self) -> &str {
         r#"Create a scheduled task that runs a prompt on a recurring interval, or update an existing one in place.
+
+New recurring tasks run as background subagents by default. Set foreground: true only for compatibility when each fire needs the main conversation's accumulated context.
 
 Set fire_immediately: true to also fire once on creation; by default the first run waits for the interval.
 
@@ -242,13 +258,14 @@ impl xai_tool_runtime::Tool for SchedulerCreateTool {
         })?;
 
         let durable = input.durable.unwrap_or(false);
-        let task = ScheduledTask::with_fire_immediately(
+        let mut task = ScheduledTask::with_fire_immediately(
             interval_secs,
             prompt,
             true,
             durable,
             input.fire_immediately,
         );
+        task.foreground = input.foreground.unwrap_or(false);
 
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let created = send_and_wait(
@@ -307,6 +324,14 @@ mod tests {
             .unwrap_or(0)
     }
 
+    async fn only_task(resources: &SharedResources) -> ScheduledTask {
+        let res = resources.lock().await;
+        res.get::<State<super::super::types::SchedulerState>>()
+            .and_then(|s| s.tasks.first())
+            .cloned()
+            .expect("one scheduled task")
+    }
+
     #[tokio::test]
     async fn create_requires_interval_and_prompt() {
         let (resources, cancel) = scheduler_resources();
@@ -345,6 +370,40 @@ mod tests {
             .expect_err("one-shot must be rejected");
         assert!(err.to_string().contains("sleep"), "steers to sleep: {err}");
         assert_eq!(task_count(&resources).await, 0);
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn new_recurring_tasks_are_background_by_default() {
+        let (resources, cancel) = scheduler_resources();
+
+        SchedulerCreateTool
+            .run(
+                test_ctx(resources.clone()),
+                input(serde_json::json!({"interval": "5m", "prompt": "check"})),
+            )
+            .await
+            .expect("create succeeds");
+
+        assert!(!only_task(&resources).await.foreground);
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn foreground_compatibility_option_is_explicit() {
+        let (resources, cancel) = scheduler_resources();
+
+        SchedulerCreateTool
+            .run(
+                test_ctx(resources.clone()),
+                input(serde_json::json!({
+                    "interval": "5m", "prompt": "check", "foreground": true
+                })),
+            )
+            .await
+            .expect("create succeeds");
+
+        assert!(only_task(&resources).await.foreground);
         cancel.cancel();
     }
 

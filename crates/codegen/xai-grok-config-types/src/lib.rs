@@ -586,6 +586,10 @@ pub struct RemoteSettings {
     /// When `Some(false)` or absent, error messages are unchanged.
     #[serde(default)]
     pub path_not_found_hints: Option<bool>,
+    /// When `Some(false)`, recurring scheduled tasks run as legacy
+    /// main-conversation turns instead of background loop subagents.
+    #[serde(default)]
+    pub scheduler_background_loops: Option<bool>,
     /// Remote enable tier for the per-tip contextual hints. Each field is a
     /// soft default for one tip: `Some(false)` disables, `Some(true)` enables,
     /// absent/null ⇒ client default (on). User config beats this tier.

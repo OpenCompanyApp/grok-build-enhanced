@@ -62,6 +62,134 @@ fn resolve_search_tool_enabled(
     env.or(config).or(managed).unwrap_or(true)
 }
 
+const ENV_SCHEDULER_BACKGROUND_LOOPS: &str = "GROK_SCHEDULER_BACKGROUND_LOOPS";
+
+fn scheduler_background_loops_from_toml(v: Option<&TomlValue>) -> Option<bool> {
+    v?.get("scheduler")?.get("background_loops")?.as_bool()
+}
+
+/// Resolve whether recurring scheduler fires run in background loop subagents.
+///
+/// Precedence: requirements > env (`GROK_SCHEDULER_BACKGROUND_LOOPS`) > user
+/// `config.toml` `[scheduler] background_loops` > managed layers > remote
+/// settings > default `true`.
+pub fn resolve_scheduler_background_loops(remote: Option<bool>) -> bool {
+    let requirements = crate::config::load_merged_requirements();
+    let layers = match crate::config::ConfigLayers::load() {
+        Ok(layers) => Some(layers),
+        Err(error) => {
+            tracing::warn!(%error, "scheduler_background_loops: failed to load config layers");
+            None
+        }
+    };
+    resolve_scheduler_background_loops_tiers(
+        requirements.as_ref(),
+        layers.as_ref().map(|layers| &layers.user),
+        layers.as_ref().map(|layers| &layers.managed),
+        layers.as_ref().map(|layers| &layers.system_managed),
+        remote,
+    )
+}
+
+fn resolve_scheduler_background_loops_tiers(
+    requirements: Option<&TomlValue>,
+    user: Option<&TomlValue>,
+    managed: Option<&TomlValue>,
+    system_managed: Option<&TomlValue>,
+    remote: Option<bool>,
+) -> bool {
+    use crate::agent::config::BoolFlag;
+    BoolFlag::env(ENV_SCHEDULER_BACKGROUND_LOOPS)
+        .requirement(scheduler_background_loops_from_toml(requirements))
+        .config(scheduler_background_loops_from_toml(user))
+        .managed(
+            scheduler_background_loops_from_toml(managed)
+                .or_else(|| scheduler_background_loops_from_toml(system_managed)),
+        )
+        .feature_flag(remote)
+        .default(true)
+        .resolve()
+        .value
+}
+
+#[cfg(test)]
+mod scheduler_background_loops_tests {
+    use super::{ENV_SCHEDULER_BACKGROUND_LOOPS, resolve_scheduler_background_loops_tiers};
+    use toml::Value as TomlValue;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        let guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe { std::env::remove_var(ENV_SCHEDULER_BACKGROUND_LOOPS) };
+        guard
+    }
+
+    fn config(enabled: bool) -> TomlValue {
+        toml::from_str(&format!("[scheduler]\nbackground_loops = {enabled}\n")).unwrap()
+    }
+
+    #[test]
+    fn defaults_on_and_remote_can_disable() {
+        let _guard = guard();
+        assert!(resolve_scheduler_background_loops_tiers(
+            None, None, None, None, None
+        ));
+        assert!(!resolve_scheduler_background_loops_tiers(
+            None,
+            None,
+            None,
+            None,
+            Some(false)
+        ));
+    }
+
+    #[test]
+    fn user_config_beats_remote() {
+        let _guard = guard();
+        assert!(resolve_scheduler_background_loops_tiers(
+            None,
+            Some(&config(true)),
+            None,
+            None,
+            Some(false)
+        ));
+        assert!(!resolve_scheduler_background_loops_tiers(
+            None,
+            Some(&config(false)),
+            None,
+            None,
+            Some(true)
+        ));
+    }
+
+    #[test]
+    fn requirements_and_environment_have_higher_precedence() {
+        let _guard = guard();
+        unsafe { std::env::set_var(ENV_SCHEDULER_BACKGROUND_LOOPS, "0") };
+        let environment_off = resolve_scheduler_background_loops_tiers(
+            None,
+            Some(&config(true)),
+            None,
+            None,
+            Some(true),
+        );
+        unsafe { std::env::set_var(ENV_SCHEDULER_BACKGROUND_LOOPS, "1") };
+        let requirement_off = resolve_scheduler_background_loops_tiers(
+            Some(&config(false)),
+            Some(&config(true)),
+            None,
+            None,
+            Some(true),
+        );
+        unsafe { std::env::remove_var(ENV_SCHEDULER_BACKGROUND_LOOPS) };
+        assert!(!environment_off);
+        assert!(!requirement_off);
+    }
+}
+
 /// Env override for `[toolset.ask_user_question] timeout_enabled` (parsed by
 /// the shared [`xai_grok_config::env_bool`] via `BoolFlag`). The secs env var
 /// lives in the tools crate (`RESPONSE_TIMEOUT_ENV`), parsed once there.

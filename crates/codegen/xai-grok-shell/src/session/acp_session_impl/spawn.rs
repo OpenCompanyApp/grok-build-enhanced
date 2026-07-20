@@ -1179,6 +1179,11 @@ pub(crate) async fn spawn_session_actor(
         session_id_str: session_info.id.0.to_string(),
         respect_gitignore,
         path_not_found_hints,
+        scheduler_background_loops: crate::util::config::resolve_scheduler_background_loops(
+            remote_settings
+                .as_ref()
+                .and_then(|settings| settings.scheduler_background_loops),
+        ),
         mcp_state: mcp_state.clone(),
         managed_gateway_tool_client: managed_gateway_tool_client.clone(),
         is_non_interactive: startup_hints.non_interactive,

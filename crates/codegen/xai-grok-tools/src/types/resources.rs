@@ -652,6 +652,19 @@ impl Default for RespectGitignore {
 /// Default `false`. Hosts may enable this via remote config or local settings.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PathNotFoundHints(pub bool);
+/// Whether recurring scheduler fires execute as background loop subagents.
+///
+/// `false` is a compatibility kill switch that forces all fires onto the
+/// legacy main-conversation path. It is resolved from requirements, the
+/// `GROK_SCHEDULER_BACKGROUND_LOOPS` environment variable, local/managed
+/// `[scheduler] background_loops` config, and remote settings.
+#[derive(Debug, Clone, Copy)]
+pub struct SchedulerBackgroundLoops(pub bool);
+impl Default for SchedulerBackgroundLoops {
+    fn default() -> Self {
+        Self(true)
+    }
+}
 /// Map of canonical tool names → model-facing tool names.
 #[derive(Debug, Clone, Default)]
 pub struct ToolNameMapping(pub HashMap<String, String>);

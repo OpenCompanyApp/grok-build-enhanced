@@ -139,6 +139,7 @@ pub(crate) struct AgentRebuildSpec {
     pub session_id_str: String,
     pub respect_gitignore: bool,
     pub path_not_found_hints: bool,
+    pub scheduler_background_loops: bool,
     pub mcp_state: Arc<tokio::sync::Mutex<crate::session::mcp_servers::McpState>>,
     pub managed_gateway_tool_client:
         Option<xai_grok_tools::types::resources::ManagedGatewayToolClient>,
@@ -237,6 +238,7 @@ impl AgentRebuildSpec {
             session_id_str,
             respect_gitignore,
             path_not_found_hints,
+            scheduler_background_loops,
             mcp_state,
             managed_gateway_tool_client,
             is_non_interactive,
@@ -375,6 +377,12 @@ impl AgentRebuildSpec {
                 *path_not_found_hints,
             ))
             .await;
+        agent
+            .tool_bridge()
+            .update_resource(xai_grok_tools::types::resources::SchedulerBackgroundLoops(
+                *scheduler_background_loops,
+            ))
+            .await;
         if let Some(client) = managed_gateway_tool_client.clone() {
             agent.tool_bridge().update_resource(client).await;
         }
@@ -447,6 +455,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         session_id_str: "test-session".to_string(),
         respect_gitignore: false,
         path_not_found_hints: false,
+        scheduler_background_loops: true,
         mcp_state: Arc::new(tokio::sync::Mutex::new(
             crate::session::mcp_servers::McpState::new(vec![]),
         )),
