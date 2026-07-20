@@ -442,6 +442,14 @@ pub struct FeedbackSubmission {
     /// Backend URL linking this feedback to its server-side session log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unified_log_url: Option<String>,
+
+    /// Client-reported display name; unverified and never used for authorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
+
+    /// Client-reported email; unverified and never used for authorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_email: Option<String>,
 }
 
 impl FeedbackSubmission {
@@ -460,8 +468,8 @@ impl FeedbackSubmission {
         s
     }
 
-    /// Remove session context and model metadata, preserving only the
-    /// user's rating/text and essential identifiers (session_id, client_type).
+    /// Remove session context and model metadata while preserving the user's
+    /// rating/text, essential identifiers, and optional submitter identity.
     pub fn strip_metadata(&mut self) {
         self.model_id = None;
         self.resolved_model_id = None;
@@ -1691,6 +1699,60 @@ pub struct SessionTurnDeltaResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feedback_author_identity_defaults_to_absent_and_is_omitted() {
+        let submission = FeedbackSubmission::default();
+
+        let serialized = serde_json::to_value(&submission).unwrap();
+
+        assert_eq!(submission.author_name, None);
+        assert_eq!(submission.author_email, None);
+        assert!(serialized.get("authorName").is_none());
+        assert!(serialized.get("authorEmail").is_none());
+    }
+
+    #[test]
+    fn feedback_author_identity_uses_camel_case_wire_names() {
+        let submission: FeedbackSubmission = serde_json::from_value(serde_json::json!({
+            "sessionId": "session-1",
+            "clientType": "agent",
+            "feedbackType": "rating",
+            "authorName": "Example Author",
+            "authorEmail": "author@example.invalid"
+        }))
+        .unwrap();
+
+        assert_eq!(submission.author_name.as_deref(), Some("Example Author"));
+        assert_eq!(
+            submission.author_email.as_deref(),
+            Some("author@example.invalid")
+        );
+        let serialized = serde_json::to_value(&submission).unwrap();
+        assert_eq!(serialized["authorName"], "Example Author");
+        assert_eq!(serialized["authorEmail"], "author@example.invalid");
+    }
+
+    #[test]
+    fn strip_metadata_preserves_feedback_author_identity() {
+        let mut submission = FeedbackSubmission {
+            author_name: Some("Example Author".into()),
+            author_email: Some("author@example.invalid".into()),
+            model_id: Some("model".into()),
+            metadata: Some(serde_json::json!({"private": "context"})),
+            ..Default::default()
+        };
+
+        submission.strip_metadata();
+
+        assert_eq!(submission.author_name.as_deref(), Some("Example Author"));
+        assert_eq!(
+            submission.author_email.as_deref(),
+            Some("author@example.invalid")
+        );
+        assert_eq!(submission.model_id, None);
+        assert_eq!(submission.metadata, None);
+    }
 
     /// Verify backward compatibility: JSON from old agents (no ITL fields)
     /// deserializes cleanly, and new agents' ITL fields are also parsed.
