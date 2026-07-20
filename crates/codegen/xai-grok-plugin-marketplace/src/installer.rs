@@ -539,7 +539,7 @@ fn clone_repo_to_path(
     })?;
     if !output.status.success() {
         let _ = remove_path_if_exists(target);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = git_install::redact_git_output(&output.stderr);
         return Err(InstallError::InstallFailed {
             detail: format!(
                 "git clone failed (exit {}):\n{stderr}",
@@ -595,7 +595,7 @@ fn run_git_in_capture(cwd: &Path, args: &[&str]) -> Result<std::process::Output,
         .output()
         .map_err(|e| format!("failed to run git {}: {e}", args.first().unwrap_or(&"")))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = git_install::redact_git_output(&output.stderr);
         return Err(format!(
             "git {} failed (exit {}):\n{stderr}",
             args.first().unwrap_or(&""),

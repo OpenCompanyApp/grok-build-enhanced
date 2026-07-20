@@ -169,6 +169,17 @@ pub fn validate_git_sha(sha: &str) -> Result<&str, String> {
     }
 }
 
+/// Redact credentials and known secret shapes before a Git URL or subprocess
+/// diagnostic is logged, displayed, or stored in an error.
+pub fn redact_git_diagnostic(value: &str) -> String {
+    xai_grok_secrets::redact_secrets(value).into_owned()
+}
+
+/// Lossily decode and redact Git subprocess output before diagnostics use it.
+pub fn redact_git_output(value: &[u8]) -> String {
+    redact_git_diagnostic(&String::from_utf8_lossy(value))
+}
+
 /// Enforce the immutable-revision policy before fetching remote plugin code.
 pub fn ensure_pinned(
     require_sha: bool,
@@ -182,15 +193,14 @@ pub fn ensure_pinned(
     if sha.map(str::trim).is_some_and(is_full_commit_sha) {
         return Ok(());
     }
+    let plugin = redact_git_diagnostic(plugin);
+    let url = redact_git_diagnostic(url);
     tracing::warn!(
-        plugin,
-        url,
+        plugin = %plugin,
+        url = %url,
         "refusing unpinned remote plugin code (require_sha)"
     );
-    Err(InstallError::UnpinnedRemoteRefused {
-        plugin: plugin.to_owned(),
-        url: url.to_owned(),
-    })
+    Err(InstallError::UnpinnedRemoteRefused { plugin, url })
 }
 
 /// Prefer an explicit SHA; if only `git_ref` is a full commit SHA, hoist it
@@ -418,14 +428,15 @@ fn clone_repo(
 
     cmd.arg("--").arg(url).arg(target);
 
-    tracing::info!(url, target = %target.display(), "cloning plugin repo");
+    let display_url = redact_git_diagnostic(url);
+    tracing::info!(url = %display_url, target = %target.display(), "cloning plugin repo");
 
     let output = cmd.output().map_err(|e| InstallError::InstallFailed {
         detail: format!("failed to run git clone: {e}"),
     })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = redact_git_output(&output.stderr);
         // Clean up partial clone
         let _ = std::fs::remove_dir_all(target);
         return Err(InstallError::InstallFailed {
@@ -443,7 +454,8 @@ fn clone_repo_at_sha(url: &str, sha: &str, target: &Path) -> Result<(), InstallE
     let url = validate_git_url(url).map_err(|detail| InstallError::InstallFailed { detail })?;
     let sha = validate_git_sha(sha).map_err(|detail| InstallError::InstallFailed { detail })?;
 
-    tracing::info!(url, sha, target = %target.display(), "cloning plugin repo at SHA");
+    let display_url = redact_git_diagnostic(url);
+    tracing::info!(url = %display_url, sha, target = %target.display(), "cloning plugin repo at SHA");
 
     std::fs::create_dir_all(target).map_err(|e| InstallError::Io {
         path: target.to_path_buf(),
@@ -489,7 +501,7 @@ fn run_git_in_capture(cwd: &Path, args: &[&str]) -> Result<std::process::Output,
         .output()
         .map_err(|e| format!("failed to run git {}: {e}", args.first().unwrap_or(&"")))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = redact_git_output(&output.stderr);
         return Err(format!(
             "git {} failed (exit {}):\n{stderr}",
             args.first().unwrap_or(&""),
@@ -750,7 +762,7 @@ pub fn update_repo(
             })?;
 
             if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = redact_git_output(&output.stderr);
                 return Err(InstallError::InstallFailed {
                     detail: format!(
                         "git pull failed (exit {}):\n{stderr}",
@@ -1373,6 +1385,80 @@ mod tests {
         for bad in ["", "  ", "--upload-pack=cmd", "bad\0value"] {
             assert!(validate_git_url(bad).is_err(), "URL {bad:?} must fail");
             assert!(validate_git_ref(bad).is_err(), "ref {bad:?} must fail");
+        }
+    }
+
+    #[test]
+    fn git_diagnostics_redact_url_credentials_and_preserve_repository_identity() {
+        let raw_url = "https://synthetic-user:synthetic-value@example.test/team/plugin.git?access_token=synthetic-query#synthetic-fragment";
+        let assert_safe = |diagnostic: &str| {
+            for secret in [
+                "synthetic-user",
+                "synthetic-value",
+                "synthetic-query",
+                "synthetic-fragment",
+            ] {
+                assert!(!diagnostic.contains(secret));
+            }
+            assert!(diagnostic.contains("example.test/team/plugin.git"));
+        };
+
+        let redacted_url = redact_git_diagnostic(raw_url);
+        assert_safe(&redacted_url);
+        assert!(redacted_url.contains("access_token="));
+
+        let output = redact_git_output(format!("fatal: unable to access '{raw_url}'").as_bytes());
+        assert_safe(&output);
+    }
+
+    #[test]
+    fn unpinned_refusal_redacts_default_url_label_in_all_error_surfaces() {
+        let raw_url = "https://synthetic-user:synthetic-value@example.test/team/plugin.git?access_token=synthetic-query#synthetic-fragment";
+        let root = tempfile::tempdir().unwrap();
+        let install_dir = root.path().join("installed-plugins");
+        let registry = InstallRegistry::empty(install_dir.clone());
+        let source = InstallSource::Git {
+            url: raw_url.to_owned(),
+            git_ref: None,
+            git_sha: None,
+            subdir: None,
+        };
+
+        let error = match install_from_source(&source, &registry, true) {
+            Err(error) => error,
+            Ok(_) => panic!("expected unpinned install refusal"),
+        };
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        for diagnostic in [&display, &debug] {
+            for secret in [
+                "synthetic-user",
+                "synthetic-value",
+                "synthetic-query",
+                "synthetic-fragment",
+            ] {
+                assert!(!diagnostic.contains(secret));
+            }
+            assert!(diagnostic.contains("example.test/team/plugin.git"));
+        }
+
+        match error {
+            InstallError::UnpinnedRemoteRefused { plugin, url } => {
+                assert_eq!(plugin, url);
+                assert!(plugin.contains("example.test/team/plugin.git"));
+                assert!(!plugin.contains("synthetic-user"));
+                assert!(!plugin.contains("synthetic-value"));
+            }
+            other => panic!("expected UnpinnedRemoteRefused, got {other:?}"),
+        }
+        assert!(!install_dir.exists());
+
+        match ensure_pinned(true, None, "catalog-plugin", raw_url).unwrap_err() {
+            InstallError::UnpinnedRemoteRefused { plugin, url } => {
+                assert_eq!(plugin, "catalog-plugin");
+                assert!(url.contains("example.test/team/plugin.git"));
+            }
+            other => panic!("expected UnpinnedRemoteRefused, got {other:?}"),
         }
     }
 

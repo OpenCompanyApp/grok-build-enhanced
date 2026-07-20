@@ -339,7 +339,11 @@ pub enum InstallError {
          marketplace.require_sha / GROK_MARKETPLACE_REQUIRE_SHA is enabled and \
          no full commit SHA (40/64 hex) is pinned"
     )]
-    UnpinnedRemoteRefused { plugin: String, url: String },
+    UnpinnedRemoteRefused {
+        plugin: String,
+        /// Credential-redacted URL retained only for safe display/debug output.
+        url: String,
+    },
 
     #[error("install failed: {detail}")]
     InstallFailed { detail: String },

@@ -13,6 +13,10 @@ use crate::agent::MvpAgent;
 
 type ExtResult = Result<acp::ExtResponse, acp::Error>;
 
+fn redact_git_diagnostic(value: &str) -> String {
+    xai_grok_agent::plugins::git_install::redact_git_diagnostic(value)
+}
+
 fn load_filtered_marketplace_sources() -> Vec<xai_grok_plugin_marketplace::MarketplaceSource> {
     crate::plugin::load_filtered_marketplace_sources()
 }
@@ -31,13 +35,15 @@ async fn handle_list(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let source_names: Vec<String> = sources
         .iter()
         .map(|s| {
-            let url = match &s.kind {
-                xai_grok_plugin_marketplace::SourceKind::Git { url, .. } => url.as_str(),
+            let display = match &s.kind {
+                xai_grok_plugin_marketplace::SourceKind::Git { url, .. } => {
+                    redact_git_diagnostic(url)
+                }
                 xai_grok_plugin_marketplace::SourceKind::Local { path } => {
-                    path.to_str().unwrap_or("?")
+                    path.to_str().unwrap_or("?").to_owned()
                 }
             };
-            format!("{}={}", s.name, url)
+            format!("{}={display}", s.name)
         })
         .collect();
     xai_grok_telemetry::unified_log::info(
@@ -213,7 +219,10 @@ async fn handle_update(
         None => {
             return ActionOutcome {
                 status: OutcomeStatus::NotFound,
-                message: format!("Marketplace source not found: {source_url_or_path}"),
+                message: format!(
+                    "Marketplace source not found: {}",
+                    redact_git_diagnostic(source_url_or_path)
+                ),
                 requires_reload: false,
                 requires_restart: false,
             };
@@ -368,7 +377,10 @@ async fn handle_install(
         None => {
             return ActionOutcome {
                 status: OutcomeStatus::NotFound,
-                message: format!("Marketplace source not found: {source_url_or_path}"),
+                message: format!(
+                    "Marketplace source not found: {}",
+                    redact_git_diagnostic(source_url_or_path)
+                ),
                 requires_reload: false,
                 requires_restart: false,
             };
@@ -773,7 +785,7 @@ fn scan_source(
                         "scan_source: git sync done",
                         None,
                         Some(serde_json::json!({
-                            "url": url,
+                            "url": redact_git_diagnostic(url),
                             "git_sync_ms": t_git.elapsed().as_millis() as u64,
                         })),
                     );
@@ -804,7 +816,10 @@ fn scan_source(
                     source_kind,
                     source_url_or_path: source_url_or_path.clone(),
                     plugins: Vec::new(),
-                    error: Some(format!("Directory not found: {source_url_or_path}")),
+                    error: Some(format!(
+                        "Directory not found: {}",
+                        redact_git_diagnostic(&source_url_or_path)
+                    )),
                 },
                 false,
             );
@@ -924,6 +939,10 @@ async fn handle_add_source(url: &str) -> xai_hooks_plugins_types::ActionOutcome 
         MarketplaceAddInput::GitUrl(u) => u.clone(),
         MarketplaceAddInput::LocalPath(p) => p.display().to_string(),
     };
+    let display_identity = match &input {
+        MarketplaceAddInput::GitUrl(u) => redact_git_diagnostic(u),
+        MarketplaceAddInput::LocalPath(_) => identity.clone(),
+    };
 
     // Local paths never match the git-URL allowlist, so a restricted
     // strictKnownMarketplaces policy blocks them — intentionally fail-closed.
@@ -958,7 +977,7 @@ async fn handle_add_source(url: &str) -> xai_hooks_plugins_types::ActionOutcome 
     if already_configured {
         return ActionOutcome {
             status: OutcomeStatus::ValidationError,
-            message: format!("Marketplace source already configured: {identity}"),
+            message: format!("Marketplace source already configured: {display_identity}"),
             requires_reload: false,
             requires_restart: false,
         };
@@ -1009,7 +1028,7 @@ async fn handle_add_source(url: &str) -> xai_hooks_plugins_types::ActionOutcome 
 
     ActionOutcome {
         status: OutcomeStatus::Success,
-        message: format!("Added marketplace source: {name} ({identity})"),
+        message: format!("Added marketplace source: {name} ({display_identity})"),
         requires_reload: true,
         requires_restart: false,
     }
@@ -1122,6 +1141,7 @@ fn remove_source_locked(source_url_or_path: &str) -> xai_hooks_plugins_types::Ac
     use crate::plugin;
     use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
+    let display_source = redact_git_diagnostic(source_url_or_path);
     let grok_home = xai_grok_config::grok_home();
     let _flock = acquire_init_lock(&grok_home).ok();
 
@@ -1173,7 +1193,7 @@ fn remove_source_locked(source_url_or_path: &str) -> xai_hooks_plugins_types::Ac
     if !removed_from_config && !plugin::try_remove_source_from_json_files(source_url_or_path) {
         return ActionOutcome {
             status: OutcomeStatus::NotFound,
-            message: format!("Source not found in config: {source_url_or_path}"),
+            message: format!("Source not found in config: {display_source}"),
             requires_reload: false,
             requires_restart: false,
         };
@@ -1193,7 +1213,7 @@ fn remove_source_locked(source_url_or_path: &str) -> xai_hooks_plugins_types::Ac
     }
 
     let msg = if uninstalled.is_empty() {
-        format!("Removed marketplace source: {source_url_or_path}")
+        format!("Removed marketplace source: {display_source}")
     } else {
         format!(
             "Removed marketplace source and uninstalled {} plugin(s): {}",

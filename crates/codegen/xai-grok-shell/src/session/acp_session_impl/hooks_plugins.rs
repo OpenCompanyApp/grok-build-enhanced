@@ -304,6 +304,8 @@ impl SessionActor {
                         requires_restart: false,
                     };
                 }
+                let display_source =
+                    xai_grok_agent::plugins::git_install::redact_git_diagnostic(&source);
                 let cwd = std::path::Path::new(&self.session_info.cwd);
                 let install_source =
                     xai_grok_agent::plugins::git_install::parse_install_source(&source, cwd);
@@ -327,7 +329,7 @@ impl SessionActor {
                             crate::config::post_install_plugin(&result.repo_key);
                         let count = names.len();
                         let mut msg = format!(
-                            "Installed {count} plugin(s) from {source}: {}",
+                            "Installed {count} plugin(s) from {display_source}: {}",
                             names.join(", ")
                         );
                         for w in &post_warnings {

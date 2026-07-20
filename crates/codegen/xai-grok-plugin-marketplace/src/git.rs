@@ -246,9 +246,10 @@ fn clone_with_git2(url: &str, branch: Option<&str>, dest: &Path) -> Result<(), S
         builder.branch(b);
     }
 
-    builder
-        .clone(url, dest)
-        .map_err(|e| format!("git2 clone failed: {e}"))?;
+    builder.clone(url, dest).map_err(|e| {
+        let detail = xai_grok_agent::plugins::git_install::redact_git_diagnostic(&e.to_string());
+        format!("git2 clone failed: {detail}")
+    })?;
     Ok(())
 }
 
@@ -292,7 +293,7 @@ fn clone_with_cli(url: &str, branch: Option<&str>, dest: &Path) -> Result<(), St
         .output()
         .map_err(|e| format!("failed to run git clone: {e}"))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = xai_grok_agent::plugins::git_install::redact_git_output(&output.stderr);
         return Err(format!("git clone failed: {stderr}"));
     }
     Ok(())
@@ -320,7 +321,7 @@ fn fetch_reset_cached_repo(repo_dir: &Path, branch: Option<&str>) -> Result<(), 
         .map_err(|e| format!("failed to run git fetch: {e}"))?;
 
     if !fetch_output.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch_output.stderr);
+        let stderr = xai_grok_agent::plugins::git_install::redact_git_output(&fetch_output.stderr);
         return Err(format!("git fetch failed: {stderr}"));
     }
 
@@ -331,7 +332,8 @@ fn fetch_reset_cached_repo(repo_dir: &Path, branch: Option<&str>) -> Result<(), 
         .map_err(|e| format!("failed to run git checkout: {e}"))?;
 
     if !checkout_output.status.success() {
-        let stderr = String::from_utf8_lossy(&checkout_output.stderr);
+        let stderr =
+            xai_grok_agent::plugins::git_install::redact_git_output(&checkout_output.stderr);
         return Err(format!("git checkout failed: {stderr}"));
     }
 
@@ -342,7 +344,7 @@ fn fetch_reset_cached_repo(repo_dir: &Path, branch: Option<&str>) -> Result<(), 
         .map_err(|e| format!("failed to run git reset: {e}"))?;
 
     if !reset_output.status.success() {
-        let stderr = String::from_utf8_lossy(&reset_output.stderr);
+        let stderr = xai_grok_agent::plugins::git_install::redact_git_output(&reset_output.stderr);
         return Err(format!("git reset failed: {stderr}"));
     }
 

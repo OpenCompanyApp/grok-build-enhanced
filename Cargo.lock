@@ -13013,6 +13013,7 @@ dependencies = [
  "xai-grok-config",
  "xai-grok-hooks",
  "xai-grok-sampling-types",
+ "xai-grok-secrets",
  "xai-grok-tools",
  "xai-token-estimation",
  "xai-tool-types",

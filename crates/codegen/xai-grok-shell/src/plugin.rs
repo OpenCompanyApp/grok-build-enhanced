@@ -740,9 +740,11 @@ fn filter_sources_by_allowlist(
                 if allowlist.is_url_allowed(url) {
                     true
                 } else {
+                    let display_url =
+                        xai_grok_agent::plugins::git_install::redact_git_diagnostic(url);
                     tracing::warn!(
                         name = %source.name,
-                        url,
+                        url = %display_url,
                         reason = %allowlist.block_reason(),
                         "Marketplace source blocked by allowlist"
                     );
