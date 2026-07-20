@@ -286,11 +286,9 @@ async fn sampler_401_with_api_key_auth_skips_refresh_and_surfaces_error() {
         .await;
 }
 
-/// Per-turn pre-flight refresh dispatches on `AuthManager`'s
-/// `TokenType`, not `creds.auth_type`. Pins that a stale
-/// When `creds.auth_type` is `ApiKey` (BYOK model), the pre-flight
-/// refresh must NOT fire — the model's own API key must not be
-/// overwritten by the session JWT.
+/// Per-turn pre-flight refresh must not fire when `creds.auth_type` is
+/// `ApiKey` (a BYOK model): the model's own API key must not be overwritten
+/// by the session JWT.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn pre_flight_refresh_skips_api_key_auth_type() {
@@ -1035,12 +1033,8 @@ async fn no_legacy_hint_for_oidc_auth() {
         .await;
 }
 
-// Regression: a live OIDC session whose `creds.auth_type` has
-// transiently collapsed to `ApiKey` (session-token cache miss + `XAI_API_KEY`)
-// must still drive the live bearer resolver, be eligible for 401 retry, and get
-// its stale `api_key` healed — the gate keys off the stable `auth_method_id`,
-// not the collapsible `auth_type`.
-
+// Regression group: a live session whose `auth_type` transiently reads `ApiKey`
+// must still recover, because the gate keys off the stable `auth_method_id`.
 #[test]
 fn session_token_auth_gate_truth_table() {
     use crate::agent::auth_method::{ModelByok, session_token_auth_gate as gate};
@@ -1294,13 +1288,13 @@ async fn session_born_on_api_key_recovers_after_oidc_login_without_restart() {
         .await;
 }
 
-// Per-model BYOK memo (`SessionActor::model_auth_facts`): a definite cached
+// Per-model BYOK memo (`SessionActor::model_auth_memo`): a definite cached
 // status is served without recomputing, and the memo keys on `model_id`.
 
 /// The cache-hit branch is what lets a later config parse failure (`Unknown`)
 /// fall back to the last-known-good status.
 #[tokio::test(flavor = "current_thread")]
-async fn model_auth_facts_memo_serves_cached_status_and_keys_on_model() {
+async fn model_auth_memo_serves_cached_status_and_keys_on_model() {
     use crate::agent::auth_method::ModelByok;
     use crate::agent::config::ModelAuthFacts;
     let local = tokio::task::LocalSet::new();
@@ -1314,13 +1308,16 @@ async fn model_auth_facts_memo_serves_cached_status_and_keys_on_model() {
             )
             .await;
 
-            actor.model_auth_facts.replace(Some((
-                "model-a".to_string(),
-                ModelAuthFacts {
-                    byok: ModelByok::Byok,
-                    auth_scheme: Default::default(),
-                },
-            )));
+            actor
+                .model_auth_memo
+                .replace(Some(crate::session::acp_session::ModelAuthMemo {
+                    model_id: "model-a".to_string(),
+                    facts: ModelAuthFacts {
+                        byok: ModelByok::Byok,
+                        auth_scheme: Default::default(),
+                    },
+                    provider: None,
+                }));
 
             // Cache hit: served without consulting config.
             assert_eq!(actor.model_auth_facts("model-a").byok, ModelByok::Byok);
@@ -1359,13 +1356,16 @@ async fn reconstruct_full_config_drops_cross_provider_custom_credential() {
             sampling.model = "custom-model".to_owned();
             sampling.base_url = "https://custom.example/v1".to_owned();
             actor.chat_state_handle.update_sampling_config(sampling);
-            actor.model_auth_facts.replace(Some((
-                "custom-model".to_owned(),
-                ModelAuthFacts {
-                    byok: ModelByok::Byok,
-                    auth_scheme: Default::default(),
-                },
-            )));
+            actor
+                .model_auth_memo
+                .replace(Some(crate::session::acp_session::ModelAuthMemo {
+                    model_id: "custom-model".to_owned(),
+                    facts: ModelAuthFacts {
+                        byok: ModelByok::Byok,
+                        auth_scheme: Default::default(),
+                    },
+                    provider: None,
+                }));
 
             let cfg = actor
                 .reconstruct_full_config()
@@ -1376,6 +1376,90 @@ async fn reconstruct_full_config_drops_cross_provider_custom_credential() {
             assert_eq!(cfg.credential_source, CredentialSourceId::Unspecified);
             assert!(cfg.api_key.is_none());
             assert!(cfg.bearer_resolver.is_none());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reconstruct_full_config_marks_a_cached_helper_key_as_rotating() {
+    use xai_grok_sampling_types::CredentialSourceId;
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let provider = crate::auth::AuthProviderRef::new(
+                "test-reconstruct-rotating".to_owned(),
+                crate::auth::AuthProviderConfig {
+                    command: "printf rotating-token".to_owned(),
+                    args: None,
+                    token_ttl_secs: Some(3600),
+                    timeout_secs: None,
+                },
+            );
+            let token = provider
+                .ensure_fresh_token(None)
+                .await
+                .rotated()
+                .expect("provider mints a token");
+            let (actor, _rx) =
+                make_actor_with_auth_and_credentials(None, xai_chat_state::AuthType::ApiKey, token)
+                    .await;
+            seed_provider_memo(&actor, provider).await;
+
+            let cfg = actor
+                .reconstruct_full_config()
+                .await
+                .expect("custom provider binding should succeed");
+
+            assert_eq!(
+                cfg.credential_source,
+                CredentialSourceId::RotatingAuthProvider
+            );
+            assert_eq!(cfg.api_key.as_deref(), Some("rotating-token"));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reconstruct_full_config_keeps_rotating_source_for_a_short_lived_token() {
+    use xai_grok_sampling_types::CredentialSourceId;
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let provider = crate::auth::AuthProviderRef::new(
+                "test-reconstruct-short-lived".to_owned(),
+                crate::auth::AuthProviderConfig {
+                    command: "printf short-lived-token".to_owned(),
+                    args: None,
+                    token_ttl_secs: Some(1),
+                    timeout_secs: None,
+                },
+            );
+            let token = provider
+                .ensure_fresh_token(None)
+                .await
+                .rotated()
+                .expect("provider mints a token");
+            assert_eq!(
+                provider.cached_token(),
+                None,
+                "the cache read is stale immediately"
+            );
+            let (actor, _rx) =
+                make_actor_with_auth_and_credentials(None, xai_chat_state::AuthType::ApiKey, token)
+                    .await;
+            seed_provider_memo(&actor, provider).await;
+
+            let cfg = actor
+                .reconstruct_full_config()
+                .await
+                .expect("custom provider binding should succeed");
+
+            assert_eq!(
+                cfg.credential_source,
+                CredentialSourceId::RotatingAuthProvider
+            );
         })
         .await;
 }
@@ -1404,13 +1488,16 @@ async fn reconstruct_full_config_no_bearer_resolver_for_byok_model_on_session_me
                 .await
                 .map(|c| c.model)
                 .unwrap_or_default();
-            actor.model_auth_facts.replace(Some((
-                model,
-                ModelAuthFacts {
-                    byok: ModelByok::Byok,
-                    auth_scheme: Default::default(),
-                },
-            )));
+            actor
+                .model_auth_memo
+                .replace(Some(crate::session::acp_session::ModelAuthMemo {
+                    model_id: model,
+                    facts: ModelAuthFacts {
+                        byok: ModelByok::Byok,
+                        auth_scheme: Default::default(),
+                    },
+                    provider: None,
+                }));
 
             let cfg = actor
                 .reconstruct_full_config()
@@ -1452,13 +1539,16 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 .map(|c| c.model)
                 .unwrap_or_default();
 
-            actor.model_auth_facts.replace(Some((
-                model.clone(),
-                ModelAuthFacts {
-                    byok: ModelByok::NotByok,
-                    auth_scheme: Default::default(),
-                },
-            )));
+            actor
+                .model_auth_memo
+                .replace(Some(crate::session::acp_session::ModelAuthMemo {
+                    model_id: model.clone(),
+                    facts: ModelAuthFacts {
+                        byok: ModelByok::NotByok,
+                        auth_scheme: Default::default(),
+                    },
+                    provider: None,
+                }));
 
             // Switch to the same model_id, now a per-model BYOK model on a
             // third-party endpoint.
@@ -1504,9 +1594,343 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 .await;
 
             assert!(
-                actor.model_auth_facts.borrow().is_none(),
+                actor.model_auth_memo.borrow().is_none(),
                 "a model switch must invalidate the per-model BYOK memo so the next \
                  reconstruct recomputes under the current config"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn switching_to_xai_replaces_the_rotating_custom_provider_key() {
+    use xai_grok_sampling_types::{CredentialSourceId, ProviderId};
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider =
+                crate::auth::test_counting_provider("test-switch-provider-isolation", dir.path());
+            let token = provider
+                .ensure_fresh_token(None)
+                .await
+                .rotated()
+                .expect("provider mints a token");
+            let (actor, _rx) =
+                make_actor_with_auth_and_credentials(None, xai_chat_state::AuthType::ApiKey, token)
+                    .await;
+            seed_provider_memo(&actor, provider).await;
+            let xai = xai_grok_sampler::SamplerConfig {
+                provider: ProviderId::Xai,
+                credential_source: CredentialSourceId::StaticApiKey,
+                api_key: Some("xai-api-key".to_owned()),
+                base_url: "https://api.x.ai/v1".to_owned(),
+                model: "grok-first-party".to_owned(),
+                context_window: 256_000,
+                ..Default::default()
+            };
+
+            actor
+                .handle_set_session_model(xai, false, false, true, 85)
+                .await
+                .expect("model switch succeeds");
+
+            let credentials = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(credentials.provider, Some(ProviderId::Xai));
+            assert_eq!(credentials.api_key.as_deref(), Some("xai-api-key"));
+        })
+        .await;
+}
+
+use crate::auth::test_counting_provider as counting_provider;
+
+/// Seed one exact-route-bound custom-provider model without loading process
+/// config. Session tests use this to isolate the turn/auth recovery seam.
+async fn seed_provider_memo(actor: &Arc<SessionActor>, provider: crate::auth::AuthProviderRef) {
+    let mut sampling = actor
+        .chat_state_handle
+        .get_sampling_config()
+        .await
+        .expect("test actor has sampling config");
+    sampling.provider = xai_grok_sampling_types::ProviderId::Custom;
+    sampling.base_url = "https://auth-provider.test/v1".to_owned();
+    let model = sampling.model.clone();
+    actor.chat_state_handle.update_sampling_config(sampling);
+
+    let mut credentials = actor.chat_state_handle.get_credentials().await;
+    credentials.provider = Some(xai_grok_sampling_types::ProviderId::Custom);
+    actor.chat_state_handle.update_credentials(credentials);
+    actor
+        .model_auth_memo
+        .replace(Some(crate::session::acp_session::ModelAuthMemo {
+            model_id: model,
+            facts: crate::agent::config::ModelAuthFacts {
+                byok: crate::agent::auth_method::ModelByok::Byok,
+                auth_scheme: Default::default(),
+            },
+            provider: Some(provider),
+        }));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pre_turn_custom_provider_mints_without_refreshing_xai_session() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-preturn-exclusive", dir.path());
+            let called = Arc::new(AtomicBool::new(false));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysSucceedRefresher {
+                    called: called.clone(),
+                });
+            let (_dir, manager) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_method_and_credentials(
+                Some(manager),
+                "cached_token",
+                xai_chat_state::AuthType::SessionToken,
+                "foreign-session-token".to_owned(),
+            )
+            .await;
+            seed_provider_memo(&actor, provider).await;
+            let mut credentials = actor.chat_state_handle.get_credentials().await;
+            credentials.api_key = None;
+            actor.chat_state_handle.update_credentials(credentials);
+
+            actor
+                .refresh_token_if_expired()
+                .await
+                .expect("custom provider mint succeeds");
+
+            let credentials = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(
+                credentials.provider,
+                Some(xai_grok_sampling_types::ProviderId::Custom)
+            );
+            assert_eq!(credentials.api_key.as_deref(), Some("tok-1"));
+            assert_eq!(credentials.auth_type, xai_chat_state::AuthType::ApiKey);
+            assert!(
+                !called.load(Ordering::SeqCst),
+                "xAI session refresh must never run for custom provider auth"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_pre_turn_custom_provider_clears_stale_key_and_aborts() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let provider = crate::auth::AuthProviderRef::new(
+                "test-preturn-failure".to_owned(),
+                crate::auth::AuthProviderConfig {
+                    command: "exit 1".to_owned(),
+                    args: None,
+                    token_ttl_secs: None,
+                    timeout_secs: None,
+                },
+            );
+            let (actor, _rx) = make_actor_with_auth_and_credentials(
+                None,
+                xai_chat_state::AuthType::ApiKey,
+                "stale-custom-token".to_owned(),
+            )
+            .await;
+            seed_provider_memo(&actor, provider).await;
+
+            assert!(
+                actor.refresh_token_if_expired().await.is_err(),
+                "a failed helper must abort before sampling"
+            );
+            let credentials = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(
+                credentials.provider,
+                Some(xai_grok_sampling_types::ProviderId::Custom)
+            );
+            assert_eq!(
+                credentials.api_key, None,
+                "the stale bearer must be cleared"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pre_turn_custom_provider_rejects_a_changed_endpoint() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let provider = crate::auth::AuthProviderRef::new(
+                "test-preturn-route-mismatch".to_owned(),
+                crate::auth::AuthProviderConfig {
+                    command: "printf route-token".to_owned(),
+                    args: None,
+                    token_ttl_secs: Some(3600),
+                    timeout_secs: None,
+                },
+            );
+            let (actor, _rx) = make_actor_with_auth_and_credentials(
+                None,
+                xai_chat_state::AuthType::ApiKey,
+                "stale-custom-token".to_owned(),
+            )
+            .await;
+            seed_provider_memo(&actor, provider).await;
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor has sampling config");
+            sampling.base_url = "https://other-route.test/v1".to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+
+            let error = actor
+                .refresh_token_if_expired()
+                .await
+                .expect_err("the helper must not authenticate a different endpoint");
+
+            assert_eq!(error.code, acp::Error::auth_required().code);
+            assert_eq!(
+                actor.chat_state_handle.get_credentials().await.api_key,
+                None
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn custom_provider_401_with_no_key_mints_before_resubmission() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-custom-401-no-key", dir.path());
+            let (actor, _rx) = make_actor_with_auth_and_credentials(
+                None,
+                xai_chat_state::AuthType::ApiKey,
+                "placeholder".to_owned(),
+            )
+            .await;
+            seed_provider_memo(&actor, provider).await;
+            let mut credentials = actor.chat_state_handle.get_credentials().await;
+            credentials.api_key = None;
+            actor.chat_state_handle.update_credentials(credentials);
+
+            let result = actor.handle_sampling_failure(auth_error()).await;
+
+            assert!(matches!(
+                result,
+                Ok(SamplerFailureRecovery::RefreshAuthAndResubmit)
+            ));
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .as_deref(),
+                Some("tok-1")
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn custom_provider_401_remints_once_without_xai_recovery() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-custom-401", dir.path());
+            let token = provider.ensure_fresh_token(None).await.rotated().unwrap();
+            let called = Arc::new(AtomicBool::new(false));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysSucceedRefresher {
+                    called: called.clone(),
+                });
+            let (_dir, manager) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_method_and_credentials(
+                Some(manager),
+                "cached_token",
+                xai_chat_state::AuthType::SessionToken,
+                token,
+            )
+            .await;
+            seed_provider_memo(&actor, provider).await;
+            crate::auth::test_backdate_provider_mint(
+                "test-custom-401",
+                std::time::Duration::from_secs(60),
+            );
+
+            let result = actor.handle_sampling_failure(auth_error()).await;
+            assert!(matches!(
+                result,
+                Ok(SamplerFailureRecovery::RefreshAuthAndResubmit)
+            ));
+            assert!(!called.load(Ordering::SeqCst));
+            let credentials = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(credentials.api_key.as_deref(), Some("tok-2"));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_auth_kind_401_still_uses_custom_provider_recovery() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-custom-non-auth-401", dir.path());
+            let token = provider.ensure_fresh_token(None).await.rotated().unwrap();
+            let (actor, _rx) =
+                make_actor_with_auth_and_credentials(None, xai_chat_state::AuthType::ApiKey, token)
+                    .await;
+            seed_provider_memo(&actor, provider).await;
+            crate::auth::test_backdate_provider_mint(
+                "test-custom-non-auth-401",
+                std::time::Duration::from_secs(60),
+            );
+
+            let mut error = auth_error();
+            error.kind = xai_grok_sampler::SamplingErrorKind::Api;
+            let result = actor.handle_sampling_failure(error).await;
+            assert!(matches!(
+                result,
+                Ok(SamplerFailureRecovery::RefreshAuthAndResubmit)
+            ));
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .as_deref(),
+                Some("tok-2")
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fresh_rejected_custom_provider_token_surfaces_and_is_cleared() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-custom-fresh-guard", dir.path());
+            let token = provider.ensure_fresh_token(None).await.rotated().unwrap();
+            let (actor, _rx) =
+                make_actor_with_auth_and_credentials(None, xai_chat_state::AuthType::ApiKey, token)
+                    .await;
+            seed_provider_memo(&actor, provider).await;
+
+            assert!(actor.handle_sampling_failure(auth_error()).await.is_err());
+            assert_eq!(
+                actor.chat_state_handle.get_credentials().await.api_key,
+                None,
+                "a rejected bearer must not survive the terminal fresh-mint guard"
             );
         })
         .await;

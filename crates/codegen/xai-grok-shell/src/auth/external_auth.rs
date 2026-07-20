@@ -1,46 +1,12 @@
+use crate::auth::token_output::parse_token_output;
 use crate::auth::{AuthMode, GrokAuth};
 
-#[derive(serde::Deserialize)]
-pub(crate) struct ExternalAuthOutput {
-    pub access_token: String,
-    #[serde(default)]
-    pub refresh_token: Option<String>,
-    #[serde(default)]
-    pub expires_in: Option<u64>,
-}
-
-/// Parse process output (stdout) into a `GrokAuth`. Accepts bare token or JSON.
+/// Parse stdout into a session-credential `GrokAuth` using the same strict,
+/// control-character-safe token parser as named custom-model auth providers.
 pub(crate) fn parse_output(output: &std::process::Output) -> anyhow::Result<GrokAuth> {
-    if !output.status.success() {
-        anyhow::bail!("exited with {}", output.status);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if stdout.is_empty() {
-        anyhow::bail!("produced no output on stdout");
-    }
-
-    let (token, refresh_token, expires_at) =
-        if let Ok(parsed) = serde_json::from_str::<ExternalAuthOutput>(&stdout) {
-            tracing::debug!(
-                has_refresh_token = parsed.refresh_token.is_some(),
-                expires_in = ?parsed.expires_in,
-                "auth: parsed external provider output as JSON"
-            );
-            let expires_at = parsed
-                .expires_in
-                .map(|secs| chrono::Utc::now() + chrono::Duration::seconds(secs as i64));
-            (parsed.access_token, parsed.refresh_token, expires_at)
-        } else {
-            tracing::debug!(
-                stdout_len = stdout.len(),
-                "auth: treating output as bare token"
-            );
-            (stdout, None, None)
-        };
-
+    let parsed = parse_token_output(output)?;
     Ok(GrokAuth {
-        key: token,
+        key: parsed.access_token,
         auth_mode: AuthMode::External,
         create_time: chrono::Utc::now(),
         user_id: String::new(),
@@ -60,9 +26,9 @@ pub(crate) fn parse_output(output: &std::process::Output) -> anyhow::Result<Grok
         team_blocked_reasons: vec![],
         coding_data_retention_opt_out: crate::auth::default_coding_data_retention_opt_out(),
         has_grok_code_access: None,
-        refresh_token,
-        expires_at,
-        oidc_issuer: None,
+        refresh_token: parsed.refresh_token,
+        expires_at: parsed.expires_at,
+        oidc_issuer: parsed.issuer,
         oidc_client_id: None,
     })
 }
@@ -73,7 +39,11 @@ pub(crate) fn run_external_auth_sync(command: &str, is_refresh: bool) -> Option<
 
     let timeout_secs = if is_refresh { 5 } else { 60 };
 
-    tracing::info!(cmd = %command, is_refresh, timeout_secs, "auth: running external auth provider (sync)");
+    tracing::info!(
+        is_refresh,
+        timeout_secs,
+        "auth: running external auth provider (sync)"
+    );
 
     let mut cmd = Command::new("sh");
     cmd.args(["-c", command])
@@ -86,9 +56,10 @@ pub(crate) fn run_external_auth_sync(command: &str, is_refresh: bool) -> Option<
     }
     xai_grok_tools::util::detach_std_command(&mut cmd);
     cmd.envs(xai_grok_tools::util::pager_env());
-    let mut child = cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| {
-            tracing::warn!(error = %e, cmd = %command, "auth: failed to start external auth provider");
+            tracing::warn!(error = %e, "auth: failed to start external auth provider");
             e
         })
         .ok()?;
@@ -101,7 +72,6 @@ pub(crate) fn run_external_auth_sync(command: &str, is_refresh: bool) -> Option<
             Ok(None) => {
                 if start.elapsed() > timeout {
                     tracing::warn!(
-                        cmd = %command,
                         timeout_secs,
                         "auth: external auth provider timed out (likely needs interactive auth), killing"
                     );
@@ -170,14 +140,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_output_malformed_json_falls_back_to_bare() {
+    fn parse_output_json_shaped_but_invalid_is_err() {
         let output = std::process::Output {
             status: std::process::Command::new("true").status().unwrap(),
             stdout: b"{not valid json}".to_vec(),
             stderr: vec![],
         };
-        let auth = parse_output(&output).unwrap();
-        assert_eq!(auth.key, "{not valid json}");
+        assert!(parse_output(&output).is_err());
     }
 
     #[test]

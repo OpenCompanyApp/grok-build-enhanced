@@ -2462,6 +2462,7 @@ fn build_prefetched_map(
             info,
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: m.api_base_url.clone().or(api_base_url_override.clone()),
         };
         map.insert(key, entry);
@@ -2902,6 +2903,27 @@ pub(crate) fn resolve_default_model(
         (default_id, entry)
     };
 
+    // A rollout may select ordinary models, but it cannot newly activate a
+    // locally configured credential-helper command. Resolve the model that
+    // would have won without the campaign: the pre-campaign default when
+    // available, otherwise the normal first-model fallback. If that baseline
+    // is itself helper-backed, the local config already authorized its use.
+    let campaign_baseline = || -> (String, ModelEntry, config::ConfigSource) {
+        if let Some(previous) = cfg
+            .models
+            .pre_campaign_default
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            && let Some((key, entry)) = visible
+                .get_key_value(previous)
+                .or_else(|| visible.iter().find(|(_, entry)| entry.model == previous))
+        {
+            return (key.clone(), entry.clone(), config::ConfigSource::Config);
+        }
+        let (key, entry) = first_or_fallback();
+        (key, entry, config::ConfigSource::Default)
+    };
+
     match &model_pref {
         None => {
             let (key, first) = first_or_fallback();
@@ -2922,6 +2944,20 @@ pub(crate) fn resolve_default_model(
                 .or_else(|| candidates.iter().find(|(_, m)| m.model == pref.value));
 
             if let Some((key, entry)) = found {
+                let campaign_selected_helper = cfg.models.default_is_campaign_driven
+                    && matches!(pref.source, config::ConfigSource::Config)
+                    && entry.effective_auth_provider().is_some();
+                if campaign_selected_helper {
+                    let baseline = campaign_baseline();
+                    if baseline.0 != *key {
+                        tracing::warn!(
+                            campaign_model = %pref.value,
+                            fallback_model = %baseline.0,
+                            "campaign default cannot activate a local auth-provider helper; using the pre-campaign model"
+                        );
+                        return baseline;
+                    }
+                }
                 (key.clone(), entry.clone(), pref.source)
             } else {
                 if is_explicit {
@@ -4085,6 +4121,7 @@ mod tests {
             info: config::ModelInfo::fallback("fp-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         flagged.info.show_model_fingerprint = true;
@@ -4097,6 +4134,7 @@ mod tests {
                 info: config::ModelInfo::fallback("plain-model"),
                 api_key: None,
                 env_key: None,
+                auth_provider: None,
                 api_base_url: None,
             },
         );
@@ -4107,6 +4145,7 @@ mod tests {
             info: config::ModelInfo::fallback("enterprise-slug"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         custom.info.show_model_fingerprint = true;
@@ -4277,6 +4316,7 @@ mod tests {
                 info: config::ModelInfo::fallback("test-model"),
                 api_key: None,
                 env_key: None,
+                auth_provider: None,
                 api_base_url: None,
             },
         );
@@ -4331,6 +4371,7 @@ mod tests {
             info: config::ModelInfo::fallback("reasoning-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
@@ -4353,6 +4394,7 @@ mod tests {
             info: config::ModelInfo::fallback("plain-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
@@ -4375,6 +4417,7 @@ mod tests {
             info: config::ModelInfo::fallback("reasoning-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         legacy.info.provider = ProviderId::Xai;
@@ -4428,6 +4471,7 @@ mod tests {
             info: config::ModelInfo::fallback("grok-4.5"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         no_none.info.supports_reasoning_effort = true;
@@ -4446,6 +4490,7 @@ mod tests {
             info: config::ModelInfo::fallback("legacy-none"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         with_none.info.supports_reasoning_effort = true;
@@ -4552,6 +4597,7 @@ mod tests {
             info: config::ModelInfo::fallback("reasoning-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
@@ -4561,6 +4607,7 @@ mod tests {
             info: config::ModelInfo::fallback("plain-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
@@ -4603,6 +4650,7 @@ mod tests {
             info: config::ModelInfo::fallback(model_id),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         }
     }
@@ -5261,6 +5309,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn campaign_default_cannot_newly_activate_a_local_auth_helper() {
+        let mut catalog = make_prefetched(&["base-model", "campaign-helper"]);
+        let helper = catalog.get_mut("campaign-helper").unwrap();
+        helper.info.provider = ProviderId::Custom;
+        helper.info.base_url = "https://helper.example/v1".to_owned();
+        helper.auth_provider = Some(crate::auth::AuthProviderRef::new_for_test_route(
+            "campaign-helper-provider".to_owned(),
+            crate::auth::AuthProviderConfig {
+                command: "printf helper-token".to_owned(),
+                args: None,
+                token_ttl_secs: Some(3600),
+                timeout_secs: None,
+            },
+            "https://helper.example/v1",
+        ));
+        let mut cfg = config::Config::default();
+        cfg.models.default = Some("campaign-helper".to_owned());
+        cfg.models.default_is_campaign_driven = true;
+        cfg.models.pre_campaign_default = Some("base-model".to_owned());
+
+        let (key, _, source) = resolve_default_model(&cfg, &catalog, true);
+
+        assert_eq!(key, "base-model");
+        assert_eq!(source, config::ConfigSource::Config);
+    }
+
+    #[test]
+    fn campaign_default_still_selects_an_ordinary_model() {
+        let catalog = make_prefetched(&["base-model", "campaign-model"]);
+        let mut cfg = config::Config::default();
+        cfg.models.default = Some("campaign-model".to_owned());
+        cfg.models.default_is_campaign_driven = true;
+        cfg.models.pre_campaign_default = Some("base-model".to_owned());
+
+        let (key, _, source) = resolve_default_model(&cfg, &catalog, true);
+
+        assert_eq!(key, "campaign-model");
+        assert_eq!(source, config::ConfigSource::Config);
+    }
+
     // ── ModelFetchAuth::resolve priority tests ──────────────────────
 
     use serial_test::serial;
@@ -5549,6 +5638,7 @@ mod tests {
                 info: config::ModelInfo::fallback("static-one"),
                 api_key: None,
                 env_key: None,
+                auth_provider: None,
                 api_base_url: None,
             },
         );
@@ -5576,6 +5666,7 @@ mod tests {
             info: config::ModelInfo::fallback("oauth-only"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         oauth_only.info.supported_in_api = false;
@@ -5585,6 +5676,7 @@ mod tests {
             info: config::ModelInfo::fallback("public-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         catalog.insert("public-model".to_string(), public);

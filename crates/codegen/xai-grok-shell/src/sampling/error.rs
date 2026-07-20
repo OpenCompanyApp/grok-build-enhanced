@@ -53,6 +53,9 @@ pub fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
         SamplingError::Http(e) => {
             acp::Error::internal_error().data(format!("http client init failed: {e}"))
         }
+        SamplingError::RedactedTransport { .. } => {
+            acp::Error::internal_error().data(err.to_string())
+        }
         SamplingError::Serialization(_) => acp::Error::invalid_params().data(err.to_string()),
         SamplingError::Api {
             status,

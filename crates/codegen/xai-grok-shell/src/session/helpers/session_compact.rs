@@ -114,6 +114,7 @@ fn classify_sampling_error_for_provider(
         }
         SamplingError::StreamError { .. }
         | SamplingError::Http(_)
+        | SamplingError::RedactedTransport { .. }
         | SamplingError::EventStreamError(_)
         | SamplingError::EmptyResponse { .. }
         | SamplingError::DoomLoopDetected { .. } => CompactFailure::Transient(acp_err),

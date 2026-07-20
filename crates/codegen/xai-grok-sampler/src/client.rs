@@ -20,7 +20,9 @@ use reqwest::header::{
 };
 use serde::Serialize;
 
-use xai_grok_sampling_types::error::{parse_error_bytes, try_parse_stream_error};
+use xai_grok_sampling_types::error::{
+    parse_error_bytes, try_parse_stream_error, try_parse_stream_error_redacted,
+};
 use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
     ConversationResponse, CreateResponseWrapper, CredentialBinding, DOOM_LOOP_CHECK_HEADER,
@@ -239,7 +241,7 @@ fn extract_context_total(value: &serde_json::Value) -> Option<u32> {
 /// request fails before any response (transport/connect/TLS errors). Without
 /// this the `#[instrument]` span closes with both fields Empty, so an outage
 /// shows zero `success=false` and error-rate alerts never fire.
-fn record_stream_request_failure(err: &reqwest::Error) {
+fn record_stream_request_failure(err: &SamplingError) {
     let span = tracing::Span::current();
     span.record("success", false);
     span.record("error", err.to_string().as_str());
@@ -272,6 +274,7 @@ fn extract_model_metadata(
     headers: &reqwest::header::HeaderMap,
     provider: ProviderId,
     credential_binding: Option<&CredentialBinding>,
+    accept_opaque_etag: bool,
 ) -> Option<ResponseModelMetadata> {
     let context_window = headers
         .get("x-grok-context-window")
@@ -283,10 +286,14 @@ fn extract_model_metadata(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u32>().ok());
 
-    let models_etag = headers
-        .get("x-models-etag")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    let models_etag = accept_opaque_etag
+        .then(|| {
+            headers
+                .get("x-models-etag")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        })
+        .flatten();
 
     if context_window.is_some() || max_completion_tokens.is_some() || models_etag.is_some() {
         Some(ResponseModelMetadata {
@@ -431,6 +438,10 @@ impl std::fmt::Debug for SamplingClient {
 #[derive(Clone, Debug, Default)]
 struct ClientDefaults {
     provider: ProviderId,
+    /// Redact provider-controlled HTTP/SSE diagnostics. First-class provider
+    /// boundaries always redact; named rotating Custom credentials opt in via
+    /// their credential-source identity.
+    redact_response_diagnostics: bool,
     /// True only for explicit xAI requests targeting a canonical inference URL.
     xai_trusted_origin: bool,
     model: String,
@@ -813,6 +824,9 @@ impl SamplingClient {
 
         let defaults = ClientDefaults {
             provider: config.provider,
+            redact_response_diagnostics: config.provider.requires_redacted_provider_diagnostics()
+                || config.credential_source
+                    == xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider,
             xai_trusted_origin,
             model: config.model,
             max_completion_tokens: config.max_completion_tokens,
@@ -1206,7 +1220,8 @@ impl SamplingClient {
     /// account material into local logs, spans, or user-visible errors. For
     /// Codex, expose only the presence of a tiny fixed allowlist of operational
     /// headers. Other providers retain the existing value-bearing diagnostics.
-    fn format_response_headers(headers: &HeaderMap, provider: ProviderId) -> Vec<String> {
+    fn format_response_headers(&self, headers: &HeaderMap) -> Vec<String> {
+        let provider = self.defaults.provider;
         if provider.is_openai_codex() {
             return codex_errors::response_header_diagnostics(headers);
         }
@@ -1216,6 +1231,9 @@ impl SamplingClient {
         if provider.is_zai_coding_plan() {
             return zai_coding_plan::response_header_diagnostics(headers);
         }
+        if self.defaults.redact_response_diagnostics {
+            return vec![format!("  details omitted (provider={provider})")];
+        }
 
         headers
             .iter()
@@ -1223,16 +1241,78 @@ impl SamplingClient {
             .collect()
     }
 
+    /// URL shown in diagnostics and inference-span fields. Redacted provider
+    /// boundaries expose only the logical endpoint name, never the configured
+    /// route, path, query, or user-info.
+    fn diagnostic_endpoint(&self, endpoint_name: &str) -> String {
+        if self.defaults.redact_response_diagnostics {
+            format!("{}:{endpoint_name}", self.defaults.provider)
+        } else {
+            self.endpoint(endpoint_name)
+        }
+    }
+
+    /// Rotating Custom responses must not be able to reflect an arbitrary
+    /// catalog fingerprint into persisted model metadata. Other sources retain
+    /// the existing ETag contract.
+    fn accept_opaque_response_etag(&self) -> bool {
+        !(self.defaults.provider == ProviderId::Custom && self.defaults.redact_response_diagnostics)
+    }
+
+    /// Convert an HTTP failure at a redacted provider boundary without
+    /// retaining the raw `reqwest::Error` (which may carry the request URL).
+    fn transport_error(&self, error: reqwest::Error) -> SamplingError {
+        if self.defaults.redact_response_diagnostics {
+            SamplingError::redacted_transport(self.defaults.provider, &error)
+        } else {
+            SamplingError::Http(error)
+        }
+    }
+
+    fn record_transport_failure(&self, error: reqwest::Error) -> SamplingError {
+        let error = self.transport_error(error);
+        tracing::debug!(
+            provider = %self.defaults.provider,
+            error = %error,
+            "HTTP request failed"
+        );
+        record_stream_request_failure(&error);
+        error
+    }
+
+    async fn read_response_bytes(&self, response: reqwest::Response) -> Result<bytes::Bytes> {
+        if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::read_limited_response_body(response).await
+        } else {
+            response
+                .bytes()
+                .await
+                .map_err(|error| self.transport_error(error))
+        }
+    }
+
+    fn unauthorized_message(&self, endpoint: &str, server_message: Option<&str>) -> String {
+        let location = if self.defaults.redact_response_diagnostics {
+            String::new()
+        } else {
+            format!(" from {endpoint}")
+        };
+        let detail = server_message
+            .filter(|message| !message.is_empty())
+            .map_or_else(String::new, |message| format!(": {message}"));
+        format!("Unauthorized (401){location}{detail}")
+    }
+
     /// Emit fixed request diagnostics without enumerating header names, values,
-    /// or counts. Even a redacted per-header event exposes optional security
-    /// state through its name (and a count exposes it through cardinality).
+    /// counts, or the request URL. Even a redacted per-header event exposes
+    /// optional security state through its name (and a count exposes it through
+    /// cardinality).
     fn log_request_diagnostics(request: &reqwest::Request, endpoint_name: &str) {
         tracing::debug!(
             endpoint = endpoint_name,
             method = %request.method(),
-            url = %request.url(),
             has_body = request.body().is_some(),
-            "HTTP request prepared; header diagnostics suppressed"
+            "HTTP request prepared; header and URL diagnostics suppressed"
         );
     }
 
@@ -1249,7 +1329,9 @@ impl SamplingClient {
         let server_message_lower = server_message.to_lowercase();
 
         let mut context_parts = vec![server_message.to_string()];
-        context_parts.push(format!("\nRequest URL: {}", endpoint));
+        if !self.defaults.redact_response_diagnostics {
+            context_parts.push(format!("\nRequest URL: {endpoint}"));
+        }
 
         // Show headers if error mentions headers
         if server_message_lower.contains("header") {
@@ -1276,6 +1358,11 @@ impl SamplingClient {
             kimi_code::response_message(status, body)
         } else if self.defaults.provider.is_zai_coding_plan() {
             zai_coding_plan::response_message(status, body)
+        } else if self.defaults.redact_response_diagnostics {
+            format!(
+                "{} request failed with HTTP {status}",
+                self.defaults.provider
+            )
         } else {
             parse_error_bytes(body)
         }
@@ -1324,15 +1411,11 @@ impl SamplingClient {
             response.headers(),
             self.defaults.provider,
             credential_binding.as_ref(),
+            self.accept_opaque_response_etag(),
         );
         let retry_after_secs = extract_retry_after(response.headers());
         let should_retry = extract_should_retry(response.headers());
-        let bytes = if self.defaults.provider.is_zai_coding_plan() {
-            zai_coding_plan::read_limited_response_body(response).await?
-        } else {
-            response.bytes().await?
-        };
-
+        let bytes = self.read_response_bytes(response).await?;
         if self.defaults.provider.is_zai_coding_plan()
             && let Some(error) = zai_coding_plan::business_error(bytes.as_ref())
         {
@@ -1411,7 +1494,7 @@ impl SamplingClient {
         let model_id = payload.model.clone().unwrap_or_default();
 
         tracing::debug!(
-            base_url = %self.base_url,
+            endpoint = %self.diagnostic_endpoint("chat/completions"),
             model_id = %model_id,
             "Sending chat completion request"
         );
@@ -1445,11 +1528,10 @@ impl SamplingClient {
             request_builder.json(&payload)
         };
 
-        let response = http_request.send().await.map_err(|e| {
-            // Log at debug level; errors are surfaced to the caller.
-            tracing::debug!("HTTP request failed: {}", e);
-            e
-        })?;
+        let response = http_request
+            .send()
+            .await
+            .map_err(|error| self.transport_error(error))?;
 
         self.handle_response(response, request_credential).await
     }
@@ -1459,7 +1541,7 @@ impl SamplingClient {
         name = "http.chat_completion_stream",
         skip_all,
         fields(
-            endpoint = %self.endpoint("chat/completions"),
+            endpoint = %self.diagnostic_endpoint("chat/completions"),
             model_id = request.model.as_deref().unwrap_or(""),
             status_code = tracing::field::Empty,
             success = tracing::field::Empty,
@@ -1519,23 +1601,28 @@ impl SamplingClient {
             request_builder.json(&streaming_request)
         };
 
-        let built_request = http_request.build().map_err(|e| {
-            tracing::error!("Failed to build HTTP request: {}", e);
-            SamplingError::Http(e)
+        let built_request = http_request.build().map_err(|error| {
+            let error = self.transport_error(error);
+            tracing::error!(
+                provider = %self.defaults.provider,
+                error = %error,
+                "Failed to build HTTP request"
+            );
+            error
         })?;
 
         tracing::debug!(
-            url = %built_request.url(),
+            endpoint = %self.diagnostic_endpoint("chat/completions"),
             method = %built_request.method(),
             "Sending chat/completions request"
         );
         Self::log_request_diagnostics(&built_request, "chat/completions");
 
-        let response = self.http.execute(built_request).await.map_err(|e| {
-            tracing::debug!("HTTP request failed: {}", e);
-            record_stream_request_failure(&e);
-            e
-        })?;
+        let response = self
+            .http
+            .execute(built_request)
+            .await
+            .map_err(|error| self.record_transport_failure(error))?;
 
         let status = response.status();
         let span = tracing::Span::current();
@@ -1561,6 +1648,7 @@ impl SamplingClient {
             response.headers(),
             self.defaults.provider,
             request_credential.as_ref(),
+            self.accept_opaque_response_etag(),
         );
         let retry_after_secs = extract_retry_after(response.headers());
         let should_retry = extract_should_retry(response.headers());
@@ -1575,27 +1663,16 @@ impl SamplingClient {
                 } else {
                     self.endpoint("chat/completions")
                 };
-                let bytes = if self.defaults.provider.is_zai_coding_plan() {
-                    zai_coding_plan::read_limited_response_body(response)
-                        .await
-                        .unwrap_or_default()
-                } else {
-                    response.bytes().await.unwrap_or_default()
-                };
+                let bytes = self.read_response_bytes(response).await.unwrap_or_default();
                 let server_message = self.provider_error_message(status, bytes.as_ref());
-                return Err(SamplingError::Auth(format!(
-                    "Unauthorized (401) from {endpoint}: {server_message}"
-                )));
+                return Err(SamplingError::Auth(
+                    self.unauthorized_message(&endpoint, Some(&server_message)),
+                ));
             }
 
             let req_headers = self.request_header_diagnostics(true);
-            let resp_headers =
-                Self::format_response_headers(response.headers(), self.defaults.provider);
-            let bytes = if self.defaults.provider.is_zai_coding_plan() {
-                zai_coding_plan::read_limited_response_body(response).await?
-            } else {
-                response.bytes().await?
-            };
+            let resp_headers = self.format_response_headers(response.headers());
+            let bytes = self.read_response_bytes(response).await?;
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
             } else if self.defaults.provider.is_zai_coding_plan() {
@@ -1653,6 +1730,7 @@ impl SamplingClient {
         // then subsequent polls return `None` -- preventing an infinite busy-loop
         // when the HTTP/2 connection drops and h2 keeps producing errors.
         let stream_provider = self.defaults.provider;
+        let redact_stream_diagnostics = self.defaults.redact_response_diagnostics;
         let chunks = event_stream
             .scan(false, move |had_transport_error, event_res| {
                 if *had_transport_error {
@@ -1665,7 +1743,7 @@ impl SamplingClient {
                             return std::future::ready(None);
                         }
 
-                        if stream_provider.requires_redacted_provider_diagnostics() {
+                        if redact_stream_diagnostics {
                             tracing::info!(
                                 target: crate::sampling_log::TARGET,
                                 event = "sse_chunk",
@@ -1691,14 +1769,12 @@ impl SamplingClient {
                             && let Some(stream_error) = kimi_code::stream_error(data)
                         {
                             Some(Err(stream_error))
-                        } else if let Some(stream_error) = try_parse_stream_error(data) {
-                            if stream_provider.requires_redacted_provider_diagnostics() {
-                                Some(Err(SamplingError::EventStreamError(format!(
-                                    "{stream_provider} event stream failed"
-                                ))))
-                            } else {
-                                Some(Err(stream_error))
-                            }
+                        } else if let Some(stream_error) = if redact_stream_diagnostics {
+                            try_parse_stream_error_redacted(data, stream_provider)
+                        } else {
+                            try_parse_stream_error(data)
+                        } {
+                            Some(Err(stream_error))
                         } else if stream_provider.is_kimi_code() {
                             Some(kimi_code::deserialize_chat_chunk(data).map_err(|error| {
                                 tracing::error!(
@@ -1712,7 +1788,7 @@ impl SamplingClient {
                         } else {
                             Some(
                                 serde_json::from_str::<ChatCompletionChunk>(data).map_err(|e| {
-                                    if stream_provider.requires_redacted_provider_diagnostics() {
+                                    if redact_stream_diagnostics {
                                         tracing::error!(
                                             error = %e,
                                             provider = %stream_provider,
@@ -1733,7 +1809,7 @@ impl SamplingClient {
                     }
                     Err(e) => {
                         *had_transport_error = true;
-                        let message = if stream_provider.requires_redacted_provider_diagnostics() {
+                        let message = if redact_stream_diagnostics {
                             format!("{stream_provider} event stream transport failed")
                         } else {
                             e.to_string()
@@ -1820,7 +1896,7 @@ impl SamplingClient {
         tracing::debug!(
             provider = ?self.defaults.provider,
             model = %model_id,
-            endpoint = %self.endpoint("responses"),
+            endpoint = %self.diagnostic_endpoint("responses"),
             "responses request prepared"
         );
 
@@ -1869,23 +1945,24 @@ impl SamplingClient {
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
             .json(&request_body);
 
-        let response = http_request.send().await.map_err(|e| {
-            tracing::debug!("HTTP request failed: {}", e);
-            e
-        })?;
+        let response = http_request
+            .send()
+            .await
+            .map_err(|error| self.transport_error(error))?;
 
         let status = response.status();
         let model_metadata = extract_model_metadata(
             response.headers(),
             self.defaults.provider,
             request_credential.as_ref(),
+            self.accept_opaque_response_etag(),
         );
         let retry_after_secs = extract_retry_after(response.headers());
         let should_retry = extract_should_retry(response.headers());
         if status.is_success() {
             self.capture_codex_turn_state(response.headers(), x_grok_req_id);
         }
-        let bytes = response.bytes().await?;
+        let bytes = self.read_response_bytes(response).await?;
         let should_retry = codex_errors::usage_limit_should_retry(
             self.defaults.provider,
             status,
@@ -1907,9 +1984,9 @@ impl SamplingClient {
                     });
                 }
                 let endpoint = self.endpoint("responses");
-                return Err(SamplingError::Auth(format!(
-                    "Unauthorized (401) from {endpoint}"
-                )));
+                return Err(SamplingError::Auth(
+                    self.unauthorized_message(&endpoint, None),
+                ));
             }
 
             let req_headers = self.request_header_diagnostics(false);
@@ -1973,7 +2050,7 @@ impl SamplingClient {
         name = "http.create_response_stream",
         skip_all,
         fields(
-            endpoint = %self.endpoint("responses"),
+            endpoint = %self.diagnostic_endpoint("responses"),
             model_id = request.inner.model.as_deref().unwrap_or(""),
             status_code = tracing::field::Empty,
             success = tracing::field::Empty,
@@ -2003,7 +2080,7 @@ impl SamplingClient {
         request.trace.take();
 
         tracing::debug!(
-            base_url = %self.base_url,
+            endpoint = %self.diagnostic_endpoint("responses"),
             model_id = model_id.as_str(),
             "Sending responses API stream request"
         );
@@ -2080,23 +2157,28 @@ impl SamplingClient {
         }
         let http_request = http_request.json(&request_body);
 
-        let built_request = http_request.build().map_err(|e| {
-            tracing::error!("Failed to build HTTP request: {}", e);
-            SamplingError::Http(e)
+        let built_request = http_request.build().map_err(|error| {
+            let error = self.transport_error(error);
+            tracing::error!(
+                provider = %self.defaults.provider,
+                error = %error,
+                "Failed to build HTTP request"
+            );
+            error
         })?;
 
         tracing::debug!(
-            url = %built_request.url(),
+            endpoint = %self.diagnostic_endpoint("responses"),
             method = %built_request.method(),
             "Sending responses API stream request"
         );
         Self::log_request_diagnostics(&built_request, "responses");
 
-        let response = self.http.execute(built_request).await.map_err(|e| {
-            tracing::debug!("HTTP request failed: {}", e);
-            record_stream_request_failure(&e);
-            e
-        })?;
+        let response = self
+            .http
+            .execute(built_request)
+            .await
+            .map_err(|error| self.record_transport_failure(error))?;
 
         let status = response.status();
         let span = tracing::Span::current();
@@ -2117,21 +2199,21 @@ impl SamplingClient {
                     });
                 }
                 let endpoint = self.endpoint("responses");
-                return Err(SamplingError::Auth(format!(
-                    "Unauthorized (401) from {endpoint}"
-                )));
+                return Err(SamplingError::Auth(
+                    self.unauthorized_message(&endpoint, None),
+                ));
             }
             let model_metadata = extract_model_metadata(
                 response.headers(),
                 self.defaults.provider,
                 request_credential.as_ref(),
+                self.accept_opaque_response_etag(),
             );
             let retry_after_secs = extract_retry_after(response.headers());
             let should_retry = extract_should_retry(response.headers());
             let req_headers = self.request_header_diagnostics(true);
-            let resp_headers =
-                Self::format_response_headers(response.headers(), self.defaults.provider);
-            let bytes = response.bytes().await?;
+            let resp_headers = self.format_response_headers(response.headers());
+            let bytes = self.read_response_bytes(response).await?;
             let should_retry = codex_errors::usage_limit_should_retry(
                 self.defaults.provider,
                 status,
@@ -2170,6 +2252,7 @@ impl SamplingClient {
             response.headers(),
             self.defaults.provider,
             request_credential.as_ref(),
+            self.accept_opaque_response_etag(),
         );
 
         // Strip UTF-8 BOM if present
@@ -2191,8 +2274,10 @@ impl SamplingClient {
         let event_stream = byte_stream.eventsource();
 
         let doom_loop_for_stream = doom_loop.clone();
-        let redact_provider_payload = self.defaults.provider.is_openai_codex();
-        let codex_decoder = redact_provider_payload.then(|| CodexSseDecoder::new(model_id.clone()));
+        let stream_provider = self.defaults.provider;
+        let redact_stream_diagnostics = self.defaults.redact_response_diagnostics;
+        let is_codex = stream_provider.is_openai_codex();
+        let codex_decoder = is_codex.then(|| CodexSseDecoder::new(model_id.clone()));
 
         // The scan item is an `Option`: `Some(None)` skips an absorbed
         // doom-loop event without terminating the stream (`filter_map`
@@ -2209,12 +2294,14 @@ impl SamplingClient {
                             return std::future::ready(None);
                         }
 
-                        if redact_provider_payload {
+                        if redact_stream_diagnostics {
                             tracing::info!(
                                 target: crate::sampling_log::TARGET,
                                 event = "sse_chunk",
                                 backend = "responses",
-                                provider = "openai_codex",
+                                provider = %stream_provider,
+                                data_len = data.len(),
+                                "provider SSE payload omitted"
                             );
                         } else {
                             tracing::info!(
@@ -2237,14 +2324,16 @@ impl SamplingClient {
                         };
                         if swallow {
                             Some(None)
-                        } else if redact_provider_payload && data.trim().is_empty() {
+                        } else if is_codex && data.trim().is_empty() {
                             // The official Codex fixture stream occasionally
                             // carries type-only SSE heartbeats with no data
                             // payload. They are forward-compatible liveness
                             // frames, not malformed model output.
                             Some(None)
-                        } else if let Some(stream_error) = if redact_provider_payload {
+                        } else if let Some(stream_error) = if is_codex {
                             codex_errors::try_parse_stream_error(data)
+                        } else if redact_stream_diagnostics {
+                            try_parse_stream_error_redacted(data, stream_provider)
                         } else {
                             try_parse_stream_error(data)
                         } {
@@ -2261,8 +2350,10 @@ impl SamplingClient {
                     }
                     Err(e) => {
                         state.0 = true;
-                        let message = if redact_provider_payload {
+                        let message = if is_codex {
                             "ChatGPT Codex event stream failed".to_string()
+                        } else if redact_stream_diagnostics {
+                            format!("{stream_provider} event stream transport failed")
                         } else {
                             e.to_string()
                         };
@@ -2325,7 +2416,7 @@ impl SamplingClient {
         tracing::debug!(
             provider = ?self.defaults.provider,
             model = %model_id,
-            endpoint = %self.endpoint("messages"),
+            endpoint = %self.diagnostic_endpoint("messages"),
             "messages request prepared"
         );
 
@@ -2367,28 +2458,29 @@ impl SamplingClient {
             request_builder.json(&request.inner)
         };
 
-        let response = http_request.send().await.map_err(|e| {
-            tracing::debug!("HTTP request failed: {}", e);
-            e
-        })?;
+        let response = http_request
+            .send()
+            .await
+            .map_err(|error| self.transport_error(error))?;
 
         let status = response.status();
         let model_metadata = extract_model_metadata(
             response.headers(),
             self.defaults.provider,
             request_credential.as_ref(),
+            self.accept_opaque_response_etag(),
         );
         let retry_after_secs = extract_retry_after(response.headers());
         let should_retry = extract_should_retry(response.headers());
-        let bytes = response.bytes().await?;
+        let bytes = self.read_response_bytes(response).await?;
 
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 self.record_401_attribution(crate::attribution::SamplingConsumer::Messages);
                 let server_message = self.provider_error_message(status, bytes.as_ref());
-                return Err(SamplingError::Auth(format!(
-                    "Unauthorized (401) from {endpoint}: {server_message}"
-                )));
+                return Err(SamplingError::Auth(
+                    self.unauthorized_message(&endpoint, Some(&server_message)),
+                ));
             }
 
             let req_headers = self.request_header_diagnostics(false);
@@ -2446,7 +2538,7 @@ impl SamplingClient {
         name = "http.create_message_stream",
         skip_all,
         fields(
-            endpoint = %self.endpoint("messages"),
+            endpoint = %self.diagnostic_endpoint("messages"),
             model_id = request.inner.model.as_str(),
             status_code = tracing::field::Empty,
             success = tracing::field::Empty,
@@ -2473,7 +2565,7 @@ impl SamplingClient {
         request.trace.take();
 
         tracing::debug!(
-            base_url = %self.base_url,
+            endpoint = %self.diagnostic_endpoint("messages"),
             model_id = model_id.as_str(),
             "Sending Messages API stream request"
         );
@@ -2517,23 +2609,28 @@ impl SamplingClient {
             request_builder.json(&request.inner)
         };
 
-        let built_request = http_request.build().map_err(|e| {
-            tracing::error!("Failed to build HTTP request: {}", e);
-            SamplingError::Http(e)
+        let built_request = http_request.build().map_err(|error| {
+            let error = self.transport_error(error);
+            tracing::error!(
+                provider = %self.defaults.provider,
+                error = %error,
+                "Failed to build HTTP request"
+            );
+            error
         })?;
 
         tracing::debug!(
-            url = %built_request.url(),
+            endpoint = %self.diagnostic_endpoint("messages"),
             method = %built_request.method(),
             "Sending messages API stream request"
         );
         Self::log_request_diagnostics(&built_request, "messages");
 
-        let response = self.http.execute(built_request).await.map_err(|e| {
-            tracing::debug!("HTTP request failed: {}", e);
-            record_stream_request_failure(&e);
-            e
-        })?;
+        let response = self
+            .http
+            .execute(built_request)
+            .await
+            .map_err(|error| self.record_transport_failure(error))?;
 
         let status = response.status();
         let span = tracing::Span::current();
@@ -2543,23 +2640,23 @@ impl SamplingClient {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 span.record("error", "unauthorized (401)");
                 self.record_401_attribution(crate::attribution::SamplingConsumer::MessagesStream);
-                let bytes = response.bytes().await?;
+                let bytes = self.read_response_bytes(response).await?;
                 let server_message = self.provider_error_message(status, bytes.as_ref());
-                return Err(SamplingError::Auth(format!(
-                    "Unauthorized (401) from {endpoint}: {server_message}"
-                )));
+                return Err(SamplingError::Auth(
+                    self.unauthorized_message(&endpoint, Some(&server_message)),
+                ));
             }
             let model_metadata = extract_model_metadata(
                 response.headers(),
                 self.defaults.provider,
                 request_credential.as_ref(),
+                self.accept_opaque_response_etag(),
             );
             let retry_after_secs = extract_retry_after(response.headers());
             let should_retry = extract_should_retry(response.headers());
             let req_headers = self.request_header_diagnostics(true);
-            let resp_headers =
-                Self::format_response_headers(response.headers(), self.defaults.provider);
-            let bytes = response.bytes().await?;
+            let resp_headers = self.format_response_headers(response.headers());
+            let bytes = self.read_response_bytes(response).await?;
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
             } else if self.defaults.provider.is_zai_coding_plan() {
@@ -2597,6 +2694,7 @@ impl SamplingClient {
             response.headers(),
             self.defaults.provider,
             request_credential.as_ref(),
+            self.accept_opaque_response_etag(),
         );
 
         // Strip UTF-8 BOM if present
@@ -2621,6 +2719,7 @@ impl SamplingClient {
         // Uses `scan` so transport errors terminate the stream after the first
         // error (same pattern as `chat_completion_stream`).
         let stream_provider = self.defaults.provider;
+        let redact_stream_diagnostics = self.defaults.redact_response_diagnostics;
         let events = event_stream
             .scan(false, move |had_transport_error, event_res| {
                 if *had_transport_error {
@@ -2633,7 +2732,7 @@ impl SamplingClient {
                             return std::future::ready(None);
                         }
 
-                        if !stream_provider.requires_redacted_provider_diagnostics() {
+                        if !redact_stream_diagnostics {
                             tracing::info!(
                                 target: crate::sampling_log::TARGET,
                                 event = "sse_chunk",
@@ -2646,14 +2745,12 @@ impl SamplingClient {
                             && let Some(stream_error) = kimi_code::stream_error(data)
                         {
                             Some(Err(stream_error))
-                        } else if let Some(stream_error) = try_parse_stream_error(data) {
-                            if stream_provider.requires_redacted_provider_diagnostics() {
-                                Some(Err(SamplingError::EventStreamError(format!(
-                                    "{stream_provider} event stream failed"
-                                ))))
-                            } else {
-                                Some(Err(stream_error))
-                            }
+                        } else if let Some(stream_error) = if redact_stream_diagnostics {
+                            try_parse_stream_error_redacted(data, stream_provider)
+                        } else {
+                            try_parse_stream_error(data)
+                        } {
+                            Some(Err(stream_error))
                         } else {
                             Some(
                                 serde_json::from_str::<messages::MessageStreamEvent>(data).map_err(
@@ -2672,7 +2769,7 @@ impl SamplingClient {
                     }
                     Err(e) => {
                         *had_transport_error = true;
-                        let message = if stream_provider.requires_redacted_provider_diagnostics() {
+                        let message = if redact_stream_diagnostics {
                             format!("{stream_provider} event stream transport failed")
                         } else {
                             e.to_string()
@@ -3034,15 +3131,32 @@ mod tests {
     }
 
     impl tracing::Subscriber for DebugEventCapture {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            *metadata.level() == tracing::Level::DEBUG
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
         }
 
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        fn new_span(&self, attributes: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            let mut fields = DebugFieldCapture(String::new());
+            attributes.record(&mut fields);
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!(
+                    "span={};{}",
+                    attributes.metadata().name(),
+                    fields.0
+                ));
             tracing::span::Id::from_u64(1)
         }
 
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record(&self, _: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+            let mut fields = DebugFieldCapture(String::new());
+            values.record(&mut fields);
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("span_record;{}", fields.0));
+        }
 
         fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
 
@@ -3228,12 +3342,26 @@ mod tests {
         let mut binding = CredentialBinding::openai_codex(Some("credential-record".to_owned()));
         binding.generation = 7;
 
-        let metadata = extract_model_metadata(&headers, ProviderId::OpenAiCodex, Some(&binding))
-            .expect("etag should produce response metadata");
+        let metadata =
+            extract_model_metadata(&headers, ProviderId::OpenAiCodex, Some(&binding), true)
+                .expect("etag should produce response metadata");
 
         assert_eq!(metadata.provider, ProviderId::OpenAiCodex);
         assert_eq!(metadata.credential_binding.as_ref(), Some(&binding));
         assert_eq!(metadata.models_etag.as_deref(), Some("codex-etag"));
+    }
+
+    #[test]
+    fn rotating_custom_metadata_omits_provider_controlled_etag() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-grok-context-window", "131072".parse().unwrap());
+        headers.insert("x-models-etag", "reflected-etag-secret".parse().unwrap());
+
+        let metadata = extract_model_metadata(&headers, ProviderId::Custom, None, false)
+            .expect("numeric model metadata remains usable");
+
+        assert_eq!(metadata.context_window, Some(131072));
+        assert_eq!(metadata.models_etag, None);
     }
 
     #[test]
@@ -3327,6 +3455,26 @@ mod tests {
             if captured.contains(forbidden) {
                 panic!("request security state leaked into generic debug diagnostics");
             }
+        }
+    }
+
+    #[test]
+    fn request_diagnostics_omit_the_request_url() {
+        let request = reqwest::Request::new(
+            reqwest::Method::POST,
+            reqwest::Url::parse(
+                "https://credential@example.test/private-route?token=url-query-secret",
+            )
+            .unwrap(),
+        );
+
+        let captured = capture_request_diagnostics(&request).join("\n");
+
+        for forbidden in ["credential", "private-route", "url-query-secret"] {
+            assert!(
+                !captured.contains(forbidden),
+                "leaked {forbidden}: {captured}"
+            );
         }
     }
 
@@ -4695,6 +4843,246 @@ mod tests {
         }
         assert!(!usage_message.contains(USAGE_MARKER));
         assert!(!usage_message.contains(RESET_MARKER));
+    }
+
+    #[test]
+    fn rotating_custom_provider_response_diagnostics_are_value_free() {
+        const REFLECTED_BODY: &[u8] =
+            br#"{\"error\":{\"message\":\"Bearer reflected-provider-token\"}}"#;
+        let config = SamplerConfig {
+            provider: ProviderId::Custom,
+            credential_source: xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider,
+            api_key: Some("provider-token".to_owned()),
+            base_url: "https://custom-provider.example/v1".to_owned(),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(config).expect("client should build");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-error-detail"),
+            HeaderValue::from_static("reflected-account-material"),
+        );
+
+        let message =
+            client.provider_error_message(reqwest::StatusCode::BAD_REQUEST, REFLECTED_BODY);
+        let rendered_headers = client.format_response_headers(&headers).join("\n");
+
+        assert_eq!(message, "custom request failed with HTTP 400 Bad Request");
+        assert_eq!(rendered_headers, "  details omitted (provider=custom)");
+        assert!(!message.contains("reflected-provider-token"));
+        assert!(!rendered_headers.contains("reflected-account-material"));
+    }
+
+    #[tokio::test]
+    async fn rotating_custom_responses_stream_errors_are_value_free() {
+        use axum::Router;
+        use axum::http::header::CONTENT_TYPE as AXUM_CONTENT_TYPE;
+        use axum::routing::post;
+
+        const REFLECTED_STREAM_VALUE: &str = "Bearer reflected-stream-secret";
+        let app = Router::new().route(
+            "/responses",
+            post(|| async {
+                (
+                    [(AXUM_CONTENT_TYPE, "text/event-stream")],
+                    format!(
+                        "data: {{\"error\":{{\"type\":\"server_error\",\"message\":\"{REFLECTED_STREAM_VALUE}\"}}}}\n\n"
+                    ),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = SamplerConfig {
+            provider: ProviderId::Custom,
+            credential_source: xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider,
+            api_key: Some("provider-token".to_owned()),
+            base_url: format!("http://{address}"),
+            api_backend: ApiBackend::Responses,
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(config).expect("client should build");
+
+        let (mut events, _, _) = client
+            .create_response_stream(CreateResponseWrapper::default())
+            .await
+            .expect("HTTP response should establish an event stream");
+        let error = events
+            .next()
+            .await
+            .expect("server emitted one event")
+            .expect_err("provider error envelope must fail the stream");
+        server.abort();
+
+        let rendered = format!("{error:?} {error}");
+        assert_eq!(
+            error.to_string(),
+            "reqwest error stream: custom event stream failed"
+        );
+        assert!(!rendered.contains(REFLECTED_STREAM_VALUE));
+    }
+
+    #[tokio::test]
+    async fn rotating_custom_transport_errors_omit_the_request_route() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let config = SamplerConfig {
+            provider: ProviderId::Custom,
+            credential_source: xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider,
+            api_key: Some("provider-token".to_owned()),
+            base_url: format!("http://{address}/private-transport-route"),
+            api_backend: ApiBackend::Responses,
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(config).expect("client should build");
+        let capture = DebugEventCapture::default();
+        let error = {
+            let _guard = tracing::subscriber::set_default(capture.clone());
+            match client
+                .create_response_stream(CreateResponseWrapper::default())
+                .await
+            {
+                Err(error) => error,
+                Ok(_) => panic!("closed test listener must reject the request"),
+            }
+        };
+        let diagnostics = capture
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .join("\n");
+        let rendered = format!("{error:?} {error}\n{diagnostics}");
+
+        assert!(matches!(error, SamplingError::RedactedTransport { .. }));
+        for forbidden in ["private-transport-route", "provider-token"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "leaked {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rotating_custom_401_errors_omit_provider_controlled_values() {
+        use axum::Router;
+        use axum::http::StatusCode;
+        use axum::routing::post;
+
+        const BODY_SENTINEL: &str = "Bearer reflected-401-secret";
+        let app = Router::new().route(
+            "/private-401-route/responses",
+            post(|| async { (StatusCode::UNAUTHORIZED, BODY_SENTINEL) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = SamplerConfig {
+            provider: ProviderId::Custom,
+            credential_source: xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider,
+            api_key: Some("provider-token".to_owned()),
+            base_url: format!("http://{address}/private-401-route"),
+            api_backend: ApiBackend::Responses,
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(config).expect("client should build");
+        let capture = DebugEventCapture::default();
+        let error = {
+            let _guard = tracing::subscriber::set_default(capture.clone());
+            match client
+                .create_response_stream(CreateResponseWrapper::default())
+                .await
+            {
+                Err(error) => error,
+                Ok(_) => panic!("mock deliberately returns 401"),
+            }
+        };
+        server.abort();
+        let diagnostics = capture
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .join("\n");
+        let rendered = format!("{error:?} {error}\n{diagnostics}");
+
+        assert_eq!(error.to_string(), "Unauthorized (401)");
+        for forbidden in [BODY_SENTINEL, "private-401-route", "provider-token"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "leaked {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rotating_custom_5xx_errors_drop_reflected_metadata() {
+        use axum::Router;
+        use axum::http::{HeaderMap as AxumHeaderMap, HeaderValue as AxumHeaderValue, StatusCode};
+        use axum::routing::post;
+
+        const BODY_SENTINEL: &str = "Bearer reflected-5xx-secret";
+        const ETAG_SENTINEL: &str = "reflected-etag-secret";
+        let app = Router::new().route(
+            "/private-5xx-route/responses",
+            post(|| async {
+                let mut headers = AxumHeaderMap::new();
+                headers.insert("x-models-etag", AxumHeaderValue::from_static(ETAG_SENTINEL));
+                headers.insert(
+                    "x-grok-context-window",
+                    AxumHeaderValue::from_static("131072"),
+                );
+                (StatusCode::INTERNAL_SERVER_ERROR, headers, BODY_SENTINEL)
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = SamplerConfig {
+            provider: ProviderId::Custom,
+            credential_source: xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider,
+            api_key: Some("provider-token".to_owned()),
+            base_url: format!("http://{address}/private-5xx-route"),
+            api_backend: ApiBackend::Responses,
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(config).expect("client should build");
+        let capture = DebugEventCapture::default();
+        let error = {
+            let _guard = tracing::subscriber::set_default(capture.clone());
+            match client
+                .create_response_stream(CreateResponseWrapper::default())
+                .await
+            {
+                Err(error) => error,
+                Ok(_) => panic!("mock deliberately returns 500"),
+            }
+        };
+        server.abort();
+        let diagnostics = capture
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .join("\n");
+        let metadata = error
+            .model_metadata()
+            .expect("numeric response metadata should remain available");
+        let rendered = format!("{error:?} {error}\n{diagnostics}");
+
+        assert_eq!(metadata.context_window, Some(131072));
+        assert_eq!(metadata.models_etag, None);
+        for forbidden in [
+            BODY_SENTINEL,
+            ETAG_SENTINEL,
+            "private-5xx-route",
+            "provider-token",
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "leaked {forbidden}: {rendered}"
+            );
+        }
     }
 
     #[test]

@@ -91,6 +91,15 @@ pub(crate) async fn bind_provider_runtime(
     mut sampler_config: SamplerConfig,
     generic_api_key_provider: Option<SharedApiKeyProvider>,
 ) -> Result<BoundProviderRuntime, ProviderBindingError> {
+    // A named rotating helper belongs exclusively to a Custom route. Restored
+    // or hand-built first-party sampler state cannot reinterpret that bearer.
+    if sampler_config.provider != ProviderId::Custom
+        && sampler_config.credential_source == CredentialSourceId::RotatingAuthProvider
+    {
+        sampler_config.api_key = None;
+        sampler_config.credential_source = CredentialSourceId::Unspecified;
+        sampler_config.credential_binding = None;
+    }
     if sampler_config.provider.is_kimi_code() {
         return bind_kimi_code(sampler_config);
     }
@@ -109,11 +118,13 @@ pub(crate) async fn bind_provider_runtime(
             .then_some(generic_api_key_provider)
             .flatten();
         if sampler_config.provider == ProviderId::Custom {
-            let owns_static_credential = matches!(
+            let owns_custom_credential = matches!(
                 sampler_config.credential_source,
-                CredentialSourceId::StaticApiKey | CredentialSourceId::External
+                CredentialSourceId::StaticApiKey
+                    | CredentialSourceId::External
+                    | CredentialSourceId::RotatingAuthProvider
             );
-            if !owns_static_credential {
+            if !owns_custom_credential {
                 sampler_config.api_key = None;
                 sampler_config.credential_source = CredentialSourceId::Unspecified;
             }
@@ -693,6 +704,53 @@ mod tests {
         assert_eq!(
             runtime.sampler_config.credential_source,
             CredentialSourceId::StaticApiKey
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_runtime_retains_a_named_rotating_provider_key() {
+        let config = SamplerConfig {
+            provider: ProviderId::Custom,
+            credential_source: CredentialSourceId::RotatingAuthProvider,
+            api_key: Some("custom-rotating-key".to_owned()),
+            base_url: "https://custom.invalid/v1".to_owned(),
+            model: "custom-model".to_owned(),
+            ..SamplerConfig::default()
+        };
+
+        let runtime = bind_provider_runtime(config, None)
+            .await
+            .expect("named custom-provider credential binds");
+
+        assert_eq!(
+            runtime.sampler_config.api_key.as_deref(),
+            Some("custom-rotating-key")
+        );
+        assert_eq!(
+            runtime.sampler_config.credential_source,
+            CredentialSourceId::RotatingAuthProvider
+        );
+    }
+
+    #[tokio::test]
+    async fn xai_runtime_drops_a_rotating_custom_provider_key() {
+        let config = SamplerConfig {
+            provider: ProviderId::Xai,
+            credential_source: CredentialSourceId::RotatingAuthProvider,
+            api_key: Some("custom-rotating-key".to_owned()),
+            base_url: "https://api.x.ai/v1".to_owned(),
+            model: "grok-test".to_owned(),
+            ..SamplerConfig::default()
+        };
+
+        let runtime = bind_provider_runtime(config, None)
+            .await
+            .expect("xAI runtime binds after rejecting the foreign credential");
+
+        assert!(runtime.sampler_config.api_key.is_none());
+        assert_eq!(
+            runtime.sampler_config.credential_source,
+            CredentialSourceId::Unspecified
         );
     }
 

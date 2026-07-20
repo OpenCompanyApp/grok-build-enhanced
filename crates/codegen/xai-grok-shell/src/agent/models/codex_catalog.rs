@@ -898,6 +898,7 @@ impl CodexCatalogController {
                         },
                         api_key: None,
                         env_key: None,
+                        auth_provider: None,
                         api_base_url: None,
                     },
                 ))

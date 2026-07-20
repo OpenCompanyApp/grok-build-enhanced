@@ -557,6 +557,14 @@ impl PreparedToolCall {
 #[cfg(test)]
 pub(crate) use crate::session::streaming_capture::STREAMING_CAPTURE_MAX_BYTES;
 pub(crate) use crate::session::streaming_capture::StreamingTurnCapture;
+/// One memoized model's auth state, keyed by model id. The provider ref carries
+/// only trusted, exact-route-bound custom-provider configuration in memory.
+#[derive(Clone)]
+pub(crate) struct ModelAuthMemo {
+    pub(crate) model_id: String,
+    pub(crate) facts: crate::agent::config::ModelAuthFacts,
+    pub(crate) provider: Option<crate::auth::AuthProviderRef>,
+}
 /// Spawn-time metadata for a subagent, kept by `subagent_id` so the `SubagentStop` event
 /// (whose notification carries neither) can report the subagent's type and description.
 #[derive(Clone)]
@@ -574,10 +582,10 @@ pub(crate) struct SessionActor {
     /// their lifetime). Codex auth remains provider-scoped in request auth.
     /// `None` until the agent has selected an xAI method.
     pub(crate) auth_method_id: crate::agent::auth_method::SharedAuthMethodId,
-    /// Memoized per-model auth facts, keyed by model id — see
-    /// [`SessionActor::model_auth_facts`].
-    pub(crate) model_auth_facts:
-        std::cell::RefCell<Option<(String, crate::agent::config::ModelAuthFacts)>>,
+    /// Memoized per-model auth state, shared by the session-token gate and
+    /// exact-route-bound rotating custom-provider auth. Every model or
+    /// credential switch must invalidate it.
+    pub(crate) model_auth_memo: std::cell::RefCell<Option<ModelAuthMemo>>,
     /// 401-attribution callback. Joined with the bearer the
     /// sampler sends on the wire to emit an `auth 401 attribution`
     /// event at each of the six `OaiCompatClient` 401 arms in

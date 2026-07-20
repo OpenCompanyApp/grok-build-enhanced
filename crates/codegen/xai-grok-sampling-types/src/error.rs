@@ -39,6 +39,31 @@ impl fmt::Display for EmptyReason {
     }
 }
 
+/// Coarse transport classification retained when the underlying HTTP error
+/// could contain a provider-controlled URL or other sensitive diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedactedTransportKind {
+    Timeout,
+    Connect,
+    Body,
+    Request,
+    Status,
+    Other,
+}
+
+impl fmt::Display for RedactedTransportKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Timeout => "timeout",
+            Self::Connect => "connection",
+            Self::Body => "request body",
+            Self::Request => "request",
+            Self::Status => "HTTP status",
+            Self::Other => "transport",
+        })
+    }
+}
+
 /// Structured context captured at L2 stream completion time when the
 /// response is classified as empty. Carries everything needed to
 /// root-cause the issue from a single log line or error payload.
@@ -110,6 +135,15 @@ pub enum SamplingError {
     InvalidConfiguration(&'static str),
     #[error("request error: {0}")]
     Http(reqwest::Error),
+    /// Payload-free replacement for [`SamplingError::Http`] at provider
+    /// boundaries where `reqwest::Error` may retain a sensitive request URL.
+    #[error("{provider} {kind} error")]
+    RedactedTransport {
+        provider: ProviderId,
+        kind: RedactedTransportKind,
+        retryable: bool,
+        likely_body_rejected: bool,
+    },
     #[error("{prefix}{0}", prefix = SERIALIZATION_DISPLAY_PREFIX)]
     Serialization(serde_json::Error),
     #[error("API error (status {status}): {message}")]
@@ -153,6 +187,32 @@ pub enum SamplingError {
 }
 
 impl SamplingError {
+    /// Preserve retry/body-rejection behavior without retaining the raw
+    /// `reqwest::Error`, whose rendered form may include a sensitive URL.
+    pub fn redacted_transport(provider: ProviderId, error: &reqwest::Error) -> Self {
+        let kind = if error.is_timeout() {
+            RedactedTransportKind::Timeout
+        } else if error.is_connect() {
+            RedactedTransportKind::Connect
+        } else if error.is_body() {
+            RedactedTransportKind::Body
+        } else if error.is_request() {
+            RedactedTransportKind::Request
+        } else if error.is_status() {
+            RedactedTransportKind::Status
+        } else {
+            RedactedTransportKind::Other
+        };
+        let likely_body_rejected =
+            (error.is_request() || error.is_body()) && !error.is_timeout() && !error.is_connect();
+        Self::RedactedTransport {
+            provider,
+            kind,
+            retryable: is_retryable_reqwest(error),
+            likely_body_rejected,
+        }
+    }
+
     /// Rebuild a `Serialization` error from a rendered message for non-`Clone`
     /// contexts; it must stay `Serialization` so it remains non-retryable.
     pub fn serialization_message(msg: impl fmt::Display) -> Self {
@@ -236,6 +296,10 @@ impl SamplingError {
                 // Exclude timeouts and connect errors — those are unrelated.
                 (err.is_request() || err.is_body()) && !err.is_timeout() && !err.is_connect()
             }
+            SamplingError::RedactedTransport {
+                likely_body_rejected,
+                ..
+            } => *likely_body_rejected,
             _ => false,
         }
     }
@@ -275,6 +339,7 @@ impl SamplingError {
             SamplingError::ProviderAuthRejected { .. } => false,
             SamplingError::InvalidConfiguration(_) => false,
             SamplingError::Http(err) => is_retryable_reqwest(err),
+            SamplingError::RedactedTransport { retryable, .. } => *retryable,
             SamplingError::Serialization(_) => false,
             SamplingError::Api { status, .. } => {
                 matches!(
@@ -465,6 +530,23 @@ pub fn try_parse_stream_error(data: &str) -> Option<SamplingError> {
     })
 }
 
+/// Detect a provider stream-error envelope without retaining, logging, or
+/// returning its provider-controlled values.
+pub fn try_parse_stream_error_redacted(
+    data: &str,
+    provider: crate::ProviderId,
+) -> Option<SamplingError> {
+    try_parse_error(data)?;
+    tracing::warn!(
+        provider = %provider,
+        data_len = data.len(),
+        "Provider-side stream error; details omitted"
+    );
+    Some(SamplingError::EventStreamError(format!(
+        "{provider} event stream failed"
+    )))
+}
+
 /// True when an error message indicates a context-window overflow. Backends report
 /// this inconsistently with no stable error code, so we match the message text; it's
 /// deterministic (re-sending the same payload always fails), so callers must not retry.
@@ -623,6 +705,22 @@ mod tests {
             }
             other => panic!("expected StreamError, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn redacted_stream_error_omits_provider_controlled_values() {
+        const SECRET: &str = "Bearer reflected-provider-secret";
+        let data = format!(r#"{{"error":{{"type":"server_error","message":"{SECRET}"}}}}"#);
+
+        let error = try_parse_stream_error_redacted(&data, crate::ProviderId::Custom)
+            .expect("error envelope should be detected");
+        let rendered = format!("{error:?} {error}");
+
+        assert_eq!(
+            error.to_string(),
+            "reqwest error stream: custom event stream failed"
+        );
+        assert!(!rendered.contains(SECRET));
     }
 
     #[test]

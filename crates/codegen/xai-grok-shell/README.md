@@ -328,11 +328,50 @@ Common log messages:
 
 | Log message | What it means |
 |-------------|---------------|
-| `auth: running external auth provider` | Your binary is being called (includes the command and whether it's a refresh) |
+| `auth: running external auth provider` | Your binary is being called; logs include refresh/timeout state but never the configured command or arguments |
 | `auth: external auth provider returned fresh token` | Success — token was parsed and stored |
 | `auth: external auth provider failed` | Binary exited non-zero, or exited 0 but stdout was empty/unparseable (the `error` field has details) |
 | `auth: external auth provider timed out (likely needs interactive auth), killing` | Binary didn't exit before the timeout (60s initial, 5s mid-session refresh) and was killed |
 | `auth: failed to start external auth provider` | The command couldn't be spawned (e.g. binary not found) |
+
+### Per-Model Auth Providers
+
+`auth_provider_command` above replaces Grok's *session* auth: it mints the token sent to xAI's backend. If you instead want xAI models on normal xAI login while **other models** route through a gateway (LiteLLM, corporate proxy) whose bearer tokens rotate, use a named auth provider — the rotating-token analogue of a per-model `api_key`/`env_key`.
+
+```toml
+# ~/.grok/config.toml
+[auth_provider.litellm]
+command = "/usr/local/bin/litellm-token"   # run via `sh -c`
+token_ttl_secs = 3600                      # optional: see below
+timeout_secs = 10                          # optional: command timeout (default 30)
+
+[model.proxied-claude]
+provider = "custom"                       # named helpers are custom-provider-only
+model = "claude-sonnet-4-5"
+base_url = "https://litellm.corp.example/v1"
+context_window = 200000
+auth_provider = "litellm"
+```
+
+**Contract** (the strict named-provider stdout contract accepts only `access_token`, optional `refresh_token`, and optional `expires_in`; unknown JSON fields such as `issuer` are rejected, and a returned refresh token is handed back to the command on refresh):
+
+- Without `args`, the command runs via POSIX `sh -c`, so it can be a binary path, a script, or a pipeline. With `args = ["..."]`, the command runs directly with those arguments and no shell: `command` is a program name resolved via `PATH`, or a path. Use `args` to avoid shell quoting, and on Windows, where there is no `sh`.
+- stdout: a bare token, or JSON `{"access_token": "...", "refresh_token": "...", "expires_in": 3600}`.
+- stderr: drained but never surfaced or logged because helper output may contain credentials or private diagnostics; exit 0 = success.
+- `GROK_AUTH_EXPIRED=1` is set whenever Grok re-mints over a token still cached in memory, whether from near-expiry rotation or a rejection. The first mint on a cold cache runs without it.
+
+**Token lifecycle:**
+
+- Tokens are cached in memory per `(provider name, exact base_url)` pair and shared only by models with that same pair; a same-named provider on another route gets an independent slot. Nothing is written to disk. The command is a credential helper: it owns durable storage and OAuth2 refresh (keychain, its own dotdir, etc.), exactly like `gcloud auth print-access-token` or a git credential helper. On an in-session re-mint the last credential is handed back via `GROK_AUTH_PROVIDER_ACCESS_TOKEN` (and, when present, `GROK_AUTH_PROVIDER_REFRESH_TOKEN` / `GROK_AUTH_PROVIDER_EXPIRES_AT`), so a refresh-grant command can refresh instead of re-authenticating. The command must be non-interactive and fast; do any interactive login out of band, and Grok re-runs the command on restart to re-mint.
+- Grok runs the command before a chat turn when the token is missing or within about a minute of expiring, and once more after the server rejects a token. A token rejected within 30 seconds of being fetched is not refetched again, so a broken helper surfaces one clear error instead of looping.
+- Token lifetime comes from `expires_in` in the command's JSON output, else `token_ttl_secs`, else the token's own JWT expiry claim. With none of these, tokens are only replaced after the server rejects one.
+- Commands run with a `timeout_secs` bound (default 30, clamped to 1..=600) and are killed on timeout. A turn waits on the run, so keep helpers fast and non-interactive.
+- Active sessions pick up edits or removal of a provider table at the next model switch or new session. Once picked up, an edit invalidates the cached token, so the edited command runs at the next use; removal drops the cached token.
+- Helper models (web search, session summary, image description) read the shared cache and never run the command; point them at providers your chat model keeps warm. Subagents refresh tokens the same way their parent session does.
+
+**Interaction with other credentials:** a literal `api_key`/`env_key` on the model wins over its `auth_provider`. Named providers are honored only when the resolved model identity is `provider = "custom"`; references on xAI, OpenAI Codex, Kimi Code, or Z.AI models are inert. Provider-backed custom models are BYOK: first-party session/API credentials are never sent to their endpoints, and a missing, failed, or unusable helper clears any stale custom bearer and fails before the request rather than falling back.
+
+**Security:** provider commands execute code, so definitions are honored only from trusted config layers (`~/.grok/config.toml`, managed config, requirements). A project's `.grok/config.toml` can never define one. The resolved ref is bound in memory to the custom model's exact `base_url`, is serialized by name only, and cannot authenticate a different route after restore. Whatever trusted/effective layer sets a model's `base_url` still decides where its token is sent, so keep provider tables and model routes in layers you trust. The command inherits ordinary process environment such as `PATH` and `HOME`, but xAI, Codex auth-store, Kimi, Z.AI, deployment, trace-upload, and telemetry credential variables are removed. Helper commands, arguments, stdout, and stderr are never included in diagnostics. Write helpers that read only what they need, and prefer the `GROK_AUTH_PROVIDER_*` handback for the prior credential.
 
 ### Using auth.json for API Access
 
@@ -1707,13 +1746,14 @@ name = "Display Name"                 # Shown in model picker
 description = "Model description"     # Optional description
 api_key = "sk-..."                    # API key for this provider (optional)
 env_key = "OPENAI_API_KEY"            # Env var(s) holding the API key (string or array; first set wins)
+auth_provider = "corp-gateway"        # Named credential helper for rotating tokens (optional)
 temperature = 0.7                     # Sampling temperature (0.0-2.0)
 top_p = 0.95                          # Nucleus sampling parameter
 max_completion_tokens = 8192          # Max tokens per response
 context_window = 256000               # Total context window in tokens (for auto-compact)
 ```
 
-**Credential resolution order:** `api_key` → `env_key` → `XAI_API_KEY`. If neither `api_key` nor `env_key` is set, Grok falls back to the global `XAI_API_KEY` environment variable.
+**Credential resolution order:** `api_key` → `env_key` → cached `auth_provider` token (terminal: a cache miss resolves to no credential, never the session token) → session token → `XAI_API_KEY`. See [Per-Model Auth Providers](#per-model-auth-providers).
 
 The `context_window` parameter is used to calculate when auto-compact should trigger. If not specified, Grok falls back to built-in defaults for known models.
 

@@ -247,6 +247,7 @@ fn map_model(model: ZaiCodingPlanModel) -> (String, ModelEntry) {
             info,
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         },
     )

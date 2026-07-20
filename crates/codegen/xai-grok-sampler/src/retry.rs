@@ -300,6 +300,10 @@ pub fn format_sampling_error(err: &SamplingError, retry_count: Option<u32>) -> S
                 retry_prefix, detail_str
             )
         }
+        SamplingError::RedactedTransport { provider, kind, .. } => format!(
+            "{}{provider} {kind} error. The provider request failed; sensitive transport details were omitted.",
+            retry_prefix
+        ),
         SamplingError::Serialization(e) => {
             format!(
                 "{}Failed to parse API response at line {} column {}: {}. This indicates an unexpected response format from the server.",
@@ -404,6 +408,17 @@ pub(crate) fn clone_error(err: &SamplingError) -> SamplingError {
             // variant) so callers see an equivalent description.
             SamplingError::EventStreamError(e.to_string())
         }
+        SamplingError::RedactedTransport {
+            provider,
+            kind,
+            retryable,
+            likely_body_rejected,
+        } => SamplingError::RedactedTransport {
+            provider: *provider,
+            kind: *kind,
+            retryable: *retryable,
+            likely_body_rejected: *likely_body_rejected,
+        },
         SamplingError::Serialization(e) => {
             // serde_json::Error is not Clone; its Display already carries the
             // original line/column exactly once.

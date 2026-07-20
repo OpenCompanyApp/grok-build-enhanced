@@ -655,6 +655,28 @@ pub struct RuntimeResolutionContext<'a> {
     /// CLI `--storage-mode` override. `None` = defer to env/remote/default.
     pub storage_mode: Option<&'a str>,
 }
+/// First-party credential env vars scrubbed from a BYOK auth-provider helper's
+/// environment so it can't inherit the keys Grok uses for its own first-party
+/// requests. Keep in sync with every first-party credential env read across the
+/// crate: `auth::manager` (`GROK_AUTH`/`GROK_AUTH_PATH`), `auth_method`
+/// (`XAI_API_KEY`/legacy), Kimi/Z.AI provider binders, and the
+/// credential-bearing `env_string(...)` reads in `EndpointsConfig::default`.
+/// The `provider_helper_env_scrubs_first_party_credentials`
+/// test pins this against an independent audited literal, so any change here must
+/// be mirrored (and re-audited) there.
+pub(crate) const FIRST_PARTY_CREDENTIAL_ENV_VARS: &[&str] = &[
+    crate::agent::auth_method::XAI_API_KEY_ENV_VAR,
+    crate::agent::auth_method::LEGACY_XAI_API_KEY_ENV_VAR,
+    xai_grok_sampling_types::KIMI_CODE_API_KEY_ENV,
+    xai_grok_sampling_types::ZAI_CODING_PLAN_API_KEY_ENV,
+    "GROK_AUTH",
+    "GROK_AUTH_PATH",
+    "GROK_DEPLOYMENT_KEY",
+    "GROK_EXTRA_AUTH_KEY",
+    "GROK_TRACE_UPLOAD_CREDENTIALS_FILE",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "GROK_INTERNAL_OTLP_HEADERS",
+];
 /// Read an env var as a trimmed string. Returns `None` if unset or empty/whitespace-only.
 pub(crate) fn env_string(name: &str) -> Option<String> {
     let value = std::env::var(name).ok()?;
@@ -1290,10 +1312,15 @@ pub struct Config {
     /// `[model.*]` overrides from config.toml. Resolve via `resolve_model_list()`.
     #[serde(skip)]
     pub config_models: IndexMap<String, ConfigModelOverride>,
-    /// Warnings from `[model.*]` parsing; surfaced by `grok inspect`.
+    /// Warnings from `[model.*]` and `[auth_provider.*]` parsing; surfaced by
+    /// `grok inspect`.
     #[serde(skip)]
-    pub model_override_warnings: Vec<super::config_model_override_parse::ModelOverrideWarning>,
+    pub config_warnings: Vec<super::config_model_override_parse::ConfigWarning>,
     pub grok_com_config: GrokComConfig,
+    /// `[auth_provider.<name>]` tables, populated by
+    /// [`parse_auth_providers`] from trusted config layers only.
+    #[serde(skip)]
+    pub auth_providers: IndexMap<String, crate::auth::AuthProviderConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shortcuts: Option<toml::Value>,
     /// Written by the client via `config_toml_edit`; absorbed so it isn't
@@ -1723,8 +1750,9 @@ impl Default for Config {
             doom_loop_recovery: crate::util::config::DoomLoopRecoverySettings::default(),
             auto_mode: AutoModeConfig::default(),
             config_models: IndexMap::new(),
-            model_override_warnings: Vec::new(),
+            config_warnings: Vec::new(),
             grok_com_config: GrokComConfig::default(),
+            auth_providers: IndexMap::new(),
             shortcuts: None,
             hints: None,
             ui: UiConfig::default(),
@@ -1808,6 +1836,103 @@ impl Default for Config {
         cfg
     }
 }
+/// Parse `[auth_provider.<name>]` tables leniently: a malformed entry warns
+/// (surfaced by `grok inspect`) and is skipped, so it fails closed for the
+/// models referencing it instead of failing the whole config.
+fn parse_auth_providers(
+    raw_config: &toml::Value,
+) -> (
+    IndexMap<String, crate::auth::AuthProviderConfig>,
+    Vec<super::config_model_override_parse::ConfigWarning>,
+) {
+    use super::config_model_override_parse::{ConfigWarning, ConfigWarningKind};
+    let mut providers = IndexMap::new();
+    let mut warnings = Vec::new();
+    let Some(section) = raw_config.get("auth_provider") else {
+        return (providers, warnings);
+    };
+    let Some(table) = section.as_table() else {
+        warnings.push(ConfigWarning::auth_provider_section(
+            ConfigWarningKind::NotATable,
+            format!(
+                "`auth_provider` must be a table of [auth_provider.<name>] entries, got {}; \
+                 all auth providers ignored",
+                section.type_str()
+            ),
+        ));
+        return (providers, warnings);
+    };
+    for (name, value) in table {
+        let mut unknown = Vec::new();
+        match serde_ignored::deserialize::<_, _, crate::auth::AuthProviderConfig>(
+            value.clone(),
+            |path| unknown.push(path.to_string()),
+        ) {
+            Ok(provider) => {
+                for key in unknown {
+                    warnings.push(ConfigWarning::auth_provider(
+                        name,
+                        Some(key.as_str()),
+                        ConfigWarningKind::UnknownField,
+                        "unrecognized key; field ignored".to_owned(),
+                    ));
+                }
+                if !provider.is_usable() {
+                    warnings.push(ConfigWarning::auth_provider(
+                        name,
+                        Some("command"),
+                        ConfigWarningKind::InvalidValue,
+                        "missing or empty command; referencing models resolve \
+                         with no credential"
+                            .to_owned(),
+                    ));
+                }
+                let skew = crate::auth::PROVIDER_TOKEN_EXPIRY_SKEW_SECS;
+                if provider.token_ttl_secs.is_some_and(|ttl| ttl <= skew) {
+                    warnings.push(ConfigWarning::auth_provider(
+                        name,
+                        Some("token_ttl_secs"),
+                        ConfigWarningKind::InvalidValue,
+                        format!(
+                            "at or below the {skew}s refresh margin; the command will \
+                             run before every turn"
+                        ),
+                    ));
+                }
+                if let Some(timeout) = provider.timeout_secs
+                    && !(1..=crate::auth::PROVIDER_TIMEOUT_CEILING_SECS).contains(&timeout)
+                {
+                    let ceiling = crate::auth::PROVIDER_TIMEOUT_CEILING_SECS;
+                    warnings.push(ConfigWarning::auth_provider(
+                        name,
+                        Some("timeout_secs"),
+                        ConfigWarningKind::InvalidValue,
+                        if timeout == 0 {
+                            "below the 1 second minimum; clamped to 1".to_owned()
+                        } else {
+                            format!("above the {ceiling}s maximum; clamped to {ceiling}")
+                        },
+                    ));
+                }
+                providers.insert(name.clone(), provider);
+            }
+            Err(_error) => {
+                // Serde/TOML diagnostics may quote the malformed command or
+                // argument value. Inspect and tracing surface this reason, so
+                // keep it shape-only and payload-free.
+                warnings.push(ConfigWarning::auth_provider(
+                    name,
+                    None,
+                    ConfigWarningKind::InvalidValue,
+                    "failed to parse provider fields; provider skipped, referencing models \
+                     resolve with no credential"
+                        .to_owned(),
+                ));
+            }
+        }
+    }
+    (providers, warnings)
+}
 impl Config {
     /// Reject invalid glob patterns in the model-filter lists at config load, so
     /// a typo fails loudly instead of silently changing availability.
@@ -1863,9 +1988,9 @@ impl Config {
         let raw_config = &Self::expand_auth_alias(raw_config);
         let super::config_model_override_parse::ParsedModelOverrides {
             models: config_models,
-            warnings: model_override_warnings,
+            warnings: config_warnings,
         } = super::config_model_override_parse::parse_model_overrides(raw_config);
-        super::config_model_override_parse::log_model_override_warnings(&model_override_warnings);
+        let (auth_providers, auth_provider_warnings) = parse_auth_providers(raw_config);
         let mut base = toml::Value::try_from(Self::default()).map_err(|e| e.to_string())?;
         if let toml::Value::Table(ref mut t) = base {
             t.remove("model");
@@ -1873,6 +1998,7 @@ impl Config {
         let mut raw_without_model_sections = raw_config.clone();
         if let toml::Value::Table(ref mut t) = raw_without_model_sections {
             t.remove("model");
+            t.remove("auth_provider");
         }
         crate::config::deep_merge_toml(&mut base, &raw_without_model_sections);
         let (mut config, user_unused) =
@@ -1884,7 +2010,33 @@ impl Config {
             );
         }
         config.config_models = config_models;
-        config.model_override_warnings = model_override_warnings;
+        config.config_warnings = config_warnings;
+        config.auth_providers = auth_providers;
+        config.config_warnings.extend(auth_provider_warnings);
+        let declared_provider_names: std::collections::HashSet<&str> = raw_config
+            .get("auth_provider")
+            .and_then(toml::Value::as_table)
+            .map(|t| t.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        for (model_key, model) in &config.config_models {
+            if let Some(ref name) = model.auth_provider
+                && !config.auth_providers.contains_key(name)
+                && !declared_provider_names.contains(name.as_str())
+            {
+                config.config_warnings.push(
+                    super::config_model_override_parse::ConfigWarning::model(
+                        model_key,
+                        Some("auth_provider"),
+                        super::config_model_override_parse::ConfigWarningKind::InvalidValue,
+                        format!(
+                            "references [auth_provider.{name}], which is not defined; \
+                             the model resolves with no provider credential"
+                        ),
+                    ),
+                );
+            }
+        }
+        super::config_model_override_parse::log_config_warnings(&config.config_warnings);
         if config.grok_com_config.oidc.is_none() {
             config.grok_com_config.oidc = OidcAuthConfig::from_env();
         }
@@ -3220,10 +3372,27 @@ pub fn resolve_model_list(
         let entry = model_override.apply(key, base, &cfg.endpoints);
         tracing::debug!(
             model_key = % key, base_url = % entry.info.base_url, has_api_key = entry
-            .api_key.is_some(), env_key = ? entry.env_key, had_base,
+            .api_key.is_some(), env_key = ? entry.env_key, auth_provider = entry
+            .auth_provider.as_ref().map(| p | p.name.as_str()), had_base,
             "config model override applied"
         );
         resolved.insert(key.clone(), entry);
+    }
+    for (key, entry) in resolved.iter_mut() {
+        if let Some(ref mut provider) = entry.auth_provider {
+            let is_custom = entry.info.provider == ProviderId::Custom;
+            let config = is_custom
+                .then(|| cfg.auth_providers.get(&provider.name))
+                .flatten();
+            if config.is_none() {
+                tracing::debug!(
+                    model_key = % key, provider = % provider.name, is_custom,
+                    "model auth provider is undefined or outside the custom-provider scope"
+                );
+            }
+            let route = is_custom.then_some(entry.info.base_url.as_str());
+            provider.attach_trusted_config(config, route);
+        }
     }
     {
         let default_cw = DEFAULT_CONTEXT_WINDOW;
@@ -3334,7 +3503,19 @@ fn apply_global_scalar_defaults(
 pub fn default_model_entries(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntry> {
     default_models(endpoints)
         .into_iter()
-        .map(|(key, entry)| (key, ModelEntry::from_config_entry(&entry)))
+        .map(|(key, entry)| {
+            let mut entry = ModelEntry::from_config_entry(&entry);
+            // Endpoint overrides predate explicit provider IDs. Normalize only
+            // the compiled xAI defaults at this trusted local-config seam; an
+            // explicit per-model `provider = "xai"` is applied later and stays
+            // xAI (with the wire guard still enforcing its trusted origins).
+            if entry.info.provider == ProviderId::Xai
+                && !xai_grok_sampling_types::is_trusted_xai_inference_url(&entry.info.base_url)
+            {
+                entry.info.provider = ProviderId::Custom;
+            }
+            (key, entry)
+        })
         .collect()
 }
 /// Resolve a model against the available model map.
@@ -3609,6 +3790,10 @@ pub struct ConfigModelOverride {
     pub api_key: Option<String>,
     /// Env var name(s) for the provider key — string or array in config.toml.
     pub env_key: Option<EnvKeys>,
+    /// Name of a `[auth_provider.<name>]` credential helper that mints
+    /// this model's bearer token. Static `api_key` / `env_key` win when both
+    /// are set.
+    pub auth_provider: Option<String>,
     pub api_base_url: Option<String>,
     pub max_completion_tokens: Option<u32>,
     pub temperature: Option<f32>,
@@ -3649,16 +3834,23 @@ impl ConfigModelOverride {
         base: Option<ModelEntry>,
         endpoints: &EndpointsConfig,
     ) -> ModelEntry {
-        // An override of a known catalog entry inherits that entry's provider.
-        // A brand-new user model is custom by construction, even when written
-        // before the provider field existed. This is a source-aware migration,
-        // not URL-based auth inference: explicit `provider = "xai"` remains
-        // available for intentionally first-party entries.
+        // A brand-new user model is Custom by construction. A user override
+        // that retargets an inherited xAI entry to a non-xAI URL is also a
+        // Custom model for backwards compatibility with pre-provider configs;
+        // this migration happens only at the trusted config seam. An explicit
+        // `provider = "xai"` remains xAI and the wire guard will refuse to send
+        // xAI credentials to an untrusted origin.
         let is_new_entry = base.is_none();
         let mut entry = base.unwrap_or_else(|| ModelEntry::fallback(key, endpoints));
         if let Some(provider) = self.provider {
             entry.info.provider = provider;
-        } else if is_new_entry {
+        } else if is_new_entry
+            || (entry.info.provider == ProviderId::Xai
+                && self
+                    .base_url
+                    .as_deref()
+                    .is_some_and(|url| !xai_grok_sampling_types::is_trusted_xai_inference_url(url)))
+        {
             entry.info.provider = ProviderId::Custom;
         }
         if let Some(ref v) = self.model {
@@ -3746,10 +3938,15 @@ impl ConfigModelOverride {
         if self.env_key.is_some() {
             entry.env_key.clone_from(&self.env_key);
         }
+        if let Some(ref name) = self.auth_provider {
+            entry.auth_provider = Some(crate::auth::AuthProviderRef::unresolved(name.clone()));
+        }
         if self.api_base_url.is_some() {
             entry.api_base_url.clone_from(&self.api_base_url);
         }
-        if self.supported_in_api.is_none() && (self.api_key.is_some() || self.env_key.is_some()) {
+        if self.supported_in_api.is_none()
+            && (self.api_key.is_some() || self.env_key.is_some() || self.auth_provider.is_some())
+        {
             entry.info.supported_in_api = true;
         }
         entry
@@ -3995,6 +4192,11 @@ pub struct ModelEntry {
     pub info: ModelInfo,
     pub api_key: Option<String>,
     pub env_key: Option<EnvKeys>,
+    /// Named credential helper (`[model.<id>] auth_provider = "<name>"`),
+    /// resolved against `[auth_provider.<name>]` by `resolve_model_list`.
+    /// Config-file models only: the built-in catalog never carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_provider: Option<crate::auth::AuthProviderRef>,
     /// When set, `base_url` is used for session auth, `api_base_url` for API-key auth.
     pub api_base_url: Option<String>,
 }
@@ -4003,10 +4205,14 @@ impl ModelEntry {
     pub fn fallback(slug: &str, endpoints: &EndpointsConfig) -> Self {
         let mut info = ModelInfo::fallback(slug);
         info.base_url = endpoints.resolve_inference_base_url();
+        if !xai_grok_sampling_types::is_trusted_xai_inference_url(&info.base_url) {
+            info.provider = ProviderId::Custom;
+        }
         Self {
             info,
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         }
     }
@@ -4018,20 +4224,34 @@ impl ModelEntry {
             info: ModelInfo::from_config(entry),
             api_key: entry.api_key.clone(),
             env_key: entry.env_key.clone(),
+            auth_provider: None,
             api_base_url: entry.api_base_url.clone(),
         }
     }
-    /// The model's own (BYOK) credential: a non-empty `api_key`, else the first
-    /// set, non-empty `env_key` value. `None` means the model has no usable own
-    /// credential and resolution should fall through to the session / global key.
+    /// The model's own static BYOK credential: a non-empty `api_key`, else the
+    /// first set, non-empty `env_key` value. This never consults a rotating
+    /// auth-provider token.
     pub(super) fn own_credential(&self) -> Option<String> {
         first_own_credential(self.api_key.as_deref(), self.env_key.as_ref())
     }
-    /// `true` when the model has a non-empty `api_key` or an `env_key` that
-    /// resolves to a non-empty value.
-    /// Probes `std::env::var` at call time — result is not stable across env changes.
+    /// The rotating provider authorized for this model. Named helpers are a
+    /// generic-custom-provider feature only, static credentials take
+    /// precedence, and the trusted ref must be bound to this exact route.
+    pub(crate) fn effective_auth_provider(&self) -> Option<&crate::auth::AuthProviderRef> {
+        if self.info.provider != ProviderId::Custom || self.own_credential().is_some() {
+            return None;
+        }
+        self.auth_provider
+            .as_ref()
+            .filter(|provider| provider.is_bound_to_custom_route(&self.info.base_url))
+    }
+    /// `true` when the custom model has a static credential or a named helper.
+    /// The unresolved-helper case still counts as BYOK so auth gates fail
+    /// closed rather than considering first-party credentials. Never executes
+    /// a provider command.
     pub fn has_own_credentials(&self) -> bool {
         self.own_credential().is_some()
+            || (self.info.provider == ProviderId::Custom && self.auth_provider.is_some())
     }
 }
 impl std::ops::Deref for ModelEntry {
@@ -4411,9 +4631,10 @@ pub(crate) fn first_own_credential(
 ///
 /// xAI compatibility priority is model `api_key`/`env_key`, then the signed-in
 /// session token, then `XAI_API_KEY`. Custom providers accept only their own
-/// explicit `api_key`/`env_key`; Codex authentication is attached later by its
-/// provider binder. When `env_key` lists multiple names, the first set,
-/// non-empty value is used.
+/// explicit `api_key`/`env_key` or a fresh token cached by an exact-route-bound
+/// named helper; static keys take precedence. Codex, Kimi, and Z.AI
+/// authentication is attached later by each provider binder. When `env_key`
+/// lists multiple names, the first set, non-empty value is used.
 pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> ResolvedCredentials {
     let info = model.info();
     if info.provider == ProviderId::OpenAiCodex {
@@ -4452,7 +4673,11 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
         };
     }
     if info.provider == ProviderId::Custom {
-        let api_key = model.own_credential();
+        let api_key = model.own_credential().or_else(|| {
+            model
+                .effective_auth_provider()
+                .and_then(crate::auth::AuthProviderRef::cached_token)
+        });
         if api_key.is_none()
             && let Some(ref env_keys) = model.env_key
             && !env_keys.is_empty()
@@ -4610,28 +4835,87 @@ pub struct ModelAuthFacts {
     pub byok: ModelByok,
     pub auth_scheme: AuthScheme,
 }
-/// Resolve `model_id` to its auth facts from one effective-config load.
-/// Load/parse failure → `byok = Unknown`; model absent from the catalog →
-/// `NotByok`. An empty `model_id` (no sampling config yet) → `Unknown`, not
-/// `NotByok`, so the gate isn't activated for an unidentified model.
-pub fn resolve_model_auth_facts(model_id: &str) -> ModelAuthFacts {
-    if model_id.is_empty() {
-        return ModelAuthFacts {
-            byok: ModelByok::Unknown,
-            auth_scheme: AuthScheme::default(),
-        };
+/// Resolve `model_id` to its auth facts and auth-provider reference from one
+/// effective-config load; both ride the same memo (see
+/// `SessionActor::model_auth_memo`). Load/parse failure → `byok = Unknown`;
+/// model absent from the catalog → `NotByok`. An empty `model_id` (no sampling
+/// config yet) → `Unknown`, not `NotByok`, so the gate isn't activated for an
+/// unidentified model.
+pub fn resolve_model_auth_facts_and_provider(
+    model_id: &str,
+) -> (ModelAuthFacts, Option<crate::auth::AuthProviderRef>) {
+    resolve_model_auth_facts_and_provider_at_route(model_id, None)
+}
+
+/// Why a route-aware model-auth lookup did not produce a cacheable definite
+/// result. Only a transient config load/parse failure may reuse a prior memo;
+/// ambiguity and an unidentified model must fail closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModelAuthLookupStatus {
+    Definite,
+    ConfigUnavailable,
+    FailClosed,
+}
+
+impl ModelAuthLookupStatus {
+    pub(crate) const fn may_reuse_memo(self) -> bool {
+        matches!(self, Self::ConfigUnavailable)
     }
-    with_resolved_model(model_id, |lookup| ModelAuthFacts {
-        byok: byok_from_lookup(&lookup),
-        auth_scheme: match lookup {
-            ModelLookup::Loaded(Some(e)) => e.info().auth_scheme,
-            _ => AuthScheme::default(),
-        },
+}
+
+/// Route-aware variant used at the turn boundary. Catalog map keys are not
+/// persisted in chat-state, so a routing slug may match more than one entry.
+/// Accept exactly one `(slug, base_url)` match and fail closed on ambiguity
+/// rather than selecting the first provider credential in map order.
+pub fn resolve_model_auth_facts_and_provider_at_route(
+    model_id: &str,
+    base_url: Option<&str>,
+) -> (ModelAuthFacts, Option<crate::auth::AuthProviderRef>) {
+    let (facts, provider, _) = resolve_model_auth_state_at_route(model_id, base_url);
+    (facts, provider)
+}
+
+pub(crate) fn resolve_model_auth_state_at_route(
+    model_id: &str,
+    base_url: Option<&str>,
+) -> (
+    ModelAuthFacts,
+    Option<crate::auth::AuthProviderRef>,
+    ModelAuthLookupStatus,
+) {
+    if model_id.is_empty() {
+        return (
+            ModelAuthFacts {
+                byok: ModelByok::Unknown,
+                auth_scheme: AuthScheme::default(),
+            },
+            None,
+            ModelAuthLookupStatus::FailClosed,
+        );
+    }
+    with_resolved_model(model_id, base_url, |lookup| {
+        let status = match &lookup {
+            ModelLookup::Loaded(_) => ModelAuthLookupStatus::Definite,
+            ModelLookup::ConfigUnavailable => ModelAuthLookupStatus::ConfigUnavailable,
+            ModelLookup::Ambiguous => ModelAuthLookupStatus::FailClosed,
+        };
+        let facts = ModelAuthFacts {
+            byok: byok_from_lookup(&lookup),
+            auth_scheme: match lookup {
+                ModelLookup::Loaded(Some(e)) => e.info().auth_scheme,
+                _ => AuthScheme::default(),
+            },
+        };
+        let provider = match lookup {
+            ModelLookup::Loaded(Some(e)) => e.effective_auth_provider().cloned(),
+            _ => None,
+        };
+        (facts, provider, status)
     })
 }
 fn byok_from_lookup(lookup: &ModelLookup) -> ModelByok {
     match lookup {
-        ModelLookup::ConfigUnavailable => ModelByok::Unknown,
+        ModelLookup::ConfigUnavailable | ModelLookup::Ambiguous => ModelByok::Unknown,
         ModelLookup::Loaded(Some(e)) if e.has_own_credentials() => ModelByok::Byok,
         ModelLookup::Loaded(_) => ModelByok::NotByok,
     }
@@ -4639,12 +4923,17 @@ fn byok_from_lookup(lookup: &ModelLookup) -> ModelByok {
 enum ModelLookup<'a> {
     /// `None` if `model_id` is absent from the catalog.
     Loaded(Option<&'a ModelEntry>),
+    /// More than one catalog identity shares the same routing slug and route.
+    Ambiguous,
     ConfigUnavailable,
 }
-/// Load + parse the effective config and hand the `model_id` lookup to `f`,
-/// keeping "config unavailable" distinct from "model absent" so callers can
-/// stay conservative on a transient config failure.
-fn with_resolved_model<T>(model_id: &str, f: impl FnOnce(ModelLookup) -> T) -> T {
+/// Load + parse the effective config and hand the route-aware `model_id` lookup
+/// to `f`, keeping unavailable, absent, and ambiguous states distinct.
+fn with_resolved_model<T>(
+    model_id: &str,
+    base_url: Option<&str>,
+    f: impl FnOnce(ModelLookup) -> T,
+) -> T {
     let Some(raw) = crate::config::load_effective_config()
         .map_err(|e| tracing::warn!(error = % e, "config load failed for model auth lookup"))
         .ok()
@@ -4658,7 +4947,27 @@ fn with_resolved_model<T>(model_id: &str, f: impl FnOnce(ModelLookup) -> T) -> T
         return f(ModelLookup::ConfigUnavailable);
     };
     let models = resolve_model_list(&cfg, None);
-    f(ModelLookup::Loaded(find_model_by_id(&models, model_id)))
+    f(lookup_model_at_route(&models, model_id, base_url))
+}
+
+fn lookup_model_at_route<'a>(
+    models: &'a IndexMap<String, ModelEntry>,
+    model_id: &str,
+    base_url: Option<&str>,
+) -> ModelLookup<'a> {
+    let mut matches = models.values().filter(|entry| {
+        entry.info.model == model_id && base_url.is_none_or(|route| entry.info.base_url == route)
+    });
+    let first = matches.next();
+    if first.is_some() && matches.next().is_some() {
+        tracing::warn!(
+            model = %model_id,
+            route = base_url.unwrap_or_default(),
+            "model auth lookup is ambiguous; refusing to select a provider credential"
+        );
+        return ModelLookup::Ambiguous;
+    }
+    ModelLookup::Loaded(first)
 }
 /// Resolve a standalone `SamplerConfig` for an auxiliary model slug (image
 /// description, session summary, ...), resolved through the catalog so a
@@ -4696,6 +5005,13 @@ pub fn resolve_aux_model_sampling_config(
         }
         if sampler.api_key.is_some() {
             return Some(sampler);
+        }
+        if entry.effective_auth_provider().is_some() {
+            tracing::warn!(
+                model = % model_id,
+                "aux model uses an auth provider with no cached token; the caller falls back to its session default"
+            );
+            return None;
         }
     }
     let xai_bearer = session_key
@@ -4749,6 +5065,7 @@ pub fn resolve_aux_model_sampling_config(
             },
             api_key: Some(bearer),
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
@@ -4768,18 +5085,14 @@ pub fn resolve_aux_model_sampling_config(
     );
     None
 }
-/// Finalize image-describe model + sampler config for user attachments.
-/// Shared so the aux resolve happy path and the
-/// `None` fallback cannot diverge between those entry points.
-///
-/// On aux resolve `Some`, stamp session-local fields (client id, attribution, bearer,
-/// retries) onto the helper config. On `None`, fall back to the active session model and
-/// full config (not forcing `image_description_model` onto the agent endpoint, which 404s
-/// on BYOK / non-proxy routes for internal slugs like `grok-build`).
 /// Stamp the session-local fields (client id, attribution, bearer resolver,
 /// retries) from the active session onto a routed aux `SamplerConfig` so a
 /// helper model keeps the session's auth/attribution. Shared by image-describe
 /// and the auto-mode classifier so the two can't drift.
+///
+/// The resolver gate is host-based, stricter than `session_token_auth_gate`:
+/// a session-token deployment on a custom `models_base_url` loses aux-sampler
+/// refresh, rather than risk the session bearer on a third-party endpoint.
 pub fn stamp_session_local_sampler_fields(
     cfg: &mut SamplerConfig,
     active_session_config: &SamplerConfig,
@@ -4885,7 +5198,10 @@ pub fn sampling_config_for_model(
         ProviderId::ZaiCodingPlan => {
             xai_grok_sampling_types::CredentialSourceId::ZaiCodingPlanApiKey
         }
-        ProviderId::Custom if model.has_own_credentials() => {
+        ProviderId::Custom if model.effective_auth_provider().is_some() => {
+            xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider
+        }
+        ProviderId::Custom if model.own_credential().is_some() => {
             xai_grok_sampling_types::CredentialSourceId::StaticApiKey
         }
         ProviderId::Custom => xai_grok_sampling_types::CredentialSourceId::Unspecified,
@@ -5047,6 +5363,7 @@ fn resolve_hidden_default_web_search_sampling_config(
         },
         api_key: None,
         env_key: None,
+        auth_provider: None,
         api_base_url: None,
     };
     let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
@@ -5070,6 +5387,13 @@ pub fn resolve_web_search_sampling_config(
 ) -> Option<SamplerConfig> {
     let resolved = if let Some(entry) = find_model_by_id(models, model_id).cloned() {
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
+        if credentials.api_key.is_none() && entry.effective_auth_provider().is_some() {
+            tracing::warn!(
+                web_search_model = % model_id,
+                "web search model uses an auth provider with no cached token; disabling web search"
+            );
+            return None;
+        }
         Some(sampling_config_for_model(
             &entry,
             credentials,
@@ -5566,6 +5890,62 @@ reasoning_effort = "low"
         );
     }
     #[test]
+    fn session_bearer_resolver_is_not_stamped_onto_a_third_party_sampler() {
+        #[derive(Debug)]
+        struct SessionResolver;
+        impl xai_grok_sampler::BearerResolver for SessionResolver {
+            fn current_bearer(&self) -> Option<String> {
+                Some("session-token".to_owned())
+            }
+        }
+        let active = SamplerConfig {
+            provider: ProviderId::Xai,
+            bearer_resolver: Some(std::sync::Arc::new(SessionResolver)),
+            ..Default::default()
+        };
+        let mut third_party = SamplerConfig {
+            provider: ProviderId::Xai,
+            base_url: "https://third-party.example/v1".to_owned(),
+            ..Default::default()
+        };
+
+        stamp_session_local_sampler_fields(&mut third_party, &active, None, None);
+
+        assert!(third_party.bearer_resolver.is_none());
+    }
+
+    #[test]
+    fn session_bearer_resolver_is_retained_for_a_trusted_xai_sampler() {
+        #[derive(Debug)]
+        struct SessionResolver;
+        impl xai_grok_sampler::BearerResolver for SessionResolver {
+            fn current_bearer(&self) -> Option<String> {
+                Some("session-token".to_owned())
+            }
+        }
+        let active = SamplerConfig {
+            provider: ProviderId::Xai,
+            bearer_resolver: Some(std::sync::Arc::new(SessionResolver)),
+            ..Default::default()
+        };
+        let mut xai = SamplerConfig {
+            provider: ProviderId::Xai,
+            base_url: "https://api.x.ai/v1".to_owned(),
+            ..Default::default()
+        };
+
+        stamp_session_local_sampler_fields(&mut xai, &active, None, None);
+
+        assert_eq!(
+            xai.bearer_resolver
+                .as_ref()
+                .and_then(|resolver| resolver.current_bearer())
+                .as_deref(),
+            Some("session-token")
+        );
+    }
+
+    #[test]
     fn finalize_image_describe_sampler_none_uses_active_session_model_not_forced_helper() {
         let active = SamplerConfig {
             model: "composer-session-model".into(),
@@ -5597,16 +5977,15 @@ reasoning_effort = "low"
     fn resolve_aux_model_honors_grok_build_override() {
         let endpoints = EndpointsConfig::default();
         let mut catalog = IndexMap::new();
-        catalog.insert(
-            "grok-build".to_string(),
-            test_model_entry(
-                "v9m-rl-learnability-tp8",
-                "https://vendor.example/v1",
-                Some("vendor-key"),
-                None,
-                None,
-            ),
+        let mut custom = test_model_entry(
+            "v9m-rl-learnability-tp8",
+            "https://vendor.example/v1",
+            Some("vendor-key"),
+            None,
+            None,
         );
+        custom.info.provider = ProviderId::Custom;
+        catalog.insert("grok-build".to_string(), custom);
         let resolved = resolve_aux_model_sampling_config(
             "grok-build",
             &catalog,
@@ -5654,6 +6033,152 @@ reasoning_effort = "low"
             xai_grok_sampling_types::KIMI_CODE_BASE_URL
         );
         assert!(resolved.api_key.is_none());
+    }
+
+    #[tokio::test]
+    async fn cold_provider_backed_aux_model_never_falls_through_to_xai() {
+        let endpoints = EndpointsConfig::default();
+        let route = "https://aux-gateway.example/v1";
+        let mut entry = test_model_entry("aux-model", route, None, None, None);
+        entry.info.provider = ProviderId::Custom;
+        entry.auth_provider = Some(crate::auth::AuthProviderRef::new_for_test_route(
+            "test-aux-cold".to_owned(),
+            crate::auth::AuthProviderConfig {
+                command: "printf aux-token".to_owned(),
+                args: None,
+                token_ttl_secs: Some(3600),
+                timeout_secs: None,
+            },
+            route,
+        ));
+        let catalog = IndexMap::from([("aux".to_owned(), entry)]);
+
+        let resolved = resolve_aux_model_sampling_config(
+            "aux",
+            &catalog,
+            &endpoints,
+            Some("foreign-xai-session"),
+            false,
+            None,
+            None,
+        );
+
+        assert!(resolved.is_none());
+    }
+
+    #[tokio::test]
+    async fn warm_provider_backed_aux_model_uses_its_custom_route_and_token() {
+        let endpoints = EndpointsConfig::default();
+        let route = "https://aux-gateway.example/v1";
+        let provider = crate::auth::AuthProviderRef::new_for_test_route(
+            "test-aux-warm".to_owned(),
+            crate::auth::AuthProviderConfig {
+                command: "printf aux-token".to_owned(),
+                args: None,
+                token_ttl_secs: Some(3600),
+                timeout_secs: None,
+            },
+            route,
+        );
+        provider
+            .ensure_fresh_token(None)
+            .await
+            .rotated()
+            .expect("provider mints a token");
+        let mut entry = test_model_entry("aux-model", route, None, None, None);
+        entry.info.provider = ProviderId::Custom;
+        entry.auth_provider = Some(provider);
+        let catalog = IndexMap::from([("aux".to_owned(), entry)]);
+
+        let resolved = resolve_aux_model_sampling_config(
+            "aux",
+            &catalog,
+            &endpoints,
+            Some("foreign-xai-session"),
+            false,
+            None,
+            None,
+        )
+        .expect("the warm custom provider resolves");
+
+        assert_eq!(resolved.provider, ProviderId::Custom);
+        assert_eq!(resolved.base_url, route);
+        assert_eq!(resolved.api_key.as_deref(), Some("aux-token"));
+        assert_eq!(
+            resolved.credential_source,
+            xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider
+        );
+    }
+
+    #[tokio::test]
+    async fn cold_provider_backed_web_search_model_is_disabled() {
+        let endpoints = EndpointsConfig::default();
+        let route = "https://search-gateway.example/v1";
+        let mut entry = test_model_entry("search-model", route, None, None, None);
+        entry.info.provider = ProviderId::Custom;
+        entry.auth_provider = Some(crate::auth::AuthProviderRef::new_for_test_route(
+            "test-web-search-cold".to_owned(),
+            crate::auth::AuthProviderConfig {
+                command: "printf search-token".to_owned(),
+                args: None,
+                token_ttl_secs: Some(3600),
+                timeout_secs: None,
+            },
+            route,
+        ));
+        let catalog = IndexMap::from([("search".to_owned(), entry)]);
+
+        let resolved = resolve_web_search_sampling_config(
+            "search",
+            &catalog,
+            Some("foreign-xai-session"),
+            false,
+            None,
+            None,
+            &endpoints,
+        );
+
+        assert!(resolved.is_none());
+    }
+
+    #[tokio::test]
+    async fn warm_provider_backed_web_search_model_uses_its_cached_token() {
+        let endpoints = EndpointsConfig::default();
+        let route = "https://search-gateway.example/v1";
+        let provider = crate::auth::AuthProviderRef::new_for_test_route(
+            "test-web-search-warm".to_owned(),
+            crate::auth::AuthProviderConfig {
+                command: "printf search-token".to_owned(),
+                args: None,
+                token_ttl_secs: Some(3600),
+                timeout_secs: None,
+            },
+            route,
+        );
+        provider
+            .ensure_fresh_token(None)
+            .await
+            .rotated()
+            .expect("provider mints a token");
+        let mut entry = test_model_entry("search-model", route, None, None, None);
+        entry.info.provider = ProviderId::Custom;
+        entry.auth_provider = Some(provider);
+        let catalog = IndexMap::from([("search".to_owned(), entry)]);
+
+        let resolved = resolve_web_search_sampling_config(
+            "search",
+            &catalog,
+            Some("foreign-xai-session"),
+            false,
+            None,
+            None,
+            &endpoints,
+        )
+        .expect("the warm custom provider enables web search");
+
+        assert_eq!(resolved.provider, ProviderId::Custom);
+        assert_eq!(resolved.base_url, route);
+        assert_eq!(resolved.api_key.as_deref(), Some("search-token"));
     }
 
     #[test]
@@ -5706,6 +6231,465 @@ reasoning_effort = "low"
         assert_eq!(model.info.base_url, "https://api.example.com/v1");
         assert_eq!(model.api_key, Some("sk-test-key-12345".to_string()));
     }
+    #[test]
+    fn parses_auth_provider_tables_and_model_reference() {
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [auth_provider.litellm]
+            command = "/usr/local/bin/litellm-token"
+            args = ["--scope", "corp"]
+            token_ttl_secs = 3600
+            timeout_secs = 10
+
+            [model.proxied-claude]
+            model = "claude-sonnet-4-5"
+            base_url = "https://litellm.corp.example/v1"
+            context_window = 200000
+            auth_provider = "litellm"
+            "#,
+        )
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+        assert_eq!(
+            cfg.auth_providers.get("litellm"),
+            Some(&crate::auth::AuthProviderConfig {
+                command: "/usr/local/bin/litellm-token".into(),
+                args: Some(vec!["--scope".into(), "corp".into()]),
+                token_ttl_secs: Some(3600),
+                timeout_secs: Some(10),
+            })
+        );
+        let resolved = resolve_model_list(&cfg, None);
+        let model = resolved.get("proxied-claude").expect("model should exist");
+        let provider = model
+            .auth_provider
+            .as_ref()
+            .expect("model should reference the provider");
+        assert_eq!(provider.name, "litellm");
+        assert_eq!(provider.config.command, "/usr/local/bin/litellm-token");
+        assert_eq!(provider.config.token_ttl_secs, Some(3600));
+        assert!(
+            model.has_own_credentials(),
+            "provider-backed models classify as BYOK (session token must not leak)"
+        );
+        assert!(
+            model.info.supported_in_api,
+            "declaring an auth provider implies supported_in_api"
+        );
+    }
+    #[test]
+    fn non_table_auth_provider_section_warns_and_is_ignored() {
+        use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
+        let raw_config: toml::Value = toml::from_str("auth_provider = [1, 2]").unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config remains usable");
+
+        assert!(cfg.auth_providers.is_empty());
+        assert!(cfg.config_warnings.iter().any(|warning| {
+            warning.kind == ConfigWarningKind::NotATable
+                && warning.target == WarningTarget::AuthProviderSection
+        }));
+    }
+
+    #[test]
+    fn malformed_auth_provider_entry_warns_and_is_skipped() {
+        use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [auth_provider.corp]
+            command = "provider-helper"
+            token_ttl_secs = "not-a-number"
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config remains usable");
+
+        assert!(!cfg.auth_providers.contains_key("corp"));
+        let warning = cfg
+            .config_warnings
+            .iter()
+            .find(|warning| {
+                warning.kind == ConfigWarningKind::InvalidValue
+                    && warning.target
+                        == WarningTarget::AuthProvider {
+                            name: "corp".to_owned(),
+                            field: None,
+                        }
+            })
+            .expect("the malformed provider should warn");
+        assert!(!warning.reason.contains("provider-helper"));
+        assert!(!warning.reason.contains("not-a-number"));
+    }
+
+    #[test]
+    fn unknown_auth_provider_field_warns_without_dropping_the_provider() {
+        use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [auth_provider.corp]
+            command = "provider-helper"
+            unexpected = true
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config remains usable");
+
+        assert!(cfg.auth_providers.contains_key("corp"));
+        assert!(cfg.config_warnings.iter().any(|warning| {
+            warning.kind == ConfigWarningKind::UnknownField
+                && warning.target
+                    == WarningTarget::AuthProvider {
+                        name: "corp".to_owned(),
+                        field: Some("unexpected".to_owned()),
+                    }
+        }));
+    }
+
+    #[test]
+    fn missing_auth_provider_command_warns_that_models_have_no_credential() {
+        use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [auth_provider.corp]
+            token_ttl_secs = 3600
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config remains usable");
+
+        let warning = cfg
+            .config_warnings
+            .iter()
+            .find(|warning| {
+                warning.kind == ConfigWarningKind::InvalidValue
+                    && warning.target
+                        == WarningTarget::AuthProvider {
+                            name: "corp".to_owned(),
+                            field: Some("command".to_owned()),
+                        }
+            })
+            .expect("missing provider command should warn");
+        assert!(warning.reason.contains("no credential"));
+    }
+
+    #[test]
+    fn short_auth_provider_ttl_warns_that_every_turn_will_remint() {
+        use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [auth_provider.corp]
+            command = "provider-helper"
+            token_ttl_secs = 60
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config remains usable");
+
+        assert!(cfg.config_warnings.iter().any(|warning| {
+            warning.kind == ConfigWarningKind::InvalidValue
+                && warning.target
+                    == WarningTarget::AuthProvider {
+                        name: "corp".to_owned(),
+                        field: Some("token_ttl_secs".to_owned()),
+                    }
+        }));
+    }
+
+    #[test]
+    fn zero_auth_provider_timeout_warns_that_it_is_clamped_to_one_second() {
+        use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [auth_provider.corp]
+            command = "provider-helper"
+            timeout_secs = 0
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config remains usable");
+
+        let warning = cfg
+            .config_warnings
+            .iter()
+            .find(|warning| {
+                warning.kind == ConfigWarningKind::InvalidValue
+                    && warning.target
+                        == WarningTarget::AuthProvider {
+                            name: "corp".to_owned(),
+                            field: Some("timeout_secs".to_owned()),
+                        }
+            })
+            .expect("zero timeout should warn");
+        assert!(warning.reason.contains("clamped to 1"));
+    }
+
+    #[test]
+    fn excessive_auth_provider_timeout_warns_that_it_is_clamped_to_six_hundred_seconds() {
+        use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [auth_provider.corp]
+            command = "provider-helper"
+            timeout_secs = 601
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config remains usable");
+
+        let warning = cfg
+            .config_warnings
+            .iter()
+            .find(|warning| {
+                warning.kind == ConfigWarningKind::InvalidValue
+                    && warning.target
+                        == WarningTarget::AuthProvider {
+                            name: "corp".to_owned(),
+                            field: Some("timeout_secs".to_owned()),
+                        }
+            })
+            .expect("excessive timeout should warn");
+        assert!(warning.reason.contains("clamped to 600"));
+    }
+
+    #[tokio::test]
+    async fn named_auth_provider_is_custom_only_and_exact_route_bound() {
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [auth_provider.corp]
+            command = "printf helper-token"
+            token_ttl_secs = 3600
+
+            [model.first-party]
+            provider = "xai"
+            model = "grok-test"
+            base_url = "https://api.x.ai/v1"
+            context_window = 200000
+            auth_provider = "corp"
+
+            [model.custom-route]
+            provider = "custom"
+            model = "custom-test"
+            base_url = "https://gateway.example/v1"
+            context_window = 200000
+            auth_provider = "corp"
+            "#,
+        )
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+        let mut resolved = resolve_model_list(&cfg, None);
+
+        let first_party = resolved.get("first-party").unwrap();
+        let first_party_ref = first_party.auth_provider.as_ref().unwrap();
+        assert!(first_party_ref.config.command.is_empty());
+        assert!(first_party.effective_auth_provider().is_none());
+        assert_eq!(
+            first_party_ref.ensure_fresh_token(None).await,
+            crate::auth::ProviderRefreshOutcome::Unusable
+        );
+        assert_eq!(
+            resolve_credentials(first_party, Some("xai-session"))
+                .api_key
+                .as_deref(),
+            Some("xai-session"),
+            "a named helper cannot replace xAI session auth"
+        );
+
+        let custom = resolved.get("custom-route").unwrap();
+        assert!(custom.effective_auth_provider().is_some());
+        let provider = custom.auth_provider.as_ref().unwrap().clone();
+        assert_eq!(
+            provider.ensure_fresh_token(None).await.rotated().as_deref(),
+            Some("helper-token")
+        );
+        assert_eq!(
+            resolve_credentials(custom, Some("foreign-session"))
+                .api_key
+                .as_deref(),
+            Some("helper-token")
+        );
+
+        resolved
+            .get_mut("custom-route")
+            .unwrap()
+            .info
+            .base_url
+            .push('/');
+        let changed_route = resolved.get("custom-route").unwrap();
+        assert!(changed_route.effective_auth_provider().is_none());
+        assert_eq!(
+            resolve_credentials(changed_route, Some("foreign-session")).api_key,
+            None
+        );
+    }
+    /// A static key shadows a fully defined provider through the real
+    /// `resolve_model_list` + `attach_trusted_config` pipeline (not a
+    /// hand-built ref): the static key wins even with the provider cache warm.
+    #[tokio::test]
+    async fn static_key_shadows_defined_provider_through_pipeline() {
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [auth_provider.understudy]
+            command = "printf provider-token"
+            token_ttl_secs = 3600
+
+            [model.dual-auth]
+            model = "m"
+            base_url = "https://switchboard.example/v1"
+            context_window = 200000
+            api_key = "sk-house-key"
+            auth_provider = "understudy"
+            "#,
+        )
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+        let resolved = resolve_model_list(&cfg, None);
+        let model = resolved.get("dual-auth").expect("model should exist");
+        assert_eq!(
+            model.effective_auth_provider().map(|p| p.name.as_str()),
+            None,
+            "a static key shadows the provider after real resolution"
+        );
+        let provider = model.auth_provider.as_ref().unwrap().clone();
+        let _ = provider.ensure_fresh_token(None).await;
+        let creds = resolve_credentials(model, Some("session-jwt"));
+        assert_eq!(creds.api_key.as_deref(), Some("sk-house-key"));
+        assert_eq!(creds.auth_type, xai_chat_state::AuthType::ApiKey);
+        assert_eq!(creds.base_url, "https://switchboard.example/v1");
+    }
+    #[test]
+    fn undefined_auth_provider_fails_closed() {
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [model.orphan]
+            model = "m"
+            base_url = "https://third-party.example/v1"
+            context_window = 200000
+            auth_provider = "nope"
+            "#,
+        )
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+        let resolved = resolve_model_list(&cfg, None);
+        let model = resolved.get("orphan").expect("model should exist");
+        let provider = model.auth_provider.as_ref().unwrap();
+        assert_eq!(provider.name, "nope");
+        assert!(
+            provider.config.command.is_empty(),
+            "undefined provider keeps an empty command"
+        );
+        assert!(cfg.config_warnings.iter().any(|warning| {
+            warning.kind
+                == super::super::config_model_override_parse::ConfigWarningKind::InvalidValue
+                && matches!(
+                    &warning.target,
+                    super::super::config_model_override_parse::WarningTarget::Model {
+                        field: Some(field),
+                        ..
+                    } if field == "auth_provider"
+                )
+        }));
+        assert!(model.has_own_credentials());
+        let creds = resolve_credentials(model, Some("session-jwt"));
+        assert_eq!(creds.api_key, None);
+    }
+    #[tokio::test]
+    async fn resolve_credentials_serves_cached_provider_token() {
+        use xai_chat_state::AuthType;
+        let mut model = test_model_entry("m", "https://litellm.example/v1", None, None, None);
+        model.info.provider = ProviderId::Custom;
+        let provider = crate::auth::AuthProviderRef::new_for_test_route(
+            "resolve-creds-test".into(),
+            crate::auth::AuthProviderConfig {
+                command: "printf provider-minted-token".into(),
+                args: None,
+                token_ttl_secs: Some(3600),
+                timeout_secs: None,
+            },
+            "https://litellm.example/v1",
+        );
+        model.auth_provider = Some(provider.clone());
+        let creds = resolve_credentials(&model, Some("session-jwt"));
+        assert_eq!(creds.api_key, None, "cold cache must not run the command");
+        let _ = provider.ensure_fresh_token(None).await;
+        let creds = resolve_credentials(&model, Some("session-jwt"));
+        assert_eq!(creds.api_key.as_deref(), Some("provider-minted-token"));
+        assert_eq!(creds.auth_type, AuthType::ApiKey);
+        assert_eq!(creds.base_url, "https://litellm.example/v1");
+    }
+    /// A set `env_key` shadows even a warm provider cache at resolve time, so
+    /// the static credential wins on the wire and the provider never governs.
+    #[tokio::test]
+    async fn set_env_key_shadows_warm_provider_at_resolve_time() {
+        use xai_grok_test_support::EnvGuard;
+        let var = "GROK_TEST_ENVKEY_SHADOW";
+        let _guard = EnvGuard::set(var, "env-token");
+        let mut model = test_model_entry("m", "https://litellm.example/v1", None, Some(var), None);
+        model.info.provider = ProviderId::Custom;
+        let provider = crate::auth::AuthProviderRef::new_for_test_route(
+            "env-shadow-test".into(),
+            crate::auth::AuthProviderConfig {
+                command: "printf provider-token".into(),
+                args: None,
+                token_ttl_secs: Some(3600),
+                timeout_secs: None,
+            },
+            "https://litellm.example/v1",
+        );
+        model.auth_provider = Some(provider.clone());
+        let _ = provider.ensure_fresh_token(None).await;
+        assert_eq!(
+            model.effective_auth_provider().map(|p| p.name.as_str()),
+            None,
+            "a resolvable env_key shadows the provider"
+        );
+        let creds = resolve_credentials(&model, Some("session-jwt"));
+        assert_eq!(
+            creds.api_key.as_deref(),
+            Some("env-token"),
+            "a set env_key must win over a warm provider cache"
+        );
+    }
+    /// A catalog deserialized from bytes cannot smuggle a runnable command.
+    #[test]
+    fn prefetched_entry_provider_config_comes_from_trusted_tables_only() {
+        let mut entry = test_model_entry("m", "https://cache.example/v1", None, None, None);
+        entry.info.provider = ProviderId::Custom;
+        let smuggled: crate::auth::AuthProviderRef = serde_json::from_str(
+            r#"{"name": "cache-smuggle-test", "config": {"command": "evil"}}"#,
+        )
+        .unwrap();
+        entry.auth_provider = Some(smuggled);
+        let mut prefetched = IndexMap::new();
+        prefetched.insert("cached-model".to_string(), entry);
+        let cfg = Config::default();
+        let resolved = resolve_model_list(&cfg, Some(prefetched.clone()));
+        let provider = resolved["cached-model"].auth_provider.as_ref().unwrap();
+        assert_eq!(
+            resolve_credentials(&resolved["cached-model"], Some("session-jwt")).api_key,
+            None,
+            "an unusable provider fails closed"
+        );
+        assert_eq!(provider.config, crate::auth::AuthProviderConfig::default());
+        let mut cfg = Config::default();
+        cfg.auth_providers.insert(
+            "cache-smuggle-test".to_string(),
+            crate::auth::AuthProviderConfig {
+                command: "printf local".to_string(),
+                args: None,
+                token_ttl_secs: None,
+                timeout_secs: None,
+            },
+        );
+        let resolved = resolve_model_list(&cfg, Some(prefetched));
+        let provider = resolved["cached-model"].auth_provider.as_ref().unwrap();
+        assert_eq!(provider.config.command, "printf local");
+    }
     fn test_model_entry(
         model: &str,
         base_url: &str,
@@ -5757,6 +6741,7 @@ reasoning_effort = "low"
             },
             api_key: api_key.map(|s| s.to_string()),
             env_key: env_key.map(EnvKeys::single),
+            auth_provider: None,
             api_base_url: api_base_url.map(|s| s.to_string()),
         }
     }
@@ -5787,13 +6772,14 @@ reasoning_effort = "low"
     }
     #[test]
     fn sampling_config_uses_model_api_key_over_fallback() {
-        let model = test_model_entry(
+        let mut model = test_model_entry(
             "test-model",
             "https://test.api/v1",
             Some("model-specific-key"),
             None,
             None,
         );
+        model.info.provider = ProviderId::Custom;
         let sampling_config = sampling_config_for_model(
             &model,
             resolve_credentials(&model, None),
@@ -5809,7 +6795,7 @@ reasoning_effort = "low"
         assert_eq!(sampling_config.base_url, "https://test.api/v1");
     }
     #[test]
-    fn sampling_config_uses_fallback_when_no_model_api_key() {
+    fn sampling_config_drops_xai_fallback_on_an_untrusted_origin() {
         let model = test_model_entry("test-model", "https://test.api/v1", None, None, None);
         let sampling_config = sampling_config_for_model(
             &model,
@@ -5825,7 +6811,12 @@ reasoning_effort = "low"
             None,
             None,
         );
-        assert_eq!(sampling_config.api_key, Some("fallback-key".to_string()));
+
+        assert!(sampling_config.api_key.is_none());
+        assert_eq!(
+            sampling_config.credential_source,
+            xai_grok_sampling_types::CredentialSourceId::Unspecified
+        );
     }
     #[test]
     fn default_models_dual_endpoint_routing() {
@@ -6418,8 +7409,80 @@ reasoning_effort = "low"
         );
     }
     #[test]
+    fn model_auth_lookup_status_reuses_memo_only_for_config_unavailability() {
+        assert!(ModelAuthLookupStatus::ConfigUnavailable.may_reuse_memo());
+        assert!(!ModelAuthLookupStatus::FailClosed.may_reuse_memo());
+        assert!(!ModelAuthLookupStatus::Definite.may_reuse_memo());
+    }
+
+    #[test]
+    fn model_auth_lookup_fails_closed_for_same_route_slug_even_when_one_key_matches() {
+        let mut models = IndexMap::new();
+        models.insert(
+            "shared-slug".to_owned(),
+            test_model_entry(
+                "shared-slug",
+                "https://gateway.example/v1",
+                Some("key-one"),
+                None,
+                None,
+            ),
+        );
+        models.insert(
+            "second-catalog-id".to_owned(),
+            test_model_entry(
+                "shared-slug",
+                "https://gateway.example/v1",
+                Some("key-two"),
+                None,
+                None,
+            ),
+        );
+
+        assert!(matches!(
+            lookup_model_at_route(&models, "shared-slug", Some("https://gateway.example/v1")),
+            ModelLookup::Ambiguous
+        ));
+    }
+
+    #[test]
+    fn model_auth_lookup_uses_exact_route_to_disambiguate_shared_slug() {
+        let mut models = IndexMap::new();
+        models.insert(
+            "first-catalog-id".to_owned(),
+            test_model_entry(
+                "shared-slug",
+                "https://first.example/v1",
+                Some("key-one"),
+                None,
+                None,
+            ),
+        );
+        models.insert(
+            "second-catalog-id".to_owned(),
+            test_model_entry(
+                "shared-slug",
+                "https://second.example/v1",
+                Some("key-two"),
+                None,
+                None,
+            ),
+        );
+
+        let ModelLookup::Loaded(Some(entry)) =
+            lookup_model_at_route(&models, "shared-slug", Some("https://second.example/v1"))
+        else {
+            panic!("exact route should select one catalog identity");
+        };
+        assert_eq!(entry.api_key.as_deref(), Some("key-two"));
+    }
+
+    #[test]
     fn resolve_model_auth_facts_empty_model_id_is_unknown() {
-        assert_eq!(resolve_model_auth_facts("").byok, ModelByok::Unknown);
+        assert_eq!(
+            resolve_model_auth_facts_and_provider("").0.byok,
+            ModelByok::Unknown
+        );
     }
     #[test]
     fn user_override_adds_api_key_to_default_model() {
@@ -7847,6 +8910,7 @@ reasoning_effort = "low"
             None,
         );
         let model = models.get(dm).expect("model should exist");
+        assert_eq!(model.info.provider, ProviderId::Custom);
         assert_eq!(model.info.base_url, "https://my-proxy.example.com/v1");
         assert_eq!(model.api_key.as_deref(), Some("my-custom-api-key"));
         assert!(model.env_key.is_none());
@@ -7980,13 +9044,14 @@ reasoning_effort = "low"
     #[test]
     #[serial]
     fn e2e_credential_priority_model_key_beats_session_beats_env() {
-        let model_with_key = test_model_entry(
+        let mut model_with_key = test_model_entry(
             "test",
             "https://custom.api/v1",
             Some("model-key"),
             None,
             None,
         );
+        model_with_key.info.provider = ProviderId::Custom;
         unsafe { std::env::set_var("XAI_API_KEY", "env-key") };
         let sampling = resolve_sampling(&model_with_key, Some("session-key"));
         assert_eq!(
@@ -8000,7 +9065,7 @@ reasoning_effort = "low"
         );
         let model_no_key = test_model_entry(
             "test",
-            "https://proxy.api/v1",
+            "https://cli-chat-proxy.grok.com/v1",
             None,
             None,
             Some("https://api.x.ai/v1"),
@@ -8012,7 +9077,7 @@ reasoning_effort = "low"
             "session token should beat env key when model has no own credentials"
         );
         assert_eq!(
-            sampling.base_url, "https://proxy.api/v1",
+            sampling.base_url, "https://cli-chat-proxy.grok.com/v1",
             "session auth should use base_url, not api_base_url"
         );
         let sampling = resolve_sampling(&model_no_key, None);
@@ -8156,6 +9221,7 @@ reasoning_effort = "low"
             None,
         );
         let model = models.get(dm).expect("model should exist");
+        assert_eq!(model.info.provider, ProviderId::Custom);
         assert_eq!(
             model.info.base_url, "https://enterprise-proxy.acme.com/v1",
             "base_url must inherit from [endpoints], not stale default"
@@ -11162,6 +12228,7 @@ default = "grok-4.5"
             },
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         }
     }

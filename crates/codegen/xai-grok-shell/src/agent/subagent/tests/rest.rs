@@ -274,7 +274,8 @@ fn compaction_preserves_inherited_prefix() {
                     .any(|p| {
                         matches!(
                             p, xai_grok_sampling_types::conversation::ContentPart::Text {
-                            text } if text.contains("<background_context>")
+                            text }
+if text.contains("<background_context>")
                         )
                     })
             } else {
@@ -2927,6 +2928,51 @@ async fn resolve_subagent_agent_definition_unknown_model_falls_through_to_inheri
         .await;
     assert_eq!(config.model, "grok-4.5");
     assert_eq!(model_id.0.as_ref(), "grok-4.5");
+}
+/// Spawn-time resolution is cache-only: a cold custom provider never receives
+/// the parent xAI key, while a warm exact-route cache supplies its own token.
+#[tokio::test]
+async fn subagent_override_custom_provider_uses_only_its_cached_token() {
+    use xai_grok_agent::config::ModelOverride;
+    let route = "https://gateway.example/v1";
+    let provider = crate::auth::AuthProviderRef::new_for_test_route(
+        "test-subagent-spawn".to_owned(),
+        crate::auth::AuthProviderConfig {
+            command: "printf subagent-provider-token".to_owned(),
+            args: None,
+            token_ttl_secs: Some(3600),
+            timeout_secs: None,
+        },
+        route,
+    );
+    let mut entry = test_model_entry("proxied-model");
+    entry.info.provider = xai_grok_sampling_types::ProviderId::Custom;
+    entry.info.base_url = route.to_owned();
+    entry.auth_provider = Some(provider.clone());
+    let mut models = indexmap::IndexMap::new();
+    models.insert("proxied".to_owned(), entry);
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.sampling_config.model = "grok-4.5".to_owned();
+    ctx.model_id = acp::ModelId::new("grok-4.5");
+    ctx.available_models = models;
+    ctx.auth = Some(crate::auth::GrokAuth {
+        key: "parent-session-jwt".to_owned(),
+        ..Default::default()
+    });
+    ctx.subagent_model_overrides
+        .insert("explore".to_owned(), "proxied".to_owned());
+
+    let (cold, model_id) =
+        resolve_subagent_sampling_config("explore", &ModelOverride::Inherit, &ctx).await;
+    assert_eq!(model_id.0.as_ref(), "proxied");
+    assert_eq!(cold.provider, xai_grok_sampling_types::ProviderId::Custom);
+    assert_eq!(cold.api_key, None, "the parent xAI key must not fall through");
+
+    provider.ensure_fresh_token(None).await.rotated().unwrap();
+    let (warm, _) =
+        resolve_subagent_sampling_config("explore", &ModelOverride::Inherit, &ctx).await;
+    assert_eq!(warm.api_key.as_deref(), Some("subagent-provider-token"));
+    assert_eq!(warm.base_url, route);
 }
 #[test]
 fn has_api_key_reports_non_empty_values_without_exposing_them() {

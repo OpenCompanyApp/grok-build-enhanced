@@ -325,8 +325,7 @@ pub(super) async fn run_session(
             { session.chat_state_handle.update_credentials(xai_chat_state::Credentials {
             provider : Some(r.provider), api_key : r.api_key, auth_type : r.auth_type,
             alpha_test_key : existing.alpha_test_key, client_version : existing
-            .client_version, }); } session.model_auth_facts
-            .replace(None); } } SessionCommand::GetCurrentModel { responds_to } => { let
+            .client_version, }); } session.invalidate_model_auth_memo(); } } SessionCommand::GetCurrentModel { responds_to } => { let
             model = session.chat_state_handle.get_sampling_config(). await .map(| c | c
             .model).unwrap_or_default(); let _ = responds_to.send(model); }
             SessionCommand::GetCurrentPromptMode { responds_to } => { let mode = *

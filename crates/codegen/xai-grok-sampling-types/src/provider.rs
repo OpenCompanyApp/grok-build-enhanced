@@ -138,6 +138,9 @@ pub enum CredentialSourceId {
     #[serde(rename = "zai_coding_plan_api_key")]
     ZaiCodingPlanApiKey,
     StaticApiKey,
+    /// In-memory token minted by a trusted named helper for one exact custom
+    /// provider route. This source is never valid for a first-party provider.
+    RotatingAuthProvider,
     External,
 }
 
