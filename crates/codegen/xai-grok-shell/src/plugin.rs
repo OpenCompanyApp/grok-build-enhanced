@@ -53,7 +53,8 @@ pub fn install_plugin(source: &str, cwd: &Path) -> Result<InstallOutcome, Instal
     let is_local = matches!(install_source, git_install::InstallSource::Local { .. });
     let mut registry = InstallRegistry::load();
 
-    let result = git_install::install_from_source(&install_source, &registry)?;
+    let result =
+        git_install::install_from_source(&install_source, &registry, marketplace_require_sha())?;
 
     let repo = git_install::build_installed_repo(&result, &install_source);
     registry.insert(result.repo_key.clone(), repo);
@@ -286,6 +287,7 @@ fn update_marketplace_repo(
         &entry,
         provenance,
         registry,
+        marketplace_require_sha(),
     )
 }
 
@@ -398,7 +400,7 @@ pub fn update_plugins_by_selector(
                 },
             }
         } else {
-            match git_install::update_repo(repo_key, repo) {
+            match git_install::update_repo(repo_key, repo, marketplace_require_sha()) {
                 Ok(UpdateStatus::Updated(result)) if result.changed => {
                     apply_update_to_registry(&mut registry, repo_key, &result);
                     RepoUpdateOutcome::Updated {
@@ -527,6 +529,7 @@ pub fn classify_install_error(err: &InstallError) -> String {
         InstallError::Json { .. } => "json",
         InstallError::PluginNotFound { .. } => "not_found",
         InstallError::ShaMismatch { .. } => "sha_mismatch",
+        InstallError::UnpinnedRemoteRefused { .. } => "unpinned_remote_refused",
         InstallError::InstallFailed { .. } => "install_failed",
     }
     .to_string()
@@ -697,6 +700,15 @@ fn bullet_list(items: &[String]) -> String {
         .map(|item| format!("  - {item}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Resolve the remote-plugin SHA policy from disk config plus the environment.
+/// Both sources are tighten-only, and remote campaign overlays cannot relax a
+/// local security policy.
+pub fn marketplace_require_sha() -> bool {
+    xai_grok_config::load_effective_config_disk_only()
+        .map(|config| xai_grok_plugin_marketplace::load_require_sha(&config))
+        .unwrap_or_else(|_| xai_grok_plugin_marketplace::env_require_sha())
 }
 
 /// Marketplace sources from config.toml + settings JSON, unfiltered.
@@ -1067,6 +1079,7 @@ fn install_marketplace_entry(
             &plugin_subdir,
             provenance,
             registry,
+            marketplace_require_sha(),
         )
     } else {
         installer::install_from_marketplace(marketplace_root, &plugin_subdir, provenance, registry)
@@ -1430,6 +1443,13 @@ mod tests {
             "sha_mismatch"
         );
         assert_eq!(
+            classify_install_error(&InstallError::UnpinnedRemoteRefused {
+                plugin: "p".into(),
+                url: "u".into(),
+            }),
+            "unpinned_remote_refused"
+        );
+        assert_eq!(
             classify_install_error(&InstallError::InstallFailed { detail: "x".into() }),
             "install_failed"
         );
@@ -1462,7 +1482,7 @@ mod tests {
             plugins: HashMap::new(),
             marketplace: None,
         };
-        let status = git_install::update_repo("local", &repo).unwrap();
+        let status = git_install::update_repo("local", &repo, false).unwrap();
         assert!(matches!(status, UpdateStatus::LiveLocal));
     }
 

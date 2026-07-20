@@ -1692,6 +1692,37 @@
       ]
     },
     {
+      "id": "upstream-plugin-immutable-revision-security",
+      "description": "Pinned Grok Build ba76b0a provider-neutral remote-plugin commit-pin policy, full-SHA validation and hoisting, safe git operand handling, and option-terminated argv contracts.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "Cargo.lock",
+        "crates/codegen/xai-grok-agent/Cargo.toml",
+        "crates/codegen/xai-grok-agent/src/plugins/git_install.rs",
+        "crates/codegen/xai-grok-agent/src/plugins/install_registry.rs",
+        "crates/codegen/xai-grok-agent/src/plugins/local_refresh.rs",
+        "crates/codegen/xai-grok-pager/docs/user-guide/09-plugins.md",
+        "crates/codegen/xai-grok-plugin-marketplace/src/config.rs",
+        "crates/codegen/xai-grok-plugin-marketplace/src/git.rs",
+        "crates/codegen/xai-grok-plugin-marketplace/src/installer.rs",
+        "crates/codegen/xai-grok-plugin-marketplace/src/lib.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/marketplace.rs",
+        "crates/codegen/xai-grok-shell/src/plugin.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/hooks_plugins.rs",
+        "crates/codegen/xai-grok-shell/tests/test_trusted_local_plugin_refresh_e2e.rs",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "Cargo.lock",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "provider-bearer-auth-source-isolation",
       "description": "Canonical-origin xAI bearer isolation, cross-origin redirect refusal, fail-closed managed refresh, provider-neutral bounded errors, explicit retry hints, and synthetic provider-matrix regressions.",
       "source_ids": [

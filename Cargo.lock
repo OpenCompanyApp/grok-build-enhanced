@@ -13016,6 +13016,7 @@ dependencies = [
  "xai-grok-tools",
  "xai-token-estimation",
  "xai-tool-types",
+ "xai-tty-utils",
  "zeroize",
 ]
 
