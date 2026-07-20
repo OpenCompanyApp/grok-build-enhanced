@@ -3706,7 +3706,7 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",
-            false,
+            None, // clipboard_delivery
             true, // show_raw_url
         );
 
@@ -3732,7 +3732,7 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",
-            false,
+            None, // clipboard_delivery
             true, // show_raw_url
         );
 
@@ -3769,7 +3769,7 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",
-            false,
+            None, // clipboard_delivery
             true, // show_raw_url
         );
 
