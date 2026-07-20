@@ -660,7 +660,7 @@ pub struct WelcomeRenderParams<'a> {
     pub trust_state: &'a TrustState,
     pub login_label: Option<&'a str>,
     pub auth_code_input: &'a str,
-    pub clipboard_copied: bool,
+    pub clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     pub show_raw_url: bool,
     pub announcement: Option<&'a xai_grok_announcements::RemoteAnnouncement>,
     pub tip: Option<&'a str>,
@@ -804,7 +804,7 @@ pub fn render_welcome(
                 auth_url.as_deref(),
                 *mode,
                 params.auth_code_input,
-                params.clipboard_copied,
+                params.clipboard_delivery,
                 params.show_raw_url,
             );
             WelcomeRenderResult {
@@ -1135,18 +1135,30 @@ fn auth_fallback_line(theme: &Theme) -> Line<'static> {
     .alignment(Alignment::Center)
 }
 
-/// Push the shared copy-prompt block: the "click here to copy" line, a "copied!"
-/// slot (kept blank when not copied so the height is stable), and the
-/// show-full-URL fallback link.
-fn push_auth_copy_block(lines: &mut Vec<Line<'static>>, theme: &Theme, clipboard_copied: bool) {
+/// Push the shared copy-prompt block, stable feedback slot, and raw-URL fallback.
+fn push_auth_copy_block(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
+) {
     lines.push(Line::default());
     lines.push(auth_copy_line(theme));
     lines.push(Line::default());
-    lines.push(if clipboard_copied {
-        Line::from(Span::styled("copied!", Style::default().fg(theme.gray)))
-            .alignment(Alignment::Center)
-    } else {
-        Line::default()
+    lines.push(match clipboard_delivery {
+        Some(crate::clipboard::ClipboardDelivery::Confirmed) => {
+            Line::from(Span::styled("copied!", Style::default().fg(theme.gray)))
+                .alignment(Alignment::Center)
+        }
+        Some(crate::clipboard::ClipboardDelivery::Unverified) => Line::from(Span::styled(
+            "copy sent—verify paste",
+            Style::default().fg(theme.gray),
+        ))
+        .alignment(Alignment::Center),
+        Some(crate::clipboard::ClipboardDelivery::Failed) => {
+            Line::from(Span::styled("copy failed", Style::default().fg(theme.gray)))
+                .alignment(Alignment::Center)
+        }
+        None => Line::default(),
     });
     lines.push(Line::default());
     lines.push(auth_fallback_line(theme));
@@ -1304,7 +1316,7 @@ fn render_browser_status_arm(
     logo_line_count: u16,
     auth_url: Option<&str>,
     show_raw_url: bool,
-    clipboard_copied: bool,
+    clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     kind: BrowserStatusKind,
 ) -> (Option<Rect>, Option<Rect>) {
     let h_pad: u16 = content_area.width / 6;
@@ -1376,7 +1388,7 @@ fn render_browser_status_arm(
         );
     }
     if auth_url.is_some() {
-        push_auth_copy_block(&mut lines, theme, clipboard_copied);
+        push_auth_copy_block(&mut lines, theme, clipboard_delivery);
     }
     lines.push(Line::default());
     lines.push(
@@ -1410,7 +1422,7 @@ fn render_welcome_authenticating(
     auth_url: Option<&str>,
     mode: AuthMode,
     auth_code_input: &str,
-    clipboard_copied: bool,
+    clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     show_raw_url: bool,
 ) -> (Option<Rect>, Option<Rect>) {
     let top_pad = content_area.height.saturating_sub(logo_line_count) / 10;
@@ -1463,7 +1475,7 @@ fn render_welcome_authenticating(
                     ))
                     .alignment(Alignment::Center),
                 );
-                push_auth_copy_block(&mut lines, theme, clipboard_copied);
+                push_auth_copy_block(&mut lines, theme, clipboard_delivery);
             } else {
                 lines.push(
                     Line::from(Span::styled(
@@ -1520,7 +1532,7 @@ fn render_welcome_authenticating(
             logo_line_count,
             auth_url,
             show_raw_url,
-            clipboard_copied,
+            clipboard_delivery,
             BrowserStatusKind::Command,
         ),
 
@@ -1532,7 +1544,7 @@ fn render_welcome_authenticating(
             logo_line_count,
             auth_url,
             show_raw_url,
-            clipboard_copied,
+            clipboard_delivery,
             BrowserStatusKind::Device,
         ),
 
@@ -2565,6 +2577,28 @@ mod tests {
     use crate::views::session_picker::{build_grouped_picker_entries, build_session_entry_data};
 
     #[test]
+    fn auth_copy_feedback_covers_delivery_states() {
+        let theme = Theme::current();
+        for (delivery, expected) in [
+            (crate::clipboard::ClipboardDelivery::Confirmed, "copied!"),
+            (
+                crate::clipboard::ClipboardDelivery::Unverified,
+                "copy sent—verify paste",
+            ),
+            (crate::clipboard::ClipboardDelivery::Failed, "copy failed"),
+        ] {
+            let mut lines = Vec::new();
+            push_auth_copy_block(&mut lines, &theme, Some(delivery));
+            let feedback = lines[3]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            assert_eq!(feedback, expected);
+        }
+    }
+
+    #[test]
     fn mask_auth_token_cases() {
         assert_eq!(mask_auth_token_for_display(""), "Paste your token here...");
         assert_eq!(mask_auth_token_for_display("12345678"), "12345678");
@@ -2608,7 +2642,7 @@ mod tests {
             trust_state,
             login_label: None,
             auth_code_input: "",
-            clipboard_copied: false,
+            clipboard_delivery: None,
             show_raw_url: false,
             announcement: None,
             tip: None,
@@ -3618,7 +3652,7 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",    // auth_code_input — unused in device mode
-            false, // clipboard_copied
+            None,  // clipboard_delivery
             false, // show_raw_url
         );
 
@@ -3774,7 +3808,7 @@ mod tests {
             Some(url),
             AuthMode::Command,
             "",    // auth_code_input — unused
-            false, // clipboard_copied
+            None,  // clipboard_delivery
             false, // show_raw_url
         );
 

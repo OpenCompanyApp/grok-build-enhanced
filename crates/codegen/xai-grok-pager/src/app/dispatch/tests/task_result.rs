@@ -5,6 +5,66 @@ use super::super::task_result::{
 };
 use super::*;
 
+#[test]
+fn stale_auth_copy_timeout_does_not_clear_newer_feedback() {
+    let mut app = test_app();
+    app.auth_state = AuthState::Authenticating {
+        request_seq: 1,
+        handle: None,
+        auth_url: Some("https://grok.com/auth".to_owned()),
+        mode: AuthMode::Command,
+    };
+
+    let first_effects = crate::app::dispatch::router::dispatch_copy_auth_url(&mut app, |_| {
+        crate::clipboard::ClipboardDelivery::Failed
+    });
+    let [
+        Effect::ScheduleClearAuthCopyFeedback {
+            generation: first_generation,
+        },
+    ] = first_effects.as_slice()
+    else {
+        panic!("first copy must schedule feedback clear");
+    };
+
+    let second_effects = crate::app::dispatch::router::dispatch_copy_auth_url(&mut app, |_| {
+        crate::clipboard::ClipboardDelivery::Confirmed
+    });
+    let [
+        Effect::ScheduleClearAuthCopyFeedback {
+            generation: second_generation,
+        },
+    ] = second_effects.as_slice()
+    else {
+        panic!("second copy must schedule feedback clear");
+    };
+    assert_ne!(first_generation, second_generation);
+    assert_eq!(
+        app.auth_clipboard_delivery,
+        Some(crate::clipboard::ClipboardDelivery::Confirmed)
+    );
+
+    dispatch_task_result(
+        TaskResult::AuthCopyFeedbackTimeout {
+            generation: *first_generation,
+        },
+        &mut app,
+    );
+    assert_eq!(
+        app.auth_clipboard_delivery,
+        Some(crate::clipboard::ClipboardDelivery::Confirmed),
+        "the first copy's stale timeout must preserve the second feedback"
+    );
+
+    dispatch_task_result(
+        TaskResult::AuthCopyFeedbackTimeout {
+            generation: *second_generation,
+        },
+        &mut app,
+    );
+    assert_eq!(app.auth_clipboard_delivery, None);
+}
+
 fn foreign_resume_hint(
     tool: xai_grok_workspace::foreign_sessions::ForeignSessionTool,
 ) -> xai_grok_workspace::foreign_sessions::RecentForeignSession {

@@ -957,8 +957,10 @@ pub struct AppView {
     pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
     /// Whether deferred welcome-screen login should force OAuth.
     pub auth_use_oauth: bool,
-    /// Whether the last clipboard copy during auth succeeded.
-    pub auth_clipboard_copied: bool,
+    /// Delivery state from the last clipboard copy during auth.
+    pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
+    /// Generation of the current auth copy feedback and its clear timer.
+    pub auth_clipboard_feedback_generation: u64,
     /// Team principal UUID from auth (`None` for personal sessions).
     pub team_id: Option<String>,
     /// Team name from auth (displayed in the shortcuts bar).
@@ -1283,7 +1285,8 @@ impl AppView {
             next_auth_request_seq: 1,
             deferred_startup: Default::default(),
             auth_use_oauth: false,
-            auth_clipboard_copied: false,
+            auth_clipboard_delivery: None,
+            auth_clipboard_feedback_generation: 0,
             team_id: None,
             team_name: None,
             is_zdr: false,
@@ -3843,7 +3846,7 @@ impl AppView {
                             trust_state: &self.trust_state,
                             login_label: self.login_label.as_deref(),
                             auth_code_input: &self.auth_code_input,
-                            clipboard_copied: self.auth_clipboard_copied,
+                            clipboard_delivery: self.auth_clipboard_delivery,
                             show_raw_url: self.auth_show_raw_url,
                             announcement: hero_announcement,
                             tip,
@@ -5110,7 +5113,8 @@ pub(crate) mod tests {
             next_auth_request_seq: 1,
             deferred_startup: Default::default(),
             auth_use_oauth: false,
-            auth_clipboard_copied: false,
+            auth_clipboard_delivery: None,
+            auth_clipboard_feedback_generation: 0,
             team_id: None,
             team_name: None,
             is_zdr: false,

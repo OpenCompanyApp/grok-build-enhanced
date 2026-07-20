@@ -1056,7 +1056,9 @@ impl AgentView {
     fn complete_mermaid_action(&mut self, action: MermaidClickAction, path: &Path) {
         let ok = match action {
             MermaidClickAction::Open => self.open_media_natively(path),
-            MermaidClickAction::CopyPath => self.copy_to_clipboard(&path.display().to_string()),
+            MermaidClickAction::CopyPath => self
+                .copy_to_clipboard(&path.display().to_string())
+                .success(),
         };
         if !ok {
             crate::unified_log::error(

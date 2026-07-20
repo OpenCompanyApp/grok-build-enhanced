@@ -560,6 +560,115 @@ pub fn diagnose_wayland_data_control_live() -> Option<TerminalWarning> {
     )
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ClipboardDiagnosticsInput<'a> {
+    pub route_native: bool,
+    pub route_tmux: bool,
+    pub route_osc52: bool,
+    pub native_tool: &'a str,
+    pub brand: TerminalName,
+    pub host_os: crate::host::HostOs,
+    pub display_server: crate::host::DisplayServer,
+    pub is_ssh: bool,
+    pub container_no_display: bool,
+    pub osc52_sink: bool,
+    pub wayland_data_control: bool,
+    pub wl_copy_available: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ClipboardDiagnostics {
+    pub text: String,
+    pub has_issue: bool,
+}
+
+/// Format preflight clipboard routes without claiming that a copy already happened.
+pub fn format_clipboard_diagnostics(input: ClipboardDiagnosticsInput<'_>) -> ClipboardDiagnostics {
+    use crate::clipboard::{
+        ClipboardDelivery, ClipboardEnvironment, NativeClipboardPreflight, expected_delivery,
+        native_clipboard_preflight,
+    };
+
+    let environment = ClipboardEnvironment {
+        brand: input.brand,
+        host_os: input.host_os,
+        display_server: input.display_server,
+        remote: input.is_ssh,
+        container: input.container_no_display,
+        osc52_sink: input.osc52_sink,
+        wayland_data_control: input.wayland_data_control,
+        wl_copy_available: input.wl_copy_available,
+    };
+    let capability = environment.osc52_capability();
+    let native_preflight = native_clipboard_preflight(input.route_native, environment);
+    let delivery = expected_delivery(
+        native_preflight,
+        input.route_tmux,
+        input.route_osc52,
+        environment,
+    );
+    let native = match native_preflight {
+        NativeClipboardPreflight::LocalAvailable => format!("local ({})", input.native_tool),
+        NativeClipboardPreflight::RemoteOnly if input.container_no_display => {
+            format!("container ({})", input.native_tool)
+        }
+        NativeClipboardPreflight::RemoteOnly => format!("remote ({})", input.native_tool),
+        NativeClipboardPreflight::Unavailable => "unavailable".to_owned(),
+        NativeClipboardPreflight::Disabled => "off".to_owned(),
+    };
+    let tmux = if input.route_tmux { "on" } else { "off" };
+    let osc52 = if input.route_osc52 {
+        capability.label()
+    } else {
+        "off"
+    };
+    let wrap = if input.osc52_sink { "on" } else { "off" };
+    let status = match delivery {
+        ClipboardDelivery::Confirmed => "confirmed",
+        ClipboardDelivery::Unverified => "unverified",
+        ClipboardDelivery::Failed => "unavailable",
+    };
+    let fix = match delivery {
+        ClipboardDelivery::Confirmed => None,
+        ClipboardDelivery::Unverified if input.is_ssh => {
+            Some("grok wrap <ssh command> or /minimal")
+        }
+        ClipboardDelivery::Unverified if input.container_no_display => {
+            Some("grok wrap <command> or /minimal")
+        }
+        ClipboardDelivery::Unverified => Some("grok wrap or /minimal"),
+        ClipboardDelivery::Failed if input.is_ssh => Some("grok wrap <ssh command> or /minimal"),
+        ClipboardDelivery::Failed if input.container_no_display => {
+            Some("grok wrap <command> or /minimal")
+        }
+        ClipboardDelivery::Failed => Some("/minimal"),
+    };
+
+    let mut out = String::from("Clipboard\n");
+    out.push_str(&format!("  native       {native}\n"));
+    out.push_str(&format!("  tmux         {tmux}\n"));
+    out.push_str(&format!("  osc 52       {osc52}\n"));
+    out.push_str(&format!("  wrap         {wrap}\n"));
+    if input.display_server == crate::host::DisplayServer::Wayland {
+        out.push_str(&format!(
+            "  data-control {}\n",
+            if input.wayland_data_control {
+                "on"
+            } else {
+                "off"
+            }
+        ));
+    }
+    out.push_str(&format!("  status       {status}\n"));
+    if let Some(fix) = fix {
+        out.push_str(&format!("  fix          {fix}\n"));
+    }
+    ClipboardDiagnostics {
+        text: out,
+        has_issue: !delivery.is_confirmed(),
+    }
+}
+
 /// `/terminal-setup` Environment `color` row.
 pub fn format_color_env_line(level: ColorLevel) -> String {
     format!("  color        {}\n", level.as_str())
@@ -1000,6 +1109,136 @@ mod tests {
     fn non_wayland_is_quiet() {
         assert!(diagnose_wayland_data_control(false, false, false).is_none());
         assert!(diagnose_wayland_data_control(false, true, true).is_none());
+    }
+
+    fn clipboard_input(brand: TerminalName) -> ClipboardDiagnosticsInput<'static> {
+        ClipboardDiagnosticsInput {
+            route_native: true,
+            route_tmux: false,
+            route_osc52: true,
+            native_tool: "arboard",
+            brand,
+            host_os: crate::host::HostOs::Linux,
+            display_server: crate::host::DisplayServer::Unknown,
+            is_ssh: true,
+            container_no_display: false,
+            osc52_sink: false,
+            wayland_data_control: false,
+            wl_copy_available: false,
+        }
+    }
+
+    #[test]
+    fn clipboard_diagnostics_unknown_ssh_is_unverified() {
+        let diagnostics = format_clipboard_diagnostics(clipboard_input(TerminalName::Unknown));
+        for expected in [
+            "Clipboard",
+            "native       remote (arboard)",
+            "tmux         off",
+            "osc 52       unknown",
+            "wrap         off",
+            "status       unverified",
+            "fix          grok wrap <ssh command> or /minimal",
+        ] {
+            assert!(
+                diagnostics.text.contains(expected),
+                "missing {expected:?}:\n{}",
+                diagnostics.text
+            );
+        }
+        assert!(diagnostics.has_issue);
+    }
+
+    #[test]
+    fn clipboard_diagnostics_known_terminal_status() {
+        let supported = format_clipboard_diagnostics(clipboard_input(TerminalName::Ghostty));
+        assert!(supported.text.contains("osc 52       supported"));
+        assert!(supported.text.contains("status       confirmed"));
+        assert!(!supported.has_issue);
+
+        let unsupported = format_clipboard_diagnostics(clipboard_input(TerminalName::Vte));
+        assert!(unsupported.text.contains("osc 52       unsupported"));
+        assert!(unsupported.text.contains("status       unavailable"));
+        assert!(
+            unsupported
+                .text
+                .contains("fix          grok wrap <ssh command> or /minimal")
+        );
+        assert!(unsupported.has_issue);
+
+        let unsupported_container = format_clipboard_diagnostics(ClipboardDiagnosticsInput {
+            is_ssh: false,
+            container_no_display: true,
+            ..clipboard_input(TerminalName::Vte)
+        });
+        assert!(
+            unsupported_container
+                .text
+                .contains("osc 52       unsupported")
+        );
+        assert!(
+            unsupported_container
+                .text
+                .contains("status       unavailable")
+        );
+    }
+
+    #[test]
+    fn clipboard_diagnostics_local_wayland_native_matrix() {
+        for (data_control, wl_copy, expected) in [
+            (false, false, crate::clipboard::ClipboardDelivery::Failed),
+            (false, true, crate::clipboard::ClipboardDelivery::Confirmed),
+            (true, false, crate::clipboard::ClipboardDelivery::Confirmed),
+        ] {
+            let diagnostics = format_clipboard_diagnostics(ClipboardDiagnosticsInput {
+                route_osc52: false,
+                native_tool: if wl_copy { "wl-copy" } else { "arboard" },
+                brand: TerminalName::Vte,
+                display_server: crate::host::DisplayServer::Wayland,
+                is_ssh: false,
+                wayland_data_control: data_control,
+                wl_copy_available: wl_copy,
+                ..clipboard_input(TerminalName::Vte)
+            });
+            assert_eq!(diagnostics.has_issue, !expected.is_confirmed());
+            assert!(diagnostics.text.contains(if data_control {
+                "data-control on"
+            } else {
+                "data-control off"
+            }));
+        }
+    }
+
+    #[test]
+    fn clipboard_diagnostics_tmux_wrap_and_container() {
+        let tmux = format_clipboard_diagnostics(ClipboardDiagnosticsInput {
+            route_tmux: true,
+            route_osc52: false,
+            ..clipboard_input(TerminalName::Unknown)
+        });
+        assert!(tmux.text.contains("tmux         on"));
+        assert!(tmux.text.contains("status       confirmed"));
+
+        let wrapped = format_clipboard_diagnostics(ClipboardDiagnosticsInput {
+            osc52_sink: true,
+            ..clipboard_input(TerminalName::Unknown)
+        });
+        assert!(wrapped.text.contains("osc 52       supported"));
+        assert!(wrapped.text.contains("wrap         on"));
+        assert!(wrapped.text.contains("status       confirmed"));
+
+        let container = format_clipboard_diagnostics(ClipboardDiagnosticsInput {
+            is_ssh: false,
+            container_no_display: true,
+            ..clipboard_input(TerminalName::Unknown)
+        });
+        assert!(container.text.contains("native       container (arboard)"));
+        assert!(container.text.contains("status       unverified"));
+        assert!(
+            container
+                .text
+                .contains("fix          grok wrap <command> or /minimal")
+        );
     }
 
     // =====================================================================

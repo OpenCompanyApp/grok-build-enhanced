@@ -939,8 +939,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::AuthCopiedTimeout => {
-            app.auth_clipboard_copied = false;
+        TaskResult::AuthCopyFeedbackTimeout { generation } => {
+            if generation == app.auth_clipboard_feedback_generation {
+                app.auth_clipboard_delivery = None;
+            }
             vec![]
         }
         TaskResult::PaywallCheckTick => {
@@ -972,7 +974,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             app.last_subscription_check_at = None;
             app.login_method_id = None;
             ensure_login_method(app);
-            app.auth_clipboard_copied = false;
+            app.auth_clipboard_delivery = None;
             let effects = dispatch_exit_session(app);
             app.welcome_prompt_focused = false;
             effects

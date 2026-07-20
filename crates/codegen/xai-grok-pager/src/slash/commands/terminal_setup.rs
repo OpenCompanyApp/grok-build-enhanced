@@ -61,6 +61,8 @@ impl SlashCommand for TerminalSetupCommand {
         ));
         let route = crate::clipboard::clipboard_route();
         let is_ssh = xai_grok_shell::util::clipboard::is_remote_session();
+        let container_no_display =
+            xai_grok_shell::util::clipboard::is_containerized_without_display();
 
         let mut out = String::new();
 
@@ -124,30 +126,34 @@ impl SlashCommand for TerminalSetupCommand {
         }
 
         // -- Clipboard --
-        out.push_str("\nClipboard routes\n");
-        out.push_str(&format!(
-            "  native       {}  (tool: {})\n",
-            if route.native { "active" } else { "off" },
-            xai_grok_shell::util::clipboard::native_tool_name(),
-        ));
-        out.push_str(&format!(
-            "  tmux buffer  {}\n",
-            if route.tmux_buffer { "active" } else { "off" }
-        ));
-        out.push_str(&format!(
-            "  osc 52       {}\n",
-            if route.osc52 { "active" } else { "off" }
-        ));
-        out.push_str(&format!(
-            "  data-control {}\n",
-            crate::clipboard::wayland_data_control_label()
-        ));
+        let display_server = crate::host::DisplayServer::current();
+        let is_wayland = display_server == crate::host::DisplayServer::Wayland;
+        let clipboard_diagnostics = crate::diagnostics::format_clipboard_diagnostics(
+            crate::diagnostics::ClipboardDiagnosticsInput {
+                route_native: route.native,
+                route_tmux: route.tmux_buffer,
+                route_osc52: route.osc52,
+                native_tool: xai_grok_shell::util::clipboard::native_tool_name(),
+                brand: ctx.brand,
+                host_os: crate::host::HostOs::current(),
+                display_server,
+                is_ssh,
+                container_no_display,
+                osc52_sink: crate::clipboard::osc52_sink_active(),
+                wayland_data_control: is_wayland
+                    && xai_grok_shell::util::clipboard::wayland_data_control_supported(),
+                wl_copy_available: is_wayland
+                    && xai_grok_shell::util::clipboard::native_tool_name() == "wl-copy",
+            },
+        );
+        out.push('\n');
+        out.push_str(&clipboard_diagnostics.text);
 
         // -- Diagnostics --
-        if warnings.is_empty() {
+        if warnings.is_empty() && !clipboard_diagnostics.has_issue {
             out.push_str("\nNo issues found.\n");
-        } else {
-            out.push_str(&format!("\n{} issue(s)\n", warnings.len()));
+        } else if !warnings.is_empty() {
+            out.push_str(&format!("\n{} additional issue(s)\n", warnings.len()));
             for w in &warnings {
                 out.push_str(&format!("\n  [!] {}\n", w.message));
                 match (w.fix.as_deref(), w.config_path.as_deref()) {

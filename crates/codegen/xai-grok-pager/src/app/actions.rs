@@ -306,9 +306,10 @@ pub enum Action {
     ShowDebugStatus,
     /// Copy selected block's content to clipboard.
     CopyBlockContent,
-    /// Copy the Nth most recent assistant message to clipboard (1 = latest).
+    /// Copy the Nth most recent assistant message to clipboard (1 = latest), or to an explicit file.
     CopyAssistantMessage {
         n: usize,
+        file_path: Option<std::path::PathBuf>,
     },
     /// Export the active (sub)agent's conversation transcript as Markdown.
     /// `None` => copy to clipboard (with route-aware toast + stats); `Some(p)` => write UTF-8 file
@@ -1881,8 +1882,8 @@ pub enum Effect {
         method_id: acp::AuthMethodId,
         use_oauth: bool,
     },
-    /// Clear the "copied!" feedback after a delay.
-    ScheduleClearAuthCopied,
+    /// Clear the auth copy feedback after a delay if its generation is still current.
+    ScheduleClearAuthCopyFeedback { generation: u64 },
     /// Register the current session in the active-sessions crash-recovery
     /// registry (`~/.grok/active_sessions.json`).
     RegisterActiveSession {
@@ -2564,8 +2565,10 @@ pub enum TaskResult {
     GateVerifyTimeout {
         generation: u64,
     },
-    /// The 2-second "copied!" display timer expired.
-    AuthCopiedTimeout,
+    /// The 2-second auth copy feedback timer expired.
+    AuthCopyFeedbackTimeout {
+        generation: u64,
+    },
     DeepSearchResults {
         results: Vec<xai_grok_shell::extensions::session_search::SearchSessionHit>,
         seq: u64,

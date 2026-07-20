@@ -66,11 +66,11 @@ pub(crate) fn execute(
                 tracing::warn!(error = % e, "project picker: failed to set_current_dir");
             }
         }
-        Effect::ScheduleClearAuthCopied => {
+        Effect::ScheduleClearAuthCopyFeedback { generation } => {
             tasks
-                .spawn(async {
+                .spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    TaskResult::AuthCopiedTimeout
+                    TaskResult::AuthCopyFeedbackTimeout { generation }
                 });
         }
         Effect::Logout => {
