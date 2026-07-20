@@ -49,9 +49,13 @@ def check_branding_and_charter() -> None:
         "c1b5909ec707c069f1d21a93917af044e71da0d7",
         "da3076874292c538bfc4efeede0cf517c2e975f0",
         "7ed3320c797852ed5894f1fc2fca7cee6827768f",
-        "8adf9013a0929e5c7f1d4e849492d2387837a28d",
     ):
         require_fragment("AGENTS.md", identity)
+    require_fragment(
+        "AGENTS.md",
+        "latest fetched disconnected Grok Build snapshot recorded in the",
+    )
+    require_fragment("AGENTS.md", "`grok-build-upstream` source entry")
     require_fragment(
         "crates/codegen/xai-grok-version/src/lib.rs",
         'pub const ENHANCED_PRODUCT_NAME: &str = "Grok Build Enhanced";',

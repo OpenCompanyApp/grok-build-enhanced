@@ -123,15 +123,15 @@ reviewed rather than accidental, but the first four decisions were inconsistent
 with the fork vision: integration or hardening work can justify only a tracked
 temporary deferral for behavior on a preserved Grok surface.
 
-The following obligations are carried forward from Grok snapshot
+The following obligations were carried forward from Grok snapshot
 `ba76b0a683fa52e4e60685017b85905451be17bc`. Their owner is the Grok Build
-Enhanced maintainers, and none may disappear from a later refresh without the
-listed implementation and test evidence.
+Enhanced maintainers. The correction work below closes them with durable commit
+and test evidence that later refreshes must retain.
 
-#### Open Grok adoption obligations
+#### Implemented Grok adoption obligations
 
 - **`GB-PARITY-001` — scheduler background loop-subagents**
-  - **Status:** temporarily deferred; adopt.
+  - **Status:** closed by `0ed211a` and `ce186c5`; adopted.
   - **Source:**
     `crates/codegen/xai-grok-tools/src/implementations/grok_build/scheduler/{actor,create,types}.rs`,
     `crates/codegen/xai-grok-shell/src/tools/notification_bridge.rs`, and
@@ -140,28 +140,28 @@ listed implementation and test evidence.
   - **Blocker and impact:** v0.2.4 has foreground task firing but lacks recurring
     background child execution, overlap prevention, bounded resume chains, and
     the foreground compatibility option.
-  - **Target:** the corrective release after v0.2.4, before any later Grok
-    **Reviewed** advance.
+  - **Closure:** schema/persistence migration landed in `0ed211a`; background
+    execution, chain management, and client projection landed in `ce186c5`.
   - **Acceptance evidence:** provider/session-bound child creation, no-overlap
     queries, completed-child resume, ten-iteration and prompt-change rollover,
     4,000-character completion bounds, kill-switch behavior, persistence
     migration, and TUI/minimal/headless/ACP tests.
 - **`GB-PARITY-002` — Stop/SubagentStop resampling gates**
-  - **Status:** temporarily deferred; adopt.
+  - **Status:** closed by `d819a8a`; adopted.
   - **Source:** `crates/codegen/xai-grok-hooks/src/{event,dispatcher}.rs`,
     `crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs`, and
     `crates/codegen/xai-grok-shell/src/session/acp_session_impl/{stop_gate,turn}.rs`
     in the pinned Grok snapshot.
   - **Blocker and impact:** v0.2.4 observes these events but cannot let a hook
     reject genuine completion and return feedback for another model round.
-  - **Target:** the corrective release after v0.2.4, after safe hook projection
-    and before any later Grok **Reviewed** advance.
+  - **Closure:** `d819a8a` integrates awaited parent/subagent completion gates,
+    feedback continuation, force-stop, fail-open handling, and the eight-round cap.
   - **Acceptance evidence:** deterministic hook aggregation, explicit
     force-stop, failure-open timeout/error handling, an eight-round cap, correct
     parent/subagent boundaries, and tests proving no resample on cancellation,
     refusal, provider error, or max-turn termination.
 - **`GB-PARITY-003` — active task and scheduler context in stop hooks**
-  - **Status:** temporarily deferred; adopt with Enhanced safety adaptation.
+  - **Status:** closed by `d819a8a`; adopted with Enhanced safety adaptation.
   - **Source:** `crates/codegen/xai-grok-hooks/src/event.rs`,
     `crates/codegen/xai-grok-tools/src/implementations/grok_build/{task,scheduler}/types.rs`,
     `crates/codegen/xai-grok-shell/src/tools/notification_bridge.rs`, and
@@ -170,14 +170,14 @@ listed implementation and test evidence.
   - **Blocker and impact:** external stop hooks lack upstream work context, but
     an unbounded raw prompt projection would create a credential and payload
     exposure risk.
-  - **Target:** the corrective release after v0.2.4, before enabling
-    `GB-PARITY-002`.
+  - **Closure:** `d819a8a` adds session-owned work descriptors, Unicode-safe
+    field bounds, deterministic ordering, and a 64 KiB fail-open envelope.
   - **Acceptance evidence:** structurally secret-free descriptors, exclusion of
     provider-private turn state, Unicode-safe per-field clipping, an aggregate
     envelope limit, deterministic ordering, aligned client/file/HTTP payloads,
     and adversarial redaction and size tests.
 - **`GB-PARITY-004` — minimal-mode `/btw`**
-  - **Status:** temporarily deferred; adopt.
+  - **Status:** closed by `67fc94b`; adopted.
   - **Source:** `crates/codegen/xai-grok-pager/src/minimal/api.rs`,
     `crates/codegen/xai-grok-pager-minimal/src/live.rs`,
     `crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs`, and the minimal
@@ -185,8 +185,8 @@ listed implementation and test evidence.
     snapshot.
   - **Blocker and impact:** `/btw` exists in the full TUI, but minimal mode lacks
     its panel lifecycle, making the same Grok command mode-dependent.
-  - **Target:** the corrective release after v0.2.4, before any later Grok
-    **Reviewed** advance.
+  - **Closure:** `67fc94b` adds correlated requests, modal lifecycle, geometry,
+    interaction, rendering tests, and native-scrollback persistence.
   - **Acceptance evidence:** request correlation, stale-response suppression,
     modal suspension/restoration, focus/scroll/link behavior, native-scrollback
     persistence, and deterministic narrow/normal-terminal rendering tests.
@@ -194,16 +194,17 @@ listed implementation and test evidence.
 #### Adapted capability obligation
 
 - **`GB-ADAPT-001` — xAI speech BYOK**
-  - **Status:** temporarily deferred capability; adopt without the upstream
-    process-global key-publication mechanism.
+  - **Status:** closed by `744c053`, `2638a58`, and `9cbada3`; adopted without
+    the upstream process-global key-publication mechanism.
   - **Source:** `crates/codegen/xai-grok-shell/src/auth/manager.rs` and
     `crates/codegen/xai-grok-pager/src/voice/auth.rs` in the pinned Grok
     snapshot.
   - **Blocker and impact:** process-wide publication of the first model-owned key
     is unsafe in a mixed-provider process, but an xAI user should still be able
     to use an eligible xAI credential for speech.
-  - **Target:** a scoped follow-up after `GB-PARITY-001` through
-    `GB-PARITY-004`, reviewed again no later than the next Grok refresh.
+  - **Closure:** `744c053` adds connection-local model eligibility and canonical
+    routing, `2638a58` binds each recording command to its model, and `9cbada3`
+    exposes only qualified xAI session refresh to the pager.
   - **Acceptance evidence:** xAI-only, canonical-endpoint, session/model-scoped
     credential resolution with sensitive headers and tests for mixed providers,
     concurrent sessions, model switching, logout, and missing credentials.
@@ -216,9 +217,9 @@ listed implementation and test evidence.
   only with platform enforcement and fail-closed tests, or for a narrowly
   documented wire/schema need that cannot be mistaken for enforcement.
 - **`GB-SCOPE-002` — generic xAI billing/upsell wording:** **not applicable as
-  written** under explicit provider identity. Retain xAI guidance only for
-  positively identified xAI failures and add negative Codex, Kimi, custom, and
-  generic-provider tests before closing this audit correction.
+  written** under explicit provider identity. `2b3f282` retains xAI guidance
+  only for positively identified xAI failures and adds negative Codex, Kimi,
+  Z.AI, custom, unknown, and generic-provider coverage.
 - **`CODEX-SCOPE-001` — Codex app-server architecture:** **not applicable**
   because Codex is a provider compatibility reference, not a replacement Grok
   application. Audio and realtime behavior must still be inspected separately
@@ -239,10 +240,10 @@ listed implementation and test evidence.
   policy. Reconcile the root scope statement, actual runtime behavior, provider
   documentation, and manifest ownership in a separate reviewed change.
 
-The immutable Grok baseline remains unchanged. The fetched snapshot is still a
-review target rather than a replacement base, but the four open parity items
-above now make clear that path review and manifest ownership did not establish
-complete behavior parity for v0.2.4.
+The immutable Grok baseline remains unchanged. The fetched snapshot remains a
+review target rather than a replacement base. The closed items above document
+both the v0.2.4 behavior gaps and the corrective implementation evidence; they
+do not retroactively claim that path review alone established parity.
 
 ## Thematic implementation commits
 
@@ -269,6 +270,19 @@ The reviewed refresh was integrated as the following linear, focused series:
 - `f1a374a` `fix(security): harden managed policy integrity`
 - `df02c7b` `fix(plugins): redact credentials from git diagnostics`
 - `83700da` `test(clipboard): update welcome delivery fixtures`
+
+The parity correction was implemented afterward as a separate focused series:
+
+- `8a2e72f` `docs(fork): make upstream parity deferrals durable`
+- `67fc94b` `feat(minimal): add correlated btw panel parity`
+- `744c053` `feat(voice): scope xAI speech BYOK credentials`
+- `2b3f282` `fix(errors): gate xAI guidance on provider identity`
+- `2638a58` `fix(voice): carry model scope with recording commands`
+- `0ed211a` `feat(scheduler): add background loop task schema`
+- `ce186c5` `feat(scheduler): run recurring loops in background`
+- `d819a8a` `feat(hooks): integrate bounded stop resampling gates`
+- `9cbada3` `fix(voice): expose only qualified xAI session auth`
+- `2230ec2` `fix(pager): close parity regression gaps`
 
 The final plugin diagnostic follow-up is deliberately separate from the pinned
 upstream port: it closes an Enhanced credential-safety gap where credentialed
