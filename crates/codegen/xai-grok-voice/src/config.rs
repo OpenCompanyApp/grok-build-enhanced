@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::VoiceError;
 
+/// The only credential-bearing xAI speech endpoint.
+pub const XAI_STT_WS_URL: &str = "wss://api.x.ai/v1/stt";
+
 /// Voice settings for the STT transport.
 ///
 /// Carries the transport knobs parsed from optional `[voice]` in
@@ -58,13 +61,11 @@ impl Default for VoiceConfig {
 }
 
 impl VoiceConfig {
-    /// Build the streaming-STT WebSocket URL.
+    /// Build the canonical streaming-STT WebSocket URL.
     ///
-    /// Only TLS endpoints are allowed: an `https://` / `wss://` (or scheme-less)
-    /// `api_base` maps to `wss://`. An `http://`/`ws://` `api_base` is rejected with a
-    /// [`VoiceError::Config`] rather than silently downgrading, since the bearer
-    /// token is sent as a header on this connection and must never traverse a
-    /// plaintext socket.
+    /// The bearer is valid only for xAI speech, so aliases for the canonical
+    /// host/scheme are normalized and every alternate host, port, path, query,
+    /// fragment, or plaintext route is rejected before credential resolution.
     pub fn stt_ws_url(&self) -> Result<String, VoiceError> {
         ws_url(&self.api_base, &self.stt_ws_path)
     }
@@ -78,20 +79,17 @@ impl VoiceConfig {
 }
 
 fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {
-    let base = api_base.trim_end_matches('/');
-    let path = path.trim_start_matches('/');
-    if base.starts_with("http://") || base.starts_with("ws://") {
-        return Err(VoiceError::Config(format!(
-            "insecure voice api_base {api_base:?}: voice requires a TLS endpoint \
-             (https:// / wss://). Refusing to send the bearer token over a \
-             plaintext connection."
-        )));
+    let base = api_base.trim().trim_end_matches('/');
+    let path = path.trim().trim_start_matches('/');
+    let canonical_base = matches!(base, "api.x.ai" | "https://api.x.ai" | "wss://api.x.ai");
+    if canonical_base && path == "v1/stt" {
+        return Ok(XAI_STT_WS_URL.to_owned());
     }
-    let host = base
-        .strip_prefix("https://")
-        .or_else(|| base.strip_prefix("wss://"))
-        .unwrap_or(base);
-    Ok(format!("wss://{host}/{path}"))
+
+    Err(VoiceError::Config(format!(
+        "voice credentials may only be sent to the canonical xAI speech endpoint \
+         {XAI_STT_WS_URL}; configured api_base/path is not eligible"
+    )))
 }
 
 #[cfg(test)]
@@ -123,22 +121,47 @@ mod tests {
     }
 
     #[test]
-    fn http_api_base_is_rejected_not_downgraded() {
-        let cfg = VoiceConfig {
-            api_base: "http://localhost:8080".into(),
-            ..VoiceConfig::default()
-        };
-        let err = cfg.stt_ws_url().unwrap_err();
-        assert!(matches!(err, VoiceError::Config(_)), "got {err:?}");
+    fn noncanonical_api_bases_are_rejected_before_auth() {
+        for api_base in [
+            "http://api.x.ai",
+            "ws://api.x.ai",
+            "https://api.x.ai:444",
+            "https://speech.x.ai",
+            "https://api.x.ai.evil.example",
+            "https://user@api.x.ai",
+            "https://api.x.ai?redirect=1",
+            "https://api.x.ai#fragment",
+            "https://custom.example",
+        ] {
+            let cfg = VoiceConfig {
+                api_base: api_base.into(),
+                ..VoiceConfig::default()
+            };
+            assert!(
+                matches!(cfg.stt_ws_url(), Err(VoiceError::Config(_))),
+                "unexpected eligible voice api_base: {api_base}"
+            );
+        }
     }
 
     #[test]
-    fn ws_api_base_is_rejected() {
-        let cfg = VoiceConfig {
-            api_base: "ws://localhost:8080".into(),
-            ..VoiceConfig::default()
-        };
-        assert!(cfg.stt_ws_url().is_err());
+    fn noncanonical_speech_paths_are_rejected() {
+        for path in [
+            "/stt",
+            "/v1/stt/preview",
+            "/v1/stt?redirect=1",
+            "/v1/stt#fragment",
+            "//evil.example/v1/stt",
+        ] {
+            let cfg = VoiceConfig {
+                stt_ws_path: path.into(),
+                ..VoiceConfig::default()
+            };
+            assert!(
+                cfg.stt_ws_url().is_err(),
+                "unexpected eligible speech path: {path}"
+            );
+        }
     }
 
     /// Legacy / unknown keys — including the removed local `enabled` opt-out —

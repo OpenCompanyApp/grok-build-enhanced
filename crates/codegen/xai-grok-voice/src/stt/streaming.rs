@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -34,31 +35,7 @@ pub struct StreamingSttSession {
 impl StreamingSttSession {
     /// Connect and wait for `transcript.created` before sending audio.
     pub async fn connect(config: &VoiceConfig, bearer: &str) -> Result<Self, VoiceError> {
-        let url = build_stt_ws_url(config)?;
-        let mut request = url
-            .as_str()
-            .into_client_request()
-            .map_err(|e| VoiceError::WebSocket(format!("request: {e}")))?;
-        request.headers_mut().insert(
-            "Authorization",
-            format!("Bearer {bearer}")
-                .parse()
-                .map_err(|e| VoiceError::WebSocket(format!("auth header: {e}")))?,
-        );
-
-        // Request-identity headers so the backend can attribute and meter voice
-        // usage by client, mirroring what the sampler / imagine request paths
-        // send. Billing itself follows the `Authorization` bearer (per-user for
-        // OAuth, BYOK key owner otherwise); these are purely for usage
-        // attribution. Skipped when empty (e.g. the probe binary / tests) or
-        // when a value isn't a valid header (never fatal — the connection is
-        // still fully authorized without them).
-        insert_optional_header(
-            &mut request,
-            "x-grok-client-identifier",
-            &config.client_identifier,
-        );
-        insert_optional_header(&mut request, "User-Agent", &config.user_agent);
+        let request = build_stt_request(config, bearer)?;
 
         let (ws, _) = tokio::time::timeout(
             Duration::from_secs(15),
@@ -212,6 +189,29 @@ fn is_benign_disconnect(err: &WsError) -> bool {
     )
 }
 
+fn build_stt_request(config: &VoiceConfig, bearer: &str) -> Result<WsRequest, VoiceError> {
+    let url = build_stt_ws_url(config)?;
+    let mut request = url
+        .as_str()
+        .into_client_request()
+        .map_err(|e| VoiceError::WebSocket(format!("request: {e}")))?;
+    let mut authorization = HeaderValue::from_str(&format!("Bearer {bearer}"))
+        .map_err(|e| VoiceError::WebSocket(format!("auth header: {e}")))?;
+    authorization.set_sensitive(true);
+    request.headers_mut().insert("Authorization", authorization);
+
+    // Request-identity headers so the backend can attribute and meter voice
+    // usage by client, mirroring what the sampler / imagine request paths send.
+    // These are not credentials and are skipped when empty or invalid.
+    insert_optional_header(
+        &mut request,
+        "x-grok-client-identifier",
+        &config.client_identifier,
+    );
+    insert_optional_header(&mut request, "User-Agent", &config.user_agent);
+    Ok(request)
+}
+
 /// Insert `name: value` into the handshake request, unless `value` is empty
 /// (header omitted) or not a valid header value (skipped with a debug log). A
 /// missing identity header never fails the connection — the bearer alone fully
@@ -299,6 +299,16 @@ mod tests {
         };
         let url = build_stt_ws_url(&cfg).unwrap();
         assert!(url.query().unwrap_or_default().contains("language=ja"));
+    }
+
+    #[test]
+    fn authorization_header_is_sensitive_and_debug_redacted() {
+        let request = build_stt_request(&VoiceConfig::default(), "sentinel-voice-key").unwrap();
+        let authorization = request.headers().get("authorization").unwrap();
+        assert!(authorization.is_sensitive());
+        let rendered = format!("{:?}", request.headers());
+        assert!(!rendered.contains("sentinel-voice-key"));
+        assert!(rendered.contains("Sensitive"));
     }
 
     #[test]

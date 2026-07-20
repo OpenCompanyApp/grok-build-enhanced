@@ -14,7 +14,11 @@ use xai_acp_lib::{
     acp_channels,
 };
 use xai_grok_shell::{
-    agent::{MvpAgent, config::Config as AgentConfig, models::RefreshStrategy},
+    agent::{
+        MvpAgent,
+        config::Config as AgentConfig,
+        models::{RefreshStrategy, XaiSpeechModelCatalog},
+    },
     auth::AuthManager,
     util::grok_home::grok_home,
 };
@@ -28,6 +32,10 @@ pub struct SpawnedAgent {
     /// The agent's `AuthManager`, shared so pager-side consumers (e.g. the voice
     /// channel) resolve the same refreshing bearer as chat traffic.
     pub auth_manager: std::sync::Arc<AuthManager>,
+    /// Session-local, redacted snapshot of models eligible to supply xAI speech
+    /// credentials. This is passed directly to the pager and never published on
+    /// `AuthManager` or in process-global mutable state.
+    pub voice_models: XaiSpeechModelCatalog,
 }
 
 /// Spawn a GrokShell agent in a background thread.
@@ -64,6 +72,7 @@ pub async fn spawn_grok_shell(
     models_manager
         .list_models(RefreshStrategy::OnlineIfUncached)
         .await;
+    let voice_models = XaiSpeechModelCatalog::from_models(&models_manager.models());
 
     let agent_cancel = cancel.child_token();
     let (acp_client, acp_agent) = acp_channels();
@@ -93,6 +102,7 @@ pub async fn spawn_grok_shell(
         channel: acp_client,
         cancel: agent_cancel,
         auth_manager: auth_manager_for_pager,
+        voice_models,
     })
 }
 

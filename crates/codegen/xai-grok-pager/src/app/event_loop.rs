@@ -1167,7 +1167,10 @@ pub(crate) async fn run(
     // (cpal) and Linux (subprocess recorder), false for Bazel builds (no
     // capture in the test sandbox).
     let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
-    let voice_auth_factory = connection.auth_manager.clone();
+    let voice_auth_factory = (
+        connection.auth_manager.clone(),
+        connection.voice_models.clone(),
+    );
 
     // Animation tick: only scheduled when there are running entries.
     let mut tick_interval = tick_interval;
@@ -1489,7 +1492,10 @@ pub(crate) async fn run(
         // bound target forward into the live recording it spawns.
         if let VoiceState::ColdStart { hold, target } = app.voice_state {
             if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
-                let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
+                let voice_auth = crate::voice::build_voice_auth(
+                    voice_auth_factory.0.clone(),
+                    voice_auth_factory.1.clone(),
+                );
                 let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
                 let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
                 let voice_config = app.voice_config.clone();

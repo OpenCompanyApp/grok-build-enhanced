@@ -1502,6 +1502,24 @@ impl AppView {
     /// Open the mic now (pipeline already up) and enter [`VoiceState::Recording`]
     /// bound to `target`. `hold` marks a Ctrl+Space hold-press start.
     pub(crate) fn voice_begin_recording(&mut self, target: VoiceTarget, hold: bool) {
+        // Bind before enqueueing PttPress: the pipeline resolves its bearer when
+        // it handles this command, so each recording follows the target
+        // session/model and cannot retain a previous provider's credential.
+        let model_id = match &target {
+            VoiceTarget::Agent(agent_id) | VoiceTarget::DashboardPeekReply(agent_id) => self
+                .agents
+                .get(agent_id)
+                .and_then(|agent| agent.session.models.current_model_id_str()),
+            VoiceTarget::DashboardDispatch => self
+                .dashboard
+                .as_ref()
+                .and_then(|dashboard| dashboard.models.current_model_id_str())
+                .or_else(|| self.models.current_model_id_str()),
+        }
+        .map(str::to_owned);
+        if let Some(auth) = &self.voice_auth {
+            auth.bind_model(model_id.as_deref());
+        }
         self.voice_send(xai_grok_voice::VoiceCommand::PttPress);
         self.voice_state = VoiceState::Recording {
             hold,

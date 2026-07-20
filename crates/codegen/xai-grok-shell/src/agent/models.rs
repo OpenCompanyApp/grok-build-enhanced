@@ -206,6 +206,80 @@ fn model_addressable_for_auth(info: &config::ModelInfo, is_xai_session_auth: boo
     info.provider == ProviderId::OpenAiCodex || is_xai_session_auth || info.supported_in_api
 }
 
+/// Session-local catalog of models that may supply credentials to xAI speech.
+///
+/// Construction filters on explicit xAI provider identity and a trusted xAI
+/// inference route. The catalog deliberately contains no Codex, Kimi, Z.AI, or
+/// custom-provider entries, so binding an arbitrary model id fails closed.
+#[derive(Clone, Default)]
+pub struct XaiSpeechModelCatalog {
+    entries: Arc<IndexMap<String, XaiSpeechModelCredential>>,
+}
+
+#[derive(Clone)]
+pub struct XaiSpeechModelCredential {
+    model_api_key: Option<String>,
+}
+
+impl std::fmt::Debug for XaiSpeechModelCatalog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XaiSpeechModelCatalog")
+            .field("eligible_models", &self.entries.len())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for XaiSpeechModelCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XaiSpeechModelCredential")
+            .field("has_model_api_key", &self.model_api_key.is_some())
+            .finish()
+    }
+}
+
+impl XaiSpeechModelCatalog {
+    /// Snapshot eligible xAI speech models from one resolved agent catalog.
+    ///
+    /// The snapshot is intentionally passed to one pager connection rather
+    /// than published through `AuthManager` or any process-global mutable key.
+    pub fn from_models(models: &IndexMap<String, ModelEntry>) -> Self {
+        let entries = models
+            .iter()
+            .filter(|(_, entry)| {
+                entry.info.provider == ProviderId::Xai
+                    && xai_grok_sampling_types::is_trusted_xai_inference_url(&entry.info.base_url)
+            })
+            .map(|(model_id, entry)| {
+                (
+                    model_id.clone(),
+                    XaiSpeechModelCredential {
+                        model_api_key: entry.own_credential(),
+                    },
+                )
+            })
+            .collect();
+        Self {
+            entries: Arc::new(entries),
+        }
+    }
+
+    /// Resolve a model-scoped speech credential route.
+    ///
+    /// `None` means the model is not positively identified as an eligible xAI
+    /// model. `Some` with no model key means the caller may try an xAI session
+    /// or ambient xAI API key, still scoped to this model binding.
+    pub fn credential_for(&self, model_id: &str) -> Option<XaiSpeechModelCredential> {
+        self.entries.get(model_id).cloned()
+    }
+}
+
+impl XaiSpeechModelCredential {
+    /// Expose the model-owned key only at the voice request boundary.
+    pub fn model_api_key(&self) -> Option<&str> {
+        self.model_api_key.as_deref()
+    }
+}
+
 /// Thread-safe model manager.
 ///
 /// Owns the auth manager, config, and gateway needed to refresh models.
@@ -3248,6 +3322,97 @@ mod tests {
 
     fn config_from_toml(toml: &str) -> config::Config {
         config::Config::new_from_toml_cfg(&toml::from_str(toml).unwrap()).unwrap()
+    }
+
+    fn speech_model(provider: ProviderId, base_url: &str, key: &str) -> ModelEntry {
+        let mut entry = ModelEntry::fallback("speech-test", &config::EndpointsConfig::default());
+        entry.info.provider = provider;
+        entry.info.base_url = base_url.to_owned();
+        entry.api_key = Some(key.to_owned());
+        entry
+    }
+
+    #[test]
+    fn xai_speech_catalog_requires_positive_provider_and_route_identity() {
+        let mut models = IndexMap::new();
+        models.insert(
+            "xai".to_owned(),
+            speech_model(
+                ProviderId::Xai,
+                xai_grok_sampling_types::XAI_API_BASE_URL,
+                "xai-model-key",
+            ),
+        );
+        models.insert(
+            "xai-proxy".to_owned(),
+            speech_model(
+                ProviderId::Xai,
+                xai_grok_sampling_types::XAI_CLI_CHAT_PROXY_BASE_URL,
+                "xai-proxy-key",
+            ),
+        );
+        models.insert(
+            "xai-untrusted-route".to_owned(),
+            speech_model(
+                ProviderId::Xai,
+                "https://custom.example/v1",
+                "must-not-escape",
+            ),
+        );
+        for (id, provider) in [
+            ("codex", ProviderId::OpenAiCodex),
+            ("kimi", ProviderId::KimiCode),
+            ("zai", ProviderId::ZaiCodingPlan),
+            ("custom", ProviderId::Custom),
+        ] {
+            models.insert(
+                id.to_owned(),
+                speech_model(provider, "https://custom.example/v1", "must-not-escape"),
+            );
+        }
+
+        let catalog = XaiSpeechModelCatalog::from_models(&models);
+
+        assert_eq!(
+            catalog
+                .credential_for("xai")
+                .and_then(|entry| entry.model_api_key().map(str::to_owned))
+                .as_deref(),
+            Some("xai-model-key")
+        );
+        assert!(catalog.credential_for("xai-proxy").is_some());
+        for id in [
+            "xai-untrusted-route",
+            "codex",
+            "kimi",
+            "zai",
+            "custom",
+            "unknown",
+        ] {
+            assert!(
+                catalog.credential_for(id).is_none(),
+                "unexpected speech credential route for {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn xai_speech_catalog_debug_is_strictly_redacted() {
+        let models = IndexMap::from([(
+            "xai".to_owned(),
+            speech_model(
+                ProviderId::Xai,
+                xai_grok_sampling_types::XAI_API_BASE_URL,
+                "sentinel-speech-key",
+            ),
+        )]);
+        let catalog = XaiSpeechModelCatalog::from_models(&models);
+        let credential = catalog.credential_for("xai").unwrap();
+
+        for rendered in [format!("{catalog:?}"), format!("{credential:?}")] {
+            assert!(!rendered.contains("sentinel-speech-key"));
+            assert!(!rendered.contains("xai-model-key"));
+        }
     }
 
     fn gpt_56_codex_catalog() -> IndexMap<String, ModelEntry> {

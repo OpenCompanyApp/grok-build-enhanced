@@ -4024,7 +4024,7 @@ impl ModelEntry {
     /// The model's own (BYOK) credential: a non-empty `api_key`, else the first
     /// set, non-empty `env_key` value. `None` means the model has no usable own
     /// credential and resolution should fall through to the session / global key.
-    fn own_credential(&self) -> Option<String> {
+    pub(super) fn own_credential(&self) -> Option<String> {
         first_own_credential(self.api_key.as_deref(), self.env_key.as_ref())
     }
     /// `true` when the model has a non-empty `api_key` or an `env_key` that

@@ -95,6 +95,10 @@ pub struct AcpConnection {
     /// mode builds a dedicated one off the same local `auth.json`. Either way it
     /// resolves a fresh bearer per request via the refresh chain.
     pub auth_manager: std::sync::Arc<xai_grok_shell::auth::AuthManager>,
+    /// Connection-local snapshot of positively identified xAI models and their
+    /// optional model-owned speech keys. The pager binds one active model before
+    /// each recording; no key is published through process-global state.
+    pub voice_models: xai_grok_shell::agent::models::XaiSpeechModelCatalog,
 }
 
 /// CLI flags that affect agent configuration, threaded from PagerArgs.
@@ -194,6 +198,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
     let memory_config = agent_config.memory_config.clone();
     let spawned = spawn::spawn_grok_shell(agent_config, cancel, memory_config).await?;
     let auth_manager = spawned.auth_manager.clone();
+    let voice_models = spawned.voice_models.clone();
     let (tx, rx) = (spawned.channel.tx, spawned.channel.rx);
 
     // Initialize
@@ -240,6 +245,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
         cancel_rewind_enabled,
         session_recap_available,
         auth_manager,
+        voice_models,
     })
 }
 
@@ -335,6 +341,14 @@ pub async fn connect_via_leader(
         )
         .await;
 
+    // The leader owns its live model catalog in another process. Build a local,
+    // connection-scoped snapshot from the same effective configuration. Unknown
+    // or leader-only dynamic ids are deliberately absent (voice fails closed)
+    // rather than borrowing a key from another provider or model.
+    let voice_models = xai_grok_shell::agent::models::XaiSpeechModelCatalog::from_models(
+        &xai_grok_shell::agent::config::resolve_model_list(&agent_config, None),
+    );
+
     // Leader mode runs the agent in a separate process, so there's no shared
     // in-process `AuthManager`. Build a dedicated *non-refreshing* one over the
     // same `auth.json`: skip `configure_refresher` so only the agent rotates the
@@ -366,6 +380,7 @@ pub async fn connect_via_leader(
         cancel_rewind_enabled,
         session_recap_available,
         auth_manager,
+        voice_models,
     })
 }
 
