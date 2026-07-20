@@ -9,6 +9,27 @@ pub enum HookDecision {
     Deny { reason: String, hook_name: String },
 }
 
+/// Parsed output of one `Stop`/`SubagentStop` gate hook.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StopHookOutcome {
+    pub block_reason: Option<String>,
+    pub additional_context: Option<String>,
+    pub force_stop: Option<StopOverride>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StopOverride {
+    pub reason: Option<String>,
+}
+
+impl StopHookOutcome {
+    pub fn is_empty(&self) -> bool {
+        self.block_reason.is_none()
+            && self.additional_context.is_none()
+            && self.force_stop.is_none()
+    }
+}
+
 /// HTTP-specific execution details for scrollback enrichment.
 ///
 /// Populated only for `"http"` handler type hooks. Carries the target
@@ -59,6 +80,14 @@ pub enum HookRunResult {
     },
     /// Hook was skipped because it is disabled.
     Skipped { hook_name: String },
+    /// Hook ran and deliberately blocked a stop/tool action. This is a
+    /// decision, not an execution failure.
+    Blocked {
+        hook_name: String,
+        detail: String,
+        elapsed: Duration,
+        http_info: Option<HttpInfo>,
+    },
     /// Hook failed (timeout, crash, bad output, etc.) — fail-open.
     Failed {
         hook_name: String,

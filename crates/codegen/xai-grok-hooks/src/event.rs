@@ -15,7 +15,9 @@ pub enum HookEventName {
     // ── Session lifecycle ───────────────────────────────────────
     SessionStart,
     SessionEnd,
-    /// Fires when an agent turn ends (completed, cancelled, or error).
+    /// Gates a genuine agent turn completion; also fires observe-only during
+    /// top-level session shutdown. Cancellation, refusal, provider error, and
+    /// max-turn termination do not enter this gate.
     Stop,
     /// Fires when the turn ends due to an API error. Output and exit code are ignored.
     StopFailure,
@@ -125,6 +127,16 @@ impl std::fmt::Display for HookEventName {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateKind {
+    /// Hook output is recorded but cannot affect execution.
+    Observe,
+    /// `PreToolUse` allow/deny gate.
+    Tool,
+    /// Turn-completion `Stop`/`SubagentStop` gate.
+    Stop,
+}
+
 impl HookEventName {
     /// Collapse alias variants to their canonical form so a registration and the fired
     /// event meet on one key regardless of which spelling each used (`SubagentEnd` is an
@@ -136,7 +148,17 @@ impl HookEventName {
         }
     }
 
-    /// Returns true if this event type uses blocking (deny/allow) semantics.
+    /// How this event's hook output is interpreted.
+    pub fn gate_kind(self) -> GateKind {
+        match self.canonical() {
+            Self::PreToolUse => GateKind::Tool,
+            Self::Stop | Self::SubagentStop => GateKind::Stop,
+            Self::SubagentEnd => unreachable!("canonicalized above"),
+            _ => GateKind::Observe,
+        }
+    }
+
+    /// Returns true if this event type uses the tool allow/deny vocabulary.
     pub fn is_blocking(&self) -> bool {
         matches!(self, Self::PreToolUse)
     }
@@ -147,6 +169,149 @@ impl HookEventName {
             self,
             Self::SessionStart | Self::SessionEnd | Self::Stop | Self::UserPromptSubmit
         )
+    }
+}
+
+/// Maximum serialized character count for every string projected into a
+/// `Stop`/`SubagentStop` envelope.
+pub const MAX_STOP_ENTRY_TEXT_CHARS: usize = 1000;
+
+/// Maximum serialized size of an entire `Stop`/`SubagentStop` envelope,
+/// including common metadata and every active-work descriptor.
+pub const MAX_STOP_ENVELOPE_BYTES: usize = 64 * 1024;
+
+/// Clip `text` to at most `max` Unicode scalar values. The omission marker is
+/// included in the bound, and slicing never splits a UTF-8 codepoint.
+pub fn clip_text(text: &str, max: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+
+    // The marker's omitted count depends on how many characters the marker
+    // itself displaces. Iterate to a fixed point (normally two passes).
+    let mut kept = max;
+    loop {
+        let omitted = char_count.saturating_sub(kept);
+        let marker = format!("… [+{omitted} chars]");
+        let next_kept = max.saturating_sub(marker.chars().count());
+        if next_kept == kept {
+            let clipped: String = text.chars().take(kept).collect();
+            return format!("{clipped}{marker}");
+        }
+        kept = next_kept;
+    }
+}
+
+/// Sanitize model/user-authored text before placing it in a stop-hook payload.
+///
+/// This is deliberately a projection boundary, not serialization of an
+/// internal task/provider object. It strips terminal controls, redacts common
+/// credential/header/account assignments and token shapes, then applies the
+/// Unicode-safe free-text bound.
+pub fn sanitize_stop_text(text: &str) -> String {
+    use std::sync::LazyLock;
+
+    static BEARER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+").expect("valid bearer regex")
+    });
+    static SECRET_ASSIGNMENT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?ix)
+            \b(
+                authorization|proxy[-_]?authorization|api[-_]?key|
+                access[-_]?token|refresh[-_]?token|id[-_]?token|password|passwd|
+                client[-_]?secret|secret|cookie|set[-_]?cookie|account[-_]?id|
+                codex[-_]?turn[-_]?state
+            )\b
+            (\s*[:=]\s*)
+            (?:"[^"]*"|'[^']*'|[^\s,;\}\]]+)
+            "#,
+        )
+        .expect("valid stop secret-assignment regex")
+    });
+    static TOKEN_SHAPE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?x)\b(?:sk-[A-Za-z0-9_-]{8,}|xai-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b",
+        )
+        .expect("valid token-shape regex")
+    });
+
+    let controls_stripped: String = text
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect();
+    let redacted = BEARER.replace_all(&controls_stripped, "[redacted]");
+    let redacted = SECRET_ASSIGNMENT.replace_all(&redacted, "$1$2[redacted]");
+    let redacted = TOKEN_SHAPE.replace_all(&redacted, "[redacted]");
+    clip_text(&redacted, MAX_STOP_ENTRY_TEXT_CHARS)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SubagentStopPhase {
+    Gate,
+    /// Reserved for compatibility; genuine completion currently fires `Gate`.
+    Observe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundTaskType {
+    Shell,
+    Monitor,
+    Subagent,
+}
+
+/// Whitelisted, credential-free projection of one in-flight work item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopBackgroundTask {
+    pub id: String,
+    pub r#type: BackgroundTaskType,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+}
+
+/// Whitelisted projection of a session-scoped scheduled wakeup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopSessionCron {
+    pub id: String,
+    pub schedule: String,
+    pub recurring: bool,
+    pub prompt: String,
+}
+
+impl StopBackgroundTask {
+    fn sanitize(&mut self) {
+        self.id = sanitize_stop_text(&self.id);
+        self.status = sanitize_stop_text(&self.status);
+        self.description = self
+            .description
+            .take()
+            .map(|value| sanitize_stop_text(&value));
+        self.command = self.command.take().map(|value| sanitize_stop_text(&value));
+        self.agent_type = self
+            .agent_type
+            .take()
+            .map(|value| sanitize_stop_text(&value));
+    }
+}
+
+impl StopSessionCron {
+    fn sanitize(&mut self) {
+        self.id = sanitize_stop_text(&self.id);
+        self.schedule = sanitize_stop_text(&self.schedule);
+        self.prompt = sanitize_stop_text(&self.prompt);
     }
 }
 
@@ -194,6 +359,20 @@ pub enum HookPayload {
     },
     Stop {
         reason: String,
+        /// True after a previous stop hook already continued this turn.
+        #[serde(rename = "stopHookActive")]
+        stop_hook_active: bool,
+        #[serde(
+            rename = "lastAssistantMessage",
+            skip_serializing_if = "Option::is_none"
+        )]
+        last_assistant_message: Option<String>,
+        /// Whitelisted active-work descriptors. `None` means this fire site does
+        /// not enumerate work (for example, observe-only session shutdown).
+        #[serde(rename = "backgroundTasks", skip_serializing_if = "Option::is_none")]
+        background_tasks: Option<Vec<StopBackgroundTask>>,
+        #[serde(rename = "sessionCrons", skip_serializing_if = "Option::is_none")]
+        session_crons: Option<Vec<StopSessionCron>>,
     },
     StopFailure {
         error: String,
@@ -302,18 +481,20 @@ pub enum HookPayload {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
-    /// Fires when a subagent completes.
+    /// Fires as the genuine subagent turn-completion gate.
     SubagentStop {
+        phase: SubagentStopPhase,
         #[serde(rename = "subagentId")]
         subagent_id: String,
         #[serde(rename = "subagentType")]
         subagent_type: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        #[serde(rename = "exitCode", skip_serializing_if = "Option::is_none")]
-        exit_code: Option<i32>,
-        #[serde(rename = "durationMs", skip_serializing_if = "Option::is_none")]
-        duration_ms: Option<u64>,
+        #[serde(rename = "stopHookActive", skip_serializing_if = "Option::is_none")]
+        stop_hook_active: Option<bool>,
+        #[serde(
+            rename = "lastAssistantMessage",
+            skip_serializing_if = "Option::is_none"
+        )]
+        last_assistant_message: Option<String>,
     },
 
     // ── Compaction events ───────────────────────────────────────
@@ -325,6 +506,154 @@ pub enum HookPayload {
         /// "manual" or "auto".
         source: String,
     },
+}
+
+impl HookPayload {
+    /// Value tested by matcher-aware events. Events with no selector return
+    /// `None`, which intentionally means match-all (fail open).
+    pub fn match_value(&self) -> Option<&str> {
+        let value = match self {
+            Self::PreToolUse { tool_name, .. }
+            | Self::PostToolUse { tool_name, .. }
+            | Self::PostToolUseFailure { tool_name, .. }
+            | Self::PermissionDenied { tool_name, .. } => tool_name,
+            Self::Notification {
+                notification_type, ..
+            } => notification_type,
+            Self::SubagentStart { subagent_type, .. }
+            | Self::SubagentStop { subagent_type, .. } => subagent_type,
+            Self::SessionStart { source, .. }
+            | Self::PreCompact { source }
+            | Self::PostCompact { source } => source,
+            Self::SessionEnd { reason, .. } => reason,
+            Self::StopFailure { error } => error,
+            Self::Stop { .. } | Self::UserPromptSubmit { .. } => return None,
+        };
+        Some(value.as_str()).filter(|value| !value.is_empty())
+    }
+
+    fn sanitize_stop_projection(&mut self) {
+        match self {
+            Self::Stop {
+                reason,
+                last_assistant_message,
+                background_tasks,
+                session_crons,
+                ..
+            } => {
+                *reason = sanitize_stop_text(reason);
+                *last_assistant_message = last_assistant_message
+                    .take()
+                    .map(|value| sanitize_stop_text(&value))
+                    .filter(|value| !value.trim().is_empty());
+                if let Some(tasks) = background_tasks {
+                    for task in tasks.iter_mut() {
+                        task.sanitize();
+                    }
+                    tasks.sort_by(|left, right| {
+                        left.r#type
+                            .cmp(&right.r#type)
+                            .then_with(|| left.id.cmp(&right.id))
+                    });
+                }
+                if let Some(crons) = session_crons {
+                    for cron in crons.iter_mut() {
+                        cron.sanitize();
+                    }
+                    crons.sort_by(|left, right| left.id.cmp(&right.id));
+                }
+            }
+            Self::SubagentStop {
+                subagent_id,
+                subagent_type,
+                last_assistant_message,
+                ..
+            } => {
+                *subagent_id = sanitize_stop_text(subagent_id);
+                *subagent_type = sanitize_stop_text(subagent_type);
+                *last_assistant_message = last_assistant_message
+                    .take()
+                    .map(|value| sanitize_stop_text(&value))
+                    .filter(|value| !value.trim().is_empty());
+            }
+            _ => {}
+        }
+    }
+
+    /// Drop the deterministic tail of the active-work projection. Scheduled
+    /// wakeups are removed before background work, then assistant text; the
+    /// same input therefore always produces the same bounded envelope.
+    fn discard_stop_projection_tail(&mut self) -> bool {
+        match self {
+            Self::Stop {
+                last_assistant_message,
+                background_tasks,
+                session_crons,
+                ..
+            } => {
+                if session_crons
+                    .as_mut()
+                    .is_some_and(|crons| crons.pop().is_some())
+                {
+                    return true;
+                }
+                if background_tasks
+                    .as_mut()
+                    .is_some_and(|tasks| tasks.pop().is_some())
+                {
+                    return true;
+                }
+                last_assistant_message.take().is_some()
+            }
+            Self::SubagentStop {
+                last_assistant_message,
+                ..
+            } => last_assistant_message.take().is_some(),
+            _ => false,
+        }
+    }
+}
+
+impl HookEventEnvelope {
+    /// Canonicalize, sanitize, order, and size-bound a stop projection before
+    /// any command, HTTP, or ACP client hook can observe it.
+    pub fn enforce_stop_projection_bounds(&mut self) {
+        self.hook_event_name = self.hook_event_name.canonical();
+        if !matches!(
+            &self.payload,
+            HookPayload::Stop { .. } | HookPayload::SubagentStop { .. }
+        ) {
+            return;
+        }
+
+        self.payload.sanitize_stop_projection();
+        self.session_id = clip_text(&self.session_id, MAX_STOP_ENTRY_TEXT_CHARS);
+        self.cwd = clip_text(&self.cwd, MAX_STOP_ENTRY_TEXT_CHARS);
+        self.workspace_root = clip_text(&self.workspace_root, MAX_STOP_ENTRY_TEXT_CHARS);
+        self.timestamp = clip_text(&self.timestamp, MAX_STOP_ENTRY_TEXT_CHARS);
+        self.transcript_path = self
+            .transcript_path
+            .take()
+            .map(|value| clip_text(&value, MAX_STOP_ENTRY_TEXT_CHARS));
+        self.client_identifier = self
+            .client_identifier
+            .take()
+            .map(|value| clip_text(&value, MAX_STOP_ENTRY_TEXT_CHARS));
+        self.prompt_id = self
+            .prompt_id
+            .take()
+            .map(|value| clip_text(&value, MAX_STOP_ENTRY_TEXT_CHARS));
+
+        while serde_json::to_vec(&self).map_or(usize::MAX, |json| json.len())
+            > MAX_STOP_ENVELOPE_BYTES
+            && self.payload.discard_stop_projection_tail()
+        {}
+
+        debug_assert!(
+            serde_json::to_vec(&self).is_ok_and(|json| json.len() <= MAX_STOP_ENVELOPE_BYTES),
+            "bounded stop envelope exceeded {MAX_STOP_ENVELOPE_BYTES} bytes"
+        );
+    }
 }
 
 /// Truncate a JSON value if its serialized size exceeds `MAX_PAYLOAD_SIZE`.
@@ -574,5 +903,138 @@ mod tests {
         let json = serde_json::to_value(payload).unwrap();
         assert_eq!(json["externalContent"]["sources"][0], "web_search");
         assert_eq!(json["externalContent"]["derived"], false);
+    }
+
+    #[test]
+    fn stop_text_clipping_is_unicode_safe_and_includes_marker_in_bound() {
+        let clipped = clip_text(&"🦀".repeat(2_000), MAX_STOP_ENTRY_TEXT_CHARS);
+        assert!(clipped.is_char_boundary(clipped.len()));
+        assert_eq!(clipped.chars().count(), MAX_STOP_ENTRY_TEXT_CHARS);
+        assert!(clipped.contains("[+"));
+        assert!(clipped.ends_with(" chars]"));
+    }
+
+    #[test]
+    fn stop_text_redacts_credentials_and_controls_before_projection() {
+        let text =
+            "\u{1b}[31mAuthorization: Bearer top-secret api_key=sk-abcdefghijk account_id=acct-1";
+        let sanitized = sanitize_stop_text(text);
+        assert!(!sanitized.contains('\u{1b}'));
+        assert!(!sanitized.contains("top-secret"));
+        assert!(!sanitized.contains("sk-abcdefghijk"));
+        assert!(!sanitized.contains("acct-1"));
+        assert!(sanitized.matches("[redacted]").count() >= 3);
+        assert!(sanitized.chars().count() <= MAX_STOP_ENTRY_TEXT_CHARS);
+    }
+
+    #[test]
+    fn stop_envelope_projection_is_sorted_secret_free_and_aggregate_bounded() {
+        let tasks = (0..200)
+            .rev()
+            .map(|index| StopBackgroundTask {
+                id: format!("task-{index:03}"),
+                r#type: if index % 2 == 0 {
+                    BackgroundTaskType::Shell
+                } else {
+                    BackgroundTaskType::Monitor
+                },
+                status: "running".into(),
+                description: Some(format!(
+                    "refresh_token=secret-{index} {}",
+                    "🦀".repeat(1_500)
+                )),
+                command: Some(format!(
+                    "Authorization: Bearer bearer-{index} {}",
+                    "x".repeat(1_500)
+                )),
+                agent_type: Some("explore".into()),
+            })
+            .collect();
+        let crons = (0..100)
+            .rev()
+            .map(|index| StopSessionCron {
+                id: format!("cron-{index:03}"),
+                schedule: "every 1 minute".into(),
+                recurring: true,
+                prompt: format!("api_key=secret-{index} {}", "p".repeat(1_500)),
+            })
+            .collect();
+        let mut envelope = HookEventEnvelope {
+            hook_event_name: HookEventName::Stop,
+            session_id: "session-a".into(),
+            cwd: "/tmp".into(),
+            workspace_root: "/tmp".into(),
+            timestamp: "2026-07-20T00:00:00Z".into(),
+            transcript_path: None,
+            client_identifier: None,
+            prompt_id: Some("prompt-1".into()),
+            payload: HookPayload::Stop {
+                reason: "end_turn".into(),
+                stop_hook_active: false,
+                last_assistant_message: Some(
+                    "codex_turn_state=private Authorization: Bearer model-secret".into(),
+                ),
+                background_tasks: Some(tasks),
+                session_crons: Some(crons),
+            },
+        };
+
+        envelope.enforce_stop_projection_bounds();
+        let bytes = serde_json::to_vec(&envelope).unwrap();
+        assert!(
+            bytes.len() <= MAX_STOP_ENVELOPE_BYTES,
+            "{} bytes",
+            bytes.len()
+        );
+        let wire = String::from_utf8(bytes).unwrap();
+        for secret in ["secret-", "model-secret", "private", "bearer-"] {
+            assert!(!wire.contains(secret), "projected secret {secret:?}");
+        }
+        for forbidden_key in [
+            "credentials",
+            "providerState",
+            "codexTurnState",
+            "accountId",
+            "apiKey",
+        ] {
+            assert!(!wire.contains(&format!("\"{forbidden_key}\"")));
+        }
+
+        let HookPayload::Stop {
+            background_tasks: Some(tasks),
+            session_crons: Some(crons),
+            last_assistant_message,
+            ..
+        } = &envelope.payload
+        else {
+            panic!("expected bounded Stop payload");
+        };
+        assert!(
+            crons.is_empty(),
+            "deterministic pruning removes crons first"
+        );
+        assert!(tasks.len() < 200, "aggregate bound must prune task tail");
+        assert!(tasks.windows(2).all(|pair| {
+            (pair[0].r#type, pair[0].id.as_str()) <= (pair[1].r#type, pair[1].id.as_str())
+        }));
+        for task in tasks {
+            for value in [
+                Some(task.id.as_str()),
+                Some(task.status.as_str()),
+                task.description.as_deref(),
+                task.command.as_deref(),
+                task.agent_type.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                assert!(value.chars().count() <= MAX_STOP_ENTRY_TEXT_CHARS);
+            }
+        }
+        assert!(
+            last_assistant_message
+                .as_deref()
+                .is_none_or(|value| value.chars().count() <= MAX_STOP_ENTRY_TEXT_CHARS)
+        );
     }
 }

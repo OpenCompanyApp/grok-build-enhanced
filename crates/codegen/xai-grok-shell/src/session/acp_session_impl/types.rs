@@ -223,6 +223,13 @@ pub(crate) enum GoalRoundDecision {
     EndTurn,
 }
 
+/// Decision from one genuine turn-completion stop gate.
+#[derive(Debug)]
+pub(crate) enum StopGateDecision {
+    AllowStop,
+    KeepWorking { feedback: String },
+}
+
 /// Which part of the model's streaming lifecycle the capture was tied to
 /// when it was last touched — i.e. what the model was doing at the moment
 /// the turn was cut off. Serialized onto `streaming_partial.json` so trace

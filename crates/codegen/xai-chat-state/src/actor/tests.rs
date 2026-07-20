@@ -26,9 +26,12 @@ fn test_config_with_window(context_window: u64) -> SamplingConfig {
         top_p: None,
         api_backend: Default::default(),
         extra_headers: Default::default(),
+        comp_hash: None,
         context_window: NonZeroU64::new(context_window)
             .expect("test context_window must be non-zero"),
         reasoning_effort: None,
+        supports_reasoning_summary_parameter: false,
+        default_reasoning_summary: None,
         stream_tool_calls: None,
         service_tier: None,
     }
@@ -939,8 +942,11 @@ async fn update_sampling_config_is_queryable() {
         top_p: None,
         api_backend: Default::default(),
         extra_headers: Default::default(),
+        comp_hash: None,
         context_window: NonZeroU64::new(200_000).unwrap(),
         reasoning_effort: None,
+        supports_reasoning_summary_parameter: false,
+        default_reasoning_summary: None,
         stream_tool_calls: None,
         service_tier: Some("priority".to_string()),
     };
@@ -1328,8 +1334,11 @@ async fn build_request_uses_sampling_config() {
         top_p: Some(0.9),
         api_backend: Default::default(),
         extra_headers: Default::default(),
+        comp_hash: None,
         context_window: NonZeroU64::new(128_000).unwrap(),
         reasoning_effort: None,
+        supports_reasoning_summary_parameter: false,
+        default_reasoning_summary: None,
         stream_tool_calls: None,
         service_tier: None,
     };
@@ -2749,6 +2758,42 @@ async fn get_last_assistant_text_skips_whitespace_only() {
 }
 
 #[tokio::test]
+async fn get_last_assistant_text_in_turn_stops_at_prompt_boundary() {
+    let h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q1"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("previous turn answer"));
+    h.handle.push_user_message(ConversationItem::user("q2"));
+
+    assert!(h.handle.get_last_assistant_text_in_turn().await.is_none());
+    assert_eq!(
+        h.handle.get_last_assistant_text().await.as_deref(),
+        Some("previous turn answer"),
+        "the unbounded sibling still sees earlier turns"
+    );
+}
+
+#[tokio::test]
+async fn get_last_assistant_text_in_turn_walks_past_mid_turn_feedback() {
+    let h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("turn answer"));
+    h.handle
+        .push_user_message(ConversationItem::stop_hook_feedback("keep working"));
+
+    assert_eq!(
+        h.handle.get_last_assistant_text_in_turn().await.as_deref(),
+        Some("turn answer"),
+        "mid-turn stop feedback must not become a prompt boundary"
+    );
+
+    h.handle
+        .push_user_message(ConversationItem::task_completed("new synthetic turn"));
+    assert!(h.handle.get_last_assistant_text_in_turn().await.is_none());
+}
+
+#[tokio::test]
 async fn get_last_assistant_text_no_assistant_messages() {
     let h = TestHarness::new();
     h.handle.push_user_message(ConversationItem::user("hi"));
@@ -3438,8 +3483,11 @@ async fn sampling_config_survives_compaction_replacement() {
         top_p: Some(0.95),
         api_backend: ApiBackend::Responses,
         extra_headers: Default::default(),
+        comp_hash: None,
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
+        supports_reasoning_summary_parameter: false,
+        default_reasoning_summary: None,
         stream_tool_calls: None,
         service_tier: Some("priority".to_string()),
     };
@@ -3531,8 +3579,11 @@ async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
         top_p: Some(0.95),
         api_backend: Default::default(),
         extra_headers: Default::default(),
+        comp_hash: None,
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
+        supports_reasoning_summary_parameter: false,
+        default_reasoning_summary: None,
         stream_tool_calls: None,
         service_tier: None,
     };
@@ -3624,8 +3675,11 @@ async fn context_window_downgrade_triggers_auto_compact() {
         top_p: Some(0.95),
         api_backend: ApiBackend::Responses,
         extra_headers: Default::default(),
+        comp_hash: None,
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
+        supports_reasoning_summary_parameter: false,
+        default_reasoning_summary: None,
         stream_tool_calls: None,
         service_tier: None,
     };

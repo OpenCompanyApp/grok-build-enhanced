@@ -1,6 +1,49 @@
 use super::support::*;
 use super::*;
 
+fn install_client_hook(
+    actor: &SessionActor,
+    event: xai_grok_hooks::event::HookEventName,
+    callback_ids: &[&str],
+) {
+    let mut client_hooks = crate::extensions::hooks::ClientHooks::new();
+    client_hooks.insert(
+        event,
+        vec![crate::extensions::hooks::ClientHookGroup {
+            matcher: None,
+            callback_ids: callback_ids.iter().map(|id| id.to_string()).collect(),
+            timeout: None,
+        }],
+    );
+    *actor.client_hooks.borrow_mut() = client_hooks;
+}
+
+fn spawn_deny_responder(
+    mut gateway_rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    reason: &'static str,
+) {
+    tokio::task::spawn_local(async move {
+        while let Some(message) = gateway_rx.recv().await {
+            match message {
+                xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                    let response: Arc<serde_json::value::RawValue> =
+                        serde_json::value::to_raw_value(&serde_json::json!({
+                            "decision": "deny",
+                            "systemMessage": reason,
+                        }))
+                        .unwrap()
+                        .into();
+                    let _ = args.response_tx.send(Ok(acp::ExtResponse::new(response)));
+                }
+                xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                    let _ = args.response_tx.send(Ok(()));
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
 /// Client hooks must fire even with no on-disk hook registry: `notify_client_hooks`
 /// reads `client_hooks` (never `hook_registry`) and its call sites sit outside the
 /// file-registry guard.
@@ -35,6 +78,10 @@ async fn client_hooks_fire_without_file_registry() {
                 None,
                 xai_grok_hooks::event::HookPayload::Stop {
                     reason: "end_turn".to_string(),
+                    stop_hook_active: false,
+                    last_assistant_message: None,
+                    background_tasks: None,
+                    session_crons: None,
                 },
             );
 
@@ -612,6 +659,251 @@ async fn pre_tool_use_deny_feeds_reason_back_and_continues_turn() {
                     .any(|c| c.text_content().contains("use read_file instead")),
                 "the deny reason must be fed back as the tool_result"
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stop_client_force_stop_attribution_follows_registration_order() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, mut gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            install_client_hook(
+                &actor,
+                xai_grok_hooks::event::HookEventName::Stop,
+                &["first", "second"],
+            );
+
+            tokio::task::spawn_local(async move {
+                while let Some(message) = gateway_rx.recv().await {
+                    if let xai_acp_lib::AcpClientMessage::ExtMethod(args) = message {
+                        let params: serde_json::Value =
+                            serde_json::from_str(args.request.params.get()).unwrap();
+                        let first = params["hookCallbackId"] == "first";
+                        tokio::task::spawn_local(async move {
+                            if first {
+                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            }
+                            let reason = if first {
+                                "first-reason"
+                            } else {
+                                "second-reason"
+                            };
+                            let response: Arc<serde_json::value::RawValue> =
+                                serde_json::value::to_raw_value(&serde_json::json!({
+                                    "continue": false,
+                                    "stopReason": reason,
+                                }))
+                                .unwrap()
+                                .into();
+                            let _ = args.response_tx.send(Ok(acp::ExtResponse::new(response)));
+                        });
+                    }
+                }
+            });
+
+            let envelope = actor.make_hook_envelope(
+                xai_grok_hooks::event::HookEventName::Stop,
+                Some("prompt-1".into()),
+                xai_grok_hooks::event::HookPayload::Stop {
+                    reason: "end_turn".into(),
+                    stop_hook_active: false,
+                    last_assistant_message: None,
+                    background_tasks: None,
+                    session_crons: None,
+                },
+            );
+            let dispatch = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                actor.run_stop_client_hooks(&envelope),
+            )
+            .await
+            .expect("stop client gate must not hang");
+            let prevent = dispatch.prevent_continuation.expect("force-stop captured");
+            assert_eq!(prevent.hook_name, "client:first");
+            assert_eq!(prevent.reason, "first-reason");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_stop_gate_keeps_working_and_enforces_eight_round_cap() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            assert!(matches!(
+                actor.run_stop_gate("prompt-1", 0).await,
+                StopGateDecision::AllowStop
+            ));
+
+            install_client_hook(
+                &actor,
+                xai_grok_hooks::event::HookEventName::Stop,
+                &["deny"],
+            );
+            spawn_deny_responder(gateway_rx, "keep working");
+
+            let decision = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                actor.run_stop_gate("prompt-1", 0),
+            )
+            .await
+            .expect("stop gate must not hang");
+            match decision {
+                StopGateDecision::KeepWorking { feedback } => {
+                    assert!(feedback.contains("keep working"));
+                }
+                other => panic!("client deny must resample, got {other:?}"),
+            }
+
+            let capped = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                actor.run_stop_gate("prompt-1", MAX_STOP_HOOK_CONTINUATIONS_PER_TURN),
+            )
+            .await
+            .expect("capped stop gate must not hang");
+            assert!(matches!(capped, StopGateDecision::AllowStop));
+        })
+        .await;
+}
+
+fn file_registry_with_stop_spec(
+    event: xai_grok_hooks::event::HookEventName,
+    script: &str,
+) -> xai_grok_hooks::discovery::HookRegistry {
+    let (mut registry, _) = xai_grok_hooks::discovery::load_hooks(None, None);
+    registry.append_specs(vec![xai_grok_hooks::config::HookSpec {
+        name: "test/stop-hook".into(),
+        event,
+        handler_type: "command".into(),
+        configured_matcher: None,
+        matcher: None,
+        enabled: true,
+        command: Some(std::path::PathBuf::from(script)),
+        command_raw: Some(script.to_string()),
+        url: None,
+        url_raw: None,
+        timeout_ms: 5_000,
+        source_dir: std::path::PathBuf::from("/tmp"),
+        extra_env: std::collections::HashMap::new(),
+    }]);
+    registry
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn file_force_stop_skips_client_gate_but_still_notifies_observer() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, mut gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.hook_resolved_workspace_root = "/tmp".into();
+            *actor.hook_registry.borrow_mut() =
+                Some(std::sync::Arc::new(file_registry_with_stop_spec(
+                    xai_grok_hooks::event::HookEventName::Stop,
+                    r#"echo '{"continue":false,"stopReason":"budget"}'"#,
+                )));
+            install_client_hook(
+                &actor,
+                xai_grok_hooks::event::HookEventName::Stop,
+                &["observer"],
+            );
+
+            let run_requests = std::rc::Rc::new(std::cell::Cell::new(0u32));
+            let observe_events = std::rc::Rc::new(std::cell::Cell::new(0u32));
+            let (runs, observes) = (run_requests.clone(), observe_events.clone());
+            tokio::task::spawn_local(async move {
+                while let Some(message) = gateway_rx.recv().await {
+                    match message {
+                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                            if args.request.method.as_ref() == "x.ai/hooks/run" {
+                                runs.set(runs.get() + 1);
+                            }
+                            let response: Arc<serde_json::value::RawValue> =
+                                serde_json::value::to_raw_value(&serde_json::json!({}))
+                                    .unwrap()
+                                    .into();
+                            let _ = args.response_tx.send(Ok(acp::ExtResponse::new(response)));
+                        }
+                        xai_acp_lib::AcpClientMessage::ExtNotification(args) => {
+                            if args.request.method.as_ref() == "x.ai/hooks/event" {
+                                observes.set(observes.get() + 1);
+                            }
+                        }
+                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                            let _ = args.response_tx.send(Ok(()));
+                        }
+                        _ => {}
+                    }
+                }
+            });
+
+            let decision = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                actor.run_stop_gate("prompt-1", 0),
+            )
+            .await
+            .expect("file force-stop must not hang");
+            assert!(matches!(decision, StopGateDecision::AllowStop));
+            tokio::task::yield_now().await;
+            assert_eq!(run_requests.get(), 0);
+            assert_eq!(observe_events.get(), 1);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn subagent_session_uses_subagent_stop_boundary_only() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, mut gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.startup_hints.is_subagent = true;
+            actor.startup_hints.subagent_type = Some("explore".into());
+            actor.hook_resolved_workspace_root = "/tmp".into();
+            *actor.hook_registry.borrow_mut() =
+                Some(std::sync::Arc::new(file_registry_with_stop_spec(
+                    xai_grok_hooks::event::HookEventName::SubagentStop,
+                    r#"echo '{"decision":"block","reason":"verify summary"}'"#,
+                )));
+
+            tokio::task::spawn_local(async move {
+                while let Some(message) = gateway_rx.recv().await {
+                    if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = message {
+                        let _ = args.response_tx.send(Ok(()));
+                    }
+                }
+            });
+
+            let decision = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                actor.run_stop_gate("prompt-1", 0),
+            )
+            .await
+            .expect("subagent stop gate must not hang");
+            match decision {
+                StopGateDecision::KeepWorking { feedback } => {
+                    assert!(feedback.contains("verify summary"));
+                }
+                other => panic!("SubagentStop block must resample child, got {other:?}"),
+            }
         })
         .await;
 }

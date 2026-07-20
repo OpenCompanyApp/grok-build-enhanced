@@ -152,6 +152,34 @@ impl ChatStateActor {
         })
     }
 
+    /// Return the current turn's last assistant message with non-empty text, or
+    /// `None` when the turn produced none.
+    ///
+    /// The backwards walk stops at a prompt-turn boundary: a user item with a
+    /// `prompt_index`, a genuine user message, or a turn-starting synthetic
+    /// message. Mid-turn synthetic feedback and reminders are walked past.
+    pub(super) fn get_last_assistant_text_in_turn(&self) -> Option<String> {
+        for item in self.state.conversation.iter().rev() {
+            match item {
+                xai_grok_sampling_types::ConversationItem::Assistant(a)
+                    if !a.content.trim().is_empty() =>
+                {
+                    return Some(a.content.as_ref().to_owned());
+                }
+                xai_grok_sampling_types::ConversationItem::User(u)
+                    if u.prompt_index.is_some()
+                        || u.synthetic_reason
+                            .as_ref()
+                            .is_none_or(|reason| reason.starts_prompt_turn()) =>
+                {
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Return the text of the **first content part** of the first `User` message,
     /// if and only if that part is `ContentPart::Text`.
     ///

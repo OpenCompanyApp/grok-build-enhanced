@@ -341,9 +341,18 @@ pub fn attach_result_usage_fail_closed(result: &mut serde_json::Value, usage: &s
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", tag = "status")]
 pub enum HookRunStatusDto {
-    Success { elapsed_ms: u64 },
+    Success {
+        elapsed_ms: u64,
+    },
     Skipped,
-    Failed { error: String, elapsed_ms: u64 },
+    Failed {
+        error: String,
+        elapsed_ms: u64,
+        /// Deliberate stop/tool-gate block, not an execution failure. Kept on
+        /// the existing `failed` wire status for older pager compatibility.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        blocked: bool,
+    },
 }
 
 /// A single hook run entry (wire format).

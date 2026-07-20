@@ -45,6 +45,7 @@ pub fn test_sampler_config(
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
+        comp_hash: None,
         context_window: 256_000,
         client_version: None,
         force_http1: false,
@@ -53,6 +54,8 @@ pub fn test_sampler_config(
         idle_timeout_secs: None,
         client_identifier: None,
         reasoning_effort: None,
+        supports_reasoning_summary_parameter: false,
+        default_reasoning_summary: None,
         service_tier: None,
         deployment_id: None,
         user_id: None,

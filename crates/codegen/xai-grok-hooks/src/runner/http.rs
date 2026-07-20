@@ -6,25 +6,18 @@
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
 use url::Url;
 
 use crate::config::HookSpec;
 use crate::event::HookEventEnvelope;
-use crate::result::{HookDecision, HttpInfo};
+use crate::result::{HookDecision, HttpInfo, StopHookOutcome};
 
-use super::{HookRunOutput, HookRunnerResult, RunContext};
+use super::{
+    GateKind, HookRunOutput, HookRunnerResult, RunContext, StopHookJson, stop_json_to_outcome,
+};
 
 /// Maximum characters to keep from the response body for the preview.
 const RESPONSE_PREVIEW_MAX: usize = 200;
-
-/// The JSON result structure expected from blocking HTTP hooks.
-#[derive(Debug, Deserialize)]
-struct HttpHookOutput {
-    decision: String,
-    #[serde(default)]
-    reason: Option<String>,
-}
 
 /// CWE-918: Returns `true` if an IP address is in a private, link-local,
 /// or cloud metadata range that should be blocked to prevent SSRF attacks.
@@ -131,6 +124,15 @@ async fn validate_hook_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn build_hook_client(timeout_ms: u64) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        // Redirect targets have not passed the SSRF validator.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("hook HTTP client config is valid")
+}
+
 /// Run a single HTTP hook.
 ///
 /// POSTs the serialized `HookEventEnvelope` as JSON to `spec.url`.
@@ -143,7 +145,7 @@ pub async fn run_http_hook(
     spec: &HookSpec,
     envelope: &HookEventEnvelope,
     _ctx: &RunContext<'_>,
-    is_blocking: bool,
+    mode: GateKind,
 ) -> HookRunOutput {
     let start = Instant::now();
 
@@ -197,8 +199,20 @@ pub async fn run_http_hook(
         }
     };
 
-    // CWE-918: Validate URL before sending any data.
-    if let Err(reason) = validate_hook_url(url).await {
+    // CWE-918: validate before sending and include DNS lookup in the hook's
+    // deadline. A stalled resolver must fail open rather than wedge a gate.
+    let validation = tokio::time::timeout(
+        Duration::from_millis(spec.timeout_ms),
+        validate_hook_url(url),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(format!(
+            "URL validation timed out after {}ms",
+            spec.timeout_ms
+        ))
+    });
+    if let Err(reason) = validation {
         tracing::warn!(
             hook_name = %spec.name,
             url = %log_url,
@@ -223,10 +237,7 @@ pub async fn run_http_hook(
         }
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(spec.timeout_ms))
-        .build()
-        .unwrap_or_default();
+    let client = build_hook_client(spec.timeout_ms);
 
     let response = match client
         .post(url)
@@ -272,7 +283,7 @@ pub async fn run_http_hook(
         "http hook completed"
     );
 
-    if !is_blocking {
+    if mode == GateKind::Observe {
         let http_info = Some(make_info(Some(status_code), None));
         if status.is_success() {
             return (HookRunnerResult::Success, elapsed, http_info);
@@ -284,7 +295,7 @@ pub async fn run_http_hook(
         );
     }
 
-    // Blocking hook: parse response JSON for decision.
+    // Gate hook: parse response JSON for its mode-specific decision.
     let response_text = match response.text().await {
         Ok(t) => t,
         Err(e) => {
@@ -311,8 +322,37 @@ pub async fn run_http_hook(
 
     let http_info = Some(make_info(Some(status_code), response_preview.clone()));
 
-    let result = parse_http_blocking_result(&response_text, status, &spec.name);
+    let result = match mode {
+        GateKind::Tool => parse_http_blocking_result(&response_text, status, &spec.name),
+        GateKind::Stop => parse_http_stop_result(&response_text, status, &spec.name),
+        GateKind::Observe => HookRunnerResult::Success,
+    };
     (result, elapsed, http_info)
+}
+
+/// HTTP stop-gate parser. Failures and malformed output contribute no signal,
+/// so callers fail open and allow completion.
+fn parse_http_stop_result(
+    response_text: &str,
+    status: reqwest::StatusCode,
+    hook_name: &str,
+) -> HookRunnerResult {
+    if !status.is_success() {
+        return HookRunnerResult::Failed(format!("HTTP status {status}"));
+    }
+    let trimmed = response_text.trim();
+    if trimmed.is_empty() {
+        return HookRunnerResult::Stop(StopHookOutcome::default());
+    }
+    match serde_json::from_str::<StopHookJson>(trimmed) {
+        Ok(json) => match stop_json_to_outcome(json, hook_name) {
+            Ok(outcome) => HookRunnerResult::Stop(outcome),
+            Err(err) => HookRunnerResult::Failed(err),
+        },
+        Err(err) => HookRunnerResult::Failed(format!(
+            "malformed HTTP stop hook output from '{hook_name}': {err}"
+        )),
+    }
 }
 
 /// Parse an HTTP blocking hook response into a `HookRunnerResult`.
@@ -333,25 +373,11 @@ fn parse_http_blocking_result(
         return HookRunnerResult::Failed(format!("HTTP status {} with empty body", status));
     }
 
-    match serde_json::from_str::<HttpHookOutput>(response_text) {
-        Ok(output) => {
-            if output.decision == "deny" {
-                let reason = output
-                    .reason
-                    .unwrap_or_else(|| format!("denied by hook '{}'", hook_name));
-                HookRunnerResult::Decision(HookDecision::Deny {
-                    reason,
-                    hook_name: hook_name.to_string(),
-                })
-            } else if output.decision == "allow" {
-                HookRunnerResult::Decision(HookDecision::Allow)
-            } else {
-                HookRunnerResult::Failed(format!(
-                    "unknown decision value '{}' from hook '{}'",
-                    output.decision, hook_name
-                ))
-            }
-        }
+    match serde_json::from_str::<super::GateHookJson>(response_text) {
+        Ok(output) => match super::gate_json_to_decision(output, hook_name) {
+            Ok(decision) => HookRunnerResult::Decision(decision),
+            Err(err) => HookRunnerResult::Failed(err),
+        },
         Err(e) => {
             // Cannot parse response: fail-open if status is success.
             if status.is_success() {
@@ -452,6 +478,32 @@ mod tests {
             }
             other => panic!("expected Failed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn http_stop_gate_parses_signals_and_fails_open_on_bad_output() {
+        match parse_http_stop_result(
+            r#"{"decision":"block","reason":"tests failing"}"#,
+            StatusCode::OK,
+            "stop",
+        ) {
+            HookRunnerResult::Stop(outcome) => {
+                assert_eq!(outcome.block_reason.as_deref(), Some("tests failing"));
+            }
+            other => panic!("expected stop outcome, got {other:?}"),
+        }
+        assert!(matches!(
+            parse_http_stop_result(r#"{"decision":"block""#, StatusCode::OK, "stop"),
+            HookRunnerResult::Failed(_)
+        ));
+        assert!(matches!(
+            parse_http_stop_result(
+                r#"{"decision":"block","reason":"ignored"}"#,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "stop"
+            ),
+            HookRunnerResult::Failed(_)
+        ));
     }
 
     #[test]
@@ -789,7 +841,7 @@ mod tests {
             session_id: "test",
             workspace_root: "/tmp",
         };
-        let (result, _, info) = run_http_hook(&spec, &envelope, &ctx, true).await;
+        let (result, _, info) = run_http_hook(&spec, &envelope, &ctx, GateKind::Tool).await;
 
         match result {
             crate::runner::HookRunnerResult::Failed(reason) => {
@@ -880,7 +932,7 @@ mod tests {
             workspace_root: "/tmp",
         };
 
-        let (result, _, info) = run_http_hook(&spec, &envelope, &ctx, true).await;
+        let (result, _, info) = run_http_hook(&spec, &envelope, &ctx, GateKind::Tool).await;
 
         // Either `Failed` (timeout / connection error) is fine; both
         // exercise paths that previously embedded the raw URL via

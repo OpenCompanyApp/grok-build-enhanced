@@ -23,6 +23,31 @@ impl HookRegistry {
         self.hooks.get(&event).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// Returns true when any enabled hook is registered for `event` or its
+    /// compatibility alias.
+    pub fn has_enabled_hooks_for_canonical(&self, event: HookEventName) -> bool {
+        let enabled = |specs: &[HookSpec]| {
+            specs
+                .iter()
+                .any(|spec| spec.enabled && !crate::trust::is_hook_disabled(&spec.name))
+        };
+        let canonical = event.canonical();
+        enabled(self.hooks_for(canonical))
+            || (canonical == HookEventName::SubagentStop
+                && enabled(self.hooks_for(HookEventName::SubagentEnd)))
+    }
+
+    /// Hooks under the canonical key followed by compatibility-alias hooks.
+    /// Vector order is stable and defines stop aggregation order.
+    pub fn hooks_for_canonical(&self, event: HookEventName) -> Vec<&HookSpec> {
+        let canonical = event.canonical();
+        let mut hooks: Vec<&HookSpec> = self.hooks_for(canonical).iter().collect();
+        if canonical == HookEventName::SubagentStop {
+            hooks.extend(self.hooks_for(HookEventName::SubagentEnd));
+        }
+        hooks
+    }
+
     /// Returns true if the registry contains no hooks at all.
     pub fn is_empty(&self) -> bool {
         self.hooks.values().all(|v| v.is_empty())

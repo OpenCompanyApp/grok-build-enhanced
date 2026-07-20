@@ -146,6 +146,19 @@ impl SessionActor {
                     HookRunResult::Skipped { hook_name } => {
                         (hook_name.clone(), HookRunStatusDto::Skipped)
                     }
+                    HookRunResult::Blocked {
+                        hook_name,
+                        detail,
+                        elapsed,
+                        ..
+                    } => (
+                        hook_name.clone(),
+                        HookRunStatusDto::Failed {
+                            error: detail.clone(),
+                            elapsed_ms: elapsed.as_millis() as u64,
+                            blocked: true,
+                        },
+                    ),
                     HookRunResult::Failed {
                         hook_name,
                         error,
@@ -156,6 +169,7 @@ impl SessionActor {
                         HookRunStatusDto::Failed {
                             error: error.clone(),
                             elapsed_ms: elapsed.as_millis() as u64,
+                            blocked: false,
                         },
                     ),
                 };
@@ -251,6 +265,13 @@ impl SessionActor {
                     hook_name,
                     elapsed,
                     xai_grok_telemetry::events::HookOutcome::Success,
+                ),
+                xai_grok_hooks::result::HookRunResult::Blocked {
+                    hook_name, elapsed, ..
+                } => (
+                    hook_name,
+                    elapsed,
+                    xai_grok_telemetry::events::HookOutcome::Blocked,
                 ),
                 xai_grok_hooks::result::HookRunResult::Failed {
                     hook_name, elapsed, ..

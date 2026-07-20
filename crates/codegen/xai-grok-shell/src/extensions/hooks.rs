@@ -88,8 +88,8 @@ pub struct ClientHookGroup {
     /// `None` (wire `null`, `""`, or `"*"`) matches every tool.
     pub matcher: Option<HookMatcher>,
     pub callback_ids: Vec<String>,
-    /// Per-group reply deadline for the `PreToolUse` gate (wire value in seconds). `None`
-    /// falls back to the default gate timeout.
+    /// Per-group gate reply deadline in seconds. `None` uses the event's
+    /// default (`PreToolUse` is short; stop gates allow longer verification).
     pub timeout: Option<std::time::Duration>,
 }
 
@@ -107,12 +107,23 @@ pub(crate) struct ClientHookDispatch<'a> {
     pub envelope: &'a HookEventEnvelope,
 }
 
-/// Only `Deny` blocks the tool; every other value proceeds (fail-open).
+pub(crate) const ADVERTISED_BLOCKING_EVENTS: &[HookEventName] = &[
+    HookEventName::PreToolUse,
+    HookEventName::Stop,
+    HookEventName::SubagentStop,
+];
+
+pub(crate) const ADVERTISED_DECISIONS: &[&str] = &["deny", "block"];
+pub(crate) const ADVERTISED_STOP_SIGNALS: &[&str] =
+    &["continue", "stopReason", "additionalContext"];
+
+/// Only `Deny` blocks; every other value proceeds (fail-open).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ClientHookDecision {
     #[default]
     Continue,
+    #[serde(alias = "block")]
     Deny,
     #[serde(other)]
     Other,
@@ -125,9 +136,14 @@ pub(crate) enum ClientHookDecision {
 pub(crate) struct ClientHookResponse {
     #[serde(default)]
     pub decision: ClientHookDecision,
-    /// Deny reason surfaced to the model/user; consumed only when `decision` is `Deny`.
-    #[serde(default)]
+    #[serde(default, alias = "reason")]
     pub system_message: Option<String>,
+    #[serde(default, rename = "continue")]
+    pub continue_: Option<bool>,
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub additional_context: Option<String>,
 }
 
 /// Parse client hooks from `session/new` `_meta["x.ai/hooks"]`, shaped
@@ -199,7 +215,7 @@ fn parse_hook_group(event: HookEventName, value: &serde_json::Value) -> Option<C
     }
     // Drop a non-finite/non-positive timeout (fall back to the default gate timeout) and
     // cap it so a client can't make a tool hang on the gate for an unbounded time.
-    const MAX_HOOK_TIMEOUT_SECS: f64 = 300.0;
+    const MAX_HOOK_TIMEOUT_SECS: f64 = 600.0;
     let timeout = group
         .timeout
         .filter(|s| s.is_finite() && *s > 0.0)
@@ -380,7 +396,7 @@ mod tests {
         assert_eq!(groups[0].timeout, Some(std::time::Duration::from_secs(5)));
         assert_eq!(groups[1].timeout, None); // non-positive -> default
         assert_eq!(groups[2].timeout, None); // absent -> default
-        assert_eq!(groups[3].timeout, Some(std::time::Duration::from_secs(300))); // capped
+        assert_eq!(groups[3].timeout, Some(std::time::Duration::from_secs(600))); // capped
     }
 
     /// A registration under the `SubagentEnd` alias must land on the canonical
@@ -435,6 +451,51 @@ mod tests {
             ClientHookResponse::default().decision,
             ClientHookDecision::Continue
         );
+
+        let stop: ClientHookResponse = serde_json::from_str(
+            r#"{"continue":false,"stopReason":"budget","additionalContext":"ctx"}"#,
+        )
+        .unwrap();
+        assert_eq!(stop.continue_, Some(false));
+        assert_eq!(stop.stop_reason.as_deref(), Some("budget"));
+        assert_eq!(stop.additional_context.as_deref(), Some("ctx"));
+
+        let literal_file_shape: ClientHookResponse =
+            serde_json::from_str(r#"{"decision":"block","reason":"run tests"}"#).unwrap();
+        assert_eq!(literal_file_shape.decision, ClientHookDecision::Deny);
+        assert_eq!(
+            literal_file_shape.system_message.as_deref(),
+            Some("run tests")
+        );
+    }
+
+    #[test]
+    fn advertised_stop_gate_capabilities_match_the_parser() {
+        for event in ADVERTISED_BLOCKING_EVENTS {
+            assert_ne!(event.gate_kind(), xai_grok_hooks::event::GateKind::Observe);
+        }
+        for decision in ADVERTISED_DECISIONS {
+            let parsed: ClientHookDecision =
+                serde_json::from_value(serde_json::json!(decision)).unwrap();
+            assert_eq!(parsed, ClientHookDecision::Deny);
+        }
+
+        let values = serde_json::json!({
+            "continue": false,
+            "stopReason": "r",
+            "additionalContext": "c",
+        });
+        for signal in ADVERTISED_STOP_SIGNALS {
+            let response: ClientHookResponse =
+                serde_json::from_value(serde_json::json!({ *signal: values[*signal].clone() }))
+                    .unwrap();
+            assert!(match *signal {
+                "continue" => response.continue_ == Some(false),
+                "stopReason" => response.stop_reason.as_deref() == Some("r"),
+                "additionalContext" => response.additional_context.as_deref() == Some("c"),
+                _ => false,
+            });
+        }
     }
 
     /// The callback id sits beside the flattened envelope (camelCase keys,

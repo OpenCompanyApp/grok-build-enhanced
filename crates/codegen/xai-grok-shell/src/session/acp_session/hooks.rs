@@ -1,13 +1,13 @@
 //! Client-registered hooks for [`SessionActor`].
 //!
-//! Hooks registered at `session/new` (`_meta["x.ai/hooks"]`) come in two flavors,
-//! both matched by the agent ([`xai_grok_hooks::matcher::HookMatcher`], shared with
-//! file hooks):
-//! - **`PreToolUse` gate**: an awaited reverse *request* `x.ai/hooks/run`; a `deny`
-//!   blocks the tool.
-//! - **All other events**: fire-and-forget *notifications* `x.ai/hooks/event`,
-//!   observe-only (the callback's return is ignored). Sent per matching callback.
+//! Hooks registered at `session/new` (`_meta["x.ai/hooks"]`) come in two flavors:
+//! - **Awaited gates** (`x.ai/hooks/run`): `PreToolUse` plus genuine turn-end
+//!   `Stop`/`SubagentStop`. Stop responses are aggregated deterministically and
+//!   may keep the model working or explicitly force the turn to stop.
+//! - **Observe-only notifications** (`x.ai/hooks/event`): every other event,
+//!   plus the final observer notification after a stop-gate force-stop.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,15 +27,12 @@ use crate::sampling::types::ToolCallResponse;
 const HOOK_EVENT_METHOD: &str = "x.ai/hooks/event";
 const HOOK_RUN_METHOD: &str = "x.ai/hooks/run";
 
-/// Default per-callback bound for a client's `x.ai/hooks/run` reply; on timeout the gate
-/// fails open (the tool proceeds).
-///
-/// Some external hosts default to 600s per hook; we default to 30s because our gate sits
-/// in the interactive tool hot path (a hung hook would otherwise stall a tool call for
-/// minutes). Hosts can override per group up to `MAX_HOOK_TIMEOUT_SECS` (300s). To match
-/// a longer external default, change this value (and raise/remove the cap in
-/// `extensions::hooks`).
+/// Default reply deadline for the interactive `PreToolUse` gate.
 const CLIENT_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Default reply deadline for `Stop`/`SubagentStop`. Timeout still fails open,
+/// but stop policies commonly run a build or test suite and need a longer bound.
+const CLIENT_STOP_GATE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Outcome of the `x.ai/hooks/run` reverse request, before interpreting it as a
 /// decision. Separate so [`classify`] stays pure and unit-testable.
@@ -135,8 +132,8 @@ impl SessionActor {
         prompt_id: Option<String>,
         payload: HookPayload,
     ) -> HookEventEnvelope {
-        HookEventEnvelope {
-            hook_event_name,
+        let mut envelope = HookEventEnvelope {
+            hook_event_name: hook_event_name.canonical(),
             session_id: self.session_id_string(),
             cwd: self.session_info.cwd.clone(),
             workspace_root: self.hook_workspace_root(),
@@ -145,7 +142,12 @@ impl SessionActor {
             client_identifier: None,
             prompt_id,
             payload,
-        }
+        };
+        // One projection boundary shared by file, HTTP, and ACP hooks. This is
+        // where active-work text is redacted, Unicode-clipped, ordered, and
+        // aggregate-bounded before any external callback sees it.
+        envelope.enforce_stop_projection_bounds();
+        envelope
     }
 
     /// Whether any hook would consume `event`: the on-disk file registry, or a registered
@@ -198,51 +200,33 @@ impl SessionActor {
         Ok(ToolLoop::HookDenied { hook_name })
     }
 
-    /// Run the client-registered `PreToolUse` hooks for `call`, firing
-    /// `x.ai/hooks/run` once per matching callback with the shared `envelope` (the
-    /// same payload file hooks and observe events receive).
-    ///
-    /// Returns `Some(ToolLoop::HookDenied)` on the first deny, else `None`.
-    /// Timeout, transport error, and malformed replies all fail open.
-    pub(super) async fn run_pre_tool_use_client_hook(
-        &self,
-        call: &ToolCallResponse,
-        tool_call_id: &acp::ToolCallId,
-        envelope: &HookEventEnvelope,
-    ) -> Result<Option<ToolLoop>, acp::Error> {
-        // Clone the matched groups so we don't hold the `client_hooks` borrow across the
-        // dispatch awaits below.
-        let Some(groups) = self
-            .client_hooks
-            .borrow()
-            .get(&HookEventName::PreToolUse)
-            .cloned()
-        else {
-            return Ok(None);
-        };
-        // Match on the resolved target (in the envelope) so a client deny matcher
-        // keyed on the real MCP tool gates a meta-dispatch call, matching the
-        // observe path (`notify_client_hooks`). Equals `function.name` otherwise.
-        let tool_name = xai_grok_hooks::dispatcher::extract_tool_name(envelope)
-            .unwrap_or_else(|| call.function.name.clone());
-        let tool_name = tool_name.as_str();
-
-        // Dispatch every matching callback concurrently, each bounded by its group's
-        // timeout (else `CLIENT_HOOK_TIMEOUT`), and act on the first deny. Independent
-        // timeouts mean a slow or hung callback can't erode another's budget (so a later
-        // deny can't be starved into a fail-open), and concurrency keeps total gate latency
-        // bounded to ~one timeout regardless of count.
-        let mut pending: FuturesUnordered<_> = groups
+    /// Fan one client gate out concurrently, deduplicating callback ids while
+    /// retaining enough identity to aggregate responses in registration order.
+    fn client_gate_responses<'a>(
+        &'a self,
+        groups: &'a [ClientHookGroup],
+        match_value: Option<&'a str>,
+        envelope: &'a HookEventEnvelope,
+    ) -> FuturesUnordered<impl Future<Output = (&'a str, ClientHookResponse, Duration)> + 'a> {
+        let default_timeout =
+            if envelope.hook_event_name.gate_kind() == xai_grok_hooks::event::GateKind::Stop {
+                CLIENT_STOP_GATE_TIMEOUT
+            } else {
+                CLIENT_HOOK_TIMEOUT
+            };
+        let mut seen = std::collections::HashSet::new();
+        groups
             .iter()
-            .filter(|group| group_matches(group, Some(tool_name)))
-            .flat_map(|group| {
-                let timeout = group.timeout.unwrap_or(CLIENT_HOOK_TIMEOUT);
+            .filter(move |group| group_matches(group, match_value))
+            .flat_map(move |group| {
+                let timeout = group.timeout.unwrap_or(default_timeout);
                 group
                     .callback_ids
                     .iter()
                     .map(move |callback_id| (callback_id.as_str(), timeout))
             })
-            .map(|(callback_id, timeout)| {
+            .filter(move |(callback_id, _)| seen.insert(*callback_id))
+            .map(move |(callback_id, timeout)| {
                 let dispatch = ClientHookDispatch {
                     hook_callback_id: callback_id,
                     envelope,
@@ -251,31 +235,54 @@ impl SessionActor {
                     let started = tokio::time::Instant::now();
                     let (response, gate_outcome) =
                         classify(self.send_hook_run(&dispatch, timeout).await);
+                    let elapsed = started.elapsed();
                     xai_grok_telemetry::session_ctx::log_event(
                         xai_grok_telemetry::events::ClientHookGate {
                             callback_id: callback_id.to_string(),
-                            tool_name: Some(tool_name.to_string()),
+                            tool_name: match_value.map(str::to_string),
                             outcome: gate_outcome,
-                            duration_ms: started.elapsed().as_millis() as u64,
+                            duration_ms: elapsed.as_millis() as u64,
                         },
                     );
-                    (callback_id, response)
+                    (callback_id, response, elapsed)
                 }
             })
-            .collect();
+            .collect()
+    }
 
-        while let Some((callback_id, response)) = pending.next().await {
+    /// Run client `PreToolUse` callbacks. An explicit deny blocks; every
+    /// timeout, malformed reply, and transport failure fails open.
+    pub(super) async fn run_pre_tool_use_client_hook(
+        &self,
+        call: &ToolCallResponse,
+        tool_call_id: &acp::ToolCallId,
+        envelope: &HookEventEnvelope,
+    ) -> Result<Option<ToolLoop>, acp::Error> {
+        let Some(groups) = self
+            .client_hooks
+            .borrow()
+            .get(&HookEventName::PreToolUse)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let tool_name = envelope
+            .payload
+            .match_value()
+            .unwrap_or(call.function.name.as_str());
+
+        let mut pending = self.client_gate_responses(&groups, Some(tool_name), envelope);
+        while let Some((callback_id, response, _elapsed)) = pending.next().await {
             if response.decision == ClientHookDecision::Deny {
                 let reason = response
                     .system_message
+                    .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| "blocked by client hook".to_string());
                 return Ok(Some(
                     self.deny_tool(
                         &call.id,
                         tool_call_id,
                         tool_name.to_owned(),
-                        // Name the specific callback so telemetry / the UI annotation can
-                        // attribute the block, not collapse every client hook to "client".
                         format!("client:{callback_id}"),
                         reason,
                     )
@@ -284,6 +291,86 @@ impl SessionActor {
             }
         }
         Ok(None)
+    }
+
+    /// Run and deterministically aggregate all client `Stop`/`SubagentStop`
+    /// callbacks. Completion order never decides block order or force-stop
+    /// attribution; failed callbacks simply contribute no signal.
+    pub(super) async fn run_stop_client_hooks(
+        &self,
+        envelope: &HookEventEnvelope,
+    ) -> xai_grok_hooks::dispatcher::StopDispatchResult {
+        use xai_grok_hooks::result::HookRunResult;
+
+        let mut out = xai_grok_hooks::dispatcher::StopDispatchResult::default();
+        let Some(groups) = self
+            .client_hooks
+            .borrow()
+            .get(&envelope.hook_event_name.canonical())
+            .cloned()
+        else {
+            return out;
+        };
+
+        let match_value = envelope.payload.match_value();
+        let mut pending = self.client_gate_responses(&groups, match_value, envelope);
+        let mut responses = std::collections::HashMap::new();
+        while let Some((callback_id, response, elapsed)) = pending.next().await {
+            responses.insert(callback_id, (response, elapsed));
+        }
+
+        let ordered = groups
+            .iter()
+            .flat_map(|group| group.callback_ids.iter())
+            .filter_map(|id| {
+                responses
+                    .remove(id.as_str())
+                    .map(|response| (id.as_str(), response))
+            });
+        for (callback_id, (response, elapsed)) in ordered {
+            let hook_name = format!("client:{callback_id}");
+            let block_reason = (response.decision == ClientHookDecision::Deny).then(|| {
+                response
+                    .system_message
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "blocked by client hook".to_string())
+            });
+            let stop_reason = (response.continue_ == Some(false)).then(|| {
+                response
+                    .stop_reason
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "stopped by client hook".to_string())
+            });
+            let detail = xai_grok_hooks::dispatcher::stop_detail(
+                stop_reason.is_some(),
+                stop_reason.as_deref(),
+                block_reason.as_deref(),
+            );
+            out.results.push(match detail {
+                Some(detail) => HookRunResult::Blocked {
+                    hook_name: hook_name.clone(),
+                    detail,
+                    elapsed,
+                    http_info: None,
+                },
+                None => HookRunResult::Success {
+                    hook_name: hook_name.clone(),
+                    elapsed,
+                    http_info: None,
+                },
+            });
+            out.absorb(
+                &hook_name,
+                xai_grok_hooks::dispatcher::StopSignals {
+                    block_reason,
+                    stop_reason,
+                    additional_context: response
+                        .additional_context
+                        .filter(|value| !value.trim().is_empty()),
+                },
+            );
+        }
+        out
     }
 
     /// Issue one `x.ai/hooks/run` reverse request, bounded by a per-callback `timeout`.
@@ -314,8 +401,8 @@ impl SessionActor {
         let Some(groups) = hooks.get(&envelope.hook_event_name.canonical()) else {
             return;
         };
-        let tool_name = xai_grok_hooks::dispatcher::extract_tool_name(envelope);
-        for callback_id in matching_callback_ids(groups, tool_name.as_deref()) {
+        let match_value = envelope.payload.match_value();
+        for callback_id in matching_callback_ids(groups, match_value) {
             let dispatch = ClientHookDispatch {
                 hook_callback_id: callback_id,
                 envelope,

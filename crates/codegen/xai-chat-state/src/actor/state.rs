@@ -276,8 +276,11 @@ mod tests {
             top_p: None,
             api_backend: Default::default(),
             extra_headers: Default::default(),
+            comp_hash: None,
             context_window: std::num::NonZeroU64::new(128_000).unwrap(),
             reasoning_effort: None,
+            supports_reasoning_summary_parameter: false,
+            default_reasoning_summary: None,
             stream_tool_calls: None,
             service_tier: None,
         }

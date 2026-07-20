@@ -297,6 +297,11 @@ pub enum ChatStateCommand {
         reply: oneshot::Sender<Option<String>>,
     },
 
+    /// Like `GetLastAssistantText`, but stops at the current prompt-turn boundary.
+    GetLastAssistantTextInTurn {
+        reply: oneshot::Sender<Option<String>>,
+    },
+
     /// Get the text of the first `Text` content part in the first `User` message.
     /// Returns `None` if the conversation has no user messages or the first user
     /// message has no text content part.
@@ -373,8 +378,11 @@ mod tests {
                 top_p: None,
                 api_backend: Default::default(),
                 extra_headers: Default::default(),
+                comp_hash: None,
                 context_window: std::num::NonZeroU64::new(128_000).unwrap(),
                 reasoning_effort: None,
+                supports_reasoning_summary_parameter: false,
+                default_reasoning_summary: None,
                 stream_tool_calls: None,
                 service_tier: None,
             },
@@ -463,6 +471,9 @@ mod tests {
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetLastAssistantText { reply: tx };
+
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::GetLastAssistantTextInTurn { reply: tx };
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetFirstUserText { reply: tx };

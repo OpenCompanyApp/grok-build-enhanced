@@ -96,11 +96,14 @@ pub use types::{TodoGateDecision, TodoGateReason};
 mod goal;
 #[path = "acp_session_impl/interjection.rs"]
 mod interjection;
+#[path = "acp_session_impl/stop_gate.rs"]
+mod stop_gate;
 #[path = "acp_session_impl/tool_calls.rs"]
 mod tool_calls;
 #[path = "acp_session_impl/turn.rs"]
 mod turn;
 pub(crate) use interjection::*;
+use stop_gate::*;
 #[path = "acp_session_impl/laziness.rs"]
 mod laziness;
 pub(crate) use laziness::*;

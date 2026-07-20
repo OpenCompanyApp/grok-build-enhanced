@@ -636,6 +636,15 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                         xai_grok_shell::extensions::notification::HookRunStatusDto::Failed {
                             error,
                             elapsed_ms,
+                            blocked: true,
+                        } => HookRunStatus::Blocked {
+                            detail: error,
+                            elapsed: std::time::Duration::from_millis(elapsed_ms),
+                        },
+                        xai_grok_shell::extensions::notification::HookRunStatusDto::Failed {
+                            error,
+                            elapsed_ms,
+                            blocked: false,
                         } => HookRunStatus::Failed {
                             error,
                             elapsed: std::time::Duration::from_millis(elapsed_ms),
@@ -649,7 +658,10 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 })
                 .collect();
             let is_tool_hook = event_name == "pre_tool_use" || event_name == "post_tool_use";
-            let is_stop_hook = event_name == "stop" || event_name == "stop_failure";
+            let is_stop_hook = matches!(
+                event_name.as_str(),
+                "stop" | "subagent_stop" | "stop_failure"
+            );
             if is_tool_hook {
                 let phase = if event_name == "pre_tool_use" {
                     HookPhase::Pre

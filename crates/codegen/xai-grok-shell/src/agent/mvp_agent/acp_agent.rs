@@ -616,8 +616,10 @@ impl acp::Agent for MvpAgent {
                         .meta(
                             serde_json::json!(
                                 { "x.ai/fs_notify" : true, "x.ai/hooks" : { "blockingEvents"
-                                : [xai_grok_hooks::event::HookEventName::PreToolUse],
-                                "decisions" : ["deny"], }, }
+                                : crate ::extensions::hooks::ADVERTISED_BLOCKING_EVENTS,
+                                "decisions" : crate ::extensions::hooks::ADVERTISED_DECISIONS,
+                                "stopSignals" : crate
+                                ::extensions::hooks::ADVERTISED_STOP_SIGNALS, }, }
                             )
                                 .as_object()
                                 .cloned(),

@@ -19,6 +19,49 @@ enum StructuredOutputStep {
     /// should run this round).
     Proceed,
 }
+
+/// Stop hooks gate only a genuine, non-refusal model completion. Cancellation,
+/// provider/session errors, max-turn termination, and refusals are terminal and
+/// must never be converted into another sampling round.
+fn is_genuine_stop_completion(round: &Result<TurnOutcome, acp::Error>) -> bool {
+    matches!(round, Ok(TurnOutcome::Completed { refusal: false, .. }))
+}
+
+#[cfg(test)]
+mod stop_completion_filter_tests {
+    use super::*;
+
+    fn completed(refusal: bool) -> Result<TurnOutcome, acp::Error> {
+        Ok(TurnOutcome::Completed {
+            snapshot: Box::new(None),
+            tools_called: Vec::new(),
+            structured_output: None,
+            refusal,
+        })
+    }
+
+    #[test]
+    fn only_genuine_completion_enters_stop_resampling() {
+        assert!(is_genuine_stop_completion(&completed(false)));
+        assert!(!is_genuine_stop_completion(&completed(true)), "refusal");
+        assert!(
+            !is_genuine_stop_completion(&Ok(TurnOutcome::Cancelled {
+                category: None,
+                context: None,
+            })),
+            "cancellation"
+        );
+        assert!(
+            !is_genuine_stop_completion(&Ok(TurnOutcome::MaxTurnsReached { limit: 3 })),
+            "max-turn termination"
+        );
+        assert!(
+            !is_genuine_stop_completion(&Err(acp::Error::internal_error())),
+            "provider/session error"
+        );
+    }
+}
+
 /// Parse `raw` as JSON and validate it against a `validator` compiled once per
 /// turn. Returns the value on success, or a human-readable error (surfaced to
 /// the model on retry and to the client as `structuredOutputError`). A `validator`
@@ -823,6 +866,7 @@ impl SessionActor {
         let result = {
             let mut round_trace = trace_gcs_config;
             let mut round_artifact = artifact_tracker;
+            let mut stop_continuations_this_turn = 0u32;
             loop {
                 if self.goal_harness_enabled() {
                     let goal_loop_active = self.goal_tracker.lock().status()
@@ -838,24 +882,31 @@ impl SessionActor {
                         browse_requirement,
                     )
                     .await;
-                if !matches!(round, Ok(TurnOutcome::Completed { .. })) {
+                if !is_genuine_stop_completion(&round) {
                     break round;
                 }
-                if matches!(round, Ok(TurnOutcome::Completed { refusal: true, .. })) {
-                    break round;
-                }
+
                 let goal_active = laziness_injection_active(
                     self.goal_harness_enabled(),
                     self.goal_tracker.lock().status(),
                 );
-                if !goal_active {
-                    break round;
+                if goal_active
+                    && let GoalRoundDecision::Continue(directive) = self.run_goal_round_end().await
+                {
+                    self.inject_goal_continuation_message(directive).await;
+                    continue;
                 }
-                match self.run_goal_round_end().await {
-                    GoalRoundDecision::Continue(directive) => {
-                        self.inject_goal_continuation_message(directive).await;
+
+                match self
+                    .run_stop_gate(prompt_id, stop_continuations_this_turn)
+                    .await
+                {
+                    StopGateDecision::AllowStop => break round,
+                    StopGateDecision::KeepWorking { feedback } => {
+                        stop_continuations_this_turn += 1;
+                        self.chat_state_handle
+                            .push_user_message(ConversationItem::stop_hook_feedback(feedback));
                     }
-                    GoalRoundDecision::EndTurn => break round,
                 }
             }
         };
@@ -1037,22 +1088,6 @@ impl SessionActor {
                 },
             );
         }
-        let stop_reason_str = match &result {
-            Ok(TurnOutcome::Completed { .. }) => "end_turn",
-            Ok(TurnOutcome::Cancelled { .. }) | Ok(TurnOutcome::MaxTurnsReached { .. }) => {
-                "cancelled"
-            }
-            Err(_) => "error",
-        };
-        self.dispatch_hook(
-            xai_grok_hooks::event::HookEventName::Stop,
-            xai_grok_hooks::event::HookPayload::Stop {
-                reason: stop_reason_str.to_string(),
-            },
-            Some(prompt_id),
-            None,
-        )
-        .await;
         match &result {
             Ok(TurnOutcome::Completed { .. }) => {
                 for contributor in self.extension_registry.turn_lifecycle_contributors() {
