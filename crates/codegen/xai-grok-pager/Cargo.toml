@@ -168,6 +168,7 @@ criterion = { workspace = true }
 tempfile = { workspace = true }
 serial_test = { workspace = true }
 xai-grok-agent = { workspace = true }
+xai-grok-sampling-types = { path = "../xai-grok-sampling-types" }
 xai-grok-pager-pty-harness = { path = "../xai-grok-pager-pty-harness" }
 # In-process leader-cluster harness (mock inference server; no cycle:
 # xai-grok-test-support depends on neither the pager nor the shell).
@@ -251,4 +252,8 @@ default-bazel = [
 # here too and the generated `crate_features` stay valid.
 jemalloc = []
 sandbox-enforce = ["xai-grok-sandbox/enforce"]
+# Expose the narrow `minimal_api` fixture seam only when a downstream test
+# target explicitly requests it. `cfg(test)` alone does not propagate when
+# this crate is compiled as `xai-grok-pager-minimal`'s dependency.
+test-support = ["xai-grok-pager-render/test-support"]
 release-dist = []

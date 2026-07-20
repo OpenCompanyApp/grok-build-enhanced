@@ -97,6 +97,22 @@ mod tests {
         Arc::new(AuthManager::new(home, Default::default()))
     }
 
+    fn manager_with_xai_session(home: &std::path::Path, key: &str) -> Arc<AuthManager> {
+        let config = xai_grok_shell::auth::GrokComConfig::default();
+        let session = xai_grok_shell::auth::GrokAuth {
+            key: key.to_owned(),
+            oidc_issuer: Some(xai_grok_shell::auth::xai_oauth2_issuer().to_owned()),
+            ..Default::default()
+        };
+        let sessions = IndexMap::from([(config.auth_scope(), session)]);
+        std::fs::write(
+            home.join("auth.json"),
+            serde_json::to_vec(&sessions).unwrap(),
+        )
+        .unwrap();
+        Arc::new(AuthManager::new(home, config))
+    }
+
     async fn resolved(auth: &SharedVoiceAuth, model: Option<&str>) -> Option<String> {
         auth.bearer(model).await
     }
@@ -217,8 +233,7 @@ mod tests {
         let _xai = xai_grok_test_support::EnvGuard::unset("XAI_API_KEY");
         let _legacy = xai_grok_test_support::EnvGuard::unset("GROK_CODE_XAI_API_KEY");
         let home = tempfile::tempdir().unwrap();
-        xai_grok_shell::auth::store_api_key(home.path(), "stored-xai-key").unwrap();
-        let manager = manager(home.path());
+        let manager = manager_with_xai_session(home.path(), "stored-xai-key");
         let auth = build_voice_auth(manager.clone(), catalog(&[("xai", ProviderId::Xai, None)]));
 
         assert_eq!(

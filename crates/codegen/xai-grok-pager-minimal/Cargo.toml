@@ -41,9 +41,9 @@ xai-grok-version = { workspace = true }
 xai-token-estimation = { workspace = true }
 
 [dev-dependencies]
-# The unit tests reuse the pager's test-only view-model constructors
-# (`test_agent_view`, yolo/auto setters), gated behind its test-only
-# helpers.
-xai-grok-pager = { path = "../xai-grok-pager", features = [] }
+# The unit tests reuse the pager's explicitly feature-gated view-model
+# constructors (`test_agent_view`, yolo/auto setters). `cfg(test)` does not
+# propagate into dependencies, so request the narrow fixture seam here.
+xai-grok-pager = { path = "../xai-grok-pager", features = ["test-support"] }
 
 [features]

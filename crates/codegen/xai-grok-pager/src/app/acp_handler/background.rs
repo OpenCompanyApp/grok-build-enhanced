@@ -313,19 +313,26 @@ pub(super) fn handle_scheduled_task_created(
         .scheduled_tasks
         .retain(|k, _| !k.starts_with("provisional-"));
 
-    agent
-        .session
-        .scheduled_tasks
-        .entry(task_id.clone())
-        .or_insert_with(|| crate::app::agent::ScheduledTaskInfo {
-            task_id,
-            prompt,
-            human_schedule,
-            created_at: std::time::Instant::now(),
-            next_fire_at,
-            tag: "loop".into(),
-            last_subagent_id: None,
-        });
+    match agent.session.scheduled_tasks.entry(task_id) {
+        Entry::Occupied(mut entry) => {
+            let info = entry.get_mut();
+            info.prompt = prompt;
+            info.human_schedule = human_schedule;
+            info.next_fire_at = next_fire_at;
+        }
+        Entry::Vacant(entry) => {
+            let task_id = entry.key().clone();
+            entry.insert(crate::app::agent::ScheduledTaskInfo {
+                task_id,
+                prompt,
+                human_schedule,
+                created_at: std::time::Instant::now(),
+                next_fire_at,
+                tag: "loop".into(),
+                last_subagent_id: None,
+            });
+        }
+    }
 
     is_active
 }
