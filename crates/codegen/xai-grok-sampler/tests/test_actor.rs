@@ -82,6 +82,7 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         api_backend: ApiBackend::ChatCompletions,
         auth_scheme: Default::default(),
         extra_headers: IndexMap::new(),
+        comp_hash: None,
         context_window: 128_000,
         force_http1: false,
         // Keep retries minimal so tests don't take forever.
@@ -89,6 +90,8 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         stream_tool_calls: false,
         idle_timeout_secs: Some(30),
         reasoning_effort: None,
+        supports_reasoning_summary_parameter: false,
+        default_reasoning_summary: None,
         service_tier: None,
         origin_client: None,
         client_identifier: None,

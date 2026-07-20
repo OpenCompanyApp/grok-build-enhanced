@@ -2380,7 +2380,10 @@ impl SessionActor {
 mod inline_auto_compact_flow_tests {
     use super::super::support::*;
     use super::super::*;
-    use super::{AutoCompactTriggerInfo, SuppressReason};
+    use super::{
+        AutoCompactTriggerInfo, SuppressReason, codex_comp_hash_changed,
+        codex_comp_hash_trigger_info,
+    };
     use crate::session::acp_session::McpReminderMode;
     use crate::terminal::AsyncTerminalRunner;
     use crate::terminal::runner::{TerminalError, TerminalRunRequest, TerminalRunResult};
@@ -2462,6 +2465,9 @@ mod inline_auto_compact_flow_tests {
                 context_window: std::num::NonZeroU64::new(context_window)
                     .expect("test context_window must be non-zero"),
                 reasoning_effort: None,
+                comp_hash: None,
+                supports_reasoning_summary_parameter: false,
+                default_reasoning_summary: None,
                 stream_tool_calls: None,
                 service_tier: None,
             },

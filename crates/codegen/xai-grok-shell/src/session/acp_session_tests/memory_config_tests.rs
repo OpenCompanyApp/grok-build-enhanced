@@ -110,6 +110,9 @@ async fn create_test_actor_with_memory(
             context_window: std::num::NonZeroU64::new(context_window)
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
+            comp_hash: None,
+            supports_reasoning_summary_parameter: false,
+            default_reasoning_summary: None,
             stream_tool_calls: None,
             service_tier: None,
         },
