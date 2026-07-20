@@ -2337,20 +2337,34 @@ impl AppView {
                     return outcome;
                 }
                 let prompt_paging = !overlay_active && !self.screen_mode.is_minimal();
-                match self.agents.get_mut(&id) {
-                    Some(agent) => {
-                        let outcome = if prompt_paging {
-                            agent.handle_input_with_prompt_paging(ev, &self.registry)
-                        } else {
-                            agent.handle_input(ev, &self.registry)
-                        };
-                        if let Event::Key(key) = ev {
-                            agent.record_input(key, &outcome);
+                if self.screen_mode.is_minimal() {
+                    match self.agents.get_mut(&id) {
+                        Some(agent) => {
+                            let outcome = agent.handle_minimal_input(ev, &self.registry);
+                            if let Event::Key(key) = ev {
+                                agent.record_input(key, &outcome);
+                            }
+                            self.pending_effects.append(&mut agent.pending_effects);
+                            outcome
                         }
-                        self.pending_effects.append(&mut agent.pending_effects);
-                        outcome
+                        None => InputOutcome::Unchanged,
                     }
-                    None => InputOutcome::Unchanged,
+                } else {
+                    match self.agents.get_mut(&id) {
+                        Some(agent) => {
+                            let outcome = if prompt_paging {
+                                agent.handle_input_with_prompt_paging(ev, &self.registry)
+                            } else {
+                                agent.handle_input(ev, &self.registry)
+                            };
+                            if let Event::Key(key) = ev {
+                                agent.record_input(key, &outcome);
+                            }
+                            self.pending_effects.append(&mut agent.pending_effects);
+                            outcome
+                        }
+                        None => InputOutcome::Unchanged,
+                    }
                 }
             }
             ActiveView::AgentDashboard => {

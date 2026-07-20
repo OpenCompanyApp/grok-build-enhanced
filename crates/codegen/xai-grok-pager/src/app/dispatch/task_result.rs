@@ -881,7 +881,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::BtwResponse { agent_id, result } => handle_btw_response(app, agent_id, result),
+        TaskResult::BtwResponse {
+            agent_id,
+            result,
+            minimal_request_id,
+        } => handle_btw_response(app, agent_id, result, minimal_request_id),
         TaskResult::InterjectQueued { .. } => vec![],
         TaskResult::RecapRequested {
             session_id,

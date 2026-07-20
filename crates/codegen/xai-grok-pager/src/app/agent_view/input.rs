@@ -232,6 +232,77 @@ impl AgentView {
     ) -> InputOutcome {
         self.handle_input_inner(ev, registry, true)
     }
+    /// Route minimal-only `/btw` ownership before the unchanged shared router.
+    pub(in crate::app) fn handle_minimal_input(
+        &mut self,
+        ev: &Event,
+        registry: &ActionRegistry,
+    ) -> InputOutcome {
+        match self.handle_minimal_btw_input(ev) {
+            crate::minimal_api::MinimalBtwInput::Handled(outcome) => *outcome,
+            crate::minimal_api::MinimalBtwInput::Occluded => {
+                let suspended = crate::minimal_api::suspend_minimal_btw(self);
+                let outcome = self.handle_input(ev, registry);
+                if let Some(suspended) = suspended {
+                    crate::minimal_api::restore_minimal_btw(self, suspended);
+                }
+                outcome
+            }
+            crate::minimal_api::MinimalBtwInput::Delegate => self.handle_input(ev, registry),
+        }
+    }
+    /// Handle only minimal `/btw` dismissal and keyboard scrolling.
+    fn handle_minimal_btw_input(&mut self, ev: &Event) -> crate::minimal_api::MinimalBtwInput {
+        use crate::minimal_api::MinimalBtwInput::{Delegate, Handled, Occluded};
+        if !crate::minimal_api::minimal_btw_surface_available(self) {
+            return Occluded;
+        }
+        if let Event::Key(key) = ev
+            && key.kind != KeyEventKind::Release
+            && key.code == KeyCode::Esc
+            && key.modifiers.is_empty()
+            && self.btw_state.is_some()
+        {
+            return Handled(Box::new(self.dismiss_btw_panel()));
+        }
+        if self.active_pane != AgentPane::Prompt
+            || !self.btw_focused
+            || !crate::minimal_api::minimal_btw_geometry_is_paintable(self.last_btw_area)
+        {
+            return Delegate;
+        }
+        let Some(btw_scroll_max) = self.btw_state.as_ref().and_then(|btw| {
+            matches!(btw, crate::views::btw_overlay::BtwOverlayState::Done { .. }).then(|| {
+                let content_width = self.last_btw_area.width.saturating_sub(4) as usize;
+                let max_body = self.last_btw_area.height.saturating_sub(2) as usize;
+                btw.max_scroll_offset(content_width, max_body)
+            })
+        }) else {
+            return Delegate;
+        };
+        if btw_scroll_max == 0 {
+            return Delegate;
+        }
+        let Event::Key(key) = ev else {
+            return Delegate;
+        };
+        if key.kind == KeyEventKind::Release || !key.modifiers.is_empty() {
+            return Delegate;
+        }
+        let page = self.last_btw_area.height.saturating_sub(2).max(1) as usize;
+        let Some(btw) = self.btw_state.as_mut() else {
+            return Delegate;
+        };
+        match key.code {
+            KeyCode::Up => btw.scroll_up(1),
+            KeyCode::Down => btw.scroll_down(1, btw_scroll_max),
+            KeyCode::PageUp => btw.scroll_up(page),
+            KeyCode::PageDown => btw.scroll_down(page, btw_scroll_max),
+            _ => return Delegate,
+        }
+        self.clear_btw_drag_state();
+        Handled(Box::new(InputOutcome::Changed))
+    }
     fn handle_input_inner(
         &mut self,
         ev: &Event,
@@ -1202,6 +1273,29 @@ mod btw_focus_tests {
             .expect("btw panel present")
             .scroll_offset()
     }
+    fn minimal_btw_agent() -> AgentView {
+        let mut agent = prompt_focused_agent();
+        let request_id = crate::minimal_api::start_minimal_btw(&mut agent, "q".into());
+        assert!(crate::minimal_api::finish_minimal_btw(
+            &mut agent,
+            request_id,
+            Ok(long_btw_answer())
+        ));
+        agent
+    }
+    fn assert_minimal_btw_active(agent: &AgentView, surface: &str) {
+        assert!(
+            agent.btw_state.is_some(),
+            "{surface} Esc must leave the latent /btw panel intact"
+        );
+        assert!(
+            matches!(
+                agent.minimal_btw_lifecycle,
+                Some(crate::minimal_api::MinimalBtwLifecycle::Active { .. })
+            ),
+            "{surface} Esc must restore the complete minimal /btw lifecycle"
+        );
+    }
     #[test]
     fn focused_panel_scrolls_with_arrows() {
         let mut agent = prompt_focused_agent();
@@ -1322,6 +1416,81 @@ mod btw_focus_tests {
         agent.handle_input(&key(KeyCode::Esc), &reg);
         assert!(agent.btw_state.is_none(), "Esc dismisses the /btw panel");
         assert!(!agent.btw_focused, "dismissing the panel clears its focus");
+    }
+    #[test]
+    fn minimal_permission_owns_esc_over_hidden_btw() {
+        let mut agent = minimal_btw_agent();
+        let reg = ActionRegistry::defaults();
+        agent
+            .permission_queue
+            .push_back(super::paste_key_tests::make_followup_permission_state());
+        agent.handle_minimal_input(&key(KeyCode::Esc), &reg);
+        assert_minimal_btw_active(&agent, "permission");
+        assert_eq!(
+            agent.permission_queue.len(),
+            1,
+            "Esc preserves the pending permission"
+        );
+        assert_eq!(
+            agent
+                .permission_queue
+                .front()
+                .map(|permission| permission.focus),
+            Some(crate::views::permission_view::PermissionFocus::Options),
+            "permission handled Esc by returning focus to options"
+        );
+    }
+    #[test]
+    fn minimal_block_viewer_owns_esc_over_hidden_btw() {
+        let mut agent = minimal_btw_agent();
+        let reg = ActionRegistry::defaults();
+        agent.block_viewer = Some(crate::views::block_viewer::BlockViewerPane::for_plain_text(
+            "t", "content",
+        ));
+        agent.handle_minimal_input(&key(KeyCode::Esc), &reg);
+        assert!(agent.block_viewer.is_none(), "block viewer handled Esc");
+        assert_minimal_btw_active(&agent, "block viewer");
+    }
+    #[test]
+    fn minimal_btw_surface_owner_covers_shared_modal_cascade() {
+        let mut agent = minimal_btw_agent();
+        assert!(crate::minimal_api::minimal_btw_surface_available(&agent));
+        agent.image_viewer = Some(
+            crate::prompt_images::ImageViewerState::open_from_path_deferred(std::path::Path::new(
+                "x.png",
+            )),
+        );
+        assert!(!crate::minimal_api::minimal_btw_surface_available(&agent));
+        agent.image_viewer = None;
+        agent.gboom = Some(crate::gboom::GboomState::new());
+        assert!(!crate::minimal_api::minimal_btw_surface_available(&agent));
+        agent.gboom = None;
+        agent.block_viewer = Some(crate::views::block_viewer::BlockViewerPane::for_plain_text(
+            "t", "content",
+        ));
+        assert!(!crate::minimal_api::minimal_btw_surface_available(&agent));
+    }
+    #[test]
+    fn fullscreen_keeps_btw_first_esc_precedence() {
+        let mut agent = prompt_focused_agent();
+        let reg = ActionRegistry::defaults();
+        agent.btw_state = Some(BtwOverlayState::done("q".into(), long_btw_answer()));
+        agent
+            .permission_queue
+            .push_back(super::paste_key_tests::make_followup_permission_state());
+        agent.handle_input(&key(KeyCode::Esc), &reg);
+        assert!(agent.btw_state.is_none());
+        assert!(!agent.permission_queue.is_empty());
+    }
+    #[test]
+    fn minimal_does_not_scroll_unpainted_btw_geometry() {
+        let mut agent = prompt_focused_agent();
+        let reg = ActionRegistry::defaults();
+        agent.btw_state = Some(BtwOverlayState::done("q".into(), long_btw_answer()));
+        agent.btw_focused = true;
+        agent.last_btw_area = Rect::default();
+        agent.handle_minimal_input(&key(KeyCode::Down), &reg);
+        assert_eq!(done_scroll_offset(&agent), 0);
     }
     #[test]
     fn clicking_panel_refocuses_it() {

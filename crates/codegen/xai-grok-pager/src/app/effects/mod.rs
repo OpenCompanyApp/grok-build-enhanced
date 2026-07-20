@@ -3235,7 +3235,12 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::SendBtw { agent_id, session_id, question } => {
+        Effect::SendBtw {
+            agent_id,
+            session_id,
+            question,
+            minimal_request_id,
+        } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -3265,6 +3270,7 @@ pub(crate) fn execute(
                             TaskResult::BtwResponse {
                                 agent_id,
                                 result: Ok(answer),
+                                minimal_request_id,
                             }
                         }
                         Err(e) => {
@@ -3273,6 +3279,7 @@ pub(crate) fn execute(
                                 result: Err(
                                     sanitize_user_error(&format!("side question failed: {e}")),
                                 ),
+                                minimal_request_id,
                             }
                         }
                     }

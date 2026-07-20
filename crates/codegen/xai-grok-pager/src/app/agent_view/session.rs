@@ -30,8 +30,15 @@ impl AgentView {
             self.last_seen_event_id = None;
             self.last_applied_event_seq = None;
             self.last_applied_xai_event_seq = None;
+            self.clear_minimal_btw_lifecycle();
         }
         self.session.session_id = Some(session_id);
+    }
+    /// Unbind this view from its current session identity.
+    pub(crate) fn unbind_session_id(&mut self) {
+        if self.session.session_id.take().is_some() {
+            self.clear_minimal_btw_lifecycle();
+        }
     }
     /// Record a prompt id this client originated (sent to the agent as the turn
     /// driver). Used by the ACP gate to keep `attached_as_viewer` per-turn
@@ -203,6 +210,7 @@ impl AgentView {
             agents_modal: None,
             persona_detail: None,
             btw_state: None,
+            minimal_btw_lifecycle: None,
             btw_focused: false,
             hit_btw_close: Default::default(),
             toast: None,
@@ -307,12 +315,17 @@ impl AgentView {
         self.turn_paused_duration = std::time::Duration::ZERO;
         self.last_active_at = Some(Instant::now());
     }
+    /// Invalidate and clear a minimal `/btw` lifecycle at a session boundary.
+    pub(crate) fn clear_minimal_btw_lifecycle(&mut self) {
+        crate::minimal_api::clear_minimal_btw(self);
+    }
     /// Enter a `session/load` replay window: flip `loading_replay` on and reset
     /// every field coupled to that transition together, so no site can drift
     /// (e.g. reset one coupled field but miss another). Called at every
     /// replay-window entry: the fresh/restore load ctor paths and the
     /// reconnect/fork reuse paths.
     pub(crate) fn begin_replay_window(&mut self) {
+        self.clear_minimal_btw_lifecycle();
         self.session.loading_replay = true;
         self.replayed_terminal_prompts.clear();
         self.unexpected_replay_drops = 0;
@@ -1343,5 +1356,31 @@ mod status_window_tests {
             !agent.end_work_announced,
             "a replay window closes the between-turns status window"
         );
+    }
+    #[test]
+    fn session_rebind_and_replay_invalidate_minimal_btw() {
+        let mut agent = test_agent_view(Some("s1"), std::path::PathBuf::from("/tmp"));
+        let old_request = crate::minimal_api::start_minimal_btw(&mut agent, "old question".into());
+        agent.bind_session_id(agent_client_protocol::SessionId::new("s2"));
+        assert!(agent.btw_state.is_none());
+        assert!(agent.minimal_btw_lifecycle.is_none());
+        assert!(!crate::minimal_api::finish_minimal_btw(
+            &mut agent,
+            old_request,
+            Ok("old answer".into())
+        ));
+        assert!(agent.btw_state.is_none());
+
+        let replay_request =
+            crate::minimal_api::start_minimal_btw(&mut agent, "pre-replay question".into());
+        agent.begin_replay_window();
+        assert!(agent.btw_state.is_none());
+        assert!(agent.minimal_btw_lifecycle.is_none());
+        assert!(!crate::minimal_api::finish_minimal_btw(
+            &mut agent,
+            replay_request,
+            Ok("pre-replay answer".into())
+        ));
+        assert!(agent.btw_state.is_none());
     }
 }

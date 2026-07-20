@@ -57,7 +57,7 @@ pub(in crate::app::dispatch) fn clear_stale_session_id(
     let sid = acp::SessionId::new(session_id);
     for agent in app.agents.values_mut() {
         if agent.session.session_id.as_ref() == Some(&sid) {
-            agent.session.session_id = None;
+            agent.unbind_session_id();
         }
     }
     sid
