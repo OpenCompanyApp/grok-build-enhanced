@@ -511,6 +511,26 @@ pub(super) fn make_fired_notif(
             prompt: prompt.into(),
             human_schedule: human_schedule.into(),
             next_fire_at: next_fire_at.map(str::to_string),
+            subagent_id: None,
+        },
+        meta: None,
+    };
+    let raw = serde_json::value::to_raw_value(&notif).unwrap();
+    acp::ExtNotification::new("x.ai/scheduled_task_fired", std::sync::Arc::from(raw))
+}
+pub(super) fn make_fired_notif_with_subagent(
+    session_id: &str,
+    task_id: &str,
+    subagent_id: &str,
+) -> acp::ExtNotification {
+    let notif = SessionNotification {
+        session_id: acp::SessionId::new(session_id),
+        update: XaiSessionUpdate::ScheduledTaskFired {
+            task_id: task_id.into(),
+            prompt: "p".into(),
+            human_schedule: "every 1 minute".into(),
+            next_fire_at: Some("2026-02-02T02:02:02Z".into()),
+            subagent_id: Some(subagent_id.into()),
         },
         meta: None,
     };

@@ -105,6 +105,13 @@ pub struct SubagentRuntimeOverrides {
     /// (implementer vs explorer). `None` for every non-goal spawn ⇒ the parent
     /// agent decides the flavor (unchanged behavior).
     pub harness_agent_type: Option<String>,
+    /// Optional character cap for coordinator-retained and parent-projected
+    /// completion output. Scheduler loop children set this to bound recurring
+    /// state; ordinary task requests inherit the unbounded behavior.
+    pub completion_output_cap: Option<usize>,
+    /// Logical depth assigned to the child. Scheduler loop iterations use root
+    /// depth so their role can still invoke the normal one-level subagent path.
+    pub spawn_depth: Option<u32>,
 }
 
 /// Re-export of [`xai_tool_types::is_not_sentinel`] for existing call sites.

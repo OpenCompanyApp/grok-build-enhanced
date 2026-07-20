@@ -25,12 +25,46 @@ impl MvpAgent {
                 while let Some(event) = rx.recv().await {
                     match event {
                         SubagentEvent::Spawn(boxed) => {
-                            let request = *boxed;
+                            let mut request = *boxed;
                             let agent_ref = agent_ref.clone();
                             tokio::task::spawn_local(async move {
                                 let this = agent_ref.get();
+                                let parent_is_session = this
+                                    .sessions
+                                    .borrow()
+                                    .contains_key(&acp::SessionId::new(
+                                        request.parent_session_id.clone(),
+                                    ));
+                                if !parent_is_session
+                                    && let Some(root) = this
+                                        .subagent_coordinator
+                                        .borrow()
+                                        .parent_of_child_session(&request.parent_session_id)
+                                {
+                                    tracing::info!(
+                                        child_session_id = %request.parent_session_id,
+                                        root_session_id = %root,
+                                        subagent_id = %request.id,
+                                        "Re-parenting child-session spawn to root session"
+                                    );
+                                    request.parent_session_id = root;
+                                    request.surface_completion = false;
+                                }
                                 let parent_sid = request.parent_session_id.clone();
-                                let mut ctx = this.build_subagent_spawn_context(&parent_sid);
+                                let Some(mut ctx) =
+                                    this.try_build_subagent_spawn_context(&parent_sid)
+                                else {
+                                    tracing::warn!(
+                                        parent_session_id = %parent_sid,
+                                        subagent_id = %request.id,
+                                        "Spawn for unknown/evicted parent session, failing request"
+                                    );
+                                    crate::agent::subagent::send_failure(
+                                        request,
+                                        "Parent session not found (evicted or torn down); cannot spawn subagent.",
+                                    );
+                                    return;
+                                };
                                 let parent_handle = {
                                     let parent_sid_acp = acp::SessionId::new(parent_sid.clone());
                                     this.sessions.borrow().get(&parent_sid_acp).cloned()

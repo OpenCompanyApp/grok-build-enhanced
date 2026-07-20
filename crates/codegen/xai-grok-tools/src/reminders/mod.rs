@@ -61,6 +61,31 @@ pub fn format_scheduled_task_prompt(prompt: &str, task_id: &str, human_schedule:
     )
 }
 
+/// Frame one scheduler-owned background child iteration. A fresh chain may
+/// include the bounded status from its prior chain; resumed chains already
+/// contain prior iterations in their transcript.
+pub fn format_loop_iteration_prompt(
+    prompt: &str,
+    task_id: &str,
+    human_schedule: &str,
+    prior_iteration_summary: Option<&str>,
+) -> String {
+    let prior = prior_iteration_summary
+        .map(|summary| format!("\nYour previous iteration ended with:\n{summary}\n"))
+        .unwrap_or_default();
+    format!(
+        "<system-reminder>\n\
+         Scheduled task {task_id} ({human_schedule}). Earlier iterations, if any, appear \
+         above.\n\
+         Run the task below. End with a short status: what changed or needs attention. \
+         The status is relayed to the main agent.\n\
+         {prior}\
+         </system-reminder>\n\
+         \n\
+         {prompt}"
+    )
+}
+
 /// Append wrapped reminders to a tool output string.
 /// Returns output unchanged if reminders is empty.
 ///

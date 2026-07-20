@@ -97,6 +97,15 @@ impl SubagentCoordinator {
         }
         None
     }
+    /// Parent session of the running subagent whose child session is
+    /// `child_session_id`. Used to re-parent spawn requests that originate
+    /// inside a child session to the root session that owns it.
+    pub(crate) fn parent_of_child_session(&self, child_session_id: &str) -> Option<String> {
+        self.active
+            .values()
+            .find(|tracker| tracker.child_session_id.0.as_ref() == child_session_id)
+            .map(|tracker| tracker.parent_session_id.clone())
+    }
     /// Return `(parent_session_id, child_session_id)` for a given subagent.
     ///
     /// Checks active first, then completed. Returns `None` if not found.

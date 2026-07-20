@@ -346,6 +346,7 @@ fn resumable_source_returns_info_for_completed_subagent() {
                 effective_model_id: "grok-3".into(),
                 block_waited: false,
                 explicitly_killed: false,
+                completion_output_cap: None,
             },
         );
     let info = coordinator
@@ -1351,6 +1352,7 @@ fn resumable_source_rejects_cross_session_lookup() {
                 effective_model_id: String::new(),
                 block_waited: false,
                 explicitly_killed: false,
+                completion_output_cap: None,
             },
         );
     assert!(
@@ -2242,6 +2244,7 @@ fn completed_subagent_propagates_resumed_from() {
                 effective_model_id: "grok-3".into(),
                 block_waited: false,
                 explicitly_killed: false,
+                completion_output_cap: None,
             },
         );
     let refs = coordinator.spawned_refs_for_prompt("prompt-1");

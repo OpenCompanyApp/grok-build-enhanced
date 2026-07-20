@@ -870,6 +870,7 @@ mod tests {
                 created_at: std::time::Instant::now(),
                 next_fire_at: None,
                 tag: "loop".to_string(),
+                last_subagent_id: None,
             },
         );
         assert_eq!(minimal_watchers(&a).loops, 1);

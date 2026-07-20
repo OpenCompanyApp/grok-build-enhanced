@@ -890,6 +890,7 @@ fn completed_entries_are_capped_oldest_first() {
                 effective_model_id: String::new(),
                 block_waited: false,
                 explicitly_killed: false,
+                completion_output_cap: None,
             },
         );
     }
@@ -1153,6 +1154,7 @@ fn dummy_tracker(
         effective_model_id: String::new(),
         run_in_background: false,
         surface_completion: true,
+        completion_output_cap: None,
         color: None,
         block_waited: false,
         explicitly_killed: false,
@@ -1184,6 +1186,25 @@ async fn active_summaries_returns_all_regardless_of_parent() {
     coordinator.insert(dummy_tracker("sub-2", "session-B", "plan", "task 2"));
     let all = coordinator.active_summaries();
     assert_eq!(all.len(), 2);
+}
+/// Spawns issued from inside a child session (loop iterations) re-parent
+/// to the root session via the running tracker's child-to-parent mapping.
+#[tokio::test]
+async fn parent_of_child_session_maps_to_root() {
+    let mut coordinator = SubagentCoordinator::new();
+    coordinator.insert(dummy_tracker(
+        "iter-child-sess",
+        "root-session",
+        "general-purpose",
+        "loop iteration",
+    ));
+    assert_eq!(
+        coordinator
+            .parent_of_child_session("iter-child-sess")
+            .as_deref(),
+        Some("root-session")
+    );
+    assert_eq!(coordinator.parent_of_child_session("unknown-sess"), None);
 }
 #[tokio::test]
 async fn resolve_running_list_returns_empty_for_empty_seeds() {
@@ -3358,3 +3379,37 @@ fn spawn_test_parent_chat_state(model_slug: &str) -> xai_chat_state::ChatStateHa
     )
 }
 mod rest;
+
+#[tokio::test]
+async fn move_to_completed_caps_stored_and_projected_output_unicode_safely() {
+    let mut coordinator = SubagentCoordinator::new();
+    let mut tracker = dummy_tracker("sub-capped", "session-A", "explore", "loop task");
+    tracker.completion_output_cap = Some(4);
+    coordinator.insert(tracker);
+    coordinator.move_to_completed(
+        "sub-capped",
+        "loop task".into(),
+        "explore".into(),
+        SubagentResult {
+            success: true,
+            subagent_id: "sub-capped".into(),
+            child_session_id: "sub-capped".into(),
+            output: Arc::from("é🙂漢字extra"),
+            ..Default::default()
+        },
+    );
+
+    let Some(SnapshotLookup::Ready(snapshot)) = coordinator.lookup("sub-capped") else {
+        panic!("completed child must remain queryable");
+    };
+    let SubagentSnapshotStatus::Completed { output, .. } = snapshot.status else {
+        panic!("expected completed snapshot");
+    };
+    assert_eq!(output, "é🙂漢…");
+    assert_eq!(output.chars().count(), 4);
+
+    let projected = coordinator.drain_pending_completions();
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].output.as_ref(), "é🙂漢…");
+    assert_eq!(projected[0].output.chars().count(), 4);
+}

@@ -610,23 +610,29 @@ async fn handle_notification(
             tracing::info!(
                 task_id = %fired.task_id,
                 schedule = %fired.human_schedule,
-                "Scheduled task fired, injecting prompt into session"
+                subagent_id = fired.subagent_id.as_deref().unwrap_or(""),
+                "Scheduled task fired"
             );
 
-            let inject_payload = serde_json::json!({
-                "sessionId": config.session_id,
-                "taskId": &fired.task_id,
-                "prompt": &fired.prompt,
-                "humanSchedule": &fired.human_schedule,
-                "nextFireAt": &fired.next_fire_at,
-            });
-            if let Ok(params) = serde_json::value::to_raw_value(&inject_payload) {
-                config
-                    .gateway
-                    .forward_fire_and_forget(acp::ExtNotification::new(
-                        "x.ai/scheduled_task_inject_prompt",
-                        params.into(),
-                    ));
+            // Background loop children execute through the authoritative
+            // subagent coordinator. Only foreground compatibility fires (and
+            // the kill-switch fallback) inject a main-conversation turn.
+            if fired.subagent_id.is_none() {
+                let inject_payload = serde_json::json!({
+                    "sessionId": config.session_id,
+                    "taskId": &fired.task_id,
+                    "prompt": &fired.prompt,
+                    "humanSchedule": &fired.human_schedule,
+                    "nextFireAt": &fired.next_fire_at,
+                });
+                if let Ok(params) = serde_json::value::to_raw_value(&inject_payload) {
+                    config
+                        .gateway
+                        .forward_fire_and_forget(acp::ExtNotification::new(
+                            "x.ai/scheduled_task_inject_prompt",
+                            params.into(),
+                        ));
+                }
             }
 
             let fired_notif = crate::extensions::notification::SessionNotification {
@@ -636,6 +642,7 @@ async fn handle_notification(
                     prompt: fired.prompt,
                     human_schedule: fired.human_schedule,
                     next_fire_at: fired.next_fire_at,
+                    subagent_id: fired.subagent_id,
                 },
                 meta: None,
             };
@@ -1568,6 +1575,7 @@ mod tests {
                 prompt: "check deploy".into(),
                 human_schedule: "every 5 minutes".into(),
                 next_fire_at: Some("2026-01-01T00:00:00Z".into()),
+                subagent_id: None,
             },
         );
         let mut offsets = HashMap::new();
@@ -1577,6 +1585,41 @@ mod tests {
         assert!(
             persistence_rx.try_recv().is_err(),
             "scheduled_task_fired must NOT be persisted (recurring \u{2192} unbounded log growth)"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_scheduled_fire_never_injects_main_conversation_prompt() {
+        let (config, mut gateway_rx, _persistence_rx, _cmd_rx) = make_test_config_full();
+        let notification = ToolNotification::ScheduledTaskFired(
+            xai_grok_tools::notification::types::ScheduledTaskFired {
+                task_id: "loop-bg".into(),
+                prompt: "check deploy".into(),
+                human_schedule: "every 5 minutes".into(),
+                next_fire_at: Some("2026-01-01T00:00:00Z".into()),
+                subagent_id: Some("child-1".into()),
+            },
+        );
+        let mut offsets = HashMap::new();
+
+        handle_notification(&config, notification, &mut offsets).await;
+
+        let mut methods = Vec::new();
+        while let Ok(message) = gateway_rx.try_recv() {
+            if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = message {
+                methods.push(args.request.method.to_string());
+            }
+        }
+        assert!(
+            methods
+                .iter()
+                .any(|method| method == "x.ai/scheduled_task_fired")
+        );
+        assert!(
+            methods
+                .iter()
+                .all(|method| method != "x.ai/scheduled_task_inject_prompt"),
+            "background loop child must not also execute in the main conversation: {methods:?}"
         );
     }
 

@@ -323,6 +323,7 @@ impl SubagentCoordinator {
                     effective_model_id: String::new(),
                     block_waited: false,
                     explicitly_killed: false,
+                    completion_output_cap: None,
                 },
             );
         self.enforce_completed_cap();
@@ -384,6 +385,11 @@ impl SubagentCoordinator {
         let block_waited = tracker.as_ref().is_some_and(|t| t.block_waited);
         let explicitly_killed = tracker.as_ref().is_some_and(|t| t.explicitly_killed);
         let surface_completion = tracker.as_ref().is_none_or(|t| t.surface_completion);
+        let completion_output_cap = tracker
+            .as_ref()
+            .and_then(|tracker| tracker.completion_output_cap);
+        let mut result = result;
+        result.output = super::cap_completion_output(&result.output, completion_output_cap);
         self.completed
             .insert(
                 id.to_string(),
@@ -405,6 +411,7 @@ impl SubagentCoordinator {
                     effective_model_id,
                     block_waited,
                     explicitly_killed,
+                    completion_output_cap,
                 },
             );
         let completed = self.completed.get(id).expect("just inserted");
@@ -442,7 +449,10 @@ impl SubagentCoordinator {
                     duration_ms: completed.result.duration_ms,
                     tool_calls: completed.result.tool_calls,
                     turns: completed.result.turns,
-                    output: completed.result.output.clone(),
+                    output: super::cap_completion_output(
+                        &completed.result.output,
+                        completed.completion_output_cap,
+                    ),
                 });
         }
         self.enforce_completed_cap();

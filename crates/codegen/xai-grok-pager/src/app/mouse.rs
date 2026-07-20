@@ -530,7 +530,26 @@ impl AgentView {
                                             return InputOutcome::Changed;
                                         }
                                     }
-                                    TaskEntryId::Scheduled(_) => {}
+                                    TaskEntryId::Scheduled(task_id) => {
+                                        if let Some(subagent_id) = self
+                                            .session
+                                            .scheduled_tasks
+                                            .get(task_id)
+                                            .and_then(|info| info.last_subagent_id.clone())
+                                            && let Some(child_session_id) = self
+                                                .subagent_sessions
+                                                .iter()
+                                                .find(|(_, info)| {
+                                                    info.subagent_id.as_ref()
+                                                        == subagent_id.as_str()
+                                                })
+                                                .map(|(id, _)| id.clone())
+                                            && self.subagent_views.contains_key(&child_session_id)
+                                        {
+                                            self.open_subagent_fullscreen(child_session_id);
+                                            return InputOutcome::Changed;
+                                        }
+                                    }
                                 }
                             }
                         }

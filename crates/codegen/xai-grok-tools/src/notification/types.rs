@@ -310,6 +310,9 @@ pub struct ScheduledTaskFired {
     pub human_schedule: String,
     /// RFC3339 timestamp of next fire (for live countdown viz).
     pub next_fire_at: Option<String>,
+    /// Background loop child started for this fire. `None` means the bridge
+    /// must use the legacy main-conversation injection path.
+    pub subagent_id: Option<String>,
 }
 
 /// Notification that a scheduled task was removed (deleted, expired, or one-shot completed).

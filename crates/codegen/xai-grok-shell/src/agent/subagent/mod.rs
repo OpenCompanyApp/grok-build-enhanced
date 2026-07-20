@@ -84,6 +84,9 @@ pub(crate) struct SubagentTracker {
     pub run_in_background: bool,
     /// Mirrors `SubagentRequest::surface_completion`.
     pub surface_completion: bool,
+    /// Scheduler-owned cap for coordinator-retained and parent-projected
+    /// completion output, in Unicode scalar values.
+    pub completion_output_cap: Option<usize>,
     /// Set when a `block=true` waiter consumed this subagent's result.
     pub block_waited: bool,
     /// Set when the model explicitly killed this subagent via the kill tool.
@@ -495,7 +498,30 @@ pub(crate) struct CompletedSubagent {
     pub block_waited: bool,
     /// Set when the model explicitly killed this subagent via the kill tool.
     pub explicitly_killed: bool,
+    /// Scheduler-owned completion cap, retained for query/projection behavior.
+    pub completion_output_cap: Option<usize>,
 }
+
+/// Cap a child completion in Unicode scalar values. The ellipsis replaces the
+/// final retained character so the resulting value never exceeds `cap`.
+pub(crate) fn cap_completion_output(
+    output: &std::sync::Arc<str>,
+    cap: Option<usize>,
+) -> std::sync::Arc<str> {
+    let Some(cap) = cap else {
+        return output.clone();
+    };
+    if output.chars().count() <= cap {
+        return output.clone();
+    }
+    if cap == 0 {
+        return std::sync::Arc::from("");
+    }
+    let mut bounded: String = output.chars().take(cap - 1).collect();
+    bounded.push('\u{2026}');
+    std::sync::Arc::from(bounded)
+}
+
 /// Lightweight entry for subagents that have been requested but are still
 /// initializing (creating worktree, resolving config, spawning session).
 /// Promoted to a full `SubagentTracker` once the child session is ready.
@@ -2014,7 +2040,10 @@ fn inject_subagent_completed_prompt(
         duration_ms: result.duration_ms,
         tool_calls: result.tool_calls,
         turns: result.turns,
-        output: result.output.clone(),
+        output: cap_completion_output(
+            &result.output,
+            request.runtime_overrides.completion_output_cap,
+        ),
     };
     let message = xai_grok_tools::reminders::task_completion::format_subagent_completion(
         &summary,
@@ -2060,7 +2089,7 @@ fn inject_subagent_completed_prompt(
 }
 /// Post-`insert_pending`, pre-`SubagentSpawned` failure: just send via oneshot;
 /// `PendingGuard::drop` handles the queue side effects.
-fn send_failure(request: SubagentRequest, error: &str) {
+pub(crate) fn send_failure(request: SubagentRequest, error: &str) {
     let _ = request.result_tx.send(SubagentResult {
         success: false,
         error: Some(error.to_string()),
@@ -2837,3 +2866,18 @@ pub(crate) fn reconcile_orphaned_subagents(
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod completion_cap_tests {
+    #[test]
+    fn cap_is_unicode_safe_and_never_exceeds_character_limit() {
+        let output = std::sync::Arc::<str>::from("é🙂漢字extra");
+        let bounded = super::cap_completion_output(&output, Some(4));
+        assert_eq!(bounded.as_ref(), "é🙂漢…");
+        assert_eq!(bounded.chars().count(), 4);
+        assert!(std::sync::Arc::ptr_eq(
+            &output,
+            &super::cap_completion_output(&output, None)
+        ));
+    }
+}

@@ -225,6 +225,8 @@ mod tests {
             // Harness override is a /goal-only concern; these resolution tests
             // exercise model/persona/capability precedence, not the harness.
             harness_agent_type: None,
+            completion_output_cap: None,
+            spawn_depth: None,
         }
     }
 

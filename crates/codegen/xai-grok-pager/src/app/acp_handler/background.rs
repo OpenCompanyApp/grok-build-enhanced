@@ -324,6 +324,7 @@ pub(super) fn handle_scheduled_task_created(
             created_at: std::time::Instant::now(),
             next_fire_at,
             tag: "loop".into(),
+            last_subagent_id: None,
         });
 
     is_active
@@ -333,13 +334,14 @@ pub(super) fn handle_scheduled_task_fired(notif: &acp::ExtNotification, app: &mu
     let Ok(session_notif) = serde_json::from_str::<SessionNotification>(notif.params.get()) else {
         return false;
     };
-    let (task_id, prompt, human_schedule, next_fire_at) = match session_notif.update {
+    let (task_id, prompt, human_schedule, next_fire_at, subagent_id) = match session_notif.update {
         XaiSessionUpdate::ScheduledTaskFired {
             task_id,
             prompt,
             human_schedule,
             next_fire_at,
-        } => (task_id, prompt, human_schedule, next_fire_at),
+            subagent_id,
+        } => (task_id, prompt, human_schedule, next_fire_at, subagent_id),
         _ => return false,
     };
     let matched = match find_session_match(app, &session_notif.session_id) {
@@ -358,7 +360,11 @@ pub(super) fn handle_scheduled_task_fired(notif: &acp::ExtNotification, app: &mu
     // payload so the tasks pane still shows the loop.
     match agent.session.scheduled_tasks.entry(task_id) {
         Entry::Occupied(mut e) => {
-            e.get_mut().next_fire_at = next_fire_at;
+            let info = e.get_mut();
+            info.next_fire_at = next_fire_at;
+            if subagent_id.is_some() {
+                info.last_subagent_id = subagent_id;
+            }
         }
         Entry::Vacant(e) => {
             // next_fire_at: None marks a missed-one-shot fire from
@@ -375,6 +381,7 @@ pub(super) fn handle_scheduled_task_fired(notif: &acp::ExtNotification, app: &mu
                 created_at: std::time::Instant::now(),
                 next_fire_at,
                 tag: "loop".into(),
+                last_subagent_id: subagent_id,
             });
         }
     }

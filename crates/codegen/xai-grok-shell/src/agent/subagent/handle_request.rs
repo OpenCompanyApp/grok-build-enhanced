@@ -583,10 +583,13 @@ pub(crate) async fn handle_subagent_request(
             "Applied capability mode filter to agent tool config"
         );
     }
+    let child_depth = request
+        .runtime_overrides
+        .spawn_depth
+        .unwrap_or(ctx.parent_depth + 1);
     {
         use xai_grok_tools::implementations::grok_build::task::MAX_SUBAGENT_DEPTH;
         use xai_grok_tools::types::tool::ToolKind;
-        let child_depth = ctx.parent_depth + 1;
         if child_depth >= MAX_SUBAGENT_DEPTH {
             let before = definition.tool_config.tools.len();
             definition.tool_config.tools.retain(|tc| tc.kind != Some(ToolKind::Task));
@@ -886,7 +889,7 @@ pub(crate) async fn handle_subagent_request(
             .capability_mode
             .as_ref()
             .map(|m| format!("{m:?}")),
-        depth: ctx.parent_depth + 1,
+        depth: child_depth,
     };
     emit_subagent_notification(
         gateway,
@@ -1010,7 +1013,7 @@ pub(crate) async fn handle_subagent_request(
         .with_hunk_tracking_enabled(ctx.hunk_tracking_enabled);
     tool_ctx.subagent_event_tx = Some(ctx.subagent_event_tx.clone());
     tool_ctx.monitor_event_buffer = Some(MonitorEventBuffer::default());
-    tool_ctx.subagent_depth = ctx.parent_depth + 1;
+    tool_ctx.subagent_depth = child_depth;
     tool_ctx.lsp = ctx.lsp.clone();
     let parent_traceparent = xai_file_utils::trace_context::current_traceparent();
     let tracker_child_cwd = child_session_info.cwd.clone();
@@ -1514,6 +1517,7 @@ pub(crate) async fn handle_subagent_request(
             effective_model_id: tracker_model_id,
             run_in_background,
             surface_completion: request.surface_completion,
+            completion_output_cap: request.runtime_overrides.completion_output_cap,
             color: tracker_color,
             block_waited: false,
             explicitly_killed: false,
