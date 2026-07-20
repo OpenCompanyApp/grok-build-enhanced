@@ -335,6 +335,37 @@
       ]
     },
     {
+      "id": "provider-neutral-session-durability-acp-import",
+      "description": "Pinned Grok Build ba76b0a provider-neutral session append durability and ACP state/import contracts with Enhanced local credential-binding export/import isolation.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/mod.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/session_state.rs",
+        "crates/codegen/xai-grok-shell/src/session/persistence.rs",
+        "crates/codegen/xai-grok-shell/src/session/persistence_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/replay.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/durable_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/summary_write.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/extensions/session_state.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/replay.rs",
+        "crates/codegen/xai-grok-shell/src/session/persistence_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/durable_tests.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "codex-fast-mode",
       "description": "Provider-scoped persisted Fast service-tier controls and slash-command integration.",
       "source_ids": [

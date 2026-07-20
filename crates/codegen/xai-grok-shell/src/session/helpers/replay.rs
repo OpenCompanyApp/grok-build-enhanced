@@ -291,7 +291,11 @@ impl ReplayState {
             // historical User(user_info) that the model saw for these
             // pre-compaction turns. Without it we'd use the post-compaction
             // rebuilt user_info, which is wrong data.
-            let checkpoint_path = session_dir.join(&info.checkpoint_file);
+            let checkpoint_path = crate::session::storage::compaction_checkpoint_path(
+                session_dir,
+                &info.checkpoint_id,
+                &info.checkpoint_file,
+            )?;
             let bytes = match std::fs::read(&checkpoint_path) {
                 Ok(b) => b,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -339,7 +343,11 @@ impl ReplayState {
             );
             Ok(ReplayAction::Continue)
         } else {
-            let checkpoint_path = session_dir.join(&info.checkpoint_file);
+            let checkpoint_path = crate::session::storage::compaction_checkpoint_path(
+                session_dir,
+                &info.checkpoint_id,
+                &info.checkpoint_file,
+            )?;
             let bytes = match std::fs::read(&checkpoint_path) {
                 Ok(b) => b,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -632,6 +640,9 @@ mod tests {
     use agent_client_protocol as acp;
     use tempfile::TempDir;
 
+    const CHECKPOINT_1: &str = "00000000-0000-4000-8000-000000000001";
+    const CHECKPOINT_2: &str = "00000000-0000-4000-8000-000000000002";
+
     fn make_user_update(session_id: &str, text: &str) -> SessionUpdate {
         SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
             acp::SessionId::new(session_id),
@@ -854,7 +865,7 @@ mod tests {
         // P0, P1, checkpoint(at=2), P2
         write_checkpoint_file(
             tmp.path(),
-            "ckpt1",
+            CHECKPOINT_1,
             2,
             vec![
                 ConversationItem::system("sys"),
@@ -867,7 +878,7 @@ mod tests {
             make_agent_update("s1", "R0"),
             make_user_update("s1", "P1"),
             make_agent_update("s1", "R1"),
-            make_checkpoint("ckpt1", 2, None),
+            make_checkpoint(CHECKPOINT_1, 2, None),
             make_user_update("s1", "P2"),
             make_agent_update("s1", "R2"),
         ];
@@ -891,7 +902,7 @@ mod tests {
         // Checkpoint replaces conversation at prompt 2
         write_checkpoint_file(
             tmp.path(),
-            "ckpt1",
+            CHECKPOINT_1,
             2,
             vec![
                 ConversationItem::system("sys"),
@@ -904,7 +915,7 @@ mod tests {
             make_agent_update("s1", "R0"),
             make_user_update("s1", "P1"),
             make_agent_update("s1", "R1"),
-            make_checkpoint("ckpt1", 2, None),
+            make_checkpoint(CHECKPOINT_1, 2, None),
             make_user_update("s1", "P2"),
             make_agent_update("s1", "R2"),
             make_user_update("s1", "P3"),
@@ -945,7 +956,7 @@ mod tests {
 
         write_checkpoint_file(
             tmp.path(),
-            "ckpt1",
+            CHECKPOINT_1,
             1,
             vec![ConversationItem::system("sys"), poisoned],
         );
@@ -953,7 +964,7 @@ mod tests {
         let updates = vec![
             make_user_update("s1", "P0"),
             make_agent_update("s1", "R0"),
-            make_checkpoint("ckpt1", 1, None),
+            make_checkpoint(CHECKPOINT_1, 1, None),
             make_user_update("s1", "P1"),
             make_agent_update("s1", "R1"),
         ];
@@ -980,7 +991,7 @@ mod tests {
 
         write_checkpoint_file(
             tmp.path(),
-            "ckpt1",
+            CHECKPOINT_1,
             2,
             vec![
                 ConversationItem::system("sys"),
@@ -994,7 +1005,7 @@ mod tests {
             make_user_update("s1", "P1"),
             make_agent_update("s1", "R1"),
             make_checkpoint(
-                "ckpt1",
+                CHECKPOINT_1,
                 2,
                 Some(AutoContinueInfo {
                     prompt_text: "Continue working".to_string(),
@@ -1036,7 +1047,7 @@ mod tests {
 
         write_checkpoint_file(
             tmp.path(),
-            "ckpt1",
+            CHECKPOINT_1,
             2,
             vec![
                 ConversationItem::system("sys"),
@@ -1049,7 +1060,7 @@ mod tests {
             make_agent_update("s1", "R0"),
             make_user_update("s1", "P1"),
             make_agent_update("s1", "R1"),
-            make_checkpoint("ckpt1", 2, None),
+            make_checkpoint(CHECKPOINT_1, 2, None),
             make_user_update("s1", "P2"),
             make_agent_update("s1", "R2"),
             make_user_update("s1", "P3"),
@@ -1100,7 +1111,7 @@ mod tests {
 
         write_checkpoint_file(
             tmp.path(),
-            "ckpt1",
+            CHECKPOINT_1,
             2,
             vec![
                 ConversationItem::system("sys"),
@@ -1109,7 +1120,7 @@ mod tests {
         );
         write_checkpoint_file(
             tmp.path(),
-            "ckpt2",
+            CHECKPOINT_2,
             3,
             vec![
                 ConversationItem::system("sys"),
@@ -1122,10 +1133,10 @@ mod tests {
             make_agent_update("s1", "R0"),
             make_user_update("s1", "P1"),
             make_agent_update("s1", "R1"),
-            make_checkpoint("ckpt1", 2, None),
+            make_checkpoint(CHECKPOINT_1, 2, None),
             make_user_update("s1", "P2"),
             make_agent_update("s1", "R2"),
-            make_checkpoint("ckpt2", 3, None),
+            make_checkpoint(CHECKPOINT_2, 3, None),
             make_user_update("s1", "P3"),
             make_agent_update("s1", "R3"),
         ];
@@ -1151,7 +1162,7 @@ mod tests {
 
         write_checkpoint_file(
             tmp.path(),
-            "ckpt1",
+            CHECKPOINT_1,
             2,
             vec![
                 ConversationItem::system("sys"),
@@ -1160,7 +1171,7 @@ mod tests {
         );
         write_checkpoint_file(
             tmp.path(),
-            "ckpt2",
+            CHECKPOINT_2,
             3,
             vec![
                 ConversationItem::system("sys"),
@@ -1173,10 +1184,10 @@ mod tests {
             make_agent_update("s1", "R0"),
             make_user_update("s1", "P1"),
             make_agent_update("s1", "R1"),
-            make_checkpoint("ckpt1", 2, None),
+            make_checkpoint(CHECKPOINT_1, 2, None),
             make_user_update("s1", "P2"),
             make_agent_update("s1", "R2"),
-            make_checkpoint("ckpt2", 3, None),
+            make_checkpoint(CHECKPOINT_2, 3, None),
             make_user_update("s1", "P3"),
             make_agent_update("s1", "R3"),
         ];

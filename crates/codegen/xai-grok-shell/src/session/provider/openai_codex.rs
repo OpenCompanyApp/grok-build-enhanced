@@ -552,6 +552,38 @@ mod tests {
     }
 
     #[test]
+    fn imported_or_foreign_bindings_never_cross_provider_boundaries() {
+        let mut foreign = CredentialBinding::kimi_code(Some("SENTINEL-FOREIGN-RECORD".to_owned()));
+        foreign.generation = 7;
+        assert!(matches!(
+            restored_binding(Some(&foreign)),
+            Err(ProviderBindingError::InvalidRestoredBinding)
+        ));
+
+        let mut codex = CredentialBinding::openai_codex(Some("SENTINEL-CODEX-RECORD".to_owned()));
+        codex.generation = 4;
+        assert!(matches!(
+            restored_kimi_binding(Some(&codex)),
+            Err(ProviderBindingError::InvalidKimiRestoredBinding)
+        ));
+        assert!(matches!(
+            restored_zai_binding(Some(&codex)),
+            Err(ProviderBindingError::InvalidZaiRestoredBinding)
+        ));
+
+        let mut candidate = SamplerConfig::openai_codex("gpt-5.4");
+        pin_provider_candidate_to_active_record(
+            &mut candidate,
+            ProviderId::KimiCode,
+            Some(&foreign),
+        );
+        assert!(
+            candidate.credential_binding.is_none(),
+            "a provider candidate must not fall back to another provider's active record"
+        );
+    }
+
+    #[test]
     fn model_switch_and_aux_candidates_keep_provider_and_active_record_together() {
         let mut active = CredentialBinding::openai_codex(Some("record-a".to_owned()));
         active.generation = 7;
