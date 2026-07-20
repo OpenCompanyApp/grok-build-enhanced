@@ -204,10 +204,11 @@ async fn fetch_managed_config(
     token: &str,
     source: ManagedConfigSource,
     max_attempts: u32,
+    echo_principal: Option<&str>,
 ) -> Result<ManagedConfigResponse, ManagedConfigError> {
     crate::http::send_with_retry_escaping_pool(
         move |client: reqwest::Client| async move {
-            fetch_managed_config_once(&client, url, token, source).await
+            fetch_managed_config_once(&client, url, token, source, echo_principal).await
         },
         max_attempts,
         |e: &ManagedConfigError| e.is_retryable(),
@@ -290,14 +291,25 @@ async fn fetch_managed_config_once(
     url: &str,
     token: &str,
     source: ManagedConfigSource,
+    echo_principal: Option<&str>,
 ) -> Result<ManagedConfigResponse, ManagedConfigError> {
-    let resp = match client
+    let mut request = client
         .get(url)
         .header("Authorization", format!("Bearer {}", token))
-        .timeout(std::time::Duration::from_secs(15))
-        .send()
-        .await
+        .timeout(std::time::Duration::from_secs(15));
+    // Replay-probe echo only: it is telemetry, never authorization or a trust
+    // input. Invalid/corrupt local state fails open by omitting the header.
+    if let Some(nonce) = xai_grok_config::signed_policy::stored_envelope_nonce(
+        &crate::util::grok_home::grok_home(),
+        echo_principal,
+    ) && let Ok(value) = reqwest::header::HeaderValue::from_str(&nonce)
     {
+        request = request.header(
+            xai_grok_config::signed_policy::MANAGED_CONFIG_NONCE_ECHO_HEADER,
+            value,
+        );
+    }
+    let resp = match request.send().await {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
             let status = r.status().as_u16();
@@ -514,7 +526,11 @@ async fn fetch_for_principal(
 
     if let Some(dk) = resolve_deployment_key() {
         let source = ManagedConfigSource::DeploymentKey;
-        match fetch_managed_config(&url, &dk, source, max_attempts).await {
+        // Echo only for the deployment previously synced by this exact key.
+        // First sync and key rotation intentionally omit the probe.
+        let echo_principal = crate::config::managed_deployment_id(&deployment_key_fingerprint(&dk));
+        match fetch_managed_config(&url, &dk, source, max_attempts, echo_principal.as_deref()).await
+        {
             // A rejected dk (stale env/config) must not starve a valid team
             // sign-in: fall through. Network/5xx do NOT — same unreachable
             // server, double the latency for nothing.
@@ -539,6 +555,7 @@ async fn fetch_for_principal(
             &auth.key,
             ManagedConfigSource::TeamOauth,
             max_attempts,
+            auth.team_id.as_deref(),
         )
         .await?;
         return Ok(FetchedConfig::Team {

@@ -33,6 +33,7 @@ fn payload() -> SignedPayload {
         requirements: Some("[features]\nweb_fetch = false\n".into()),
         fail_closed: false,
         expires_at: 4_000_000_000,
+        nonce: String::new(),
         key_id: "v1".into(),
     }
 }
@@ -62,6 +63,7 @@ fn server_wire_format_is_client_verifiable() {
         "requirements": "[features]\n",
         "fail_closed": true,
         "expires_at": 4_000_000_000u64,
+        "nonce": "0123456789abcdef0123456789abcdef",
         "key_id": "v1",
     })
     .to_string();
@@ -100,6 +102,46 @@ fn missing_fail_closed_defaults_false() {
         verify_fetched_with_keys(&sidecar, &keyset("v1", &pubkey), Some("team-007"), 1_000)
             .expect("must verify");
     assert!(!payload.fail_closed);
+    assert!(payload.nonce.is_empty());
+}
+
+#[test]
+fn stored_envelope_nonce_echoes_valid_same_principal_nonce() {
+    let home = tempfile::tempdir().unwrap();
+    let mut payload = payload();
+    payload.nonce = "0123456789abcdef0123456789abcdef".into();
+    let (keypair, _) = test_keypair();
+    write_sidecar(home.path(), &sign(&keypair, &payload)).unwrap();
+
+    let nonce = stored_envelope_nonce(home.path(), Some("team-007"));
+
+    assert_eq!(nonce.as_deref(), Some(payload.nonce.as_str()));
+}
+
+#[test]
+fn stored_envelope_nonce_omits_cross_principal_sidecar() {
+    let home = tempfile::tempdir().unwrap();
+    let mut payload = payload();
+    payload.nonce = "0123456789abcdef0123456789abcdef".into();
+    let (keypair, _) = test_keypair();
+    write_sidecar(home.path(), &sign(&keypair, &payload)).unwrap();
+
+    let nonce = stored_envelope_nonce(home.path(), Some("team-other"));
+
+    assert_eq!(nonce, None);
+}
+
+#[test]
+fn stored_envelope_nonce_omits_invalid_nonce_shape() {
+    let home = tempfile::tempdir().unwrap();
+    let mut payload = payload();
+    payload.nonce = "not-a-server-nonce".into();
+    let (keypair, _) = test_keypair();
+    write_sidecar(home.path(), &sign(&keypair, &payload)).unwrap();
+
+    let nonce = stored_envelope_nonce(home.path(), Some("team-007"));
+
+    assert_eq!(nonce, None);
 }
 
 #[test]

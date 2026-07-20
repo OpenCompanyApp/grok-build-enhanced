@@ -12,8 +12,9 @@ mod common;
 use common::skip_as_root;
 use common::{
     MANAGED, REQUIREMENTS_FAIL_CLOSED, TEST_EXPIRES_AT, TEST_KEY_ID, forged_team_body,
-    install_test_key, reset, sign_envelope, signed_team_body, spawn_mock, team_identity, test_home,
-    write_config, write_dk_config, write_team_auth,
+    install_test_key, reset, sign_envelope, signed_team_body, signed_team_body_with_nonce,
+    spawn_mock, spawn_mock_recording_nonce, team_identity, test_home, write_config,
+    write_dk_config, write_team_auth,
 };
 use serial_test::serial;
 use xai_grok_config::signed_policy::{self, MANAGED_POLICY_TYP, SignedPayload};
@@ -48,9 +49,45 @@ fn signed_dk_empty_body(kp: &ring::signature::Ed25519KeyPair, deployment_id: &st
         requirements: None,
         fail_closed: false,
         expires_at: TEST_EXPIRES_AT,
+        nonce: String::new(),
         key_id: TEST_KEY_ID.into(),
     };
     serde_json::json!({ "signatures": [sign_envelope(kp, &payload)] }).to_string()
+}
+
+#[tokio::test]
+#[serial]
+async fn managed_config_echoes_the_previous_signed_nonce_on_the_next_fetch() {
+    const NONCE: &str = "0123456789abcdef0123456789abcdef";
+    let home = test_home().clone();
+    reset(&home);
+    let (keypair, _public_key) = install_test_key();
+    let body = signed_team_body_with_nonce(&keypair, "team-007", Some(MANAGED), None, NONCE);
+    let (url, requests) = spawn_mock_recording_nonce(body);
+    write_config(&home, &url);
+    write_team_auth(&home, "team-007");
+
+    xai_grok_shell::managed_config::sync()
+        .await
+        .expect("first sync should persist the signed nonce");
+    assert_eq!(
+        requests
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        None,
+        "the first fetch has no persisted nonce to echo"
+    );
+
+    xai_grok_shell::managed_config::sync()
+        .await
+        .expect("second sync should echo the persisted nonce");
+    assert_eq!(
+        requests
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .as_deref(),
+        Some(NONCE)
+    );
 }
 
 /// The marker principal for an applied signed-EMPTY dk response comes from the

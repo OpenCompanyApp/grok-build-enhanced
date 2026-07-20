@@ -9,8 +9,8 @@
 //! marker stays the (best-effort) authority.
 use base64::Engine;
 pub use prod_mc_cli_chat_proxy_types::{
-    MANAGED_IDENTITY_TYP, MANAGED_POLICY_TYP, ManagedIdentityClaim, SignatureEnvelope,
-    SignedPayload, now_unix,
+    MANAGED_CONFIG_NONCE_ECHO_HEADER, MANAGED_IDENTITY_TYP, MANAGED_POLICY_TYP,
+    ManagedIdentityClaim, SignatureEnvelope, SignedPayload, is_server_nonce_shape, now_unix,
 };
 /// Compiled-in trusted Ed25519 public keys, `(key_id, raw 32 bytes)`; more than one
 /// entry only during a rotation. Empty ships dark (see [`verification_active`]).
@@ -364,6 +364,28 @@ fn write_envelope_at(path: &std::path::Path, sidecar: &SignatureEnvelope) -> std
     let json = serde_json::to_string(sidecar)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     crate::fs_atomic::write_atomically(path, &json, Some(0o600))
+}
+
+/// Return the persisted envelope nonce for the replay-probe request header.
+///
+/// This value is unverified telemetry and is never a trust input. Missing,
+/// malformed, non-regular, cross-principal, and legacy sidecars all fail open by
+/// omitting the header, so corrupt local state cannot block managed-config fetches.
+pub fn stored_envelope_nonce(
+    home: &std::path::Path,
+    fetch_principal: Option<&str>,
+) -> Option<String> {
+    let fetch_principal = fetch_principal?;
+    let SidecarRead::Present(sidecar) = read_sidecar(home) else {
+        return None;
+    };
+    let payload: SignedPayload = serde_json::from_str(&sidecar.signed_payload).ok()?;
+    let issued_to = payload
+        .deployment_id
+        .as_deref()
+        .or(payload.team_id.as_deref());
+    (issued_to == Some(fetch_principal) && is_server_nonce_shape(&payload.nonce))
+        .then_some(payload.nonce)
 }
 
 /// Whether an authentic claim imposes fail-closed enforcement for the known principal.

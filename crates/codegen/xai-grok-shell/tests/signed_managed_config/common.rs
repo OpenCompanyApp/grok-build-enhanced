@@ -71,18 +71,46 @@ pub fn reset(home: &std::path::Path) {
 
 /// Minimal mock deployment-config server serving `body` to every request.
 pub fn spawn_mock(body: String) -> String {
+    spawn_mock_inner(body, None)
+}
+
+/// Mock server that records only the managed-config nonce header. It
+/// deliberately never retains the authorization header or any credential.
+#[allow(dead_code)] // Shared module is compiled by tests that do not use nonce recording.
+pub fn spawn_mock_recording_nonce(
+    body: String,
+) -> (String, std::sync::mpsc::Receiver<Option<String>>) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    (spawn_mock_inner(body, Some(sender)), receiver)
+}
+
+fn spawn_mock_inner(
+    body: String,
+    nonce_sender: Option<std::sync::mpsc::Sender<Option<String>>>,
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            // Drain the request headers before responding.
+            let mut nonce = None;
+            // Drain request headers and retain only the replay-probe nonce.
             let mut reader = BufReader::new(&mut stream);
             loop {
                 let mut line = String::new();
                 if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim_end().is_empty() {
                     break;
                 }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case(
+                        prod_mc_cli_chat_proxy_types::MANAGED_CONFIG_NONCE_ECHO_HEADER,
+                    )
+                {
+                    nonce = Some(value.trim().to_owned());
+                }
+            }
+            if let Some(sender) = &nonce_sender {
+                let _ = sender.send(nonce);
             }
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -188,6 +216,16 @@ pub fn signed_team_body(
     managed: Option<&str>,
     requirements: Option<&str>,
 ) -> String {
+    signed_team_body_with_nonce(kp, team_id, managed, requirements, "")
+}
+
+pub fn signed_team_body_with_nonce(
+    kp: &ring::signature::Ed25519KeyPair,
+    team_id: &str,
+    managed: Option<&str>,
+    requirements: Option<&str>,
+    nonce: &str,
+) -> String {
     let payload = SignedPayload {
         typ: MANAGED_POLICY_TYP.into(),
         version: prod_mc_cli_chat_proxy_types::SIGNED_PAYLOAD_VERSION,
@@ -197,6 +235,7 @@ pub fn signed_team_body(
         requirements: requirements.map(str::to_owned),
         fail_closed: requirements.is_some_and(xai_grok_config::fail_closed_flag_from_str),
         expires_at: TEST_EXPIRES_AT,
+        nonce: nonce.to_owned(),
         key_id: TEST_KEY_ID.into(),
     };
     let claim = ManagedIdentityClaim {
