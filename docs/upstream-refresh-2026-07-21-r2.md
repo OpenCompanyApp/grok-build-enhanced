@@ -65,7 +65,7 @@ Candidate validation completed before committing reviewed provenance:
 - 70 fork-script and 20 release/install-script unit tests; and
 - the static fork contracts covering branding, provider isolation, Codex search, Warp locks, updater routes, generated workspace discipline, workflow pins, and tracked-secret hygiene.
 
-Strict manifest ownership is intentionally run only after this ledger and the reviewed pins are committed, so the checker authenticates the complete candidate tree rather than an uncommitted declaration. Credential-gated live calls are not required for this source classification and must not expose authenticated payloads.
+Strict committed-tree manifest ownership passed on `7453f040bc5f7b33782cdb145002eaa7ee0c36f3`: all 64 feature path sets were valid and all 954 baseline-to-candidate downstream paths were covered. Credential-gated live calls are not required for this source classification and must not expose authenticated payloads.
 
 ## Outcome reconciliation
 
