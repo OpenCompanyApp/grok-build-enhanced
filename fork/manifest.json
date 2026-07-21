@@ -160,7 +160,7 @@
       "remote": "https://github.com/openai/codex.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "c0cd337766ff27a75623c5baba199389f94f2ab3"
+        "commit": "b9800de4867e500a92add3cde795cf4790306d0f"
       },
       "latest_fetched": {
         "commit": "b9800de4867e500a92add3cde795cf4790306d0f"
@@ -172,7 +172,7 @@
       "remote": "https://github.com/anomalyco/opencode.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "849c2598abc7d2b40261e74b5826bc74ffc78308"
+        "commit": "cb562b2c6289c2eee707078f9ab644cbe1d3d8a9"
       },
       "latest_fetched": {
         "commit": "cb562b2c6289c2eee707078f9ab644cbe1d3d8a9"
@@ -220,7 +220,7 @@
       "remote": "https://github.com/MoonshotAI/kimi-code.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "c2d7bebd04106473bb4dbab2903756aa3f14a880"
+        "commit": "a3699dd6aa7b41efd3129a117007d195282379fd"
       },
       "latest_fetched": {
         "commit": "a3699dd6aa7b41efd3129a117007d195282379fd"
@@ -280,7 +280,7 @@
       "remote": "https://github.com/steipete/CodexBar.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "f8636cb37eb0f96d261604ee94e6481496aadfeb"
+        "commit": "cc8da27cec92029a6435bfee4a703a719290234e"
       },
       "latest_fetched": {
         "commit": "cc8da27cec92029a6435bfee4a703a719290234e"
@@ -901,7 +901,7 @@
     },
     {
       "id": "kimi-code-provider-runtime",
-      "description": "First-class Kimi Code provider identity, credential-bound dynamic models, catalog-selected inference protocols, reasoning controls, cache affinity, and isolated session routing.",
+      "description": "First-class Kimi Code provider identity, credential-bound dynamic models, catalog-selected inference protocols, reasoning controls, cache affinity, vacuous-assistant wire filtering, and isolated session routing.",
       "source_ids": [
         "grok-build-upstream",
         "kimi-code"
@@ -914,6 +914,7 @@
         "crates/codegen/xai-grok-sampler/src/config.rs",
         "crates/codegen/xai-grok-sampler/src/provider/kimi_code/**",
         "crates/codegen/xai-grok-sampler/src/provider/mod.rs",
+        "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
         "crates/codegen/xai-grok-sampling-types/src/kimi_code.rs",
         "crates/codegen/xai-grok-sampling-types/src/lib.rs",
         "crates/codegen/xai-grok-sampling-types/src/provider.rs",
@@ -928,6 +929,7 @@
       ],
       "integration_paths": [
         "crates/codegen/xai-grok-sampler/src/provider/kimi_code/mod.rs",
+        "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
         "crates/codegen/xai-grok-sampling-types/src/kimi_code.rs",
         "crates/codegen/xai-grok-sampling-types/src/provider.rs",
         "crates/codegen/xai-grok-shell/src/agent/config.rs",
@@ -2301,7 +2303,7 @@
     },
     {
       "id": "codex-provider-system-proxy-routing",
-      "description": "Provider-scoped OpenAI Codex macOS and Windows system proxy, PAC, WPAD, environment fallback, redaction, caching, and lazy client routing without changing other providers' transports.",
+      "description": "Provider-scoped OpenAI Codex macOS and Windows system proxy, PAC, WPAD, environment fallback, redaction, caching, and exact-request route-keyed client reuse without changing other providers' transports.",
       "source_ids": [
         "openai-codex"
       ],
@@ -2385,6 +2387,36 @@
         "UPSTREAM_VERSIONS.md",
         "docs/providers/openai-codex-subscription-provider-reference.md",
         "docs/upstream-refresh-2026-07-21.md",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES"
+      ]
+    },
+    {
+      "id": "provider-reference-refresh-2026-07-21-r2",
+      "description": "Exhaustive second-pass 2026-07-21 Codex, OpenCode, Kimi, and CodexBar audit, exact-request routing, vacuous-assistant replay compatibility, provider-reference reconciliation, and reviewed provenance pins.",
+      "source_ids": [
+        "openai-codex",
+        "opencode",
+        "kimi-code",
+        "codexbar"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/providers/kimi-code-integration-research.md",
+        "docs/providers/openai-codex-subscription-provider-reference.md",
+        "docs/providers/zai-glm-coding-plan-integration-research.md",
+        "docs/upstream-refresh-2026-07-21-r2.md",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/providers/kimi-code-integration-research.md",
+        "docs/providers/openai-codex-subscription-provider-reference.md",
+        "docs/providers/zai-glm-coding-plan-integration-research.md",
+        "docs/upstream-refresh-2026-07-21-r2.md",
         "fork/manifest.json"
       ],
       "legal_paths": [

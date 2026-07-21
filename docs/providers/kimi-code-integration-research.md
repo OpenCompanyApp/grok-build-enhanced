@@ -1,16 +1,15 @@
 # Kimi Code plan provider reference and research
 
-> Status: **implemented, experimental** as of 2026-07-19. The runtime follows
-> the API-key, catalog, inference, usage, hosted-search, and hosted-fetch design
-> below. Initial credential-gated qualification now covers the currently
-> entitled Chat Completions catalog, K3 inference, usage, and model-driven web
-> tools; the broader protocol/session matrix remains before this can be called
-> production-ready. On 2026-07-18 the ignored Kimi Code and OpenCode checkouts
-> were fast-forwarded and their exact latest fetched revisions were recorded in
+> Status: **implemented, experimental** as of 2026-07-19 and reconciled again
+> on 2026-07-21. The runtime follows the API-key, catalog, inference, usage,
+> hosted-search, and hosted-fetch design below. Initial credential-gated
+> qualification covers the currently entitled Chat Completions catalog, K3
+> inference, usage, and model-driven web tools; the broader protocol/session
+> matrix remains before this can be called production-ready. The ignored Kimi
+> Code and OpenCode checkouts are provenance inputs only; their exact reviewed
+> revisions are recorded in
 > [`UPSTREAM_VERSIONS.md`](../../UPSTREAM_VERSIONS.md) and
-> [`fork/manifest.json`](../../fork/manifest.json). The reviewed revisions
-> remain pinned separately: a latest-fetched revision is a review queue, not an
-> accepted implementation baseline.
+> [`fork/manifest.json`](../../fork/manifest.json).
 >
 > This repository is an unofficial Grok Build fork. Its Kimi Code integration
 > identifies itself truthfully as Grok Build and does not imply endorsement by
@@ -51,21 +50,25 @@ Moonshot AI's current upstream reference implementation is
 [MoonshotAI/kimi-code][kimi-code-github], a TypeScript monorepo. This research reviewed:
 
 - `MoonshotAI/kimi-code` reviewed and latest-fetched main snapshot
-  `c2d7bebd04106473bb4dbab2903756aa3f14a880`, whose package version is
-  `0.28.1`, dated 2026-07-20.
-- The audited Kimi range from
-  `df6899553962d1764c9f4c3bec1b63c811cb425e` through `c2d7beb...` contains
-  13 commits. Its applicable provider-facing changes scope thinking effort to
-  the active session and allow ACP startup from configured non-OAuth provider
+  `a3699dd6aa7b41efd3129a117007d195282379fd`, whose package version remains
+  `0.28.1`.
+- The first audited Kimi range through `c2d7beb...` scoped thinking effort to
+  the active session and allowed ACP startup from configured non-OAuth provider
   credentials. Enhanced already stores Kimi effort per session and explicitly
-  loads and binds the selected Kimi API-key record in ACP. Transcript, VS Code,
-  web-server, tips, release, and agent-core-v2 changes do not alter the
-  provider-adapter contract.
+  loads and binds the selected Kimi API-key record in ACP.
+- The second audited range from `c2d7beb...` through `a3699dd...` contains 13
+  commits. Enhanced adopted the provider-facing fix that omits wholly vacuous
+  assistant turns from replay without mutating durable history. Cancellation,
+  prompt-cache affinity, ACP effort levels, hidden synthetic prompts,
+  long-session rendering, and MCP reconnect behavior were already equivalent.
+  Replacement model-engine, TUI, VS Code, telemetry, custom-agent, and KAP
+  server changes do not alter the provider-adapter contract. The exhaustive
+  classification is in `docs/upstream-refresh-2026-07-21-r2.md`.
 - OpenCode's reviewed and latest-fetched reference is
-  `849c2598abc7d2b40261e74b5826bc74ffc78308`, package version `1.18.4`. Its
-  relevant drift confirms explicit Kimi effort metadata and adds the shared
+  `cb562b2c6289c2eee707078f9ab644cbe1d3d8a9`, package version `1.18.4`. Its
+  second-pass changes are application presentation only; the earlier shared
   overflow, image-adjacent blank-text, and Custom Mistral tool-call-ID
-  interoperability behavior recorded in
+  interoperability behavior remains recorded in
   `docs/upstream-refresh-2026-07-21.md`.
 - The legacy Python [MoonshotAI/kimi-cli][kimi-cli-github] at
   `4a550effdfcb29a25a5d325bf935296cc50cd417`, release `1.49.0`, dated
@@ -270,6 +273,13 @@ thinking is on. For the Kimi Chat Completions protocol it sends
 explicitly empty `reasoning_content` field on historical assistant tool-call
 messages. Disabling thinking sends `thinking.type = "disabled"` and, according
 to the product documentation, changes the effective backing model.
+
+Provider replay omits an assistant turn only when it has no nonblank text, tool
+calls, nonempty reasoning, signed/encrypted reasoning, images, or other
+sendable content. An empty reasoning or thinking block remains present when a
+sibling text or tool call makes the turn sendable. This filter exists only in
+the Chat Completions and Messages wire projections; saved conversation items,
+hooks, compaction input, and resumed session history remain unchanged.
 
 One compatibility seam needs live verification: Kimi Code documentation also
 describes K3 using `reasoning_effort`, while the current official Kimi adapter
@@ -631,14 +641,14 @@ payload logging boundary.
 [kimi-k3-pricing]: https://platform.kimi.ai/docs/pricing/chat-k3
 [kimi-k27-pricing]: https://platform.kimi.ai/docs/pricing/chat-k27-code
 [kimi-k27-explainer]: https://www.kimi.com/resources/kimi-k2-7-code-pricing
-[kimi-managed-models]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/oauth/src/managed-kimi-code.ts#L415-L521
-[kimi-identity]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/oauth/src/identity.ts#L18-L97
-[kimi-oauth]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/oauth/src/oauth.ts#L117-L289
-[kimi-oauth-manager]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/oauth/src/oauth-manager.ts#L250-L390
-[kimi-oauth-storage]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/oauth/src/storage.ts#L1-L117
-[kimi-provider]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/kosong/src/providers/kimi.ts#L116-L200
-[kimi-usage-parser]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/kosong/src/providers/openai-common.ts#L157-L188
-[kimi-web-search]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/agent-core/src/tools/providers/moonshot-web-search.ts#L39-L129
-[kimi-fetch-url]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/agent-core/src/tools/providers/moonshot-fetch-url.ts#L32-L127
-[kimi-files]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/kosong/src/providers/kimi-files.ts#L31-L150
-[kimi-managed-usage]: https://github.com/MoonshotAI/kimi-code/blob/c2d7bebd04106473bb4dbab2903756aa3f14a880/packages/oauth/src/managed-usage.ts#L1-L225
+[kimi-managed-models]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/oauth/src/managed-kimi-code.ts#L415-L521
+[kimi-identity]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/oauth/src/identity.ts#L18-L97
+[kimi-oauth]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/oauth/src/oauth.ts#L117-L289
+[kimi-oauth-manager]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/oauth/src/oauth-manager.ts#L250-L390
+[kimi-oauth-storage]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/oauth/src/storage.ts#L1-L117
+[kimi-provider]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/kosong/src/providers/kimi.ts#L116-L200
+[kimi-usage-parser]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/kosong/src/providers/openai-common.ts#L157-L188
+[kimi-web-search]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/agent-core/src/tools/providers/moonshot-web-search.ts#L39-L129
+[kimi-fetch-url]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/agent-core/src/tools/providers/moonshot-fetch-url.ts#L32-L127
+[kimi-files]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/kosong/src/providers/kimi-files.ts#L31-L150
+[kimi-managed-usage]: https://github.com/MoonshotAI/kimi-code/blob/a3699dd6aa7b41efd3129a117007d195282379fd/packages/oauth/src/managed-usage.ts#L1-L225

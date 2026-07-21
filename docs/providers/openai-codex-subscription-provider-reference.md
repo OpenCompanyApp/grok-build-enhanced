@@ -1,7 +1,7 @@
 # OpenAI Codex subscription provider reference
 
 > Status: implemented, experimental provider reference. Reconciled on
-> 2026-07-18 against the checked-in fork implementation, tests, and normalized
+> 2026-07-21 against the checked-in fork implementation, tests, and normalized
 > standalone-search contract. [`UPSTREAM_VERSIONS.md`][upstream-versions]
 > records the reviewed external revisions.
 >
@@ -32,27 +32,29 @@ For “what this fork does,” the checked-in Rust code and tests are authoritat
 For the external service contract, use official OpenAI documentation and the
 public `openai/codex` source, then verify with an entitled-account smoke test.
 
-At this document's 2026-07-21 reconciliation date, `UPSTREAM_VERSIONS.md`
-records:
+At this document's 2026-07-21 second-pass reconciliation date,
+`UPSTREAM_VERSIONS.md` records:
 
 - `openai/codex` reviewed and latest-fetched at
-  `c0cd337766ff27a75623c5baba199389f94f2ab3`;
+  `b9800de4867e500a92add3cde795cf4790306d0f`;
 - OpenCode reviewed and latest-fetched at
-  `849c2598abc7d2b40261e74b5826bc74ffc78308`; and
+  `cb562b2c6289c2eee707078f9ab644cbe1d3d8a9`; and
 - fork compatibility version `0.144.0`.
 
-The audited Codex range from
-`3e2f79727a4e8ddfc8e3acb838d496b121094b9e` through `c0cd337...` added
-explicit outbound system-proxy routing, made invalid-image HTTP 400 failures
-terminal, refreshed dynamic catalog metadata, and optimized remote-compaction
-history handling. Enhanced adopted the observable proxy behavior through a
-Codex-only route-aware HTTP leaf crate and already satisfied the remaining
-provider contracts. The normalized standalone-search contract remains
-committed at `fork/contracts/openai_codex_search_contract.json`; the offline
-checker supports extracting the immutable Git object without checking it out.
-OpenCode remains an interoperability and provenance reference, not a runtime
-provider identity. The exhaustive commit, path, and behavior inventory is in
-`docs/upstream-refresh-2026-07-21.md`.
+The first audited Codex range through `c0cd337...` added explicit outbound
+system-proxy routing, made invalid-image HTTP 400 failures terminal, refreshed
+dynamic catalog metadata, and optimized remote-compaction history handling.
+The second range from `c0cd337...` through `b9800de...` made route selection
+depend on each complete request URL and applied route-aware clients across
+backend surfaces. Enhanced now selects exact first-hop routes for inference,
+OAuth, catalog, usage, hosted search, and image operations while retaining its
+stronger rule that credential-bearing clients never follow redirects. The
+normalized standalone-search contract remains committed at
+`fork/contracts/openai_codex_search_contract.json`; the offline checker
+supports extracting the immutable Git object without checking it out. OpenCode
+remains an interoperability and provenance reference, not a runtime provider
+identity. The exhaustive second-pass commit, path, and behavior inventory is in
+`docs/upstream-refresh-2026-07-21-r2.md`.
 
 The shortest operational sequence is:
 
@@ -273,6 +275,14 @@ accepted only by scoped test/test-support seams. Every Codex client disables
 redirect following so bearer/account/FedRAMP headers are never replayed to a
 redirect target.
 
+Before reading a dynamic credential snapshot, each Codex-owned request resolves
+its complete final URL through the platform PAC/system-proxy policy. A bounded
+provider pool reuses reqwest clients only when those exact-URL decisions select
+the same resolved route. This applies to inference, OAuth, catalog, usage,
+hosted search, and image operations; it does not change any other provider's
+transport. Because redirects are refused rather than replayed, there is no
+credential-bearing second hop requiring route re-resolution.
+
 The checked-in application limits are not uniform:
 
 | Operation | Timeout / size behavior |
@@ -338,7 +348,7 @@ The implementation is in
 
 The following is a dated compatibility snapshot from the official Codex model
 catalog at `openai/codex` commit
-`c0cd337766ff27a75623c5baba199389f94f2ab3`. The authenticated runtime catalog
+`b9800de4867e500a92add3cde795cf4790306d0f`. The authenticated runtime catalog
 always wins.
 
 | Model slug | Context | Default effort | Advertised efforts | Images | Fast | Multi-agent |
@@ -1029,11 +1039,11 @@ directory.
 [session-compact]: ../../crates/codegen/xai-grok-shell/src/session/helpers/session_compact.rs
 [slash-commands]: ../../crates/codegen/xai-grok-pager/src/slash/commands/
 [third-party-notices]: ../../THIRD-PARTY-NOTICES
-[upstream-app-server]: https://github.com/openai/codex/blob/c0cd337766ff27a75623c5baba199389f94f2ab3/codex-rs/app-server/README.md
-[upstream-client]: https://github.com/openai/codex/blob/c0cd337766ff27a75623c5baba199389f94f2ab3/codex-rs/core/src/client.rs
-[upstream-login]: https://github.com/openai/codex/tree/c0cd337766ff27a75623c5baba199389f94f2ab3/codex-rs/login
-[upstream-models]: https://github.com/openai/codex/blob/c0cd337766ff27a75623c5baba199389f94f2ab3/codex-rs/models-manager/models.json
-[upstream-provider]: https://github.com/openai/codex/tree/c0cd337766ff27a75623c5baba199389f94f2ab3/codex-rs/model-provider
+[upstream-app-server]: https://github.com/openai/codex/blob/b9800de4867e500a92add3cde795cf4790306d0f/codex-rs/app-server/README.md
+[upstream-client]: https://github.com/openai/codex/blob/b9800de4867e500a92add3cde795cf4790306d0f/codex-rs/core/src/client.rs
+[upstream-login]: https://github.com/openai/codex/tree/b9800de4867e500a92add3cde795cf4790306d0f/codex-rs/login
+[upstream-models]: https://github.com/openai/codex/blob/b9800de4867e500a92add3cde795cf4790306d0f/codex-rs/models-manager/models.json
+[upstream-provider]: https://github.com/openai/codex/tree/b9800de4867e500a92add3cde795cf4790306d0f/codex-rs/model-provider
 [upstream-versions]: ../../UPSTREAM_VERSIONS.md
 [version-file]: ../../crates/codegen/xai-grok-version/src/lib.rs
 [web-fetch-dir]: ../../crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/
