@@ -35,6 +35,8 @@ pub enum CodexAuthError {
     LockTimeout,
     #[error("OpenAI Codex authentication service returned HTTP {0}")]
     HttpStatus(u16),
+    #[error("OpenAI Codex authentication HTTP route setup failed; proxy details were omitted")]
+    ProxyRoute,
     #[error("OpenAI Codex authentication transport failed")]
     Transport(#[source] reqwest::Error),
     #[error("failed to store OpenAI Codex credentials")]

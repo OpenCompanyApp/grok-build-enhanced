@@ -448,7 +448,11 @@ async fn usage_client_never_replays_credentials_to_a_redirect_target() {
 
     let auth = FakeAuth::new();
     let source_url = format!("http://{source_address}/backend-api/wham/usage");
-    let error = fetch_from_url(&codex_usage_http_client(), &auth, &source_url)
+    let client = codex_usage_http_client_builder()
+        .no_proxy()
+        .build()
+        .expect("redirect-refusing test client");
+    let error = fetch_from_url(&client, &auth, &source_url)
         .await
         .expect_err("a Codex usage redirect must be terminal");
     source_task.abort();
@@ -981,6 +985,36 @@ async fn transient_service_failure_can_use_same_record_stale_usage() {
 
     assert_eq!(stale, expected_snapshot);
     assert_eq!(requests.lock().len(), 1);
+    assert!(cache.lock().await.entry.is_some());
+}
+
+#[tokio::test]
+async fn proxy_route_failure_can_use_same_record_stale_usage() {
+    let auth = FakeAuth::new();
+    let expected = binding("record-id", 1);
+    let cache = tokio::sync::Mutex::new(cached_usage(
+        expected.clone(),
+        USAGE_CACHE_TTL + std::time::Duration::from_secs(1),
+    ));
+    let route_attempts = Arc::new(AtomicUsize::new(0));
+    let attempts = Arc::clone(&route_attempts);
+
+    let stale = fetch_cached(
+        move || async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(CodexUsageError::ProxyRoute)
+        },
+        &auth,
+        OPENAI_CODEX_USAGE_URL,
+        &expected,
+        UsageFetchMode::Silent,
+        &cache,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(stale.plan_type.as_deref(), Some("cached-plan"));
+    assert_eq!(route_attempts.load(Ordering::SeqCst), 1);
     assert!(cache.lock().await.entry.is_some());
 }
 

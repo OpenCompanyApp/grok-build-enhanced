@@ -12,6 +12,7 @@ test-support = []
 
 [dependencies]
 # Internal
+xai-grok-provider-http = { path = "../xai-grok-provider-http" }
 xai-grok-sampling-types = { path = "../xai-grok-sampling-types" }
 xai-grok-version = { workspace = true }
 

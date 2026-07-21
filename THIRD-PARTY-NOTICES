@@ -2470,6 +2470,20 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
+core-foundation 0.9.4
+--------------------------------------------------------------------------------
+Source:  https://github.com/servo/core-foundation-rs
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) 2012-2013 Mozilla Foundation
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 core-foundation 0.10.1
 --------------------------------------------------------------------------------
 Source:  https://github.com/servo/core-foundation-rs
@@ -13315,6 +13329,34 @@ Copyright notice:
 License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
+system-configuration 0.7.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/mullvad/system-configuration-rs
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) 2024 Mullvad VPN AB
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+system-configuration-sys 0.6.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/mullvad/system-configuration-rs
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) 2024 Mullvad VPN AB
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 taffy 0.10.1
 --------------------------------------------------------------------------------
 Source:  https://github.com/DioxusLabs/taffy
@@ -16639,7 +16681,10 @@ Upstream paths: codex-rs/core/src/tools/handlers/ (and apply-patch crate),
   codex-rs/ext/image-generation/src/tool.rs, codex-rs/utils/image/src/lib.rs,
   codex-rs/ext/web-search/,
   codex-rs/core/src/session/multi_agents.rs,
-  codex-rs/core/src/context/multi_agent_mode_instructions.rs
+  codex-rs/core/src/context/multi_agent_mode_instructions.rs,
+  codex-rs/http-client/src/outbound_proxy.rs,
+  codex-rs/http-client/src/outbound_proxy/macos.rs,
+  codex-rs/http-client/src/outbound_proxy/windows.rs
 
 Copyright notice:
   Copyright 2025 OpenAI
@@ -16667,6 +16712,7 @@ Additional requirements / notices:
     crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn.rs
     crates/codegen/xai-grok-sampling-types/src/openai_codex.rs
     crates/codegen/xai-grok-sampling-types/src/types.rs
+    crates/codegen/xai-grok-provider-http/
     crates/codegen/xai-grok-sampler/src/client.rs
     crates/codegen/xai-grok-sampler/src/config.rs
     crates/codegen/xai-grok-sampler/src/provider/openai_codex/

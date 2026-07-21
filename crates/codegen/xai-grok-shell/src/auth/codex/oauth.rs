@@ -54,7 +54,7 @@ impl OAuthEndpoints {
 
 #[derive(Clone)]
 pub struct CodexOAuthClient {
-    http: reqwest::Client,
+    http: Arc<tokio::sync::OnceCell<reqwest::Client>>,
     endpoints: OAuthEndpoints,
     client_id: String,
 }
@@ -73,22 +73,35 @@ impl Default for CodexOAuthClient {
 
 impl CodexOAuthClient {
     pub fn new() -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(AUTH_HTTP_TIMEOUT)
-            // OAuth requests carry bearer, refresh, or authorization-code
-            // material. Never forward it through an unexpected redirect.
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent(format!(
-                "{OPENAI_CODEX_ORIGINATOR}/{}",
-                env!("CARGO_PKG_VERSION")
-            ))
-            .build()
-            .expect("static OpenAI OAuth HTTP client configuration must build");
         Self {
-            http,
+            http: Default::default(),
             endpoints: OAuthEndpoints::production(),
             client_id: OPENAI_CODEX_CLIENT_ID.to_string(),
         }
+    }
+
+    async fn http(&self) -> Result<reqwest::Client, CodexAuthError> {
+        self.http
+            .get_or_try_init(|| async {
+                let builder = reqwest::Client::builder()
+                    .timeout(AUTH_HTTP_TIMEOUT)
+                    // OAuth requests carry bearer, refresh, or authorization-code
+                    // material. Never forward it through an unexpected redirect.
+                    .redirect(reqwest::redirect::Policy::none())
+                    .user_agent(format!(
+                        "{OPENAI_CODEX_ORIGINATOR}/{}",
+                        env!("CARGO_PKG_VERSION")
+                    ));
+                xai_grok_provider_http::build_openai_codex_client(
+                    builder,
+                    self.endpoints.issuer.as_str(),
+                    xai_grok_provider_http::ClientRouteClass::Auth,
+                )
+                .await
+                .map_err(|_| CodexAuthError::ProxyRoute)
+            })
+            .await
+            .cloned()
     }
 
     #[cfg(test)]
@@ -134,7 +147,8 @@ impl CodexOAuthClient {
     ) -> Result<CodexDeviceAuthorization, CodexAuthError> {
         let endpoint = self.endpoints.endpoint("api/accounts/deviceauth/usercode");
         let response = self
-            .http
+            .http()
+            .await?
             .post(endpoint)
             .json(&DeviceCodeRequest {
                 client_id: &self.client_id,
@@ -166,6 +180,7 @@ impl CodexOAuthClient {
     ) -> Result<CodexCredentials, CodexAuthError> {
         let deadline = tokio::time::Instant::now() + DEVICE_FLOW_TIMEOUT;
         let poll_endpoint = self.endpoints.endpoint("api/accounts/deviceauth/token");
+        let http = self.http().await?;
 
         let code = loop {
             if tokio::time::Instant::now() >= deadline {
@@ -173,7 +188,7 @@ impl CodexOAuthClient {
             }
             let response = tokio::select! {
                 () = cancellation.cancelled() => return Err(CodexAuthError::Cancelled),
-                response = self.http.post(poll_endpoint.clone()).json(&DeviceTokenPoll {
+                response = http.post(poll_endpoint.clone()).json(&DeviceTokenPoll {
                     device_auth_id: &authorization.device_auth_id,
                     user_code: &authorization.user_code,
                 }).send() => response?,
@@ -224,7 +239,8 @@ impl CodexOAuthClient {
         refresh_token: &str,
     ) -> Result<TokenResponse, CodexAuthError> {
         let response = self
-            .http
+            .http()
+            .await?
             .post(self.endpoints.endpoint("oauth/token"))
             .json(&RefreshRequest {
                 client_id: &self.client_id,
@@ -285,7 +301,8 @@ impl CodexOAuthClient {
         client_id: Option<&str>,
     ) -> Result<(), CodexAuthError> {
         let response = self
-            .http
+            .http()
+            .await?
             .post(self.endpoints.endpoint("oauth/revoke"))
             .json(&RevokeRequest {
                 token,
@@ -308,7 +325,8 @@ impl CodexOAuthClient {
         verifier: &str,
     ) -> Result<TokenResponse, CodexAuthError> {
         let response = self
-            .http
+            .http()
+            .await?
             .post(self.endpoints.endpoint("oauth/token"))
             .form(&AuthorizationCodeExchange {
                 grant_type: "authorization_code",

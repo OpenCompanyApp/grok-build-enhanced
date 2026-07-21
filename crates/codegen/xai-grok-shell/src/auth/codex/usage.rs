@@ -136,6 +136,8 @@ pub enum CodexUsageError {
     CredentialRejected,
     #[error("OpenAI Codex usage request returned HTTP {0}")]
     HttpStatus(u16),
+    #[error("OpenAI Codex usage HTTP route setup failed; proxy details were omitted")]
+    ProxyRoute,
     #[error("OpenAI Codex usage request failed")]
     Transport(#[source] reqwest::Error),
     #[error("OpenAI Codex usage response was invalid")]
@@ -196,6 +198,14 @@ fn usage_cache() -> &'static tokio::sync::Mutex<CodexUsageCache> {
     CACHE.get_or_init(|| tokio::sync::Mutex::new(CodexUsageCache::default()))
 }
 
+/// Transport policy shared by the production usage client and redirect tests.
+fn codex_usage_http_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .user_agent(crate::http::process_user_agent_string())
+        .redirect(reqwest::redirect::Policy::none())
+}
+
 /// Dedicated credential-bearing client for the ChatGPT usage endpoint.
 ///
 /// The process-wide shared client follows redirects. Reqwest strips the
@@ -203,18 +213,20 @@ fn usage_cache() -> &'static tokio::sync::Mutex<CodexUsageCache> {
 /// know that ChatGPT-Account-ID and X-OpenAI-FedRAMP are equally sensitive.
 /// Refusing redirects here keeps the complete provider-auth snapshot bound to
 /// the one exact URL selected by this module.
-fn codex_usage_http_client() -> reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+async fn codex_usage_http_client() -> Result<reqwest::Client, CodexUsageError> {
+    static CLIENT: tokio::sync::OnceCell<reqwest::Client> = tokio::sync::OnceCell::const_new();
     CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(30))
-                .user_agent(crate::http::process_user_agent_string())
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .expect("failed to build OpenAI Codex usage HTTP client")
+        .get_or_try_init(|| async {
+            xai_grok_provider_http::build_openai_codex_client(
+                codex_usage_http_client_builder(),
+                OPENAI_CODEX_USAGE_URL,
+                xai_grok_provider_http::ClientRouteClass::Api,
+            )
+            .await
+            .map_err(|_| CodexUsageError::ProxyRoute)
         })
-        .clone()
+        .await
+        .cloned()
 }
 
 fn validate_binding(binding: &CredentialBinding) -> Result<(), CodexUsageError> {
@@ -265,7 +277,7 @@ fn auth_error_allows_stale(error: &CodexAuthError) -> bool {
 
 fn usage_error_allows_stale(error: &CodexUsageError) -> bool {
     match error {
-        CodexUsageError::Transport(_) => true,
+        CodexUsageError::ProxyRoute | CodexUsageError::Transport(_) => true,
         CodexUsageError::HttpStatus(status) => is_transient_service_status(*status),
         CodexUsageError::Auth(error) => auth_error_allows_stale(error),
         _ => false,
@@ -416,14 +428,19 @@ async fn attest_usage_binding<A: UsageAuthProvider + ?Sized>(
     }
 }
 
-async fn fetch_cached_from_url<A: UsageAuthProvider + ?Sized>(
-    client: &reqwest::Client,
+async fn fetch_cached<GetClient, GetClientFuture, A>(
+    get_client: GetClient,
     auth_provider: &A,
     url: &str,
     expected: &CredentialBinding,
     mode: UsageFetchMode,
     cache: &tokio::sync::Mutex<CodexUsageCache>,
-) -> Result<CodexUsageSnapshot, CodexUsageError> {
+) -> Result<CodexUsageSnapshot, CodexUsageError>
+where
+    GetClient: FnOnce() -> GetClientFuture,
+    GetClientFuture: std::future::Future<Output = Result<reqwest::Client, CodexUsageError>>,
+    A: UsageAuthProvider + ?Sized,
+{
     if let Err(error) = validate_binding(expected) {
         clear_usage_cache(cache).await;
         return Err(error);
@@ -464,7 +481,14 @@ async fn fetch_cached_from_url<A: UsageAuthProvider + ?Sized>(
         return Ok(snapshot);
     }
 
-    match fetch_from_url_with_binding(client, auth_provider, url, Some(expected)).await {
+    let fetched = match get_client().await {
+        Ok(client) => {
+            fetch_from_url_with_binding(&client, auth_provider, url, Some(expected)).await
+        }
+        Err(error) => Err(error),
+    };
+
+    match fetched {
         Ok(fetched) => {
             let _identity_lease =
                 attest_usage_binding(auth_provider, &fetched.binding, &mut cache).await?;
@@ -501,6 +525,26 @@ async fn fetch_cached_from_url<A: UsageAuthProvider + ?Sized>(
             Err(error)
         }
     }
+}
+
+async fn fetch_cached_from_url<A: UsageAuthProvider + ?Sized>(
+    client: &reqwest::Client,
+    auth_provider: &A,
+    url: &str,
+    expected: &CredentialBinding,
+    mode: UsageFetchMode,
+    cache: &tokio::sync::Mutex<CodexUsageCache>,
+) -> Result<CodexUsageSnapshot, CodexUsageError> {
+    let client = client.clone();
+    fetch_cached(
+        || async move { Ok(client) },
+        auth_provider,
+        url,
+        expected,
+        mode,
+        cache,
+    )
+    .await
 }
 
 fn snapshot_current_usage_binding(
@@ -561,15 +605,42 @@ pub async fn fetch_codex_usage_for_current(
     manager: &CodexAuthManager,
     silent: bool,
 ) -> Result<CodexUsageSnapshot, CodexUsageError> {
-    let client = codex_usage_http_client();
-    fetch_codex_usage_for_current_from_url(
-        &client,
+    let cache = usage_cache();
+    let expected = match snapshot_current_usage_binding(manager) {
+        Ok(expected) => expected,
+        Err(error) => {
+            if usage_error_invalidates_cached_identity(&error) {
+                clear_usage_cache(cache).await;
+            }
+            return Err(error);
+        }
+    };
+    fetch_cached(
+        codex_usage_http_client,
         manager,
         OPENAI_CODEX_USAGE_URL,
-        silent,
-        usage_cache(),
+        &expected,
+        if silent {
+            UsageFetchMode::Silent
+        } else {
+            UsageFetchMode::Explicit
+        },
+        cache,
     )
     .await
+}
+
+fn verify_session_usage_binding(
+    manager: &CodexAuthManager,
+    expected: &CredentialBinding,
+) -> Result<(), CodexUsageError> {
+    validate_binding(expected)?;
+    let actual = manager.current_verified()?.credential_binding();
+    validate_binding(&actual)?;
+    if !expected.same_record(&actual) || actual.generation < expected.generation {
+        return Err(CodexAuthError::AccountChanged.into());
+    }
+    Ok(())
 }
 
 async fn fetch_codex_usage_for_session_from_url(
@@ -580,16 +651,7 @@ async fn fetch_codex_usage_for_session_from_url(
     silent: bool,
     cache: &tokio::sync::Mutex<CodexUsageCache>,
 ) -> Result<CodexUsageSnapshot, CodexUsageError> {
-    let verified: Result<(), CodexUsageError> = (|| {
-        validate_binding(expected)?;
-        let actual = manager.current_verified()?.credential_binding();
-        validate_binding(&actual)?;
-        if !expected.same_record(&actual) || actual.generation < expected.generation {
-            return Err(CodexAuthError::AccountChanged.into());
-        }
-        Ok(())
-    })();
-    if let Err(error) = verified {
+    if let Err(error) = verify_session_usage_binding(manager, expected) {
         if usage_error_invalidates_cached_identity(&error) {
             clear_usage_cache(cache).await;
         }
@@ -623,14 +685,24 @@ pub async fn fetch_codex_usage_for_session(
     expected: &CredentialBinding,
     silent: bool,
 ) -> Result<CodexUsageSnapshot, CodexUsageError> {
-    let client = codex_usage_http_client();
-    fetch_codex_usage_for_session_from_url(
-        &client,
+    let cache = usage_cache();
+    if let Err(error) = verify_session_usage_binding(manager, expected) {
+        if usage_error_invalidates_cached_identity(&error) {
+            clear_usage_cache(cache).await;
+        }
+        return Err(error);
+    }
+    fetch_cached(
+        codex_usage_http_client,
         manager,
         OPENAI_CODEX_USAGE_URL,
         expected,
-        silent,
-        usage_cache(),
+        if silent {
+            UsageFetchMode::Silent
+        } else {
+            UsageFetchMode::Explicit
+        },
+        cache,
     )
     .await
 }

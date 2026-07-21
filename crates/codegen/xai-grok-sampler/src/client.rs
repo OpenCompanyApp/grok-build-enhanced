@@ -68,6 +68,7 @@ fn normalize_reasoning_effort_for_provider(
         effort => Ok(effort),
     }
 }
+
 /// Per-request `x-grok-*` headers. Optional fields are skipped when empty/`None`.
 struct GrokRequestHeaders<'a> {
     conv_id: &'a str,
@@ -398,7 +399,12 @@ impl Drop for ProviderAuthRecoveryGuard<'_> {
 
 #[derive(Clone)]
 pub struct SamplingClient {
-    http: reqwest::Client,
+    /// Eager transport for xAI, Kimi, Z.AI, and Custom providers. Codex is
+    /// deliberately absent here because its OS proxy/PAC lookup is async.
+    http: Option<reqwest::Client>,
+    /// Lazily initialized, provider-scoped Codex transport. Cheap client
+    /// clones share both route resolution and the resulting connection pool.
+    codex_http: std::sync::Arc<tokio::sync::OnceCell<reqwest::Client>>,
     default_headers: HeaderMap,
     base_url: String,
     defaults: ClientDefaults,
@@ -455,6 +461,7 @@ struct ClientDefaults {
     service_tier: Option<String>,
     stream_tool_calls: bool,
     responses_lite: bool,
+    force_http1: bool,
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
 }
 
@@ -534,10 +541,10 @@ pub fn user_agent_string_for(origin: &OriginClientInfo) -> String {
 impl SamplingClient {
     /// Construct a sampling client from a [`SamplerConfig`].
     ///
-    /// Grabs the process-wide shared `reqwest::Client` (HTTP/2 by
-    /// default, HTTP/1.1 when `config.force_http1` is set) and
-    /// pre-computes the default request headers. This does not perform
-    /// any network I/O.
+    /// Prepares the provider transport and default request headers. xAI,
+    /// Kimi, Z.AI, and Custom use their ordinary eager clients; Codex defers
+    /// asynchronous system proxy/PAC resolution until the first request. This
+    /// constructor does not perform network I/O or blocking platform lookup.
     pub fn new(config: SamplerConfig) -> Result<Self> {
         Self::new_with_codex_turn_state(config, CodexTurnStateStore::default())
     }
@@ -800,16 +807,18 @@ impl SamplingClient {
         Self::mark_sensitive_headers(&mut headers);
 
         let http = if config.provider.is_openai_codex() {
-            codex_endpoint::http_client()?
+            // System proxy/PAC discovery can block. The Codex transport is
+            // initialized asynchronously on first request instead of here.
+            None
         } else if config.provider.is_kimi_code() {
-            kimi_code::http_client(config.force_http1)?
+            Some(kimi_code::http_client(config.force_http1)?)
         } else if config.provider.is_zai_coding_plan() {
-            zai_coding_plan::http_client(config.force_http1)?
+            Some(zai_coding_plan::http_client(config.force_http1)?)
         } else if config.force_http1 {
             tracing::info!("Using HTTP/1.1 for sampling client (force_http1=true)");
-            crate::shared_http::client_http1().map_err(SamplingError::Http)?
+            Some(crate::shared_http::client_http1().map_err(SamplingError::Http)?)
         } else {
-            crate::shared_http::client().map_err(SamplingError::Http)?
+            Some(crate::shared_http::client().map_err(SamplingError::Http)?)
         };
 
         tracing::info!(
@@ -839,11 +848,13 @@ impl SamplingClient {
             service_tier: config.service_tier,
             stream_tool_calls: config.stream_tool_calls,
             responses_lite,
+            force_http1: config.force_http1,
             doom_loop_recovery: config.doom_loop_recovery,
         };
 
         Ok(Self {
             http,
+            codex_http: Default::default(),
             default_headers: headers,
             base_url: config.base_url,
             defaults,
@@ -964,6 +975,39 @@ impl SamplingClient {
         Ok((headers, credential_binding))
     }
 
+    /// Resolve the provider transport before preparing a request. Only Codex
+    /// performs asynchronous OS proxy/PAC discovery; all other provider
+    /// transports were built synchronously in `new_with_codex_turn_state`.
+    async fn ensure_provider_http(&self) -> Result<()> {
+        if !self.defaults.provider.is_openai_codex() {
+            return Ok(());
+        }
+        self.codex_http
+            .get_or_try_init(|| async {
+                codex_endpoint::http_client(&self.base_url, self.defaults.force_http1).await
+            })
+            .await?;
+        Ok(())
+    }
+
+    fn request_http(&self) -> Result<reqwest::Client> {
+        if self.defaults.provider.is_openai_codex() {
+            return self
+                .codex_http
+                .get()
+                .cloned()
+                .ok_or(SamplingError::InvalidConfiguration(
+                    "OpenAI Codex HTTP route was not initialized before request preparation",
+                ));
+        }
+        self.http
+            .as_ref()
+            .cloned()
+            .ok_or(SamplingError::InvalidConfiguration(
+                "selected provider HTTP transport is unavailable",
+            ))
+    }
+
     /// POST with default headers. Legacy bearer resolution and provider-owned
     /// dynamic auth are applied to a fresh map on every call.
     fn post(&self, url: impl reqwest::IntoUrl) -> Result<PreparedRequest> {
@@ -1018,7 +1062,7 @@ impl SamplingClient {
         );
 
         Ok(PreparedRequest {
-            builder: self.http.post(url).headers(headers),
+            builder: self.request_http()?.post(url).headers(headers),
             credential_binding,
         })
     }
@@ -1516,6 +1560,7 @@ impl SamplingClient {
         } else {
             self.endpoint("chat/completions")
         };
+        self.ensure_provider_http().await?;
         let prepared = self.post(endpoint)?;
         let request_credential = prepared.credential_binding;
         let request_builder =
@@ -1588,6 +1633,7 @@ impl SamplingClient {
         } else {
             self.endpoint("chat/completions")
         };
+        self.ensure_provider_http().await?;
         let prepared = self.post(endpoint)?;
         let request_credential = prepared.credential_binding;
         let request_builder = self
@@ -1619,7 +1665,7 @@ impl SamplingClient {
         Self::log_request_diagnostics(&built_request, "chat/completions");
 
         let response = self
-            .http
+            .request_http()?
             .execute(built_request)
             .await
             .map_err(|error| self.record_transport_failure(error))?;
@@ -1939,6 +1985,7 @@ impl SamplingClient {
         // it in post-serialize. This is the last surviving piece of the
         // old raw_output machinery.
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        self.ensure_provider_http().await?;
         let prepared = self.post(self.endpoint("responses"))?;
         let request_credential = prepared.credential_binding;
         let http_request = self
@@ -2141,6 +2188,7 @@ impl SamplingClient {
             .doom_loop_recovery
             .filter(|_| !self.defaults.provider.is_openai_codex())
             .map(crate::doom_loop::DoomLoopSignalCollector::new);
+        self.ensure_provider_http().await?;
         let prepared =
             self.post_after_provider_auth_recovery(self.endpoint("responses"), rejected)?;
         let request_credential = prepared.credential_binding;
@@ -2175,7 +2223,7 @@ impl SamplingClient {
         Self::log_request_diagnostics(&built_request, "responses");
 
         let response = self
-            .http
+            .request_http()?
             .execute(built_request)
             .await
             .map_err(|error| self.record_transport_failure(error))?;
@@ -2435,6 +2483,7 @@ impl SamplingClient {
         } else {
             self.endpoint("messages")
         };
+        self.ensure_provider_http().await?;
         let prepared = self.post(endpoint.clone())?;
         let request_credential = prepared.credential_binding;
         let request_builder =
@@ -2585,6 +2634,7 @@ impl SamplingClient {
         } else {
             self.endpoint("messages")
         };
+        self.ensure_provider_http().await?;
         let prepared = self.post(endpoint.clone())?;
         let request_credential = prepared.credential_binding;
         let request_builder = self
@@ -2627,7 +2677,7 @@ impl SamplingClient {
         Self::log_request_diagnostics(&built_request, "messages");
 
         let response = self
-            .http
+            .request_http()?
             .execute(built_request)
             .await
             .map_err(|error| self.record_transport_failure(error))?;
@@ -3534,6 +3584,7 @@ mod tests {
     fn ordinary_codex_requests_do_not_enable_responses_lite() {
         let (config, _) = codex_config();
         let client = SamplingClient::new(config).unwrap();
+        initialize_codex_test_http(&client);
         let grok_headers = GrokRequestHeaders {
             conv_id: CODEX_THREAD_FIXTURE,
             req_id: "request-ignored",
@@ -3854,6 +3905,18 @@ mod tests {
         (config, calls)
     }
 
+    fn initialize_codex_test_http(client: &SamplingClient) {
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("test-only Codex transport should build");
+        client
+            .codex_http
+            .set(http)
+            .expect("test-only Codex transport should initialize once");
+    }
+
     #[tokio::test]
     async fn fake_server_provider_matrix_never_receives_xai_headers_off_trusted_xai_routes() {
         use axum::Router;
@@ -3901,6 +3964,10 @@ mod tests {
 
         for config in [xai_labelled_custom, custom, codex, kimi, zai] {
             let client = SamplingClient::new(config).expect("matrix client should build");
+            client
+                .ensure_provider_http()
+                .await
+                .expect("matrix transport should resolve");
             let request = client
                 .post(format!("{base_url}/capture"))
                 .expect("matrix auth should prepare")
@@ -3909,7 +3976,8 @@ mod tests {
                 .build()
                 .expect("matrix request should build");
             let response = client
-                .http
+                .request_http()
+                .expect("matrix transport should be initialized")
                 .execute(request)
                 .await
                 .expect("matrix request should reach fake server");
@@ -3995,7 +4063,8 @@ mod tests {
             .build()
             .expect("build authenticated redirect request");
         let response = client
-            .http
+            .request_http()
+            .expect("custom transport should be initialized")
             .execute(request)
             .await
             .expect("redirect response");
@@ -4248,6 +4317,7 @@ mod tests {
             std::sync::Arc::clone(&recoveries),
         )));
         let client = SamplingClient::new(config).expect("Codex client should build");
+        initialize_codex_test_http(&client);
         let rejected = test_codex_binding(1);
         assert!(
             client
@@ -4278,6 +4348,7 @@ mod tests {
     fn requests_fail_closed_while_provider_recovery_is_in_progress() {
         let (config, auth_calls) = codex_config();
         let client = SamplingClient::new(config).expect("Codex client should build");
+        initialize_codex_test_http(&client);
         let recovery_guard =
             ProviderAuthRecoveryGuard::begin(client.provider_auth_recovery_state.as_ref())
                 .expect("idle recovery state should be reservable");
@@ -4422,6 +4493,7 @@ mod tests {
             Default::default(),
         )));
         let client = SamplingClient::new(without_fedramp).unwrap();
+        initialize_codex_test_http(&client);
         let _ = client
             .post("http://localhost/test")
             .expect("FedRAMP state is optional");
@@ -4432,6 +4504,7 @@ mod tests {
             false,
         ))
         .unwrap();
+        initialize_codex_test_http(&client);
         let _ = client
             .post("http://localhost/test")
             .expect("exact lowercase true is allowed");
@@ -4470,6 +4543,7 @@ mod tests {
             false,
         ))
         .unwrap();
+        initialize_codex_test_http(&client);
         let request = client
             .post("http://localhost/test")
             .expect("noncredential transport header should survive auth validation")

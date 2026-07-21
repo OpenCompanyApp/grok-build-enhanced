@@ -20,12 +20,31 @@ pub(crate) fn is_valid_base_url(base_url: &str) -> bool {
 }
 
 /// Build the dedicated Codex transport. Redirects are disabled so dynamic
-/// subscription credentials can never be forwarded to another origin.
-pub(crate) fn http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(SamplingError::Http)
+/// subscription credentials can never be forwarded to another origin. Proxy
+/// and PAC discovery is explicit and provider-scoped; unrelated reqwest
+/// clients retain their existing transport policy.
+pub(crate) async fn http_client(base_url: &str, force_http1: bool) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    if force_http1 {
+        builder = builder
+            .http1_only()
+            .pool_max_idle_per_host(0)
+            .pool_idle_timeout(std::time::Duration::from_secs(0));
+    }
+    xai_grok_provider_http::build_openai_codex_client(
+        builder,
+        base_url,
+        xai_grok_provider_http::ClientRouteClass::Api,
+    )
+    .await
+    .map_err(|error| match error {
+        xai_grok_provider_http::BuildRouteAwareHttpClientError::InvalidProxyConfig { .. } => {
+            SamplingError::InvalidConfiguration("OpenAI Codex proxy configuration is invalid")
+        }
+        _ => SamplingError::EventStreamError(
+            "OpenAI Codex HTTP route setup failed; proxy details were omitted".to_owned(),
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -79,7 +98,8 @@ mod tests {
 
         let mut credential = reqwest::header::HeaderValue::from_static("Bearer opaque-credential");
         credential.set_sensitive(true);
-        let response = http_client()
+        let response = http_client(&format!("http://{address}"), false)
+            .await
             .unwrap()
             .post(format!("http://{address}/start"))
             .header(reqwest::header::AUTHORIZATION, credential)

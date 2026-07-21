@@ -162,7 +162,7 @@ impl CodexCatalogClientConfig {
 /// Authenticated ChatGPT Codex model catalog client.
 #[derive(Clone)]
 pub struct CodexCatalogClient {
-    http: reqwest::Client,
+    http: std::sync::Arc<tokio::sync::OnceCell<reqwest::Client>>,
     config: CodexCatalogClientConfig,
 }
 
@@ -181,12 +181,28 @@ impl fmt::Debug for CodexCatalogClient {
 
 impl CodexCatalogClient {
     pub fn new(config: CodexCatalogClientConfig) -> Result<Self, CodexCatalogError> {
-        // Auth and account headers must never be replayed to a redirect target.
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| CodexCatalogError::InvalidConfiguration)?;
-        Ok(Self { http, config })
+        Ok(Self {
+            http: Default::default(),
+            config,
+        })
+    }
+
+    async fn http(&self) -> Result<reqwest::Client, CodexCatalogError> {
+        self.http
+            .get_or_try_init(|| async {
+                // Auth and account headers must never be replayed to a redirect target.
+                let builder =
+                    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+                xai_grok_provider_http::build_openai_codex_client(
+                    builder,
+                    self.config.base_url.as_str(),
+                    xai_grok_provider_http::ClientRouteClass::Api,
+                )
+                .await
+                .map_err(|_| CodexCatalogError::Transport)
+            })
+            .await
+            .cloned()
     }
 
     /// Fetch the authoritative catalog for the authenticated account.
@@ -288,7 +304,8 @@ impl CodexCatalogClient {
         let client_version = HeaderValue::from_str(&self.config.client_version)
             .map_err(|_| CodexCatalogError::InvalidConfiguration)?;
         let mut request = self
-            .http
+            .http()
+            .await?
             .get(request_url)
             .timeout(self.config.timeout)
             .headers(auth.request_headers())
@@ -1040,6 +1057,24 @@ mod tests {
         assert_eq!(request.headers[USER_AGENT], "catalog-test/1");
         assert!(!request.headers.contains_key("x-api-key"));
         assert!(!request.headers.contains_key("x-xai-api-key"));
+    }
+
+    #[tokio::test]
+    async fn missing_reasoning_summary_support_flag_defaults_to_supported() {
+        let mut body: Value = serde_json::from_str(&rich_body("gpt-codex")).unwrap();
+        body["models"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("supports_reasoning_summary_parameter");
+        let (base_url, _) = spawn_server(vec![reply(StatusCode::OK, body.to_string())]).await;
+        let cache = tempfile::tempdir().unwrap();
+        let result = client(cache.path(), base_url)
+            .unwrap()
+            .fetch(&auth("token", "account", "credential", false))
+            .await
+            .unwrap();
+
+        assert!(result.catalog.models[0].supports_reasoning_summary_parameter);
     }
 
     #[tokio::test]

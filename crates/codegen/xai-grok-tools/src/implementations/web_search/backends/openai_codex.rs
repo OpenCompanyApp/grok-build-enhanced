@@ -112,7 +112,8 @@ struct SearchFiltersWire<'a> {
 /// fallback path.
 #[derive(Clone)]
 pub(in crate::implementations::web_search) struct OpenAiCodexBackend {
-    http: reqwest::Client,
+    http: std::sync::Arc<tokio::sync::OnceCell<reqwest::Client>>,
+    default_headers: HeaderMap,
     base_url: String,
     model: String,
     session_id: String,
@@ -151,16 +152,9 @@ impl OpenAiCodexBackend {
             HeaderValue::from_static(xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION),
         );
 
-        let http = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(std::time::Duration::from_secs(60))
-            // Never replay bearer/account/FedRAMP headers to a redirect target.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| execution_error("Codex web search HTTP client could not be built"))?;
-
         Ok(Self {
-            http,
+            http: Default::default(),
+            default_headers: headers,
             base_url,
             model: model.to_owned(),
             session_id: session_id.to_owned(),
@@ -168,6 +162,26 @@ impl OpenAiCodexBackend {
             request_auth_provider,
             attribution_callback: None,
         })
+    }
+
+    async fn http(&self) -> Result<reqwest::Client, xai_tool_runtime::ToolError> {
+        self.http
+            .get_or_try_init(|| async {
+                let builder = reqwest::Client::builder()
+                    .default_headers(self.default_headers.clone())
+                    .timeout(std::time::Duration::from_secs(60))
+                    // Never replay bearer/account/FedRAMP headers to a redirect target.
+                    .redirect(reqwest::redirect::Policy::none());
+                xai_grok_provider_http::build_openai_codex_client(
+                    builder,
+                    &self.base_url,
+                    xai_grok_provider_http::ClientRouteClass::Api,
+                )
+                .await
+                .map_err(|_| web_failure_error(WebToolErrorCode::ProviderUnavailable))
+            })
+            .await
+            .cloned()
     }
 
     pub(in crate::implementations::web_search) fn set_attribution_callback(
@@ -264,6 +278,7 @@ impl OpenAiCodexBackend {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(8_192)
             .min(MAX_CODEX_SEARCH_OUTPUT_TOKENS);
+        let http = self.http().await?;
         let mut recovered = false;
 
         loop {
@@ -272,7 +287,7 @@ impl OpenAiCodexBackend {
                 .map_err(codex_auth_error)?;
             let rejected_snapshot = auth.credential_snapshot().clone();
 
-            let mut request = self.http.post(&url).json(&body);
+            let mut request = http.post(&url).json(&body);
             if let Some(value) = turn_metadata.as_ref() {
                 request = request.header(
                     HeaderName::from_static(CODEX_TURN_METADATA_HEADER),

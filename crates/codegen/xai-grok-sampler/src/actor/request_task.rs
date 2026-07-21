@@ -1159,6 +1159,74 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn codex_invalid_image_bad_request_is_terminal_without_replay() {
+        use axum::Router;
+        use axum::http::StatusCode;
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let handler_hits = std::sync::Arc::clone(&hits);
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                let hits = std::sync::Arc::clone(&handler_hits);
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        r#"{"error":{"message":"Could not process image"}}"#,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let recoveries = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut config = SamplerConfig::openai_codex("gpt-5-codex");
+        config.base_url = format!("http://{address}");
+        config.max_retries = Some(3);
+        config.request_auth = Some(std::sync::Arc::new(CountingRequestAuth::new(
+            std::sync::Arc::clone(&recoveries),
+        )));
+
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        run_request_task(
+            RequestId::from("invalid-tool-image"),
+            ConversationRequest::default(),
+            config,
+            CodexTurnStateStore::default(),
+            RetryPolicy::default(),
+            event_tx,
+            CancellationToken::new(),
+            Some(completion_tx),
+        )
+        .await;
+        server.abort();
+
+        let terminal = completion_rx
+            .await
+            .expect("request task must report completion")
+            .expect_err("an invalid-image bad request must fail the turn");
+        assert!(matches!(
+            terminal,
+            SamplingError::Api {
+                status: StatusCode::BAD_REQUEST,
+                ..
+            }
+        ));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(recoveries.load(Ordering::SeqCst), 0);
+        assert!(
+            std::iter::from_fn(|| event_rx.try_recv().ok())
+                .all(|event| !matches!(event, SamplingEvent::Retrying { .. }))
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn codex_pre_output_disconnect_retries_with_bounded_transport_budget() {
         use axum::Router;
