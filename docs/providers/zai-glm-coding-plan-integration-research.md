@@ -49,13 +49,13 @@ This research reviewed the following gitignored `inspiration/` checkouts:
   `0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254`.
 - [zai-org/GLM-5][glm-5-github] at
   `436efa09bc868a6922e307624189e7018406beb9`.
-- [anomalyco/opencode][opencode-github] only as an interoperability reference.
-  The canonical ledger records
-  `1d2a7b4c860f6a29eb90bdda07757b2adf34ab61` as last reviewed and
-  `efb6cc2d4bf6332eb156709795d2b3a649198b65` as latest fetched; this
-  reconciliation inspected neither and does not promote the latter.
+- [anomalyco/opencode][opencode-github] only as an interoperability reference,
+  reviewed and latest-fetched at
+  `849c2598abc7d2b40261e74b5826bc74ffc78308`. The 2026-07-21 audit found
+  generic context-overflow, attachment-wire, and Custom Mistral-ID behavior but
+  no Z.AI-specific runtime contract change.
 - [steipete/CodexBar][codexbar-github] at
-  `e6b2ea490cec47d122ba14e32bfc41e53d98422c`.
+  `f8636cb37eb0f96d261604ee94e6481496aadfeb`.
 - [nniicckk6/zai-extention][zai-usage-helper] at
   `54cd1f33a703c417f2492ee1f21f22b3633a43c4`.
 
@@ -860,5 +860,5 @@ reasoning, or sensitive tool results.
 [glm-5-github]: https://github.com/zai-org/GLM-5
 [opencode-github]: https://github.com/anomalyco/opencode
 [codexbar-github]: https://github.com/steipete/CodexBar
-[codexbar-zai]: https://github.com/steipete/CodexBar/blob/e6b2ea490cec47d122ba14e32bfc41e53d98422c/docs/zai.md
+[codexbar-zai]: https://github.com/steipete/CodexBar/blob/f8636cb37eb0f96d261604ee94e6481496aadfeb/docs/zai.md
 [zai-usage-helper]: https://github.com/nniicckk6/zai-extention

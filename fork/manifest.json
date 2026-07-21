@@ -160,10 +160,10 @@
       "remote": "https://github.com/openai/codex.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "3e2f79727a4e8ddfc8e3acb838d496b121094b9e"
+        "commit": "c0cd337766ff27a75623c5baba199389f94f2ab3"
       },
       "latest_fetched": {
-        "commit": "3e2f79727a4e8ddfc8e3acb838d496b121094b9e"
+        "commit": "c0cd337766ff27a75623c5baba199389f94f2ab3"
       }
     },
     {
@@ -172,10 +172,10 @@
       "remote": "https://github.com/anomalyco/opencode.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "67caf894e0843ee370e72839e8265e483233479b"
+        "commit": "849c2598abc7d2b40261e74b5826bc74ffc78308"
       },
       "latest_fetched": {
-        "commit": "67caf894e0843ee370e72839e8265e483233479b"
+        "commit": "849c2598abc7d2b40261e74b5826bc74ffc78308"
       }
     },
     {
@@ -220,10 +220,10 @@
       "remote": "https://github.com/MoonshotAI/kimi-code.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "df6899553962d1764c9f4c3bec1b63c811cb425e"
+        "commit": "c2d7bebd04106473bb4dbab2903756aa3f14a880"
       },
       "latest_fetched": {
-        "commit": "df6899553962d1764c9f4c3bec1b63c811cb425e"
+        "commit": "c2d7bebd04106473bb4dbab2903756aa3f14a880"
       }
     },
     {
@@ -2297,6 +2297,99 @@
       ],
       "legal_paths": [
         "LICENSE"
+      ]
+    },
+    {
+      "id": "codex-provider-system-proxy-routing",
+      "description": "Provider-scoped OpenAI Codex macOS and Windows system proxy, PAC, WPAD, environment fallback, redaction, caching, and lazy client routing without changing other providers' transports.",
+      "source_ids": [
+        "openai-codex"
+      ],
+      "paths": [
+        "Cargo.lock",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-provider-http/**",
+        "crates/codegen/xai-grok-sampler/Cargo.toml",
+        "crates/codegen/xai-grok-sampler/src/actor/request_task.rs",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/openai_codex/endpoint.rs",
+        "crates/codegen/xai-grok-shell/Cargo.toml",
+        "crates/codegen/xai-grok-shell/src/auth/codex/error.rs",
+        "crates/codegen/xai-grok-shell/src/auth/codex/oauth.rs",
+        "crates/codegen/xai-grok-shell/src/auth/codex/usage.rs",
+        "crates/codegen/xai-grok-shell/src/auth/codex/usage_tests.rs",
+        "crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs",
+        "crates/codegen/xai-grok-tools/Cargo.toml",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/image_gen/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/openai_codex.rs",
+        "docs/providers/openai-codex-subscription-provider-reference.md"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-provider-http/src/outbound_proxy.rs",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/openai_codex/endpoint.rs",
+        "crates/codegen/xai-grok-shell/src/auth/codex/oauth.rs",
+        "crates/codegen/xai-grok-shell/src/auth/codex/usage.rs",
+        "crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/image_gen/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/openai_codex.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-provider-http/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "provider-wire-compatibility-2026-07-21",
+      "description": "OpenCode-derived shared overflow classification, attachment-only wire projection, and Custom-provider Mistral-family tool-call ID normalization with provider isolation.",
+      "source_ids": [
+        "opencode"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/retry.rs",
+        "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
+        "crates/codegen/xai-grok-sampling-types/src/error.rs",
+        "crates/common/xai-grok-compaction/src/code_compaction/failure.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/retry.rs",
+        "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
+        "crates/codegen/xai-grok-sampling-types/src/error.rs",
+        "crates/common/xai-grok-compaction/src/code_compaction/failure.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "provider-reference-refresh-2026-07-21",
+      "description": "Exhaustive 2026-07-21 Codex, OpenCode, and Kimi source audit, parity ledger, provider-reference reconciliation, and reviewed provenance pins.",
+      "source_ids": [
+        "openai-codex",
+        "opencode",
+        "kimi-code",
+        "codexbar"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/providers/kimi-code-integration-research.md",
+        "docs/providers/openai-codex-subscription-provider-reference.md",
+        "docs/providers/zai-glm-coding-plan-integration-research.md",
+        "docs/upstream-refresh-2026-07-21.md",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/providers/openai-codex-subscription-provider-reference.md",
+        "docs/upstream-refresh-2026-07-21.md",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES"
       ]
     }
   ]

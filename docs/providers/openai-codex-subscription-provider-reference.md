@@ -32,24 +32,27 @@ For “what this fork does,” the checked-in Rust code and tests are authoritat
 For the external service contract, use official OpenAI documentation and the
 public `openai/codex` source, then verify with an entitled-account smoke test.
 
-At this document's reconciliation date, `UPSTREAM_VERSIONS.md` records:
+At this document's 2026-07-21 reconciliation date, `UPSTREAM_VERSIONS.md`
+records:
 
 - `openai/codex` reviewed and latest-fetched at
-  `315195492c80fdade38e917c18f9584efd599304`;
-- OpenCode last reviewed at
-  `1d2a7b4c860f6a29eb90bdda07757b2adf34ab61`, with
-  `efb6cc2d4bf6332eb156709795d2b3a649198b65` only the latest fetched revision;
-  and
+  `c0cd337766ff27a75623c5baba199389f94f2ab3`;
+- OpenCode reviewed and latest-fetched at
+  `849c2598abc7d2b40261e74b5826bc74ffc78308`; and
 - fork compatibility version `0.144.0`.
 
-The focused diff from the prior reviewed Codex revision
-`18110b810f0a328147f6cd85e6f1ab6414927366` to `315195...` contained no changes
-to `codex-api/src/search.rs`, `codex-api/src/endpoint/search.rs`, or the
-standalone web-search extension. The normalized reviewed contract is committed
-at `fork/contracts/openai_codex_search_contract.json`; the offline checker also
-supports extracting the immutable Git object without checking it out. OpenCode
-remains an interoperability and provenance reference, not a runtime provider
-identity.
+The audited Codex range from
+`3e2f79727a4e8ddfc8e3acb838d496b121094b9e` through `c0cd337...` added
+explicit outbound system-proxy routing, made invalid-image HTTP 400 failures
+terminal, refreshed dynamic catalog metadata, and optimized remote-compaction
+history handling. Enhanced adopted the observable proxy behavior through a
+Codex-only route-aware HTTP leaf crate and already satisfied the remaining
+provider contracts. The normalized standalone-search contract remains
+committed at `fork/contracts/openai_codex_search_contract.json`; the offline
+checker supports extracting the immutable Git object without checking it out.
+OpenCode remains an interoperability and provenance reference, not a runtime
+provider identity. The exhaustive commit, path, and behavior inventory is in
+`docs/upstream-refresh-2026-07-21.md`.
 
 The shortest operational sequence is:
 
@@ -335,7 +338,7 @@ The implementation is in
 
 The following is a dated compatibility snapshot from the official Codex model
 catalog at `openai/codex` commit
-`315195492c80fdade38e917c18f9584efd599304`. The authenticated runtime catalog
+`c0cd337766ff27a75623c5baba199389f94f2ab3`. The authenticated runtime catalog
 always wins.
 
 | Model slug | Context | Default effort | Advertised efforts | Images | Fast | Multi-agent |
@@ -982,18 +985,17 @@ Primary sources:
 - [OpenAI Codex model guidance][openai-models]
 - [OpenAI Codex image generation][openai-images]
 - [OpenAI API pricing][openai-api-pricing]
-- [`openai/codex` login at the ledger's latest-fetched snapshot][upstream-login]
-- [`openai/codex` model catalog at that latest-fetched snapshot][upstream-models]
+- [`openai/codex` login at the ledger's reviewed snapshot][upstream-login]
+- [`openai/codex` model catalog at that reviewed snapshot][upstream-models]
 - [`openai/codex` model-provider crates at that snapshot][upstream-provider]
 - [`openai/codex` client transport at that snapshot][upstream-client]
 - [`openai/codex` app-server README at that snapshot][upstream-app-server]
 
-These links are pinned review inputs. Their latest-fetched commit is not the
-ledger's last-reviewed commit.
+These links are pinned review inputs at the exact reviewed commit.
 
-Secondary interoperability pointer (latest fetched, not promoted to reviewed):
+Secondary reviewed interoperability pointer:
 
-- [OpenCode's Codex plugin at the ledger's latest-fetched revision][opencode-codex-plugin].
+- [OpenCode's Codex plugin at the ledger's reviewed revision][opencode-codex-plugin].
   OpenCode remains research/provenance input only, never a runtime provider.
 
 The local `inspiration/` clones are research material only and must remain
@@ -1019,7 +1021,7 @@ directory.
 [openai-images]: https://learn.chatgpt.com/docs/image-generation
 [openai-models]: https://learn.chatgpt.com/docs/models
 [openai-speed]: https://learn.chatgpt.com/docs/agent-configuration/speed
-[opencode-codex-plugin]: https://github.com/anomalyco/opencode/blob/efb6cc2d4bf6332eb156709795d2b3a649198b65/packages/opencode/src/plugin/openai/codex.ts
+[opencode-codex-plugin]: https://github.com/anomalyco/opencode/blob/849c2598abc7d2b40261e74b5826bc74ffc78308/packages/opencode/src/plugin/openai/codex.ts
 [provider-constants]: ../../crates/codegen/xai-grok-sampling-types/src/openai_codex.rs
 [provider-types]: ../../crates/codegen/xai-grok-sampling-types/src/provider.rs
 [sampler-client]: ../../crates/codegen/xai-grok-sampler/src/client.rs
@@ -1027,11 +1029,11 @@ directory.
 [session-compact]: ../../crates/codegen/xai-grok-shell/src/session/helpers/session_compact.rs
 [slash-commands]: ../../crates/codegen/xai-grok-pager/src/slash/commands/
 [third-party-notices]: ../../THIRD-PARTY-NOTICES
-[upstream-app-server]: https://github.com/openai/codex/blob/315195492c80fdade38e917c18f9584efd599304/codex-rs/app-server/README.md
-[upstream-client]: https://github.com/openai/codex/blob/315195492c80fdade38e917c18f9584efd599304/codex-rs/core/src/client.rs
-[upstream-login]: https://github.com/openai/codex/tree/315195492c80fdade38e917c18f9584efd599304/codex-rs/login
-[upstream-models]: https://github.com/openai/codex/blob/315195492c80fdade38e917c18f9584efd599304/codex-rs/models-manager/models.json
-[upstream-provider]: https://github.com/openai/codex/tree/315195492c80fdade38e917c18f9584efd599304/codex-rs/model-provider
+[upstream-app-server]: https://github.com/openai/codex/blob/c0cd337766ff27a75623c5baba199389f94f2ab3/codex-rs/app-server/README.md
+[upstream-client]: https://github.com/openai/codex/blob/c0cd337766ff27a75623c5baba199389f94f2ab3/codex-rs/core/src/client.rs
+[upstream-login]: https://github.com/openai/codex/tree/c0cd337766ff27a75623c5baba199389f94f2ab3/codex-rs/login
+[upstream-models]: https://github.com/openai/codex/blob/c0cd337766ff27a75623c5baba199389f94f2ab3/codex-rs/models-manager/models.json
+[upstream-provider]: https://github.com/openai/codex/tree/c0cd337766ff27a75623c5baba199389f94f2ab3/codex-rs/model-provider
 [upstream-versions]: ../../UPSTREAM_VERSIONS.md
 [version-file]: ../../crates/codegen/xai-grok-version/src/lib.rs
 [web-fetch-dir]: ../../crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/
