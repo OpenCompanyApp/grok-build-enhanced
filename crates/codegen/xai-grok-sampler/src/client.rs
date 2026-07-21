@@ -429,6 +429,7 @@ struct StreamOptions {
 /// from a [`SamplerConfig`] at construction time.
 struct PreparedRequest {
     builder: reqwest::RequestBuilder,
+    http: reqwest::Client,
     credential_binding: Option<CredentialBinding>,
 }
 
@@ -498,9 +499,9 @@ pub struct SamplingClient {
     /// Eager transport for xAI, Kimi, Z.AI, and Custom providers. Codex is
     /// deliberately absent here because its OS proxy/PAC lookup is async.
     http: Option<reqwest::Client>,
-    /// Lazily initialized, provider-scoped Codex transport. Cheap client
-    /// clones share both route resolution and the resulting connection pool.
-    codex_http: std::sync::Arc<tokio::sync::OnceCell<reqwest::Client>>,
+    /// Provider-scoped Codex transport pool. Cheap client clones share route
+    /// resolution and clients, while each request selects from its final URL.
+    codex_http: Option<xai_grok_provider_http::OpenAiCodexClientPool>,
     default_headers: HeaderMap,
     base_url: String,
     defaults: ClientDefaults,
@@ -557,7 +558,6 @@ struct ClientDefaults {
     service_tier: Option<String>,
     stream_tool_calls: bool,
     responses_lite: bool,
-    force_http1: bool,
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
 }
 
@@ -903,8 +903,8 @@ impl SamplingClient {
         Self::mark_sensitive_headers(&mut headers);
 
         let http = if config.provider.is_openai_codex() {
-            // System proxy/PAC discovery can block. The Codex transport is
-            // initialized asynchronously on first request instead of here.
+            // Codex resolves system proxy/PAC routes asynchronously from each
+            // final request URL through its provider-scoped pool below.
             None
         } else if config.provider.is_kimi_code() {
             Some(kimi_code::http_client(config.force_http1)?)
@@ -916,6 +916,10 @@ impl SamplingClient {
         } else {
             Some(crate::shared_http::client().map_err(SamplingError::Http)?)
         };
+        let codex_http = config
+            .provider
+            .is_openai_codex()
+            .then(|| codex_endpoint::http_client_pool(config.force_http1));
 
         tracing::info!(
             target: crate::sampling_log::TARGET,
@@ -944,13 +948,12 @@ impl SamplingClient {
             service_tier: config.service_tier,
             stream_tool_calls: config.stream_tool_calls,
             responses_lite,
-            force_http1: config.force_http1,
             doom_loop_recovery: config.doom_loop_recovery,
         };
 
         Ok(Self {
             http,
-            codex_http: Default::default(),
+            codex_http,
             default_headers: headers,
             base_url: config.base_url,
             defaults,
@@ -1071,30 +1074,17 @@ impl SamplingClient {
         Ok((headers, credential_binding))
     }
 
-    /// Resolve the provider transport before preparing a request. Only Codex
-    /// performs asynchronous OS proxy/PAC discovery; all other provider
-    /// transports were built synchronously in `new_with_codex_turn_state`.
-    async fn ensure_provider_http(&self) -> Result<()> {
-        if !self.defaults.provider.is_openai_codex() {
-            return Ok(());
-        }
-        self.codex_http
-            .get_or_try_init(|| async {
-                codex_endpoint::http_client(&self.base_url, self.defaults.force_http1).await
-            })
-            .await?;
-        Ok(())
-    }
-
-    fn request_http(&self) -> Result<reqwest::Client> {
+    async fn request_http(&self, request_url: &str) -> Result<reqwest::Client> {
         if self.defaults.provider.is_openai_codex() {
             return self
                 .codex_http
-                .get()
-                .cloned()
+                .as_ref()
                 .ok_or(SamplingError::InvalidConfiguration(
-                    "OpenAI Codex HTTP route was not initialized before request preparation",
-                ));
+                    "OpenAI Codex HTTP route pool is unavailable",
+                ))?
+                .client_for_url(request_url)
+                .await
+                .map_err(codex_endpoint::map_route_error);
         }
         self.http
             .as_ref()
@@ -1106,15 +1096,19 @@ impl SamplingClient {
 
     /// POST with default headers. Legacy bearer resolution and provider-owned
     /// dynamic auth are applied to a fresh map on every call.
-    fn post(&self, url: impl reqwest::IntoUrl) -> Result<PreparedRequest> {
-        self.post_after_provider_auth_recovery(url, None)
+    async fn post(&self, url: impl reqwest::IntoUrl) -> Result<PreparedRequest> {
+        self.post_after_provider_auth_recovery(url, None).await
     }
 
-    fn post_after_provider_auth_recovery(
+    async fn post_after_provider_auth_recovery(
         &self,
         url: impl reqwest::IntoUrl,
         rejected: Option<&CredentialBinding>,
     ) -> Result<PreparedRequest> {
+        let url = url.into_url().map_err(SamplingError::Http)?;
+        // Resolve the route before reading any dynamic credential snapshot so
+        // a PAC lookup never extends the lifetime of a prepared bearer header.
+        let http = self.request_http(url.as_str()).await?;
         // Serialize the one-shot successor check across cheap client clones.
         // Holding this small sync mutex through `RequestAuth::apply` is safe:
         // that trait method is deliberately synchronous and required to be a
@@ -1158,7 +1152,8 @@ impl SamplingClient {
         );
 
         Ok(PreparedRequest {
-            builder: self.request_http()?.post(url).headers(headers),
+            builder: http.post(url).headers(headers),
+            http,
             credential_binding,
         })
     }
@@ -1663,8 +1658,7 @@ impl SamplingClient {
         } else {
             self.endpoint("chat/completions")
         };
-        self.ensure_provider_http().await?;
-        let prepared = self.post(endpoint)?;
+        let prepared = self.post(endpoint).await?;
         let request_credential = prepared.credential_binding;
         let request_builder =
             self.apply_provider_request_headers(prepared.builder, &grok_headers)?;
@@ -1736,8 +1730,8 @@ impl SamplingClient {
         } else {
             self.endpoint("chat/completions")
         };
-        self.ensure_provider_http().await?;
-        let prepared = self.post(endpoint)?;
+        let prepared = self.post(endpoint).await?;
+        let request_http = prepared.http.clone();
         let request_credential = prepared.credential_binding;
         let request_builder = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
@@ -1767,8 +1761,7 @@ impl SamplingClient {
         );
         Self::log_request_diagnostics(&built_request, "chat/completions");
 
-        let response = self
-            .request_http()?
+        let response = request_http
             .execute(built_request)
             .await
             .map_err(|error| self.record_transport_failure(error))?;
@@ -2088,8 +2081,7 @@ impl SamplingClient {
         // it in post-serialize. This is the last surviving piece of the
         // old raw_output machinery.
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
-        self.ensure_provider_http().await?;
-        let prepared = self.post(self.endpoint("responses"))?;
+        let prepared = self.post(self.endpoint("responses")).await?;
         let request_credential = prepared.credential_binding;
         let http_request = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
@@ -2291,9 +2283,10 @@ impl SamplingClient {
             .doom_loop_recovery
             .filter(|_| !self.defaults.provider.is_openai_codex())
             .map(crate::doom_loop::DoomLoopSignalCollector::new);
-        self.ensure_provider_http().await?;
-        let prepared =
-            self.post_after_provider_auth_recovery(self.endpoint("responses"), rejected)?;
+        let prepared = self
+            .post_after_provider_auth_recovery(self.endpoint("responses"), rejected)
+            .await?;
+        let request_http = prepared.http.clone();
         let request_credential = prepared.credential_binding;
         let mut http_request = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
@@ -2325,8 +2318,7 @@ impl SamplingClient {
         );
         Self::log_request_diagnostics(&built_request, "responses");
 
-        let response = self
-            .request_http()?
+        let response = request_http
             .execute(built_request)
             .await
             .map_err(|error| self.record_transport_failure(error))?;
@@ -2586,8 +2578,7 @@ impl SamplingClient {
         } else {
             self.endpoint("messages")
         };
-        self.ensure_provider_http().await?;
-        let prepared = self.post(endpoint.clone())?;
+        let prepared = self.post(endpoint.clone()).await?;
         let request_credential = prepared.credential_binding;
         let request_builder =
             self.apply_provider_request_headers(prepared.builder, &grok_headers)?;
@@ -2737,8 +2728,8 @@ impl SamplingClient {
         } else {
             self.endpoint("messages")
         };
-        self.ensure_provider_http().await?;
-        let prepared = self.post(endpoint.clone())?;
+        let prepared = self.post(endpoint.clone()).await?;
+        let request_http = prepared.http.clone();
         let request_credential = prepared.credential_binding;
         let request_builder = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
@@ -2779,8 +2770,7 @@ impl SamplingClient {
         );
         Self::log_request_diagnostics(&built_request, "messages");
 
-        let response = self
-            .request_http()?
+        let response = request_http
             .execute(built_request)
             .await
             .map_err(|error| self.record_transport_failure(error))?;
@@ -3813,11 +3803,10 @@ mod tests {
         assert!(error.to_string().contains("must be exactly true"));
     }
 
-    #[test]
-    fn ordinary_codex_requests_do_not_enable_responses_lite() {
+    #[tokio::test]
+    async fn ordinary_codex_requests_do_not_enable_responses_lite() {
         let (config, _) = codex_config();
         let client = SamplingClient::new(config).unwrap();
-        initialize_codex_test_http(&client);
         let grok_headers = GrokRequestHeaders {
             conv_id: CODEX_THREAD_FIXTURE,
             req_id: "request-ignored",
@@ -3828,7 +3817,7 @@ mod tests {
             deployment_id: None,
             user_id: None,
         };
-        let prepared = client.post("https://example.test/responses").unwrap();
+        let prepared = client.post("https://example.test/responses").await.unwrap();
         let request = client
             .apply_provider_request_headers(prepared.builder, &grok_headers)
             .unwrap()
@@ -4138,18 +4127,6 @@ mod tests {
         (config, calls)
     }
 
-    fn initialize_codex_test_http(client: &SamplingClient) {
-        let http = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("test-only Codex transport should build");
-        client
-            .codex_http
-            .set(http)
-            .expect("test-only Codex transport should initialize once");
-    }
-
     #[tokio::test]
     async fn fake_server_provider_matrix_never_receives_xai_headers_off_trusted_xai_routes() {
         use axum::Router;
@@ -4197,21 +4174,13 @@ mod tests {
 
         for config in [xai_labelled_custom, custom, codex, kimi, zai] {
             let client = SamplingClient::new(config).expect("matrix client should build");
-            client
-                .ensure_provider_http()
-                .await
-                .expect("matrix transport should resolve");
-            let request = client
+            let response = client
                 .post(format!("{base_url}/capture"))
+                .await
                 .expect("matrix auth should prepare")
                 .builder
                 .body("{}")
-                .build()
-                .expect("matrix request should build");
-            let response = client
-                .request_http()
-                .expect("matrix transport should be initialized")
-                .execute(request)
+                .send()
                 .await
                 .expect("matrix request should reach fake server");
             assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
@@ -4288,17 +4257,13 @@ mod tests {
         config.base_url = format!("http://{redirect_address}");
         config.api_key = Some("synthetic-custom-bearer".to_owned());
         let client = SamplingClient::new(config).expect("redirect test client");
-        let request = client
+        let response = client
             .post(format!("http://{redirect_address}/start"))
+            .await
             .expect("prepare authenticated redirect request")
             .builder
             .body("{}")
-            .build()
-            .expect("build authenticated redirect request");
-        let response = client
-            .request_http()
-            .expect("custom transport should be initialized")
-            .execute(request)
+            .send()
             .await
             .expect("redirect response");
 
@@ -4312,11 +4277,12 @@ mod tests {
         target_server.abort();
     }
 
-    #[test]
-    fn kimi_chat_request_has_only_sensitive_bearer_and_transport_headers() {
+    #[tokio::test]
+    async fn kimi_chat_request_has_only_sensitive_bearer_and_transport_headers() {
         let request = SamplingClient::new(kimi_config(ApiBackend::ChatCompletions))
             .unwrap()
             .post("http://localhost/test")
+            .await
             .unwrap()
             .builder
             .build()
@@ -4331,11 +4297,12 @@ mod tests {
         assert!(request.headers()[AUTHORIZATION].is_sensitive());
     }
 
-    #[test]
-    fn kimi_messages_request_has_pinned_protocol_and_sensitive_api_key() {
+    #[tokio::test]
+    async fn kimi_messages_request_has_pinned_protocol_and_sensitive_api_key() {
         let request = SamplingClient::new(kimi_config(ApiBackend::Messages))
             .unwrap()
             .post("http://localhost/test")
+            .await
             .unwrap()
             .builder
             .build()
@@ -4431,8 +4398,8 @@ mod tests {
         assert!(body.get("search_parameters").is_none());
     }
 
-    #[test]
-    fn kimi_request_rejects_foreign_header_added_by_injector() {
+    #[tokio::test]
+    async fn kimi_request_rejects_foreign_header_added_by_injector() {
         #[derive(Debug)]
         struct ForeignInjector;
         impl crate::config::HeaderInjector for ForeignInjector {
@@ -4450,6 +4417,7 @@ mod tests {
 
         let error = client
             .post("http://localhost/test")
+            .await
             .err()
             .expect("foreign injected header must fail closed");
         assert!(error.to_string().contains("unapproved headers"));
@@ -4550,7 +4518,6 @@ mod tests {
             std::sync::Arc::clone(&recoveries),
         )));
         let client = SamplingClient::new(config).expect("Codex client should build");
-        initialize_codex_test_http(&client);
         let rejected = test_codex_binding(1);
         assert!(
             client
@@ -4560,6 +4527,7 @@ mod tests {
         assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 1);
         let prepared = client
             .post_after_provider_auth_recovery("https://example.test/responses", Some(&rejected))
+            .await
             .expect("same-record generation advance should bind the retry");
         assert_eq!(
             prepared
@@ -4577,16 +4545,15 @@ mod tests {
         assert_eq!(recoveries.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn requests_fail_closed_while_provider_recovery_is_in_progress() {
+    #[tokio::test]
+    async fn requests_fail_closed_while_provider_recovery_is_in_progress() {
         let (config, auth_calls) = codex_config();
         let client = SamplingClient::new(config).expect("Codex client should build");
-        initialize_codex_test_http(&client);
         let recovery_guard =
             ProviderAuthRecoveryGuard::begin(client.provider_auth_recovery_state.as_ref())
                 .expect("idle recovery state should be reservable");
 
-        let error = match client.post("https://example.test/responses") {
+        let error = match client.post("https://example.test/responses").await {
             Err(error) => error,
             Ok(_) => panic!("a request escaped while provider recovery was in progress"),
         };
@@ -4596,6 +4563,7 @@ mod tests {
         drop(recovery_guard);
         client
             .post("https://example.test/responses")
+            .await
             .expect("dropping an unfinished recovery restores idle state");
         assert_eq!(auth_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
@@ -4617,7 +4585,7 @@ mod tests {
                 .await
         );
 
-        let error = match retry_client.post("https://example.test/responses") {
+        let error = match retry_client.post("https://example.test/responses").await {
             Err(error) => error,
             Ok(_) => panic!("a raced credential rebind was accepted for retry"),
         };
@@ -4662,8 +4630,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn codex_rejects_credential_aliases_emitted_by_request_auth() {
+    #[tokio::test]
+    async fn codex_rejects_credential_aliases_emitted_by_request_auth() {
         const HOSTILE_VALUE: &str = "credential-material-must-never-leak";
         for header_name in [
             "proxy-authorization",
@@ -4687,7 +4655,7 @@ mod tests {
                 false,
             ))
             .expect("the dynamic auth boundary is validated per request");
-            let error = match client.post("http://localhost/test") {
+            let error = match client.post("http://localhost/test").await {
                 Ok(_) => panic!("a hostile credential header was accepted"),
                 Err(error) => error,
             };
@@ -4700,8 +4668,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn codex_fedramp_auth_state_is_optional_but_must_be_exactly_true() {
+    #[tokio::test]
+    async fn codex_fedramp_auth_state_is_optional_but_must_be_exactly_true() {
         for invalid_value in ["false", "TRUE", "1"] {
             let client = SamplingClient::new(codex_config_with_header_mutation(
                 OPENAI_FEDRAMP_HEADER,
@@ -4709,7 +4677,7 @@ mod tests {
                 false,
             ))
             .expect("the dynamic auth boundary is validated per request");
-            let error = match client.post("http://localhost/test") {
+            let error = match client.post("http://localhost/test").await {
                 Ok(_) => panic!("invalid provider security state was accepted"),
                 Err(error) => error,
             };
@@ -4726,9 +4694,9 @@ mod tests {
             Default::default(),
         )));
         let client = SamplingClient::new(without_fedramp).unwrap();
-        initialize_codex_test_http(&client);
         let _ = client
             .post("http://localhost/test")
+            .await
             .expect("FedRAMP state is optional");
 
         let client = SamplingClient::new(codex_config_with_header_mutation(
@@ -4737,14 +4705,14 @@ mod tests {
             false,
         ))
         .unwrap();
-        initialize_codex_test_http(&client);
         let _ = client
             .post("http://localhost/test")
+            .await
             .expect("exact lowercase true is allowed");
     }
 
-    #[test]
-    fn codex_rejects_duplicate_allowed_credential_headers() {
+    #[tokio::test]
+    async fn codex_rejects_duplicate_allowed_credential_headers() {
         for (header_name, header_value) in [
             ("authorization", "Bearer second-token"),
             (CHATGPT_ACCOUNT_ID_HEADER, "second-account"),
@@ -4756,7 +4724,7 @@ mod tests {
                 true,
             ))
             .expect("the dynamic auth boundary is validated per request");
-            let error = match client.post("http://localhost/test") {
+            let error = match client.post("http://localhost/test").await {
                 Ok(_) => panic!("duplicate credential headers were accepted"),
                 Err(error) => error,
             };
@@ -4768,17 +4736,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn codex_auth_validation_preserves_noncredential_transport_headers() {
+    #[tokio::test]
+    async fn codex_auth_validation_preserves_noncredential_transport_headers() {
         let client = SamplingClient::new(codex_config_with_header_mutation(
             "traceparent",
             "00-safe-trace-context-00",
             false,
         ))
         .unwrap();
-        initialize_codex_test_http(&client);
         let request = client
             .post("http://localhost/test")
+            .await
             .expect("noncredential transport header should survive auth validation")
             .builder
             .build()
@@ -5439,8 +5407,8 @@ mod tests {
     }
 
     // Regression: a past change dropped HeaderInjector (traceparent) from sampling requests.
-    #[test]
-    fn header_injector_is_called_in_post() {
+    #[tokio::test]
+    async fn header_injector_is_called_in_post() {
         #[derive(Debug)]
         struct TestInjector;
         impl crate::config::HeaderInjector for TestInjector {
@@ -5457,6 +5425,7 @@ mod tests {
         let client = SamplingClient::new(config).expect("build");
         let req = client
             .post("http://localhost/test")
+            .await
             .expect("apply request auth")
             .builder
             .build()
@@ -5467,8 +5436,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn credential_header_replacement_by_injector_is_sensitive() {
+    #[tokio::test]
+    async fn credential_header_replacement_by_injector_is_sensitive() {
         #[derive(Debug)]
         struct CredentialInjector;
         impl crate::config::HeaderInjector for CredentialInjector {
@@ -5489,6 +5458,7 @@ mod tests {
         let request = SamplingClient::new(config)
             .expect("client should build")
             .post("http://localhost/test")
+            .await
             .expect("injected headers should be accepted")
             .builder
             .build()
@@ -5547,8 +5517,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn xai_auth_is_kept_only_for_a_canonical_trusted_origin() {
+    #[tokio::test]
+    async fn xai_auth_is_kept_only_for_a_canonical_trusted_origin() {
         let mut config = minimal_config();
         config.provider = ProviderId::Xai;
         config.base_url = xai_grok_sampling_types::XAI_API_BASE_URL.to_owned();
@@ -5558,6 +5528,7 @@ mod tests {
         let client = SamplingClient::new(config).expect("trusted xAI client");
         let request = client
             .post("https://api.x.ai/v1/responses")
+            .await
             .expect("prepare trusted xAI request")
             .builder
             .build()
@@ -5626,8 +5597,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn live_bearer_resolver_uses_sensitive_authorization_for_messages() {
+    #[tokio::test]
+    async fn live_bearer_resolver_uses_sensitive_authorization_for_messages() {
         const LIVE_INPUT: &str = "opaque-live-credential";
         const LIVE_AUTHORIZATION: &[u8] = b"Bearer opaque-live-credential";
 
@@ -5641,6 +5612,7 @@ mod tests {
         let client = SamplingClient::new(cfg).expect("client should build");
         let request = client
             .post("https://example.test/v1/messages")
+            .await
             .expect("apply request auth")
             .builder
             .build()
@@ -5660,8 +5632,8 @@ mod tests {
     /// wire. The pre-fix code used `RequestBuilder::header(AUTHORIZATION, ...)`
     /// which appends rather than replaces, causing two identical
     /// `Authorization` headers and a 400 from cli-chat-proxy.
-    #[test]
-    fn post_emits_one_sensitive_authorization_with_live_bearer() {
+    #[tokio::test]
+    async fn post_emits_one_sensitive_authorization_with_live_bearer() {
         const LIVE_INPUT: &str = "opaque-live-credential";
         const LIVE_AUTHORIZATION: &[u8] = b"Bearer opaque-live-credential";
 
@@ -5675,6 +5647,7 @@ mod tests {
         let client = SamplingClient::new(cfg).expect("client should build");
         let request = client
             .post("https://example.test/v1/responses")
+            .await
             .expect("apply request auth")
             .builder
             .build()
@@ -5688,8 +5661,8 @@ mod tests {
         assert!(authorization.as_bytes() == LIVE_AUTHORIZATION);
     }
 
-    #[test]
-    fn live_bearer_resolver_uses_sensitive_x_api_key_for_messages() {
+    #[tokio::test]
+    async fn live_bearer_resolver_uses_sensitive_x_api_key_for_messages() {
         const LIVE_INPUT: &str = "opaque-live-credential";
         const LIVE_API_KEY: &[u8] = b"opaque-live-credential";
 
@@ -5703,6 +5676,7 @@ mod tests {
         let client = SamplingClient::new(cfg).expect("client should build");
         let request = client
             .post("https://example.test/v1/messages")
+            .await
             .expect("apply request auth")
             .builder
             .build()
@@ -5744,8 +5718,8 @@ mod tests {
     /// *replace* the Authorization header from `default_headers`, not
     /// append a second one. Duplicate Authorization headers cause
     /// Cloudflare to return 400 Bad Request.
-    #[test]
-    fn bearer_resolver_replacement_remains_sensitive() {
+    #[tokio::test]
+    async fn bearer_resolver_replacement_remains_sensitive() {
         const LIVE_INPUT: &str = "opaque-live-credential";
         const LIVE_AUTHORIZATION: &[u8] = b"Bearer opaque-live-credential";
 
@@ -5769,6 +5743,7 @@ mod tests {
 
         let request = client
             .post("https://example.test/v1/responses")
+            .await
             .expect("apply request auth")
             .builder
             .body("")

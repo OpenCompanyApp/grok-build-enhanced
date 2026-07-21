@@ -67,11 +67,10 @@ pub(crate) const TIER_RESTRICTED_UPSELL: &str = "Image generation is a SuperGrok
 /// HTTP client for xAI Imagine API. Cloned per-request; shares `Arc` state.
 #[derive(Clone)]
 pub struct ImageGenClient {
-    /// Existing eager xAI transport. Codex is initialized asynchronously so
-    /// OS proxy/PAC discovery never blocks client construction.
+    /// Existing eager xAI transport. Codex resolves routes asynchronously from
+    /// each final request URL without blocking client construction.
     http: Option<reqwest::Client>,
-    codex_http: std::sync::Arc<tokio::sync::OnceCell<reqwest::Client>>,
-    default_headers: reqwest::header::HeaderMap,
+    codex_http: Option<xai_grok_provider_http::OpenAiCodexClientPool>,
     base_url: String,
     /// Imagine model slug used by `generate()`. Selected at construction
     /// from `ImageGenConfig::model_override` (falling back to
@@ -222,11 +221,23 @@ impl ImageGenClient {
                     })?,
             )
         };
+        let codex_http = (backend == ImageGenBackend::OpenAiCodex).then(|| {
+            let headers = headers.clone();
+            xai_grok_provider_http::OpenAiCodexClientPool::new(
+                xai_grok_provider_http::ClientRouteClass::Api,
+                move || {
+                    reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(IMAGE_GEN_TIMEOUT_SECS))
+                        .read_timeout(std::time::Duration::from_secs(IMAGE_GEN_READ_TIMEOUT_SECS))
+                        .redirect(reqwest::redirect::Policy::none())
+                        .default_headers(headers.clone())
+                },
+            )
+        });
 
         Ok(Self {
             http,
-            codex_http: Default::default(),
-            default_headers: headers,
+            codex_http,
             base_url,
             model,
             backend,
@@ -238,7 +249,10 @@ impl ImageGenClient {
         })
     }
 
-    async fn http(&self) -> Result<reqwest::Client, xai_tool_runtime::ToolError> {
+    async fn http(
+        &self,
+        request_url: &str,
+    ) -> Result<reqwest::Client, xai_tool_runtime::ToolError> {
         if self.backend != ImageGenBackend::OpenAiCodex {
             return self.http.as_ref().cloned().ok_or_else(|| {
                 xai_tool_runtime::ToolError::new(
@@ -248,27 +262,21 @@ impl ImageGenClient {
             });
         }
         self.codex_http
-            .get_or_try_init(|| async {
-                let builder = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(IMAGE_GEN_TIMEOUT_SECS))
-                    .read_timeout(std::time::Duration::from_secs(IMAGE_GEN_READ_TIMEOUT_SECS))
-                    .redirect(reqwest::redirect::Policy::none())
-                    .default_headers(self.default_headers.clone());
-                xai_grok_provider_http::build_openai_codex_client(
-                    builder,
-                    &self.base_url,
-                    xai_grok_provider_http::ClientRouteClass::Api,
+            .as_ref()
+            .ok_or_else(|| {
+                xai_tool_runtime::ToolError::new(
+                    xai_tool_runtime::ToolErrorKind::ServiceUnavailable,
+                    "Image provider is temporarily unavailable.",
                 )
-                .await
-                .map_err(|_| {
-                    xai_tool_runtime::ToolError::new(
-                        xai_tool_runtime::ToolErrorKind::ServiceUnavailable,
-                        "Image provider is temporarily unavailable.",
-                    )
-                })
-            })
+            })?
+            .client_for_url(request_url)
             .await
-            .cloned()
+            .map_err(|_| {
+                xai_tool_runtime::ToolError::new(
+                    xai_tool_runtime::ToolErrorKind::ServiceUnavailable,
+                    "Image provider is temporarily unavailable.",
+                )
+            })
     }
 
     /// Whether the current user's tier (free / X Basic) is zero-limited on
@@ -352,7 +360,7 @@ impl ImageGenClient {
         payload: &serde_json::Value,
     ) -> Result<(reqwest::Response, Option<RequestCredentialSnapshot>), xai_tool_runtime::ToolError>
     {
-        let request = self.http().await?.post(url).json(payload);
+        let request = self.http(url).await?.post(url).json(payload);
         let (request, credential_snapshot) = match self.backend {
             ImageGenBackend::OpenAiCodex => {
                 let provider = self.api_key_provider.as_ref().ok_or_else(|| {

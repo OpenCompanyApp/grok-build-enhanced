@@ -162,7 +162,7 @@ impl CodexCatalogClientConfig {
 /// Authenticated ChatGPT Codex model catalog client.
 #[derive(Clone)]
 pub struct CodexCatalogClient {
-    http: std::sync::Arc<tokio::sync::OnceCell<reqwest::Client>>,
+    http: xai_grok_provider_http::OpenAiCodexClientPool,
     config: CodexCatalogClientConfig,
 }
 
@@ -182,27 +182,22 @@ impl fmt::Debug for CodexCatalogClient {
 impl CodexCatalogClient {
     pub fn new(config: CodexCatalogClientConfig) -> Result<Self, CodexCatalogError> {
         Ok(Self {
-            http: Default::default(),
+            http: xai_grok_provider_http::OpenAiCodexClientPool::new(
+                xai_grok_provider_http::ClientRouteClass::Api,
+                || {
+                    // Auth and account headers must never be replayed to a redirect target.
+                    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+                },
+            ),
             config,
         })
     }
 
-    async fn http(&self) -> Result<reqwest::Client, CodexCatalogError> {
+    async fn http(&self, request_url: &reqwest::Url) -> Result<reqwest::Client, CodexCatalogError> {
         self.http
-            .get_or_try_init(|| async {
-                // Auth and account headers must never be replayed to a redirect target.
-                let builder =
-                    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
-                xai_grok_provider_http::build_openai_codex_client(
-                    builder,
-                    self.config.base_url.as_str(),
-                    xai_grok_provider_http::ClientRouteClass::Api,
-                )
-                .await
-                .map_err(|_| CodexCatalogError::Transport)
-            })
+            .client_for_url(request_url.as_str())
             .await
-            .cloned()
+            .map_err(|_| CodexCatalogError::Transport)
     }
 
     /// Fetch the authoritative catalog for the authenticated account.
@@ -304,7 +299,7 @@ impl CodexCatalogClient {
         let client_version = HeaderValue::from_str(&self.config.client_version)
             .map_err(|_| CodexCatalogError::InvalidConfiguration)?;
         let mut request = self
-            .http()
+            .http(&request_url)
             .await?
             .get(request_url)
             .timeout(self.config.timeout)

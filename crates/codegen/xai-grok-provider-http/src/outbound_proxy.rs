@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -22,6 +23,7 @@ use thiserror::Error;
 const SYSTEM_PROXY_SUCCESS_CACHE_TTL: Duration = Duration::from_secs(60);
 const SYSTEM_PROXY_UNAVAILABLE_CACHE_TTL: Duration = Duration::from_secs(5);
 const SYSTEM_PROXY_CACHE_MAX_ENTRIES: usize = 256;
+const MAX_CACHED_CODEX_ROUTES: usize = 16;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 static ASYNC_SYSTEM_PROXY_RESOLUTION_PERMIT: Semaphore = Semaphore::const_new(1);
 
@@ -214,6 +216,109 @@ impl HttpClientFactory {
         }
         cached_system_proxy_decision(&request_url)
             .map(|decision| route_from_system_decision(&ProcessEnv, env_proxy_kind, decision))
+    }
+}
+
+/// Provider-scoped pool that selects a Codex transport from each complete request URL.
+///
+/// PAC rules may depend on the URL path or query, not only its origin. Callers therefore ask the
+/// pool for a client only after constructing the final endpoint. Clients are reused by resolved
+/// route, while each request is looked up by exact URL subject to the bounded platform decision
+/// cache. Redirect policy remains owned by each caller; credential-bearing Enhanced clients
+/// continue to refuse redirects.
+#[derive(Clone)]
+pub struct OpenAiCodexClientPool {
+    factory: HttpClientFactory,
+    route_class: ClientRouteClass,
+    builder_factory: Arc<dyn Fn() -> reqwest::ClientBuilder + Send + Sync>,
+    clients: Arc<Mutex<HashMap<OutboundProxyRoute, reqwest::Client>>>,
+}
+
+impl fmt::Debug for OpenAiCodexClientPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAiCodexClientPool")
+            .field("route_class", &self.route_class)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OpenAiCodexClientPool {
+    /// Create a pool whose builder factory carries the owning component's timeout, redirect,
+    /// protocol, header, and cookie policy.
+    pub fn new(
+        route_class: ClientRouteClass,
+        builder_factory: impl Fn() -> reqwest::ClientBuilder + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            factory: HttpClientFactory::new(OutboundProxyPolicy::RespectSystemProxy),
+            route_class,
+            builder_factory: Arc::new(builder_factory),
+            clients: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Resolve the complete outbound URL and return a reusable client for its selected route.
+    pub async fn client_for_url(
+        &self,
+        request_url: &str,
+    ) -> Result<reqwest::Client, BuildRouteAwareHttpClientError> {
+        let factory = self.factory.clone();
+        self.client_for_url_with_resolver(request_url, move |request_url| async move {
+            factory.resolve_proxy_route_async(request_url).await
+        })
+        .await
+    }
+
+    async fn client_for_url_with_resolver<F, Fut>(
+        &self,
+        request_url: &str,
+        resolve_route: F,
+    ) -> Result<reqwest::Client, BuildRouteAwareHttpClientError>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = io::Result<OutboundProxyRoute>>,
+    {
+        let route = resolve_route(request_url.to_owned()).await.map_err(|_| {
+            BuildRouteAwareHttpClientError::ProxyResolution {
+                route_class: self.route_class,
+            }
+        })?;
+
+        if let Some(client) = self
+            .clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&route)
+            .cloned()
+        {
+            return Ok(client);
+        }
+
+        let builder = configure_builder_for_resolved_route(
+            (self.builder_factory)(),
+            self.route_class,
+            &route,
+        )?;
+        let client = builder
+            .build()
+            .map_err(|_| BuildRouteAwareHttpClientError::ClientBuild {
+                route_class: self.route_class,
+            })?;
+
+        let mut clients = self
+            .clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = clients.get(&route) {
+            return Ok(existing.clone());
+        }
+        if clients.len() >= MAX_CACHED_CODEX_ROUTES
+            && let Some(route_to_evict) = clients.keys().next().cloned()
+        {
+            clients.remove(&route_to_evict);
+        }
+        clients.insert(route, client.clone());
+        Ok(client)
     }
 }
 
@@ -766,6 +871,59 @@ mod tests {
         SystemProxyDecision::Unavailable {
             failure: RouteFailureClass::ProxyResolutionUnavailable,
         }
+    }
+
+    #[tokio::test]
+    async fn codex_pool_resolves_the_complete_request_url() {
+        let seen = Arc::new(Mutex::new(None));
+        let seen_by_resolver = Arc::clone(&seen);
+        let pool = OpenAiCodexClientPool::new(ClientRouteClass::Api, reqwest::Client::builder);
+
+        pool.client_for_url_with_resolver(
+            "https://chatgpt.com/backend-api/codex/models?client_version=0.2.6",
+            move |request_url| {
+                *seen_by_resolver
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request_url);
+                async { Ok(OutboundProxyRoute::Direct) }
+            },
+        )
+        .await
+        .expect("exact request route should build");
+
+        assert_eq!(
+            seen.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_deref(),
+            Some("https://chatgpt.com/backend-api/codex/models?client_version=0.2.6")
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_pool_reuses_a_client_when_distinct_urls_select_the_same_route() {
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let builds_by_factory = Arc::clone(&builds);
+        let pool = OpenAiCodexClientPool::new(ClientRouteClass::Api, move || {
+            builds_by_factory.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            reqwest::Client::builder()
+        });
+
+        for request_url in [
+            "https://chatgpt.com/backend-api/codex/responses",
+            "https://chatgpt.com/backend-api/codex/models",
+        ] {
+            pool.client_for_url_with_resolver(request_url, |_| async {
+                Ok(OutboundProxyRoute::Direct)
+            })
+            .await
+            .expect("shared direct route should build");
+        }
+
+        assert_eq!(
+            builds.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "one transport should serve every URL selecting the same route"
+        );
     }
 
     #[test]

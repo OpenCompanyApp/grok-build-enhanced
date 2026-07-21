@@ -1,4 +1,4 @@
-use xai_grok_sampling_types::{Result, SamplingError};
+use xai_grok_sampling_types::SamplingError;
 
 /// Accept only the current ChatGPT Codex backend in production. Unit and
 /// feature-gated test builds may use an exact loopback HTTP origin.
@@ -19,32 +19,38 @@ pub(crate) fn is_valid_base_url(base_url: &str) -> bool {
     production || loopback
 }
 
-/// Build the dedicated Codex transport. Redirects are disabled so dynamic
-/// subscription credentials can never be forwarded to another origin. Proxy
-/// and PAC discovery is explicit and provider-scoped; unrelated reqwest
-/// clients retain their existing transport policy.
-pub(crate) async fn http_client(base_url: &str, force_http1: bool) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
-    if force_http1 {
-        builder = builder
-            .http1_only()
-            .pool_max_idle_per_host(0)
-            .pool_idle_timeout(std::time::Duration::from_secs(0));
-    }
-    xai_grok_provider_http::build_openai_codex_client(
-        builder,
-        base_url,
+/// Build the dedicated Codex transport pool. Redirects are disabled so dynamic
+/// subscription credentials can never be forwarded to another origin. Each
+/// request supplies its final URL for provider-scoped PAC/system-proxy routing;
+/// unrelated reqwest clients retain their existing transport policy.
+pub(crate) fn http_client_pool(force_http1: bool) -> xai_grok_provider_http::OpenAiCodexClientPool {
+    xai_grok_provider_http::OpenAiCodexClientPool::new(
         xai_grok_provider_http::ClientRouteClass::Api,
+        move || {
+            let mut builder =
+                reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+            if force_http1 {
+                builder = builder
+                    .http1_only()
+                    .pool_max_idle_per_host(0)
+                    .pool_idle_timeout(std::time::Duration::from_secs(0));
+            }
+            builder
+        },
     )
-    .await
-    .map_err(|error| match error {
+}
+
+pub(crate) fn map_route_error(
+    error: xai_grok_provider_http::BuildRouteAwareHttpClientError,
+) -> SamplingError {
+    match error {
         xai_grok_provider_http::BuildRouteAwareHttpClientError::InvalidProxyConfig { .. } => {
             SamplingError::InvalidConfiguration("OpenAI Codex proxy configuration is invalid")
         }
         _ => SamplingError::EventStreamError(
             "OpenAI Codex HTTP route setup failed; proxy details were omitted".to_owned(),
         ),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -98,10 +104,12 @@ mod tests {
 
         let mut credential = reqwest::header::HeaderValue::from_static("Bearer opaque-credential");
         credential.set_sensitive(true);
-        let response = http_client(&format!("http://{address}"), false)
+        let start_url = format!("http://{address}/start");
+        let response = http_client_pool(false)
+            .client_for_url(&start_url)
             .await
             .unwrap()
-            .post(format!("http://{address}/start"))
+            .post(&start_url)
             .header(reqwest::header::AUTHORIZATION, credential)
             .send()
             .await

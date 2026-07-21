@@ -112,8 +112,7 @@ struct SearchFiltersWire<'a> {
 /// fallback path.
 #[derive(Clone)]
 pub(in crate::implementations::web_search) struct OpenAiCodexBackend {
-    http: std::sync::Arc<tokio::sync::OnceCell<reqwest::Client>>,
-    default_headers: HeaderMap,
+    http: xai_grok_provider_http::OpenAiCodexClientPool,
     base_url: String,
     model: String,
     session_id: String,
@@ -152,9 +151,18 @@ impl OpenAiCodexBackend {
             HeaderValue::from_static(xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION),
         );
 
+        let http_headers = headers.clone();
         Ok(Self {
-            http: Default::default(),
-            default_headers: headers,
+            http: xai_grok_provider_http::OpenAiCodexClientPool::new(
+                xai_grok_provider_http::ClientRouteClass::Api,
+                move || {
+                    reqwest::Client::builder()
+                        .default_headers(http_headers.clone())
+                        .timeout(std::time::Duration::from_secs(60))
+                        // Never replay bearer/account/FedRAMP headers to a redirect target.
+                        .redirect(reqwest::redirect::Policy::none())
+                },
+            ),
             base_url,
             model: model.to_owned(),
             session_id: session_id.to_owned(),
@@ -164,24 +172,14 @@ impl OpenAiCodexBackend {
         })
     }
 
-    async fn http(&self) -> Result<reqwest::Client, xai_tool_runtime::ToolError> {
+    async fn http(
+        &self,
+        request_url: &str,
+    ) -> Result<reqwest::Client, xai_tool_runtime::ToolError> {
         self.http
-            .get_or_try_init(|| async {
-                let builder = reqwest::Client::builder()
-                    .default_headers(self.default_headers.clone())
-                    .timeout(std::time::Duration::from_secs(60))
-                    // Never replay bearer/account/FedRAMP headers to a redirect target.
-                    .redirect(reqwest::redirect::Policy::none());
-                xai_grok_provider_http::build_openai_codex_client(
-                    builder,
-                    &self.base_url,
-                    xai_grok_provider_http::ClientRouteClass::Api,
-                )
-                .await
-                .map_err(|_| web_failure_error(WebToolErrorCode::ProviderUnavailable))
-            })
+            .client_for_url(request_url)
             .await
-            .cloned()
+            .map_err(|_| web_failure_error(WebToolErrorCode::ProviderUnavailable))
     }
 
     pub(in crate::implementations::web_search) fn set_attribution_callback(
@@ -278,7 +276,7 @@ impl OpenAiCodexBackend {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(8_192)
             .min(MAX_CODEX_SEARCH_OUTPUT_TOKENS);
-        let http = self.http().await?;
+        let http = self.http(&url).await?;
         let mut recovered = false;
 
         loop {

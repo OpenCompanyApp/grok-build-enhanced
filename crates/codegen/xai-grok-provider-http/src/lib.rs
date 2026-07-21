@@ -8,5 +8,6 @@
 pub mod outbound_proxy;
 
 pub use outbound_proxy::{
-    BuildRouteAwareHttpClientError, ClientRouteClass, build_openai_codex_client,
+    BuildRouteAwareHttpClientError, ClientRouteClass, OpenAiCodexClientPool,
+    build_openai_codex_client,
 };

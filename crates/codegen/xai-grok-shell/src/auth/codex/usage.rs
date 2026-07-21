@@ -214,19 +214,18 @@ fn codex_usage_http_client_builder() -> reqwest::ClientBuilder {
 /// Refusing redirects here keeps the complete provider-auth snapshot bound to
 /// the one exact URL selected by this module.
 async fn codex_usage_http_client() -> Result<reqwest::Client, CodexUsageError> {
-    static CLIENT: tokio::sync::OnceCell<reqwest::Client> = tokio::sync::OnceCell::const_new();
-    CLIENT
-        .get_or_try_init(|| async {
-            xai_grok_provider_http::build_openai_codex_client(
-                codex_usage_http_client_builder(),
-                OPENAI_CODEX_USAGE_URL,
+    static CLIENTS: std::sync::OnceLock<xai_grok_provider_http::OpenAiCodexClientPool> =
+        std::sync::OnceLock::new();
+    CLIENTS
+        .get_or_init(|| {
+            xai_grok_provider_http::OpenAiCodexClientPool::new(
                 xai_grok_provider_http::ClientRouteClass::Api,
+                codex_usage_http_client_builder,
             )
-            .await
-            .map_err(|_| CodexUsageError::ProxyRoute)
         })
+        .client_for_url(OPENAI_CODEX_USAGE_URL)
         .await
-        .cloned()
+        .map_err(|_| CodexUsageError::ProxyRoute)
 }
 
 fn validate_binding(binding: &CredentialBinding) -> Result<(), CodexUsageError> {
