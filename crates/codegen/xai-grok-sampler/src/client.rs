@@ -69,6 +69,102 @@ fn normalize_reasoning_effort_for_provider(
     }
 }
 
+const MISTRAL_TOOL_CALL_ID_LEN: usize = 9;
+const MISTRAL_COLLISION_SUFFIX_LEN: usize = 3;
+const BASE62_DIGITS: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+fn is_mistral_family_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    ["mistral", "devstral", "codestral", "pixtral", "mixtral"]
+        .iter()
+        .any(|family| model.contains(family))
+}
+
+fn mistral_tool_call_id_base(id: &str) -> String {
+    let mut normalized: String = id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(MISTRAL_TOOL_CALL_ID_LEN)
+        .collect();
+    while normalized.len() < MISTRAL_TOOL_CALL_ID_LEN {
+        normalized.push('0');
+    }
+    normalized
+}
+
+fn fixed_base62_suffix(mut value: usize) -> [u8; MISTRAL_COLLISION_SUFFIX_LEN] {
+    let mut suffix = [BASE62_DIGITS[0]; MISTRAL_COLLISION_SUFFIX_LEN];
+    for digit in suffix.iter_mut().rev() {
+        *digit = BASE62_DIGITS[value % BASE62_DIGITS.len()];
+        value /= BASE62_DIGITS.len();
+    }
+    suffix
+}
+
+fn map_mistral_tool_call_id(
+    id: &str,
+    mappings: &mut std::collections::HashMap<String, String>,
+    used: &mut std::collections::HashSet<String>,
+) -> Result<String> {
+    if let Some(mapped) = mappings.get(id) {
+        return Ok(mapped.clone());
+    }
+
+    let base = mistral_tool_call_id_base(id);
+    let mapped = if used.insert(base.clone()) {
+        base
+    } else {
+        let prefix_len = MISTRAL_TOOL_CALL_ID_LEN - MISTRAL_COLLISION_SUFFIX_LEN;
+        let prefix = &base[..prefix_len];
+        let collision_space = BASE62_DIGITS.len().pow(MISTRAL_COLLISION_SUFFIX_LEN as u32);
+        let mut resolved = None;
+        for attempt in 1..collision_space {
+            let suffix = fixed_base62_suffix(attempt);
+            let suffix = std::str::from_utf8(&suffix).expect("base62 suffix is ASCII");
+            let candidate = format!("{prefix}{suffix}");
+            if used.insert(candidate.clone()) {
+                resolved = Some(candidate);
+                break;
+            }
+        }
+        resolved.ok_or(SamplingError::InvalidConfiguration(
+            "too many colliding Mistral tool-call IDs in one request",
+        ))?
+    };
+
+    mappings.insert(id.to_owned(), mapped.clone());
+    Ok(mapped)
+}
+
+/// Mistral-family Chat Completions endpoints require exactly nine ASCII
+/// alphanumeric characters for every tool-call ID. Apply this only to a Custom
+/// provider's per-request wire copy, with one collision-safe mapping shared by
+/// assistant calls and their tool results.
+fn normalize_custom_mistral_tool_call_ids(
+    provider: ProviderId,
+    model: &str,
+    messages: &mut [xai_grok_sampling_types::ChatRequestMessage],
+) -> Result<()> {
+    if provider != ProviderId::Custom || !is_mistral_family_model(model) {
+        return Ok(());
+    }
+
+    let mut mappings = std::collections::HashMap::new();
+    let mut used = std::collections::HashSet::new();
+    for message in messages {
+        for tool_call in &mut message.tool_calls {
+            if let Some(id) = tool_call.id.as_mut() {
+                *id = map_mistral_tool_call_id(id, &mut mappings, &mut used)?;
+            }
+        }
+        if let Some(id) = message.tool_call_id.as_mut() {
+            *id = map_mistral_tool_call_id(id, &mut mappings, &mut used)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Per-request `x-grok-*` headers. Optional fields are skipped when empty/`None`.
 struct GrokRequestHeaders<'a> {
     conv_id: &'a str,
@@ -1441,6 +1537,13 @@ impl SamplingClient {
                 effort,
             )?);
         }
+
+        let model = request.model.as_deref().unwrap_or_default().to_owned();
+        normalize_custom_mistral_tool_call_ids(
+            self.defaults.provider,
+            &model,
+            &mut request.messages,
+        )?;
 
         Ok(request)
     }
@@ -3155,7 +3258,7 @@ mod tests {
     };
     use indexmap::IndexMap;
     use xai_grok_sampling_types::OPENAI_CODEX_COMPATIBILITY_VERSION;
-    use xai_grok_sampling_types::types::ChatRequestMessage;
+    use xai_grok_sampling_types::types::{ChatRequestMessage, ToolCallRequest};
 
     const CODEX_AUTHORIZATION_FIXTURE: &str = "Bearer opaque-credential";
     const CODEX_ACCOUNT_FIXTURE: &str = "opaque-account";
@@ -3281,6 +3384,136 @@ mod tests {
             compaction_at_tokens: None,
             doom_loop_recovery: None,
             header_injector: None,
+        }
+    }
+
+    fn tool_exchange(id: &str) -> Vec<ChatRequestMessage> {
+        vec![
+            ChatRequestMessage::assistant_tool_call(
+                ToolCallRequest::function("read_file", "{}").with_id(id),
+            ),
+            ChatRequestMessage::tool(id, "result"),
+        ]
+    }
+
+    #[test]
+    fn custom_mistral_wire_uses_nine_ascii_alphanumeric_tool_call_ids() {
+        let mut config = minimal_config();
+        config.model = "mistral-large-latest".to_owned();
+        let client = SamplingClient::new(config).expect("custom client must be valid");
+        let request = ChatCompletionRequest::from_messages(tool_exchange("å-call_12!?"));
+
+        let payload = client
+            .apply_defaults(request)
+            .expect("Mistral ID normalization must succeed");
+
+        assert_eq!(
+            payload.messages[0].tool_calls[0].id.as_deref(),
+            Some("call12000")
+        );
+        assert_eq!(
+            payload.messages[1].tool_call_id.as_deref(),
+            Some("call12000")
+        );
+    }
+
+    #[test]
+    fn custom_mistral_wire_resolves_truncation_collisions_consistently() {
+        let mut config = minimal_config();
+        config.model = "mistral-large-latest".to_owned();
+        let client = SamplingClient::new(config).expect("custom client must be valid");
+        let mut messages = tool_exchange("abcdefghi-one");
+        messages.extend(tool_exchange("abcdefghi-two"));
+
+        let payload = client
+            .apply_defaults(ChatCompletionRequest::from_messages(messages))
+            .expect("colliding IDs must resolve before network I/O");
+
+        assert_eq!(
+            payload.messages[0].tool_calls[0].id.as_deref(),
+            Some("abcdefghi")
+        );
+        assert_eq!(
+            payload.messages[1].tool_call_id.as_deref(),
+            Some("abcdefghi")
+        );
+        assert_eq!(
+            payload.messages[2].tool_calls[0].id.as_deref(),
+            Some("abcdef001")
+        );
+        assert_eq!(
+            payload.messages[3].tool_call_id.as_deref(),
+            Some("abcdef001")
+        );
+    }
+
+    #[test]
+    fn every_mistral_family_name_activates_custom_wire_normalization() {
+        for model in [
+            "mistral-large",
+            "devstral-small",
+            "codestral-latest",
+            "pixtral-12b",
+            "mixtral-8x7b",
+        ] {
+            let mut messages = tool_exchange("call_with_symbols!");
+            normalize_custom_mistral_tool_call_ids(ProviderId::Custom, model, &mut messages)
+                .expect("family model must normalize");
+            assert_eq!(
+                messages[0].tool_calls[0].id.as_deref(),
+                Some("callwiths"),
+                "model {model}"
+            );
+            assert_eq!(
+                messages[1].tool_call_id.as_deref(),
+                Some("callwiths"),
+                "model {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_non_mistral_models_keep_tool_call_ids_unchanged() {
+        let mut messages = tool_exchange("call_with_symbols!");
+
+        normalize_custom_mistral_tool_call_ids(
+            ProviderId::Custom,
+            "generic-openai-compatible",
+            &mut messages,
+        )
+        .expect("non-Mistral model must remain valid");
+
+        assert_eq!(
+            messages[0].tool_calls[0].id.as_deref(),
+            Some("call_with_symbols!")
+        );
+        assert_eq!(
+            messages[1].tool_call_id.as_deref(),
+            Some("call_with_symbols!")
+        );
+    }
+
+    #[test]
+    fn first_class_providers_keep_mistral_shaped_tool_call_ids_unchanged() {
+        for provider in [
+            ProviderId::Xai,
+            ProviderId::OpenAiCodex,
+            ProviderId::KimiCode,
+            ProviderId::ZaiCodingPlan,
+        ] {
+            let mut messages = tool_exchange("call_with_symbols!");
+            normalize_custom_mistral_tool_call_ids(provider, "mistral-large", &mut messages)
+                .expect("first-class provider must remain valid");
+            assert_eq!(
+                messages[0].tool_calls[0].id.as_deref(),
+                Some("call_with_symbols!"),
+                "provider {provider}"
+            );
+            assert_eq!(
+                messages[1].tool_call_id.as_deref(),
+                Some("call_with_symbols!"),
+                "provider {provider}"
+            );
         }
     }
 

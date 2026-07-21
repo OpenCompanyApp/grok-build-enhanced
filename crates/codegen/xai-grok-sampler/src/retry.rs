@@ -845,6 +845,38 @@ mod tests {
     }
 
     #[test]
+    fn token_wording_on_a_429_keeps_rate_limit_retry_routing() {
+        let err = SamplingError::Api {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "Rate limit exceeded: too many tokens".into(),
+            model_metadata: None,
+            retry_after_secs: Some(11),
+            should_retry: None,
+        };
+
+        match classify_error(&err, 0, 15, RATE_LIMIT_RETRY_THRESHOLD) {
+            RetryDecision::RetryWithBackoff {
+                backoff,
+                is_rate_limited: true,
+            } => assert_eq!(backoff, Duration::from_secs(11)),
+            other => panic!("expected rate-limit retry routing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn throttling_token_wording_keeps_transient_stream_retry_routing() {
+        let err = SamplingError::StreamError {
+            error_type: "throttling_error".into(),
+            message: "Throttling error: Too many tokens, please wait".into(),
+        };
+
+        assert!(matches!(
+            classify_error(&err, 0, 15, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::RetryWithClientRebuild { .. }
+        ));
+    }
+
+    #[test]
     fn should_retry_true_falls_through_to_existing_logic() {
         let err = SamplingError::Api {
             status: StatusCode::INTERNAL_SERVER_ERROR,

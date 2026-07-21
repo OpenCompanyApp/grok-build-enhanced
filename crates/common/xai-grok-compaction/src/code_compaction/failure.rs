@@ -24,15 +24,45 @@ impl FailureKind {
 }
 
 /// True when an error message indicates a context-window overflow. Backends report
-/// this inconsistently with no stable error code, so we match the message text; it's
-/// deterministic (re-sending the same payload always fails), so callers must not retry.
+/// this inconsistently with no stable error code, so we match bounded message markers.
+/// Broad token wording is accepted only after excluding rate-limit and throttling
+/// responses; those remain transient even when they contain "too many tokens".
 pub fn is_context_length_error(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
+    if m.contains("throttling error")
+        || m.contains("service unavailable")
+        || m.contains("rate limit")
+        || m.contains("too many requests")
+    {
+        return false;
+    }
+
     m.contains("too long for this model")
         || m.contains("prompt is too long")
+        || m.contains("request_too_large")
+        || m.contains("input is too long for requested model")
+        || m.contains("exceeds the context window")
         || m.contains("maximum prompt length")
         || m.contains("maximum context length")
+        || m.contains("maximum allowed input length")
+        || m.contains("exceeds the available context size")
+        || m.contains("greater than the context length")
+        || m.contains("context window exceeds limit")
+        || m.contains("exceeded model token limit")
         || m.contains("context_length_exceeded")
+        || m.contains("model_context_window_exceeded")
+        || m.contains("request entity too large")
+        || m.contains("context length is only")
+        || m.contains("configured context size")
+        || m.contains("longer than the model's context length")
+        || m.contains("longer than the model’s context length")
+        || m.contains("tokens in request more than max tokens allowed")
+        || m.contains("reduce the length of the messages")
+        || m.contains("too many tokens")
+        || m.contains("token limit exceeded")
+        || (m.contains("input token count") && m.contains("exceeds the maximum"))
+        || (m.contains("input length") && m.contains("exceeds") && m.contains("context length"))
+        || (m.contains("prompt too long") && m.contains("context length"))
 }
 
 /// Classify an HTTP API failure (status + message) for the compaction retry
@@ -176,22 +206,46 @@ mod tests {
     }
 
     #[test]
-    fn context_length_error_matches_known_messages() {
-        for msg in [
+    fn context_length_error_matches_known_provider_messages() {
+        for message in [
             "The prompt is too long for this model's context window.",
             "prompt is too long: 250000 tokens > 200000 maximum",
             "exceeds the maximum prompt length",
             "This model's maximum context length is 128000 tokens",
             "error code: context_length_exceeded",
+            r#"{"error":{"type":"request_too_large","message":"Request exceeds the maximum size"}}"#,
+            "Input is too long for requested model",
+            "Input token count 300000 exceeds the maximum 262144",
+            "tokens in request more than max tokens allowed",
+            "Please reduce the length of the messages",
+            "Input length 131393 exceeds the maximum allowed input length of 131040 tokens.",
+            "The input (516368 tokens) is longer than the model's context length (262144 tokens).",
+            "Prompt has 5,958,968 tokens, but the configured context size is 256,000 tokens",
+            "model_context_window_exceeded",
+            "Request entity too large",
+            "Too many tokens",
+            "Token limit exceeded",
         ] {
-            assert!(is_context_length_error(msg), "should match: {msg}");
+            assert!(is_context_length_error(message), "should match: {message}");
         }
-        for msg in [
+    }
+
+    #[test]
+    fn context_length_error_excludes_rate_limits_and_transient_failures() {
+        for message in [
             "internal server error",
             "rate limited",
+            "Rate limit exceeded, please retry after 30 seconds.",
+            "Too many requests. Please slow down.",
+            "Throttling error: Too many tokens, please wait before trying again.",
+            "API error (status 503): Service unavailable: token limit exceeded",
+            "Stream failed: throttling error: too many tokens",
             "connection reset by peer",
         ] {
-            assert!(!is_context_length_error(msg), "should not match: {msg}");
+            assert!(
+                !is_context_length_error(message),
+                "should not match: {message}"
+            );
         }
     }
 }

@@ -547,16 +547,11 @@ pub fn try_parse_stream_error_redacted(
     )))
 }
 
-/// True when an error message indicates a context-window overflow. Backends report
-/// this inconsistently with no stable error code, so we match the message text; it's
-/// deterministic (re-sending the same payload always fails), so callers must not retry.
+/// True when an error message indicates a context-window overflow. Keep sampling
+/// and compaction retry policy on the same shared classifier so broad provider
+/// wording cannot drift into conflicting retry decisions.
 pub fn is_context_length_error(message: &str) -> bool {
-    let m = message.to_ascii_lowercase();
-    m.contains("too long for this model")
-        || m.contains("prompt is too long")
-        || m.contains("maximum prompt length")
-        || m.contains("maximum context length")
-        || m.contains("context_length_exceeded")
+    xai_grok_compaction::is_context_length_error(message)
 }
 
 /// Decide whether a [`reqwest::Error`] is worth retrying.
@@ -585,18 +580,34 @@ mod tests {
 
     #[test]
     fn context_length_error_matches_backend_variants() {
-        for msg in [
+        for message in [
             "This model's maximum prompt length is 256000 but the request contains 1500000",
             "The prompt is too long for this model's context window.",
             "none: The prompt is too long for this model's context window.",
             "This model's maximum context length is 200000 tokens",
             "invalid_request_error: prompt is too long: 300000 tokens > 200000 maximum",
             "error type: context_length_exceeded",
+            "request_too_large",
+            "Input length 131393 exceeds the maximum allowed input length of 131040 tokens.",
+            "Prompt has 5,958,968 tokens, but the configured context size is 256,000 tokens",
+            "Too many tokens",
+            "Token limit exceeded",
         ] {
-            assert!(is_context_length_error(msg), "should match: {msg}");
+            assert!(is_context_length_error(message), "should match: {message}");
         }
-        for msg in ["rate limited", "internal server error", "connection reset"] {
-            assert!(!is_context_length_error(msg), "should not match: {msg}");
+        for message in [
+            "rate limited",
+            "Rate limit exceeded: too many tokens",
+            "Too many requests",
+            "Throttling error: Too many tokens, please wait",
+            "Service unavailable: token limit exceeded",
+            "internal server error",
+            "connection reset",
+        ] {
+            assert!(
+                !is_context_length_error(message),
+                "should not match: {message}"
+            );
         }
         // The method delegates for the Api/StreamError variants.
         let api = SamplingError::Api {

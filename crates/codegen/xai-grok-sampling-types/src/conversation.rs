@@ -1945,6 +1945,13 @@ fn wrap_external_content(
     )
 }
 
+/// Provider requests do not need a synthetic blank text block next to an
+/// attachment. Filter that block only in the wire projection: the original
+/// [`UserItem`] remains byte-for-byte intact for persistence and hooks.
+fn include_user_wire_part(has_images: bool, part: &ContentPart) -> bool {
+    !has_images || !matches!(part, ContentPart::Text { text } if text.trim().is_empty())
+}
+
 pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestMessage {
     match item {
         ConversationItem::System(s) => ChatRequestMessage::system(s.content.as_ref()),
@@ -1971,6 +1978,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
                 let blocks: Vec<ChatContentBlock> = u
                     .content
                     .into_iter()
+                    .filter(|part| include_user_wire_part(has_images, part))
                     .map(|part| match part {
                         ContentPart::Text { text } => ChatContentBlock::Text {
                             text: wrap_external_content(text, external_content.as_ref()),
@@ -2505,19 +2513,8 @@ fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputIte
             })]
         }
         ConversationItem::User(u) => {
-            let bounded_parts = u.external_content.as_ref().map(|metadata| {
-                u.content
-                    .iter()
-                    .map(|part| match part {
-                        ContentPart::Text { text } => ContentPart::Text {
-                            text: Arc::<str>::from(wrap_external_content(text, Some(metadata))),
-                        },
-                        ContentPart::Image { url } => ContentPart::Image { url: url.clone() },
-                    })
-                    .collect::<Vec<_>>()
-            });
             let content =
-                content_parts_to_easy_input_content(bounded_parts.as_deref().unwrap_or(&u.content));
+                content_parts_to_easy_input_content(&u.content, u.external_content.as_ref());
             vec![rs::InputItem::EasyMessage(rs::EasyInputMessage {
                 r#type: rs::MessageType::Message,
                 role: rs::Role::User,
@@ -2617,19 +2614,32 @@ fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputIte
     }
 }
 
-/// Convert ContentParts to Responses API EasyInputContent
-fn content_parts_to_easy_input_content(parts: &[ContentPart]) -> rs::EasyInputContent {
-    if parts.len() == 1
-        && let ContentPart::Text { text } = &parts[0]
+/// Convert ContentParts to Responses API EasyInputContent. Attachment-only
+/// prompts omit blank text blocks on this provider-wire copy without mutating
+/// the durable conversation item.
+fn content_parts_to_easy_input_content(
+    parts: &[ContentPart],
+    external_content: Option<&ExternalContentMetadata>,
+) -> rs::EasyInputContent {
+    let has_images = parts
+        .iter()
+        .any(|part| matches!(part, ContentPart::Image { .. }));
+    let wire_parts: Vec<&ContentPart> = parts
+        .iter()
+        .filter(|part| include_user_wire_part(has_images, part))
+        .collect();
+
+    if wire_parts.len() == 1
+        && let ContentPart::Text { text } = wire_parts[0]
     {
-        return rs::EasyInputContent::Text(text.as_ref().to_owned());
+        return rs::EasyInputContent::Text(wrap_external_content(text, external_content));
     }
 
-    let items: Vec<rs::InputContent> = parts
-        .iter()
+    let items: Vec<rs::InputContent> = wire_parts
+        .into_iter()
         .map(|part| match part {
             ContentPart::Text { text } => rs::InputContent::InputText(rs::InputTextContent {
-                text: text.as_ref().to_owned(),
+                text: wrap_external_content(text, external_content),
             }),
             ContentPart::Image { url } => rs::InputContent::InputImage(rs::InputImageContent {
                 image_url: Some(url.as_ref().to_owned()),
@@ -3287,10 +3297,16 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             .collect()
     };
 
-    // Helper to convert ContentPart to Anthropic ContentBlock
+    // Helper to convert ContentPart to Anthropic ContentBlock. As with the
+    // Chat and Responses projections, attachment-only prompts omit synthetic
+    // blank text while the source UserItem remains unchanged.
     let content_parts_to_anthropic_blocks = |parts: &[ContentPart]| -> Vec<ContentBlock> {
+        let has_images = parts
+            .iter()
+            .any(|part| matches!(part, ContentPart::Image { .. }));
         parts
             .iter()
+            .filter(|part| include_user_wire_part(has_images, part))
             .map(|part| match part {
                 ContentPart::Text { text } => ContentBlock::Text {
                     text: text.as_ref().to_owned(),
@@ -4083,6 +4099,122 @@ mod tests {
             &blocks[1],
             ChatContentBlock::ImageUrl { image_url } if image_url.url == "https://example.com/image.png"
         );
+    }
+
+    fn user_with_attachment_text(text: &str) -> ConversationItem {
+        ConversationItem::user_with_parts(vec![
+            ContentPart::Text { text: text.into() },
+            ContentPart::Image {
+                url: "https://example.com/attachment.png".into(),
+            },
+        ])
+    }
+
+    #[test]
+    fn chat_wire_omits_blank_user_text_when_an_image_is_present() {
+        let message = conversation_item_to_chat_message(user_with_attachment_text(" \n\t"));
+
+        let MessageContent::Blocks(blocks) = message.content else {
+            panic!("attachment-bearing chat prompt must use content blocks");
+        };
+        assert_eq!(blocks.len(), 1);
+        assert_matches!(&blocks[0], ChatContentBlock::ImageUrl { image_url }
+            if image_url.url == "https://example.com/attachment.png");
+    }
+
+    #[test]
+    fn responses_wire_omits_blank_user_text_when_an_image_is_present() {
+        let request = ConversationRequest::from_items(vec![user_with_attachment_text(" \n\t")]);
+
+        let response: rs::CreateResponse = (&request).into();
+        let rs::InputParam::Items(items) = response.input else {
+            panic!("Responses request must use item input");
+        };
+        let rs::InputItem::EasyMessage(message) = &items[0] else {
+            panic!("user prompt must be an easy message");
+        };
+        let rs::EasyInputContent::ContentList(parts) = &message.content else {
+            panic!("attachment-bearing Responses prompt must use a content list");
+        };
+        assert_eq!(parts.len(), 1);
+        assert_matches!(&parts[0], rs::InputContent::InputImage(image)
+            if image.image_url.as_deref() == Some("https://example.com/attachment.png"));
+    }
+
+    #[test]
+    fn messages_wire_omits_blank_user_text_when_an_image_is_present() {
+        let request = ConversationRequest::from_items(vec![user_with_attachment_text(" \n\t")]);
+
+        let messages = build_messages_request(&request);
+        let crate::messages::MessageContent::Blocks(blocks) = &messages.messages[0].content else {
+            panic!("attachment-bearing Messages prompt must use content blocks");
+        };
+        assert_eq!(blocks.len(), 1);
+        assert_matches!(&blocks[0], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Url { url } }
+            if url == "https://example.com/attachment.png");
+    }
+
+    #[test]
+    fn nonblank_attachment_text_keeps_exact_bytes_in_every_wire_format() {
+        let text = "  describe this attachment  \n";
+        let user = user_with_attachment_text(text);
+        let request = ConversationRequest::from_items(vec![user.clone()]);
+
+        let chat = conversation_item_to_chat_message(user);
+        assert_matches!(&chat.content, MessageContent::Blocks(blocks)
+            if matches!(&blocks[0], ChatContentBlock::Text { text: wire_text } if wire_text == text));
+
+        let responses: rs::CreateResponse = (&request).into();
+        let rs::InputParam::Items(response_items) = responses.input else {
+            panic!("Responses request must use item input");
+        };
+        let rs::InputItem::EasyMessage(response_message) = &response_items[0] else {
+            panic!("user prompt must be an easy message");
+        };
+        assert_matches!(&response_message.content, rs::EasyInputContent::ContentList(parts)
+            if matches!(&parts[0], rs::InputContent::InputText(input) if input.text == text));
+
+        let messages = build_messages_request(&request);
+        assert_matches!(&messages.messages[0].content, crate::messages::MessageContent::Blocks(blocks)
+            if matches!(&blocks[0], crate::messages::ContentBlock::Text { text: wire_text, .. } if wire_text == text));
+    }
+
+    #[test]
+    fn text_only_whitespace_is_preserved_in_every_wire_format() {
+        let text = " \n\t";
+        let request = ConversationRequest::from_items(vec![ConversationItem::user(text)]);
+
+        let chat: ChatCompletionRequest = request.clone().into();
+        assert_matches!(&chat.messages[0].content, MessageContent::Text(wire_text) if wire_text == text);
+
+        let responses: rs::CreateResponse = (&request).into();
+        let rs::InputParam::Items(response_items) = responses.input else {
+            panic!("Responses request must use item input");
+        };
+        let rs::InputItem::EasyMessage(response_message) = &response_items[0] else {
+            panic!("user prompt must be an easy message");
+        };
+        assert_matches!(&response_message.content, rs::EasyInputContent::Text(wire_text) if wire_text == text);
+
+        let messages = build_messages_request(&request);
+        assert_matches!(&messages.messages[0].content, crate::messages::MessageContent::Blocks(blocks)
+            if matches!(&blocks[0], crate::messages::ContentBlock::Text { text: wire_text, .. } if wire_text == text));
+    }
+
+    #[test]
+    fn attachment_wire_projection_does_not_mutate_the_durable_user_item() {
+        let user = user_with_attachment_text(" \n\t");
+        let request = ConversationRequest::from_items(vec![user.clone()]);
+
+        let _ = conversation_item_to_chat_message(user.clone());
+        let _: rs::CreateResponse = (&request).into();
+        let _ = build_messages_request(&request);
+
+        let ConversationItem::User(durable_user) = &request.items[0] else {
+            panic!("request item must remain a user item");
+        };
+        assert_eq!(durable_user.content.len(), 2);
+        assert_matches!(&durable_user.content[0], ContentPart::Text { text } if text.as_ref() == " \n\t");
     }
 
     #[test]
