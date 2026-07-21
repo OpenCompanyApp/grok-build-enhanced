@@ -1952,6 +1952,27 @@ fn include_user_wire_part(has_images: bool, part: &ContentPart) -> bool {
     !has_images || !matches!(part, ContentPart::Text { text } if text.trim().is_empty())
 }
 
+/// True when an assistant message carries something representable on the Chat
+/// Completions wire. Empty/whitespace text and empty unsigned reasoning do not
+/// count, but either is preserved verbatim when another part is sendable.
+fn chat_assistant_has_sendable_content(message: &ChatRequestMessage) -> bool {
+    if !message.tool_calls.is_empty() {
+        return true;
+    }
+    let content_is_sendable = match &message.content {
+        MessageContent::Text(text) => !text.trim().is_empty(),
+        MessageContent::Blocks(blocks) => blocks.iter().any(|block| match block {
+            ChatContentBlock::Text { text } => !text.trim().is_empty(),
+            ChatContentBlock::ImageUrl { .. } => true,
+        }),
+    };
+    content_is_sendable
+        || message
+            .reasoning_content
+            .as_deref()
+            .is_some_and(|reasoning| !reasoning.trim().is_empty())
+}
+
 pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestMessage {
     match item {
         ConversationItem::System(s) => ChatRequestMessage::system(s.content.as_ref()),
@@ -2084,8 +2105,9 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
 /// Convert a sequence of [`ConversationItem`]s into the chat-completions
 /// wire format, concatenating each run of `Reasoning` siblings exactly into
 /// the `reasoning_content` of the following `Assistant` message. No separator
-/// is introduced, and a present-but-empty reasoning item stays present. An intervening
-/// `BackendToolCall` (emitted as its own synthetic assistant message) does
+/// is introduced, and a present-but-empty reasoning item stays present when
+/// the assistant has other sendable content. An intervening `BackendToolCall`
+/// (emitted as its own synthetic assistant message) does
 /// not break this fold, so the canonical
 /// `[Reasoning, BackendToolCall, Assistant]` turn keeps its reasoning; any
 /// other intervening item (user / tool result) clears it.
@@ -2114,7 +2136,13 @@ pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRe
                 if let Some(reasoning) = pending_reasoning.take() {
                     msg.reasoning_content = Some(reasoning);
                 }
-                out.push(msg);
+                // A provider-filtered turn can persist as empty reasoning plus
+                // an empty assistant. Keep durable history unchanged, but omit
+                // that output-free turn from every subsequent wire request so
+                // strict providers cannot wedge the session permanently.
+                if chat_assistant_has_sendable_content(&msg) {
+                    out.push(msg);
+                }
             }
             ConversationItem::BackendToolCall(_) => {
                 // A backend tool call sits between the reasoning and the
@@ -3354,15 +3382,34 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             .collect()
     };
 
-    // Flush pending assistant blocks into a message
+    // Flush only assistant blocks that produce provider-wire content. A wholly
+    // vacuous turn (whitespace text or empty unsigned thinking) is omitted,
+    // while the same blocks remain verbatim when a sibling block is sendable.
     let flush_assistant = |pending: &mut Vec<ContentBlock>, msgs: &mut Vec<Message>| {
-        if !pending.is_empty() {
+        let has_sendable_content = pending.iter().any(|block| match block {
+            ContentBlock::Text { text, .. } => !text.trim().is_empty(),
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
+                !thinking.trim().is_empty()
+                    || signature
+                        .as_deref()
+                        .is_some_and(|signature| !signature.is_empty())
+            }
+            ContentBlock::Unknown => false,
+            ContentBlock::Image { .. }
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::ToolResult { .. }
+            | ContentBlock::RedactedThinking { .. } => true,
+        });
+        if has_sendable_content {
             msgs.push(Message {
                 role: MessageRole::Assistant,
                 content: MessageContent::Blocks(pending.clone()),
             });
-            pending.clear();
         }
+        pending.clear();
     };
 
     // Flush pending tool results into a user message
@@ -5748,6 +5795,61 @@ mod tests {
         assert_eq!(thinking["type"], "thinking");
         assert_eq!(thinking["thinking"], "");
         assert!(thinking.get("signature").is_none());
+    }
+
+    #[test]
+    fn messages_request_omits_output_free_assistant_turn() {
+        let req = ConversationRequest {
+            reasoning_effort: Some(crate::ReasoningEffort::High),
+            ..ConversationRequest::from_items(vec![
+                ConversationItem::user("question"),
+                ConversationItem::Reasoning(synthesized_reasoning_item("")),
+                ConversationItem::assistant(" \n\t"),
+            ])
+            .with_model("messages-compatible-model")
+        };
+
+        let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+
+        assert_eq!(json["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(json["messages"][0]["role"], "user");
+    }
+
+    #[test]
+    fn messages_request_keeps_empty_thinking_beside_assistant_text() {
+        let req = ConversationRequest {
+            reasoning_effort: Some(crate::ReasoningEffort::High),
+            ..ConversationRequest::from_items(vec![
+                ConversationItem::Reasoning(synthesized_reasoning_item("")),
+                ConversationItem::assistant("answer"),
+            ])
+            .with_model("messages-compatible-model")
+        };
+
+        let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+
+        assert_eq!(json["messages"][0]["content"][0]["type"], "thinking");
+        assert_eq!(json["messages"][0]["content"][0]["thinking"], "");
+        assert_eq!(json["messages"][0]["content"][1]["type"], "text");
+        assert_eq!(json["messages"][0]["content"][1]["text"], "answer");
+    }
+
+    #[test]
+    fn messages_request_projection_preserves_durable_items() {
+        let req = ConversationRequest {
+            reasoning_effort: Some(crate::ReasoningEffort::High),
+            ..ConversationRequest::from_items(vec![
+                ConversationItem::user("question"),
+                ConversationItem::Reasoning(synthesized_reasoning_item("")),
+                ConversationItem::assistant(" \n\t"),
+            ])
+            .with_model("messages-compatible-model")
+        };
+        let before = serde_json::to_value(&req.items).unwrap();
+
+        let _ = build_messages_request(&req);
+
+        assert_eq!(serde_json::to_value(&req.items).unwrap(), before);
     }
 
     /// When reasoning_effort is unset, thinking is omitted entirely so the wire stays
@@ -9255,6 +9357,38 @@ mod tests {
 
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].reasoning_content.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn conversation_to_chat_messages_omits_output_free_assistant_turn() {
+        let items = vec![
+            ConversationItem::user("question"),
+            ConversationItem::Reasoning(synthesized_reasoning_item("")),
+            ConversationItem::assistant(" \n\t"),
+        ];
+
+        let messages = conversation_to_chat_messages(items);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn conversation_to_chat_messages_keeps_empty_reasoning_beside_tool_call() {
+        let items = vec![
+            ConversationItem::Reasoning(synthesized_reasoning_item("")),
+            ConversationItem::assistant_tool_calls(vec![ToolCall {
+                id: "call_1".into(),
+                name: "read_file".to_owned(),
+                arguments: r#"{"path":"README.md"}"#.into(),
+            }]),
+        ];
+
+        let messages = conversation_to_chat_messages(items);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].reasoning_content.as_deref(), Some(""));
+        assert_eq!(messages[0].tool_calls.len(), 1);
     }
 
     #[test]
