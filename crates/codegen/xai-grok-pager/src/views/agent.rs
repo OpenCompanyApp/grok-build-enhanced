@@ -127,6 +127,12 @@ pub struct AgentViewLayout {
     pub scrollback_content: Rect,
     /// Scrollbar track position (x coordinate).
     pub scrollbar_x: u16,
+    /// Timeline rail left edge (only meaningful when `timeline_width > 0`;
+    /// the rail's right edge lands on the scrollbar column, which the rail replaces).
+    pub timeline_x: u16,
+    /// Columns reserved for the timeline rail (0 = rail hidden). Non-zero also
+    /// means the scrollbar does not render this frame.
+    pub timeline_width: u16,
 }
 impl AgentViewLayout {
     /// Compute layout from screen area, appearance config, prompt height,
@@ -144,11 +150,14 @@ impl AgentViewLayout {
     /// When `startup_warning_height` is 0, the startup warning area is omitted.
     /// `prompt_gap` is 0 or 1 — controls the gap row between turn status
     /// (or scrollback) and the prompt widget.
+    /// `timeline_width` reserves rail columns for the timeline sidebar in place
+    /// of the scrollbar (0 = hidden); a disabled scrollbar forces it to 0.
     #[allow(clippy::too_many_arguments)]
     pub fn compute(
         area: Rect,
         layout_cfg: &LayoutConfig,
         scrollbar_cfg: &ScrollbarConfig,
+        timeline_width: u16,
         prompt_height: u16,
         tasks_height: u16,
         catalog_height: u16,
@@ -348,7 +357,17 @@ impl AgentViewLayout {
         }
         let shortcuts = chunks[i];
         let scrollbar_x = area.right().saturating_sub(scrollbar_cfg.gap_right + 1);
-        let content_end_x = scrollbar_x.saturating_sub(scrollbar_cfg.gap_left);
+        let timeline_width = if scrollbar_cfg.enabled {
+            timeline_width
+        } else {
+            0
+        };
+        let timeline_x = (scrollbar_x + 1).saturating_sub(timeline_width);
+        let content_end_x = if timeline_width > 0 {
+            timeline_x.saturating_sub(scrollbar_cfg.gap_left)
+        } else {
+            scrollbar_x.saturating_sub(scrollbar_cfg.gap_left)
+        };
         let scrollback_right = scrollback.x + scrollback.width;
         let scrollback_content = if !scrollbar_cfg.enabled || content_end_x >= scrollback_right {
             scrollback
@@ -376,6 +395,8 @@ impl AgentViewLayout {
             shortcuts,
             scrollback_content,
             scrollbar_x,
+            timeline_x,
+            timeline_width,
         }
     }
     /// Inner area width (for prompt height computation before full layout).
@@ -1177,8 +1198,11 @@ pub fn build_hints(
     {
         hints.push(def.hint());
     }
-    if can_demote {
-        hints.push(HintItem::new(crate::key!('g', CONTROL), "send to bg"));
+    if can_demote
+        && !is_subagent_view
+        && let Some(key) = registry.key_for(ActionId::SendToBackground)
+    {
+        hints.push(HintItem::new(key, "send to bg"));
     }
     hints
 }
@@ -1244,6 +1268,40 @@ mod tests {
     }
     fn first_two_labels(hints: &[HintItem]) -> Vec<&str> {
         hints.iter().take(2).map(|h| h.label.as_ref()).collect()
+    }
+    #[test]
+    fn demotion_hint_uses_registered_ctrl_b_binding() {
+        let registry = ActionRegistry::defaults();
+        let hints = build_hints(
+            ActivePane::Scrollback,
+            &PromptWidget::default(),
+            &registry,
+            false,
+            None,
+            None,
+            "expand thinking",
+            false,
+            false,
+            None,
+            false,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        );
+        let hint = hints
+            .iter()
+            .find(|hint| hint.label == "send to bg")
+            .expect("running Execute should advertise demotion");
+        assert_eq!(hint.keys, vec![crate::key!('b', CONTROL)]);
     }
     #[test]
     fn group_header_shows_enter_toggle_hint_instead_of_open_and_fold() {
@@ -1737,6 +1795,7 @@ mod tests {
             area,
             &layout_cfg,
             &scrollbar_cfg,
+            0,
             2,
             0,
             0,

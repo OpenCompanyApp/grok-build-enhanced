@@ -260,6 +260,19 @@ const HUNK_TRACKER_MODE_CHOICES: &[EnumChoice] = &[
 // `hold` is only offered on terminals that report key releases (Kitty keyboard
 // protocol); `effective_enum_choices` hides it elsewhere, and it falls back to
 // `toggle` at runtime.
+const SCREEN_MODE_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "fullscreen",
+        display: "Fullscreen",
+        description: "Open plain grok in the standard fullscreen TUI. Default when unset.",
+    },
+    EnumChoice {
+        canonical: "minimal",
+        display: "Minimal",
+        description: "Open plain grok in scrollback-native (minimal) mode.",
+    },
+];
+
 const VOICE_CAPTURE_MODE_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "toggle",
@@ -425,6 +438,7 @@ const CONTEXTUAL_HINTS_CHILDREN: &[&str] = &[
     "contextual_hints.send_now",
     "contextual_hints.small_screen",
     "contextual_hints.word_select",
+    "contextual_hints.ssh_wrap",
 ];
 
 /// Build the catalog. Called once at process start via
@@ -451,6 +465,34 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
         },
         SettingMeta {
+            key: "screen_mode",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shell,
+            label: "Default screen mode",
+            description: "How plain grok opens next time: Fullscreen (default when unset) or \
+                          Minimal. Writes [ui] screen_mode in config.toml. Restart required. \
+                          Switch this session only with /minimal or /fullscreen.",
+            keywords: &[
+                "screen",
+                "mode",
+                "minimal",
+                "fullscreen",
+                "full",
+                "scrollback",
+                "native",
+                "alt-screen",
+                "render",
+                "default",
+            ],
+            kind: SettingKind::Enum {
+                default: "fullscreen",
+                choices: SCREEN_MODE_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
             key: "show_timestamps",
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shared,
@@ -460,6 +502,47 @@ pub fn default_settings() -> Vec<SettingMeta> {
             kind: SettingKind::Bool {
                 // `Option<bool>` — `None` treated as `true`.
                 default: ui_default.show_timestamps.unwrap_or(true),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "show_timeline",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shared,
+            label: "Timeline sidebar",
+            description: "Per-turn tick rail in place of the scrollbar: hover previews a turn, click jumps to it.",
+            keywords: &["timeline", "sidebar", "ticks", "turns", "navigator", "rail"],
+            kind: SettingKind::Bool {
+                default: ui_default.show_timeline_enabled(),
+            },
+            restart_required: false,
+            hidden_in_minimal: true,
+        },
+        SettingMeta {
+            key: "page_flip_on_send",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shared,
+            label: "Snap prompt to top on send",
+            description: "When you send a prompt, scroll it to the top of the screen so the response starts on a fresh page (default). Turn off to leave the scroll position unchanged when you send.",
+            keywords: &[
+                "page", "flip", "send", "prompt", "scroll", "top", "jump", "auto", "snap",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.page_flip_on_send_enabled(),
+            },
+            restart_required: false,
+            hidden_in_minimal: true,
+        },
+        SettingMeta {
+            key: "combine_queued_prompts",
+            category: SettingCategory::Editor,
+            owner: SettingOwner::Shared,
+            label: "Combine queued prompts",
+            description: "Merge consecutive plain follow-ups into one model turn (TUI shows one bubble each). Stops at bash, slash commands, cron, expanded skills, image follow-ups, or a row under edit. Default off; applies on local drain and shell promote.",
+            keywords: &["queue", "combine", "batch", "follow-up", "merge", "pending"],
+            kind: SettingKind::Bool {
+                default: ui_default.combine_queued_prompts.unwrap_or(false),
             },
             restart_required: false,
             hidden_in_minimal: false,
@@ -973,27 +1056,31 @@ pub fn default_settings() -> Vec<SettingMeta> {
         },
         // SHELL-owned. Persisted in auth metadata (not config.toml).
         // Reads from `PagerLocalSnapshot.coding_data_sharing_opt_out`.
-        // Default "opt-in" matches `AuthEntry::coding_data_retention_opt_out = false`.
+        // Default "opt-out" matches `AuthEntry::coding_data_retention_opt_out = true`
+        // (safer consumer default; server enrichment may still opt the user in).
         // ZDR / non-admin guards are enforced at dispatch time.
+        // Do not put "telemetry" in keywords — that word is the config-file
+        // analytics toggle (Monitoring / Configuration docs).
         SettingMeta {
             key: "coding_data_sharing",
             category: SettingCategory::Privacy,
             owner: SettingOwner::Shell,
             label: "Coding data sharing",
-            description: "Controls whether SpaceXAI may retain and train on coding session data.",
+            description: "Controls whether SpaceXAI may retain and train on coding session \
+                          data. Does not affect product analytics; see Configuration and \
+                          Monitoring docs.",
             keywords: &[
                 "privacy",
                 "data",
                 "sharing",
                 "coding",
                 "retention",
-                "telemetry",
                 "training",
                 "opt-in",
                 "opt-out",
             ],
             kind: SettingKind::Enum {
-                default: "opt-in",
+                default: "opt-out",
                 choices: CODING_DATA_SHARING_CHOICES,
                 supports_preview: false,
             },
@@ -1331,6 +1418,28 @@ pub fn default_settings() -> Vec<SettingMeta> {
             ],
             kind: SettingKind::Bool {
                 default: ui_default.contextual_hints.word_select.unwrap_or(true),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "contextual_hints.ssh_wrap",
+            category: SettingCategory::Advanced,
+            owner: SettingOwner::Shell,
+            label: "SSH wrap",
+            description: "At session load over SSH, recommend `grok wrap ssh` for \
+                          clipboard forwarding and terminal restore.",
+            keywords: &[
+                "ssh",
+                "wrap",
+                "remote",
+                "clipboard",
+                "restore",
+                "startup",
+                "hint",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.contextual_hints.ssh_wrap.unwrap_or(true),
             },
             restart_required: false,
             hidden_in_minimal: false,

@@ -39,22 +39,8 @@ async fn endline_park_two_static_markers() {
         "is_background": true
     })
     .to_string();
-    content.enqueue_response(
-        "/v1/responses",
-        ScriptedResponse::sse(responses_api_tool_call_events(
-            "call_endline_bg",
-            "run_terminal_command",
-            &bg_args,
-        )),
-    );
-    content.enqueue_response(
-        "/v1/chat/completions",
-        ScriptedResponse::sse(chat_completions_tool_call_events_with_id(
-            "call_endline_bg",
-            "run_terminal_command",
-            &bg_args,
-        )),
-    );
+    let _background_turn =
+        expect_tool_turn(&content, "call_endline_bg", "run_terminal_command", bg_args);
 
     // Tool call 2: the flag-gated foreground hold — the turn idles here (no
     // deadline) until the test has extracted the task id and enqueued the
@@ -64,21 +50,11 @@ async fn endline_park_two_static_markers() {
         "description": "hold for id extraction"
     })
     .to_string();
-    content.enqueue_response(
-        "/v1/responses",
-        ScriptedResponse::sse(responses_api_tool_call_events(
-            "call_endline_id_hold",
-            "run_terminal_command",
-            &id_hold_args,
-        )),
-    );
-    content.enqueue_response(
-        "/v1/chat/completions",
-        ScriptedResponse::sse(chat_completions_tool_call_events_with_id(
-            "call_endline_id_hold",
-            "run_terminal_command",
-            &id_hold_args,
-        )),
+    let _id_hold_turn = expect_tool_turn(
+        &content,
+        "call_endline_id_hold",
+        "run_terminal_command",
+        id_hold_args,
     );
 
     // Fallback for the cancel-and-sent prompt's turn: plain text ends it.
@@ -127,21 +103,11 @@ async fn endline_park_two_static_markers() {
         "timeout_ms": 600_000
     })
     .to_string();
-    content.enqueue_response(
-        "/v1/responses",
-        ScriptedResponse::sse(responses_api_tool_call_events(
-            "call_endline_wait",
-            "get_command_or_subagent_output",
-            &wait_args,
-        )),
-    );
-    content.enqueue_response(
-        "/v1/chat/completions",
-        ScriptedResponse::sse(chat_completions_tool_call_events_with_id(
-            "call_endline_wait",
-            "get_command_or_subagent_output",
-            &wait_args,
-        )),
+    let _wait_turn = expect_tool_turn(
+        &content,
+        "call_endline_wait",
+        "get_command_or_subagent_output",
+        wait_args,
     );
 
     // Everything downstream is scripted — let the id-extraction hold finish.

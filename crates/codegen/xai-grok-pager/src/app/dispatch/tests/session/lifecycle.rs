@@ -1390,6 +1390,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
             text: "retry me".into(),
             images: Vec::new(),
             scrollback_entry: crate::scrollback::EntryId::new(0),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
     }
@@ -1873,7 +1874,7 @@ fn dashboard_stop_with_peek_open_moves_selection_and_peek_down_one() {
     let first = order[0].clone();
     let second = order[1].clone();
     app.dashboard.as_mut().unwrap().focus_row(first.clone());
-    let area = Rect::new(0, 0, 80, 24);
+    let area = Rect::new(0, 0, 80, 40);
     let reg = crate::actions::ActionRegistry::defaults();
     let render = |app: &mut AppView| {
         let mut buf = Buffer::empty(area);
@@ -1881,7 +1882,7 @@ fn dashboard_stop_with_peek_open_moves_selection_and_peek_down_one() {
             &mut buf,
             area,
             app.dashboard.as_mut().unwrap(),
-            &app.agents,
+            &mut app.agents,
             &reg,
             None,
             &[],

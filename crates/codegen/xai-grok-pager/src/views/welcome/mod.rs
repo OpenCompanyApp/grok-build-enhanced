@@ -11,6 +11,7 @@ use ratatui::layout::{Alignment, Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::app_view::{AuthMode, AuthState, SessionPickerEntry, TrustState};
 use crate::startup::StartupWarning;
@@ -660,6 +661,7 @@ pub struct WelcomeRenderParams<'a> {
     pub trust_state: &'a TrustState,
     pub login_label: Option<&'a str>,
     pub auth_code_input: &'a str,
+    pub auth_code_cursor_byte: usize,
     pub clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     pub show_raw_url: bool,
     pub announcement: Option<&'a xai_grok_announcements::RemoteAnnouncement>,
@@ -703,7 +705,7 @@ pub struct WelcomeRenderParams<'a> {
     pub credit_balance: Option<&'a crate::views::credit_bar::CreditBalance>,
     /// Auto top-up rule paired with `credit_balance` for the welcome warning.
     pub auto_topup: Option<&'a crate::views::credit_bar::AutoTopupInfo>,
-    /// Whether /usage is visible (false for team users — suppresses the warning).
+    /// Consumer billing surface (false for team / API-key — no credit warning).
     pub usage_visible: bool,
     /// Cached changelog bullets for the welcome screen (up to 3).
     pub changelog_bullets: &'a [String],
@@ -804,6 +806,7 @@ pub fn render_welcome(
                 auth_url.as_deref(),
                 *mode,
                 params.auth_code_input,
+                params.auth_code_cursor_byte,
                 params.clipboard_delivery,
                 params.show_raw_url,
             );
@@ -1422,6 +1425,7 @@ fn render_welcome_authenticating(
     auth_url: Option<&str>,
     mode: AuthMode,
     auth_code_input: &str,
+    auth_code_cursor_byte: usize,
     clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     show_raw_url: bool,
 ) -> (Option<Rect>, Option<Rect>) {
@@ -1505,7 +1509,13 @@ fn render_welcome_authenticating(
             ])
             .flex(Flex::Center)
             .areas(prompt_area);
-            render_auth_input_box(prompt_centered, buf, theme, auth_code_input);
+            render_auth_input_box(
+                prompt_centered,
+                buf,
+                theme,
+                auth_code_input,
+                auth_code_cursor_byte,
+            );
 
             // Hints
             let mut hint_spans = vec![
@@ -2475,7 +2485,13 @@ pub(crate) fn render_session_picker(
 }
 
 /// Render the auth token input box (loopback mode).
-fn render_auth_input_box(area: Rect, buf: &mut Buffer, theme: &Theme, input: &str) {
+fn render_auth_input_box(
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+    input: &str,
+    cursor_byte: usize,
+) {
     let prompt_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent_user))
@@ -2489,7 +2505,11 @@ fn render_auth_input_box(area: Rect, buf: &mut Buffer, theme: &Theme, input: &st
     prompt_block.render(area, buf);
 
     if inner.height > 0 && inner.width > 2 {
-        let display = mask_auth_token_for_display(input);
+        let prompt = crate::glyphs::prompt_arrow();
+        let prompt_width = unicode_width::UnicodeWidthStr::width(prompt) as u16;
+        let input_width = inner.width.saturating_sub(prompt_width);
+        let (display, cursor_column) =
+            masked_auth_token_view(input, cursor_byte, input_width as usize);
 
         let style = if input.is_empty() {
             Style::default().fg(theme.gray_dim)
@@ -2498,13 +2518,16 @@ fn render_auth_input_box(area: Rect, buf: &mut Buffer, theme: &Theme, input: &st
         };
 
         let line = Line::from(vec![
-            Span::styled(
-                crate::glyphs::prompt_arrow(),
-                Style::default().fg(theme.accent_user),
-            ),
+            Span::styled(prompt, Style::default().fg(theme.accent_user)),
             Span::styled(display, style),
         ]);
         buf.set_line(inner.x, inner.y, &line, inner.width);
+        if input_width > 0 {
+            let cursor_x = inner.x + prompt_width + cursor_column as u16;
+            if let Some(cell) = buf.cell_mut((cursor_x, inner.y)) {
+                cell.set_style(Style::default().fg(theme.bg_base).bg(theme.text_primary));
+            }
+        }
     }
 }
 
@@ -2553,20 +2576,57 @@ fn render_startup_warnings(
     None
 }
 
-fn mask_auth_token_for_display(input: &str) -> String {
-    use crate::render::line_utils::floor_char_boundary;
+fn auth_token_grapheme_visible(index: usize, total: usize) -> bool {
+    total <= 8 || index + 4 >= total
+}
 
+struct MaskedAuthToken {
+    display: String,
+    cursor_byte: usize,
+}
+
+fn build_masked_auth_token(input: &str, cursor_byte: usize) -> MaskedAuthToken {
+    let graphemes: Vec<(usize, &str)> = input.grapheme_indices(true).collect();
+    let total = graphemes.len();
+    let mut display = String::new();
+    let mut mapped_cursor = None;
+    for (index, (byte, grapheme)) in graphemes.into_iter().enumerate() {
+        if byte == cursor_byte {
+            mapped_cursor = Some(display.len());
+        }
+        if auth_token_grapheme_visible(index, total) {
+            display.push_str(grapheme);
+        } else {
+            display.push('\u{2022}');
+        }
+    }
+    MaskedAuthToken {
+        cursor_byte: mapped_cursor.unwrap_or(display.len()),
+        display,
+    }
+}
+
+fn masked_auth_token_view(input: &str, cursor_byte: usize, width: usize) -> (String, usize) {
     if input.is_empty() {
-        return "Paste your token here...".to_string();
+        return ("Paste your token here...".to_string(), 0);
     }
-    let len = input.len();
-    if len <= 8 {
-        return input.to_string();
+    let masked = build_masked_auth_token(input, cursor_byte);
+    let buffer =
+        xai_ratatui_textarea::EditBuffer::from_parts(masked.display.as_str(), masked.cursor_byte);
+    let viewport = buffer.single_line_viewport(width);
+    (
+        masked.display[viewport.visible_byte_range].to_owned(),
+        viewport.cursor_display_column,
+    )
+}
+
+#[cfg(test)]
+fn mask_auth_token_for_display(input: &str) -> String {
+    if input.is_empty() {
+        "Paste your token here...".to_string()
+    } else {
+        build_masked_auth_token(input, input.len()).display
     }
-    let boundary = floor_char_boundary(input, len - 4);
-    let visible = &input[boundary..];
-    let masked_count = input[..boundary].chars().count();
-    format!("{}{}", "\u{2022}".repeat(masked_count), visible)
 }
 
 #[cfg(test)]
@@ -2642,6 +2702,7 @@ mod tests {
             trust_state,
             login_label: None,
             auth_code_input: "",
+            auth_code_cursor_byte: 0,
             clipboard_delivery: None,
             show_raw_url: false,
             announcement: None,
@@ -2895,10 +2956,8 @@ mod tests {
 
         let render = |entries_query: Option<&str>| -> String {
             let mut buf = Buffer::empty(area);
-            let mut state = PickerState {
-                query: "hit".into(),
-                ..PickerState::default()
-            };
+            let mut state = PickerState::default();
+            state.set_query("hit");
             render_session_picker(
                 area,
                 &mut buf,
@@ -3118,15 +3177,12 @@ mod tests {
         use crate::views::picker::{PickerOutcome, handle_picker_input};
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-        let mut state = PickerState {
-            search_active: true,
-            ..PickerState::default()
-        };
+        let mut state = PickerState::input_active();
         let config = resume_picker_config();
         let ev = Event::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         let outcome = handle_picker_input(&ev, &mut state, 3, &config);
-        assert!(matches!(outcome, PickerOutcome::Changed));
-        assert_eq!(state.query, "e");
+        assert!(matches!(outcome, PickerOutcome::QueryChanged));
+        assert_eq!(state.query(), "e");
     }
 
     #[test]
@@ -3652,6 +3708,7 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",    // auth_code_input — unused in device mode
+            0,     // auth_code_cursor_byte
             None,  // clipboard_delivery
             false, // show_raw_url
         );
@@ -3706,6 +3763,7 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",
+            0,    // auth_code_cursor_byte
             None, // clipboard_delivery
             true, // show_raw_url
         );
@@ -3732,6 +3790,7 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",
+            0,    // auth_code_cursor_byte
             None, // clipboard_delivery
             true, // show_raw_url
         );
@@ -3769,6 +3828,7 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",
+            0,    // auth_code_cursor_byte
             None, // clipboard_delivery
             true, // show_raw_url
         );
@@ -3808,6 +3868,7 @@ mod tests {
             Some(url),
             AuthMode::Command,
             "",    // auth_code_input — unused
+            0,     // auth_code_cursor_byte
             None,  // clipboard_delivery
             false, // show_raw_url
         );

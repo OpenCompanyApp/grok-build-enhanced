@@ -562,12 +562,19 @@ pub fn resolve_turn_activity(v: &AgentView) -> Option<TurnActivity> {
     v.resolve_turn_activity()
 }
 
-/// [`AgentView::renders_parked`] — minimal renders the idle hint (not the
-/// turn-status row) while the parked-wait marker's turn is parked, mirroring
-/// the full TUI. The marker itself is pushed by the shared ACP notification
-/// path, so minimal's scrollback carries it too.
+/// [`AgentView::renders_parked`] — while the parked-wait marker's turn is
+/// parked, minimal renders the "… still running" cue (watchers running) or the
+/// idle hint (none), mirroring the full TUI. The marker itself is pushed by
+/// the shared ACP notification path, so minimal's scrollback carries it too.
 pub fn renders_parked(v: &AgentView) -> bool {
     v.renders_parked()
+}
+
+/// [`AgentView::watchers`] — idle-surviving background work (running
+/// commands / monitors / loops / subagents) for the shared turn-status
+/// widget's "… still running" cue.
+pub fn watchers(v: &AgentView) -> crate::views::turn_status::Watchers {
+    v.watchers()
 }
 
 /// [`AgentView::held_queue_count`].
@@ -688,6 +695,28 @@ pub fn mcp_status_label(status: &McpServerDisplayStatus) -> &'static str {
 }
 
 // ── Session picker builders ──────────────────────────────────────────────────
+
+/// Render a search bar from a [`PickerState`] using its grapheme-safe viewport.
+pub fn render_picker_search_bar(
+    buf: &mut Buffer,
+    area: Rect,
+    theme: &Theme,
+    state: &PickerState,
+    show_hint: bool,
+    bg: Option<Color>,
+) {
+    crate::views::picker::render_picker_search_bar(
+        buf,
+        area.x,
+        area.y,
+        area.width,
+        theme,
+        state,
+        state.search_active,
+        show_hint,
+        bg,
+    );
+}
 
 /// [`crate::views::session_picker::repo_name_from_cwd`].
 pub fn repo_name_from_cwd(cwd: &str) -> String {

@@ -145,7 +145,8 @@ impl SessionEvent {
             SessionEvent::TurnCompleted {
                 elapsed: Some(elapsed),
             } => {
-                format!("Worked for {}.", format_duration(*elapsed))
+                // Deliberately period-less — don't re-punctuate.
+                format!("Worked for {}", format_duration(*elapsed))
             }
             SessionEvent::TurnCompleted { elapsed: None } => "Turn completed.".to_string(),
             SessionEvent::TurnCancelled { elapsed } => {
@@ -294,12 +295,10 @@ fn format_tokens(tokens: u64) -> String {
     }
 }
 
-/// Background work counted on a turn-end marker's work suffix
-/// ("1 command, 1 monitor and 2 subagents still running."). A static
-/// snapshot taken at push time — nothing mutates it; a later completion
-/// re-emits a fresh work-only status line when no wake response follows,
-/// and otherwise gets the wake turn's own end marker (see the pager's
-/// `push_wake_end_marker`).
+/// Live background-work counts used by the between-turns no-wake fallback.
+/// Turn markers remain plain and the persistent status row owns live counts;
+/// when a completion will not trigger a synthetic wake response, these counts
+/// produce a chronological work-only line after its completion chip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EndWork {
     /// Background bash commands still running (`BgTaskStatus::Running`,
@@ -313,19 +312,15 @@ pub struct EndWork {
 }
 
 impl EndWork {
-    /// `None` at all-zero counts — the one spelling of "a workless marker
-    /// carries no `end_work`", so it renders the legacy text and closes the
-    /// between-turns status window.
+    /// `None` at all-zero counts, so workless turns and completions emit no
+    /// between-turns fallback line.
     pub fn nonzero(self) -> Option<Self> {
         (self != Self::default()).then_some(self)
     }
 
-    /// The "N … still running." line, `None` when every count is zero so a
-    /// marker collapses to the plain legacy completion text (and no
-    /// between-turns status line is emitted). Doubles as the work-only
-    /// status line re-emitted after a background completion. Ends with a
-    /// period, never an ellipsis: the marker states a settled fact, not a
-    /// progress spinner.
+    /// The "N … still running." work-only fallback line, or `None` when
+    /// every count is zero. Ends with a period, never an ellipsis: this is a
+    /// settled between-turns fact rather than progress-spinner text.
     pub fn still_running_text(&self) -> Option<String> {
         let count = |n: usize, noun: &str| -> Option<String> {
             match n {
@@ -369,15 +364,11 @@ pub struct SessionEventBlock {
     /// The prompt turn a terminal marker belongs to, when known. Gates
     /// which stop-hook batches may merge into it.
     pub prompt_id: Option<String>,
-    /// Work counts appended to a turn-end marker as a "still running"
-    /// suffix, snapshotted at push time. `None` for every non-marker event
-    /// and for markers pushed with no work in flight — those render the
-    /// legacy text unchanged.
-    pub end_work: Option<EndWork>,
     /// The marker was pushed at park time (user-interruptible blocking
     /// wait): the turn is still running shell-side, so it must never accept
-    /// stop hooks. Rendering is unchanged — a parked wait reads as stopped —
-    /// and the real completion still prints its own marker.
+    /// stop hooks. Rendering is unchanged — a parked wait reads as stopped.
+    /// Cleared when the completion folds into the uncommitted tail marker;
+    /// a committed tail (minimal print-once) gets a fresh row instead.
     pub parked: bool,
 }
 
@@ -388,7 +379,6 @@ impl SessionEventBlock {
             event,
             stop_hooks: Vec::new(),
             prompt_id: None,
-            end_work: None,
             parked: false,
         }
     }
@@ -404,7 +394,6 @@ impl SessionEventBlock {
             event,
             stop_hooks,
             prompt_id,
-            end_work: None,
             parked: false,
         }
     }
@@ -416,15 +405,10 @@ impl SessionEventBlock {
         self.event.is_turn_terminal() && !self.parked
     }
 
-    /// The marker line text: the turn-scoped prefix ("Worked for X.")
-    /// plus the work suffix ("1 command still running.") snapshotted at push
-    /// time. No `end_work` (or all-zero counts) is byte-identical to the
-    /// legacy event text.
+    /// The plain marker line text. Live background counts belong to the
+    /// persistent status row, not the immutable turn boundary.
     pub fn marker_text(&self) -> String {
-        match self.end_work.as_ref().and_then(EndWork::still_running_text) {
-            Some(work) => format!("{} {work}", self.event.message()),
-            None => self.event.message(),
-        }
+        self.event.message()
     }
 
     /// Whether any attached stop hook actually ran (non-skipped). Gates the
@@ -453,7 +437,7 @@ impl SessionEventBlock {
     ///
     /// The summary spans are decoration — [`Selectable::Spans`] keeps
     /// drag-copy on the marker text only, so a copied "Worked for
-    /// 4.4s." never drags the padding and hook counts along.
+    /// 4.4s" never drags the padding and hook counts along.
     fn append_stop_hooks(&self, lines: &mut Vec<BlockLine>, ctx: &BlockContext) {
         use super::tool::hook::{render_hooks_for_mode, render_stop_hooks_summary};
 
@@ -743,7 +727,7 @@ mod tests {
         let event = SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(125)),
         };
-        assert_eq!(event.message(), "Worked for 2m5s.");
+        assert_eq!(event.message(), "Worked for 2m5s");
     }
 
     #[test]
@@ -1244,7 +1228,7 @@ mod tests {
         assert_eq!(out.lines.len(), 1, "collapsed marker stays a single line");
         let text = plain(&out.lines[0]);
         assert!(
-            text.starts_with("Worked for 5.0s."),
+            text.starts_with("Worked for 5.0s"),
             "marker text keeps the left edge: {text}"
         );
         assert!(
@@ -1264,14 +1248,14 @@ mod tests {
         );
         assert_eq!(
             out.lines[0].selection_text.as_deref(),
-            Some("Worked for 5.0s.")
+            Some("Worked for 5.0s")
         );
     }
 
     #[test]
     fn stop_hooks_summary_wraps_to_own_line_when_narrow() {
         let block = completed_with_stop_hooks();
-        // "Worked for 5.0s." is 16 cols; the summary is 16 — no room
+        // "Worked for 5.0s" is 15 cols; the summary is 16 — no room
         // at width 30, so the summary right-justifies on its own line.
         let out = block.output(&BlockContext {
             mode: DisplayMode::Collapsed,
@@ -1382,7 +1366,7 @@ mod tests {
             mode: DisplayMode::Collapsed,
             ..ctx()
         });
-        assert_eq!(plain(&out.lines[0]), "Worked for 5.0s.");
+        assert_eq!(plain(&out.lines[0]), "Worked for 5.0s");
     }
 
     #[test]
@@ -1418,62 +1402,16 @@ mod tests {
         );
     }
 
-    /// A marker block with snapshotted work counts (parked by default — the
-    /// shape `maybe_push_parked_marker` pushes).
-    fn marker_with_work(commands: usize, monitors: usize, subagents: usize) -> SessionEventBlock {
-        SessionEventBlock {
-            event: SessionEvent::TurnCompleted {
-                elapsed: Some(Duration::from_secs(24)),
-            },
-            stop_hooks: Vec::new(),
-            prompt_id: None,
-            end_work: Some(EndWork {
-                running_commands: commands,
-                running_monitors: monitors,
-                running_subagents: subagents,
-            }),
-            parked: true,
-        }
-    }
-
-    #[test]
-    fn end_work_suffix_names_actual_pending_work() {
-        let msg = |c, m, s| marker_with_work(c, m, s).marker_text();
-        assert_eq!(msg(1, 0, 0), "Worked for 24s. 1 command still running.");
-        assert_eq!(msg(0, 0, 1), "Worked for 24s. 1 subagent still running.");
-        assert_eq!(msg(3, 0, 0), "Worked for 24s. 3 commands still running.");
-        assert_eq!(
-            msg(2, 0, 1),
-            "Worked for 24s. 2 commands and 1 subagent still running."
-        );
-        // Monitors are counted apart from commands so a long-lived watch
-        // reads as "1 monitor", not a stuck command.
-        assert_eq!(msg(0, 1, 0), "Worked for 24s. 1 monitor still running.");
-        assert_eq!(
-            msg(1, 1, 2),
-            "Worked for 24s. 1 command, 1 monitor and 2 subagents still running."
-        );
-    }
-
-    #[test]
-    fn end_work_suffix_disappears_at_zero_counts() {
-        // All-zero counts (a sleep-park with nothing running) and a legacy
-        // `end_work: None` marker must both render the byte-identical plain
-        // completion text.
-        assert_eq!(marker_with_work(0, 0, 0).marker_text(), "Worked for 24s.");
-        assert_eq!(
-            SessionEventBlock::new(SessionEvent::TurnCompleted {
-                elapsed: Some(Duration::from_secs(24)),
-            })
-            .marker_text(),
-            "Worked for 24s."
-        );
+    fn parked_marker() -> SessionEventBlock {
+        let mut block = SessionEventBlock::new(SessionEvent::TurnCompleted {
+            elapsed: Some(Duration::from_secs(24)),
+        });
+        block.parked = true;
+        block
     }
 
     #[test]
     fn still_running_text_is_the_work_only_status_form() {
-        // The between-turns status line reuses the marker suffix verbatim
-        // (no turn prefix), and stays absent at zero counts.
         let work = EndWork {
             running_commands: 2,
             running_monitors: 0,
@@ -1489,7 +1427,7 @@ mod tests {
     #[test]
     fn parked_markers_never_accept_stop_hooks() {
         // A parked marker renders mid-turn, before any Stop hook fires.
-        let block = marker_with_work(1, 0, 0);
+        let block = parked_marker();
         assert!(!block.accepts_stop_hooks(), "parked marker refuses hooks");
 
         // The real terminal marker accepts.
@@ -1506,14 +1444,9 @@ mod tests {
     }
 
     #[test]
-    fn parked_marker_output_reads_as_completed_with_work_suffix() {
-        // The rendered block line matches `marker_text` (the suffix rides the
-        // same muted line, wrapped like any other session event).
-        let block = marker_with_work(1, 0, 2);
+    fn parked_marker_output_stays_plain() {
+        let block = parked_marker();
         let out = block.output(&ctx());
-        assert_eq!(
-            plain(&out.lines[0]),
-            "Worked for 24s. 1 command and 2 subagents still running."
-        );
+        assert_eq!(plain(&out.lines[0]), "Worked for 24s");
     }
 }

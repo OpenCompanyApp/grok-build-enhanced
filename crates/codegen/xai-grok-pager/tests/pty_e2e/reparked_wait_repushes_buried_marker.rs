@@ -45,22 +45,8 @@ async fn reparked_wait_repushes_buried_marker() {
         "is_background": true
     })
     .to_string();
-    content.enqueue_response(
-        "/v1/responses",
-        ScriptedResponse::sse(responses_api_tool_call_events(
-            "call_repark_bg",
-            "run_terminal_command",
-            &bg_args,
-        )),
-    );
-    content.enqueue_response(
-        "/v1/chat/completions",
-        ScriptedResponse::sse(chat_completions_tool_call_events_with_id(
-            "call_repark_bg",
-            "run_terminal_command",
-            &bg_args,
-        )),
-    );
+    let _background_turn =
+        expect_tool_turn(&content, "call_repark_bg", "run_terminal_command", bg_args);
 
     // Tool call 2: the flag-gated foreground hold for id extraction.
     let id_hold_args = json!({
@@ -68,21 +54,11 @@ async fn reparked_wait_repushes_buried_marker() {
         "description": "hold for id extraction"
     })
     .to_string();
-    content.enqueue_response(
-        "/v1/responses",
-        ScriptedResponse::sse(responses_api_tool_call_events(
-            "call_repark_id_hold",
-            "run_terminal_command",
-            &id_hold_args,
-        )),
-    );
-    content.enqueue_response(
-        "/v1/chat/completions",
-        ScriptedResponse::sse(chat_completions_tool_call_events_with_id(
-            "call_repark_id_hold",
-            "run_terminal_command",
-            &id_hold_args,
-        )),
+    let _id_hold_turn = expect_tool_turn(
+        &content,
+        "call_repark_id_hold",
+        "run_terminal_command",
+        id_hold_args,
     );
 
     // Fallback for the post-wait continuation once park #2's wait returns.
@@ -129,21 +105,11 @@ async fn reparked_wait_repushes_buried_marker() {
         "timeout_ms": 4_000
     })
     .to_string();
-    content.enqueue_response(
-        "/v1/responses",
-        ScriptedResponse::sse(responses_api_tool_call_events(
-            "call_repark_wait1",
-            "get_command_or_subagent_output",
-            &short_wait_args,
-        )),
-    );
-    content.enqueue_response(
-        "/v1/chat/completions",
-        ScriptedResponse::sse(chat_completions_tool_call_events_with_id(
-            "call_repark_wait1",
-            "get_command_or_subagent_output",
-            &short_wait_args,
-        )),
+    let _short_wait_turn = expect_tool_turn(
+        &content,
+        "call_repark_wait1",
+        "get_command_or_subagent_output",
+        short_wait_args,
     );
 
     // Tool call 4: foreground work between the parks (`MIDWORK` is the
@@ -153,21 +119,11 @@ async fn reparked_wait_repushes_buried_marker() {
         "description": MIDWORK
     })
     .to_string();
-    content.enqueue_response(
-        "/v1/responses",
-        ScriptedResponse::sse(responses_api_tool_call_events(
-            "call_repark_midwork",
-            "run_terminal_command",
-            &midwork_args,
-        )),
-    );
-    content.enqueue_response(
-        "/v1/chat/completions",
-        ScriptedResponse::sse(chat_completions_tool_call_events_with_id(
-            "call_repark_midwork",
-            "run_terminal_command",
-            &midwork_args,
-        )),
+    let _midwork_turn = expect_tool_turn(
+        &content,
+        "call_repark_midwork",
+        "run_terminal_command",
+        midwork_args,
     );
 
     // Tool call 5 — park #2: the long wait on the same still-running task.
@@ -176,21 +132,11 @@ async fn reparked_wait_repushes_buried_marker() {
         "timeout_ms": 600_000
     })
     .to_string();
-    content.enqueue_response(
-        "/v1/responses",
-        ScriptedResponse::sse(responses_api_tool_call_events(
-            "call_repark_wait2",
-            "get_command_or_subagent_output",
-            &long_wait_args,
-        )),
-    );
-    content.enqueue_response(
-        "/v1/chat/completions",
-        ScriptedResponse::sse(chat_completions_tool_call_events_with_id(
-            "call_repark_wait2",
-            "get_command_or_subagent_output",
-            &long_wait_args,
-        )),
+    let _long_wait_turn = expect_tool_turn(
+        &content,
+        "call_repark_wait2",
+        "get_command_or_subagent_output",
+        long_wait_args,
     );
 
     // Everything downstream is scripted — release the id-extraction hold.

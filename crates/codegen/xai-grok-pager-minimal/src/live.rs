@@ -479,20 +479,27 @@ fn draw_tail(
 /// subagents" cue while the agent is idle. Mirrors the full-TUI computation in
 /// `AgentView::draw` (which minimal bypasses).
 fn minimal_watchers(agent: &xai_grok_pager::app::agent_view::AgentView) -> turn_status::Watchers {
+    let running_tasks = agent
+        .session
+        .bg_tasks
+        .values()
+        .filter(|task| task.status == xai_grok_pager::app::agent::BgTaskStatus::Running);
     turn_status::Watchers {
-        monitors: agent
-            .session
-            .bg_tasks
-            .values()
-            .filter(|t| {
-                t.is_monitor && t.status == xai_grok_pager::app::agent::BgTaskStatus::Running
-            })
+        commands: running_tasks
+            .clone()
+            .filter(|task| !task.is_monitor)
             .count(),
+        monitors: running_tasks.filter(|task| task.is_monitor).count(),
         loops: agent.session.scheduled_tasks.len(),
         subagents: agent
             .subagent_sessions
             .values()
-            .filter(|s| s.is_running())
+            .filter(|session| session.is_running() && session.workflow_run_id.is_none())
+            .count(),
+        workflows: agent
+            .workflow_runs
+            .iter()
+            .filter(|run| run.is_active())
             .count(),
     }
 }
@@ -546,14 +553,14 @@ fn render_minimal_status(
     }
     let watchers = minimal_watchers(agent);
     let drain_blocked = minimal_api::drain_blocked(agent);
-    if minimal_api::renders_parked(agent)
-        || !turn_status::should_show(
-            &agent.session.state,
-            drain_blocked,
-            minimal_api::mcp_init_progress(agent),
-            watchers,
-        )
-    {
+    let parked = minimal_api::renders_parked(agent);
+    if !turn_status::should_show(
+        &agent.session.state,
+        drain_blocked,
+        minimal_api::mcp_init_progress(agent),
+        watchers,
+        parked,
+    ) {
         render_idle_hint(buf, area, theme);
         return;
     }
@@ -580,6 +587,7 @@ fn render_minimal_status(
         is_pending_user_input,
         goal_verifying,
         watchers,
+        parked,
         true,
         minimal_api::held_queue_count(agent),
         minimal_api::held_queue_top_sendable(agent),
@@ -877,7 +885,10 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render_minimal_status(&mut buf, area, &a, &None, None, &theme);
         let text = read(&buf);
-        assert!(text.contains("watching"), "watching cue: {text:?}");
+        assert!(
+            text.contains("1 loop still running"),
+            "watching cue: {text:?}"
+        );
         assert!(!text.contains("/help"), "not the idle hint: {text:?}");
     }
     #[test]

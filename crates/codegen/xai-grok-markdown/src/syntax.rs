@@ -3,6 +3,7 @@
 //! This module provides the `Syntect` struct which holds the syntax definitions
 //! and theme for code block highlighting.
 
+use std::borrow::Cow;
 use std::io::Cursor;
 use std::path::Path;
 
@@ -21,6 +22,16 @@ pub struct Syntect {
     pub theme: SyntectTheme,
     /// The syntax definitions (supports 250+ languages via two-face).
     pub syntax_set: SyntaxSet,
+}
+
+fn normalized_syntax_key(key: &str) -> Cow<'_, str> {
+    let normalized = key.to_ascii_lowercase();
+    match normalized.as_str() {
+        // two-face has no dedicated CUDA grammar, so use its C++ grammar.
+        "cu" | "cuh" => Cow::Borrowed("cpp"),
+        _ if normalized == key => Cow::Borrowed(key),
+        _ => Cow::Owned(normalized),
+    }
 }
 
 impl Syntect {
@@ -45,12 +56,14 @@ impl Syntect {
     /// Find a syntax definition by file path extension.
     pub fn find_syntax_by_file_path(&self, file_path: &Path) -> Option<&SyntaxReference> {
         let ext = file_path.extension()?.to_str()?;
-        self.syntax_set.find_syntax_by_extension(ext)
+        let ext = normalized_syntax_key(ext);
+        self.syntax_set.find_syntax_by_extension(&ext)
     }
 
     /// Find a syntax definition by language token (e.g., "rust", "python").
     pub fn find_syntax_by_token(&self, token: &str) -> Option<&SyntaxReference> {
-        self.syntax_set.find_syntax_by_token(token)
+        let token = normalized_syntax_key(token);
+        self.syntax_set.find_syntax_by_token(&token)
     }
 
     /// Create a highlighter for the given file path.
@@ -207,5 +220,29 @@ mod tests {
     fn highlight_lines_for_fence_info_still_accepts_rust_token() {
         let s = super::test_syntect();
         assert!(s.highlight_lines_for_fence_info("rust").is_some());
+    }
+
+    #[test]
+    fn cuda_file_extensions_resolve_to_cpp_highlighting() {
+        let s = super::test_syntect();
+
+        for file_name in ["kernel.cu", "kernel.cuh", "kernel.CU", "kernel.CUH"] {
+            let syntax = s
+                .find_syntax_by_file_path(std::path::Path::new(file_name))
+                .unwrap_or_else(|| panic!("missing syntax for {file_name}"));
+            assert_eq!(syntax.name, "C++", "unexpected syntax for {file_name}");
+        }
+    }
+
+    #[test]
+    fn cuda_fence_tokens_resolve_to_cpp_highlighting_case_insensitively() {
+        let s = super::test_syntect();
+
+        for token in ["cu", "cuh", "CU", "CuH"] {
+            let syntax = s
+                .find_syntax_by_token(token)
+                .unwrap_or_else(|| panic!("missing syntax for {token}"));
+            assert_eq!(syntax.name, "C++", "unexpected syntax for {token}");
+        }
     }
 }

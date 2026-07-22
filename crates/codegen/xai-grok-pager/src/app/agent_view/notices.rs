@@ -171,6 +171,7 @@ impl AgentView {
             // modals and line_viewer) since a tip during goal reading is
             // unwanted regardless.
             || (self.show_goal_detail && self.goal_state.is_some())
+            || self.show_workflows
             // Prompt dropdowns (@/slash/completion/history) render in the
             // row directly above the prompt — the banner row — clearing it.
             || self.prompt.any_dropdown_open()
@@ -333,6 +334,30 @@ impl AgentView {
         self.extensions_modal
             .as_mut()
             .is_some_and(|m| m.tick_result_notice())
+    }
+
+    /// Open `url` in the system browser. When the opener cannot run (headless
+    /// Linux VM, missing `xdg-open`, etc.), push a scrollback system message
+    /// with the full URL so the user can copy it, and best-effort copy to the
+    /// clipboard (OSC 52 works over SSH even without a local display).
+    ///
+    /// Unsafe schemes are rejected silently (same as [`open_url_if_safe`]).
+    pub(crate) fn open_url_or_show(&mut self, url: &str) {
+        use crate::app::link_opener::{OpenUrlResult, browser_unavailable_message, try_open_url};
+        use crate::scrollback::block::RenderBlock;
+        use crate::terminal::hyperlinks::SchemeFilter;
+
+        match try_open_url(url, SchemeFilter::Standard) {
+            OpenUrlResult::Opened | OpenUrlResult::RejectedScheme => {}
+            OpenUrlResult::BrowserUnavailable => {
+                self.scrollback
+                    .push_block(RenderBlock::system(browser_unavailable_message(url)));
+                // Best-effort clipboard so SSH/VM users can paste into a
+                // browser on another machine without selecting TUI text.
+                let _ = crate::clipboard::SystemClipboard::try_set(url);
+                self.show_toast("Browser unavailable - URL shown above");
+            }
+        }
     }
 }
 

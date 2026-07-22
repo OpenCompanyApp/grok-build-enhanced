@@ -1,6 +1,7 @@
 //! Async task-result application: routes task results into state.
 use super::auth::{
     ensure_login_method, handle_auth_complete, handle_auth_url_ready, handle_mcp_auth_trigger_done,
+    handle_mcp_setup_submit_done,
 };
 use super::billing::{
     PAYWALL_AUTO_CHECK_TIMEOUT, apply_auto_topup, handle_billing_fetched,
@@ -40,8 +41,8 @@ use super::session::load::{
 };
 use super::settings::ui::apply_setting_rollback;
 use super::status::{
-    handle_coding_data_sharing_failed, handle_coding_data_sharing_updated,
-    handle_context_info_complete, scrub_error_for_toast,
+    commit_session_usage_block, handle_coding_data_sharing_failed,
+    handle_coding_data_sharing_updated, handle_context_info_complete, scrub_error_for_toast,
 };
 use super::transcript::{
     handle_hooks_list_loaded, handle_marketplace_list_loaded, handle_marketplace_updates_available,
@@ -99,6 +100,21 @@ pub(super) fn maybe_show_x11_primary_paste_hint(
         return;
     }
     show_clipboard_toast(target, X11_PRIMARY_PASTE_HINT, app);
+}
+/// Whether a completed clipboard probe should fall through to the `grok wrap`
+/// host-image request. A clean `FullMiss` always qualifies; a remote read
+/// *error* (`AttachmentRead`) also qualifies because inside `grok wrap` the
+/// authoritative pasteboard is the local host's, not the (absent) remote one, so
+/// the error is recoverable over the wrap OSC path. Every other failure
+/// (`TextRead`, `TargetInsertion`, `AlreadyReported`) is a real dead end and
+/// must keep toasting. The request itself still self-gates on
+/// `osc52_sink_active()`, so this is inert outside `grok wrap`.
+pub(super) fn wrap_host_image_request_eligible(completion: ClipboardPasteCompletion) -> bool {
+    matches!(
+        completion,
+        ClipboardPasteCompletion::FullMiss
+            | ClipboardPasteCompletion::Failed(ClipboardPasteFailure::AttachmentRead)
+    )
 }
 pub(super) fn show_clipboard_failure(
     target: &ClipboardPasteTarget,
@@ -313,9 +329,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::SessionListLoaded {
             sessions,
             partial,
+            scope,
             seq,
             query,
-        } => handle_session_list_loaded(app, sessions, partial, seq, query),
+        } => handle_session_list_loaded(app, sessions, partial, scope, seq, query),
         TaskResult::ForeignSessionsScanned { entries, seq } => {
             handle_foreign_sessions_scanned(app, entries, seq)
         }
@@ -354,10 +371,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::RosterLoaded { sessions } => {
             app.leader_roster = sessions;
+            app.dashboard_sessions_loading = false;
             vec![]
         }
         TaskResult::RosterFailed { error } => {
             tracing::debug!(error = % error, "leader roster fetch failed");
+            app.dashboard_sessions_loading = false;
             vec![]
         }
         TaskResult::DashboardSessionsLoaded { sessions } => {
@@ -522,7 +541,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 None
             };
             let completion = apply_clipboard_paste_result(ctx, image, file_urls, app);
-            let wrap_request_emitted = completion == ClipboardPasteCompletion::FullMiss
+            let wrap_request_emitted = wrap_host_image_request_eligible(completion)
                 && is_clipboard_key
                 && crate::wrap_clipboard_image::maybe_request_wrap_host_image(
                     None,
@@ -536,7 +555,9 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 &target,
                 app,
             );
-            if let ClipboardPasteCompletion::Failed(failure) = completion {
+            if let ClipboardPasteCompletion::Failed(failure) = completion
+                && !wrap_request_emitted
+            {
                 show_clipboard_failure(&target, failure, app);
             }
             effects
@@ -578,7 +599,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 && *current_seq == request_seq
             {
                 app.auth_state = AuthState::Pending { error: Some(error) };
-                app.auth_code_input.clear();
+                app.auth_code_input.reset();
             }
             vec![]
         }
@@ -589,6 +610,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             mode,
         } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
         TaskResult::AuthCodeSubmitted { .. } => vec![],
+        TaskResult::AuthCancelComplete => vec![],
         TaskResult::McpsListLoaded { agent_id, result } => {
             use crate::views::extensions_modal::TabDataState;
             if let Some(agent) = app.agents.get_mut(&agent_id)
@@ -608,6 +630,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             server_name,
             result,
         } => handle_mcp_auth_trigger_done(app, agent_id, server_name, result),
+        TaskResult::McpSetupSubmitDone {
+            agent_id,
+            server_name,
+            result,
+        } => handle_mcp_setup_submit_done(app, agent_id, server_name, result),
         TaskResult::HooksListLoaded { agent_id, result } => {
             handle_hooks_list_loaded(app, agent_id, result)
         }
@@ -670,6 +697,23 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 };
                 modal.pending_action = None;
                 modal.pending_entry_index = None;
+            }
+            vec![]
+        }
+        TaskResult::WorkflowsListLoaded {
+            agent_id,
+            session_id,
+            result,
+        } => {
+            use crate::views::extensions_modal::TabDataState;
+            if let Some(agent) = app.agents.get_mut(&agent_id)
+                && agent.session.session_id.as_ref() == Some(&session_id)
+                && let Some(ref mut modal) = agent.extensions_modal
+            {
+                modal.workflows_data = match result {
+                    Ok(workflows) => TabDataState::Loaded(workflows),
+                    Err(e) => TabDataState::Error(e),
+                };
             }
             vec![]
         }
@@ -797,6 +841,26 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
+        TaskResult::SessionUsageComplete {
+            agent_id,
+            session_id,
+            usage,
+        } => commit_session_usage_block(
+            app,
+            agent_id,
+            &session_id,
+            crate::app::status_blocks::session_usage_block_text(&usage),
+        ),
+        TaskResult::SessionUsageFailed {
+            agent_id,
+            session_id,
+            error,
+        } => commit_session_usage_block(
+            app,
+            agent_id,
+            &session_id,
+            format!("Couldn't load session usage: {error}"),
+        ),
         TaskResult::FeedbackComplete { .. } => vec![],
         TaskResult::FeedbackFailed { agent_id, error } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {
@@ -929,6 +993,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                         human_schedule: None,
                         chip_elements: Vec::new(),
                         skill_token_ranges: Vec::new(),
+                        combined_texts: Vec::new(),
                     });
                 agent.show_toast(&format!("Interjection failed — requeued: {error}"));
             }
@@ -940,6 +1005,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             {
                 agent.session.available_commands = commands;
                 agent.session.available_commands_generation += 1;
+                super::super::acp_handler::refresh_workflow_run_capabilities(agent);
             }
             vec![]
         }

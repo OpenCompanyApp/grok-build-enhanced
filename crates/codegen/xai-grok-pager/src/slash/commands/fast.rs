@@ -96,6 +96,7 @@ mod tests {
             session_id: None,
             bundle_state: &BUNDLE_STATE,
             screen_mode: crate::app::ScreenMode::Fullscreen,
+            billing_surface_visible: false,
             pager_state: PagerLocalSnapshot::default(),
         };
         FastCommand.run(&mut ctx, args)
@@ -151,6 +152,8 @@ mod tests {
             models: &models,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
+            billing_surface_visible: false,
+            workflows_available: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
         let items = command

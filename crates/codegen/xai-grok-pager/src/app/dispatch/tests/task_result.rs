@@ -2,8 +2,10 @@
 
 use super::super::task_result::{
     X11_PRIMARY_PASTE_HINT, maybe_show_x11_primary_paste_hint, show_clipboard_failure,
+    wrap_host_image_request_eligible,
 };
 use super::*;
+use xai_grok_shell::session::unified_list::ListScope;
 
 #[test]
 fn stale_auth_copy_timeout_does_not_clear_newer_feedback() {
@@ -63,6 +65,31 @@ fn stale_auth_copy_timeout_does_not_clear_newer_feedback() {
         &mut app,
     );
     assert_eq!(app.auth_clipboard_delivery, None);
+}
+
+#[test]
+fn stale_workflows_result_does_not_repaint_replaced_session_modal() {
+    let mut app = test_app_with_agent();
+    app.agents.get_mut(&AgentId(0)).unwrap().extensions_modal =
+        Some(crate::views::extensions_modal::ExtensionsModalState::new(
+            crate::views::extensions_modal::ExtensionsTab::Skills,
+        ));
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::WorkflowsListLoaded {
+            agent_id: AgentId(0),
+            session_id: acp::SessionId::new("old-session"),
+            result: Ok(vec![]),
+        }),
+        &mut app,
+    );
+    assert!(matches!(
+        app.agents[&AgentId(0)]
+            .extensions_modal
+            .as_ref()
+            .unwrap()
+            .workflows_data,
+        crate::views::extensions_modal::TabDataState::Loading
+    ));
 }
 
 fn foreign_resume_hint(
@@ -230,6 +257,35 @@ fn x11_primary_hint_requires_canonical_full_miss_outcome() {
         app.agents[&AgentId(0)].toast.is_none(),
         "non-X11 FullMiss must not show X11 guidance"
     );
+}
+
+#[test]
+fn wrap_host_image_request_eligible_covers_full_miss_and_attachment_error_only() {
+    use crate::app::actions::{ClipboardPasteCompletion, ClipboardPasteFailure};
+
+    // A clean empty miss and a remote read *error* both fall through to the wrap
+    // host-image request — the headless-SSH `grok wrap` image-paste fix.
+    assert!(wrap_host_image_request_eligible(
+        ClipboardPasteCompletion::FullMiss
+    ));
+    assert!(wrap_host_image_request_eligible(
+        ClipboardPasteCompletion::Failed(ClipboardPasteFailure::AttachmentRead)
+    ));
+
+    // Every other outcome is a real dead end: it must keep toasting and never
+    // solicit the host image.
+    for completion in [
+        ClipboardPasteCompletion::Handled,
+        ClipboardPasteCompletion::Dropped,
+        ClipboardPasteCompletion::Failed(ClipboardPasteFailure::TextRead),
+        ClipboardPasteCompletion::Failed(ClipboardPasteFailure::TargetInsertion),
+        ClipboardPasteCompletion::Failed(ClipboardPasteFailure::AlreadyReported),
+    ] {
+        assert!(
+            !wrap_host_image_request_eligible(completion),
+            "{completion:?} must not route to the wrap host-image request"
+        );
+    }
 }
 
 #[test]
@@ -1395,11 +1451,11 @@ fn delete_both_session_clears_modal_and_welcome_content_hits() {
         .active_modal
         .as_mut()
     {
-        state.query = "shared".into();
+        state.set_query("shared");
         *content_results = Some(vec![hit.clone()]);
     }
     app.session_picker_entries = Some(vec![both, foreign]);
-    app.session_picker_state.query = "shared".into();
+    app.session_picker_state.set_query("shared");
     app.session_picker_content_results = Some(vec![hit]);
 
     let _ = dispatch_task_result(
@@ -1442,7 +1498,7 @@ fn delete_both_session_clears_modal_and_welcome_content_hits() {
             .iter()
             .any(|item| matches!(item, Some(PickerItem::Content { .. })))
     );
-    assert_eq!(modal_state.query.as_str(), "shared");
+    assert_eq!(modal_state.query(), "shared");
 
     let welcome_entries = app.session_picker_entries.as_deref().unwrap();
     let welcome_hits = app.session_picker_content_results.as_deref().unwrap();
@@ -2214,6 +2270,7 @@ fn session_list_partial_no_oauth_surfaces_login_hint() {
     open_session_picker_with(&mut app, vec![]);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![],
             partial: Some(crate::app::effects::ConversationsPartial::NoOauth),
             seq: 0,
@@ -2227,6 +2284,121 @@ fn session_list_partial_no_oauth_surfaces_login_hint() {
     );
 }
 
+/// Notice fires once per relaxed run; survives search, re-arms on a cwd-scoped browse.
+#[test]
+fn session_list_relax_surfaces_notice_once() {
+    let relax_response = || {
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Repo,
+            sessions: vec![make_picker_entry("local-other-cwd-1", "/elsewhere")],
+            partial: None,
+            seq: 0,
+            query: None,
+        })
+    };
+
+    let mut app = test_app_with_agent();
+    open_session_picker_with(&mut app, vec![]);
+    let _ = dispatch(relax_response(), &mut app);
+    assert!(
+        read_toast(&app).contains("this repo"),
+        "the relaxed scope must be explained"
+    );
+
+    app.agents.get_mut(&AgentId(0)).unwrap().toast = None;
+    let _ = dispatch(relax_response(), &mut app);
+    assert!(
+        app.agents[&AgentId(0)].toast.is_none(),
+        "the relax notice must not repeat while the scope is unchanged"
+    );
+
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
+            sessions: vec![],
+            partial: None,
+            seq: 0,
+            query: Some("needle".into()),
+        }),
+        &mut app,
+    );
+    let _ = dispatch(relax_response(), &mut app);
+    assert!(
+        app.agents[&AgentId(0)].toast.is_none(),
+        "a search response must not re-arm the relax notice"
+    );
+
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
+            sessions: vec![make_picker_entry("local-here-1", "/here")],
+            partial: None,
+            seq: 0,
+            query: None,
+        }),
+        &mut app,
+    );
+    let _ = dispatch(relax_response(), &mut app);
+    assert!(
+        read_toast(&app).contains("this repo"),
+        "a scope change back to relaxed must notify again"
+    );
+}
+
+/// Welcome view can't render toasts, so the one-shot notice must not latch there.
+#[test]
+fn session_list_relax_on_welcome_does_not_latch() {
+    let mut app = test_app();
+    assert!(matches!(app.active_view, ActiveView::Welcome));
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::All,
+            sessions: vec![make_picker_entry("local-other-cwd-1", "/elsewhere")],
+            partial: None,
+            seq: 0,
+            query: None,
+        }),
+        &mut app,
+    );
+    assert!(
+        app.session_picker_relaxed_notified_for.is_none(),
+        "a notice that cannot render must not latch"
+    );
+}
+
+/// The notice is keyed by browse cwd: a different directory re-notifies even
+/// though the prior latch is set.
+#[test]
+fn session_list_relax_renotifies_when_cwd_changes() {
+    let relax = || {
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Repo,
+            sessions: vec![make_picker_entry("local-other-cwd-1", "/elsewhere")],
+            partial: None,
+            seq: 0,
+            query: None,
+        })
+    };
+
+    let mut app = test_app_with_agent();
+    open_session_picker_with(&mut app, vec![]);
+
+    app.cwd = std::path::PathBuf::from("/repo/a");
+    let _ = dispatch(relax(), &mut app);
+    assert!(
+        read_toast(&app).contains("this repo"),
+        "the first cwd must notify"
+    );
+
+    app.agents.get_mut(&AgentId(0)).unwrap().toast = None;
+    app.cwd = std::path::PathBuf::from("/repo/b");
+    let _ = dispatch(relax(), &mut app);
+    assert!(
+        read_toast(&app).contains("this repo"),
+        "a different cwd must re-notify even with the prior latch set"
+    );
+}
+
 /// Canary: an empty list without a degraded lane keeps the generic toast.
 #[test]
 fn session_list_empty_without_partial_keeps_generic_toast() {
@@ -2234,6 +2406,7 @@ fn session_list_empty_without_partial_keeps_generic_toast() {
     open_session_picker_with(&mut app, vec![]);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![],
             partial: None,
             seq: 0,
@@ -2252,6 +2425,7 @@ fn session_list_nonempty_partial_toasts_retry_in_chat_mode_only() {
     app.chat_mode = true;
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-part-1")],
             partial: Some(crate::app::effects::ConversationsPartial::Timeout),
             seq: 0,
@@ -2272,6 +2446,7 @@ fn session_list_nonempty_partial_toasts_retry_in_chat_mode_only() {
     let mut app = test_app_with_agent();
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_picker_entry("local-part-1", "/r")],
             partial: Some(crate::app::effects::ConversationsPartial::Timeout),
             seq: 0,
@@ -2295,6 +2470,7 @@ fn session_list_nonempty_partial_modal_toasts_in_chat_mode_only() {
     open_session_picker_with(&mut app, vec![]);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-part-m1")],
             partial: Some(crate::app::effects::ConversationsPartial::Timeout),
             seq: 0,
@@ -2323,6 +2499,7 @@ fn session_list_nonempty_partial_modal_toasts_in_chat_mode_only() {
     open_session_picker_with(&mut app, vec![]);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_picker_entry("local-part-m1", "/r")],
             partial: Some(crate::app::effects::ConversationsPartial::Timeout),
             seq: 0,

@@ -15,9 +15,6 @@ impl SlashCommand for UsageCommand {
         "usage"
     }
 
-    /// `/cost` is the minimal-mode name for the same credit-usage summary:
-    /// it commits a usage/cost system block rather than opening a
-    /// pane, so it's an alias rather than a separate command.
     fn aliases(&self) -> &[&str] {
         &["cost"]
     }
@@ -34,11 +31,15 @@ impl SlashCommand for UsageCommand {
         true
     }
 
-    fn arg_placeholder(&self) -> Option<&str> {
-        Some("show | manage")
+    fn takes_args_now(&self, ctx: &AppCtx) -> bool {
+        // Non-consumer: bare `/usage` only — Enter should send, not chain for args.
+        ctx.billing_surface_visible
     }
 
     fn suggest_args(&self, ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
+        if !ctx.billing_surface_visible {
+            return None;
+        }
         let manage_description = if ctx.models.current_model_is_openai_codex() {
             "Open ChatGPT Codex usage settings"
         } else if ctx.models.current_model_is_kimi_code() {
@@ -50,10 +51,10 @@ impl SlashCommand for UsageCommand {
         };
         Some(vec![
             ArgItem {
-                display: "show".to_string(),
-                match_text: "show".to_string(),
-                insert_text: "show".to_string(),
-                description: "View credit usage".to_string(),
+                display: "show".into(),
+                match_text: "show".into(),
+                insert_text: "show".into(),
+                description: "View usage".into(),
             },
             ArgItem {
                 display: "manage".to_string(),
@@ -66,6 +67,12 @@ impl SlashCommand for UsageCommand {
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         let arg = args.trim();
+        if !ctx.billing_surface_visible {
+            return match arg {
+                "" => CommandResult::Action(Action::ShowUsage),
+                _ => CommandResult::Error(format!("Unknown argument: {arg}. Use /usage")),
+            };
+        }
         match arg {
             "" | "show" => CommandResult::Action(Action::ShowUsage),
             "manage" if ctx.models.current_model_is_openai_codex() => CommandResult::Action(

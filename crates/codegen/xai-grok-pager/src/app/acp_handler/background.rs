@@ -480,12 +480,13 @@ pub(super) fn handle_scheduled_task_inject_prompt(
         return true;
     }
 
+    let agent_id = agent.session.id;
     agent.session.enqueue_cron_prompt(
         prompt.to_string(),
         task_id.to_string(),
         human_schedule.to_string(),
     );
-    let effects = super::super::dispatch::maybe_drain_queue(agent);
+    let effects = super::super::dispatch::maybe_drain_queue_and_note_peek(app, agent_id);
     app.pending_effects.extend(effects);
 
     true

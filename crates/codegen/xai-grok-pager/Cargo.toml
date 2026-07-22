@@ -54,6 +54,7 @@ portable-pty = "0.9"
 # Utilities
 derive_more = { workspace = true, features = ["deref", "deref_mut"] }
 anyhow = { workspace = true }
+shlex = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 clap_complete = { workspace = true }
 rand = { workspace = true }
@@ -196,13 +197,48 @@ harness = false
 name = "edit_highlight"
 harness = false
 
-# Integration testing.
+# PTY integration tests are split into coherent scheduling families. The test
+# modules remain under tests/pty_e2e/; these roots only define which cases share
+# one Cargo/Bazel process. All cases stay #[ignore]d for ordinary Cargo runs.
+# Selected Cargo runs must provide PAGER_BINARY; Bazel wires the sibling binary.
 [[test]]
-name = "pty_e2e"
-path = "tests/pty_e2e/mod.rs"
+name = "doctor_early_dispatch"
+path = "tests/doctor_early_dispatch.rs"
 
-# Leader-mode PTY e2e — split from pty_e2e so multi-process cluster bring-up
-# never contends with the main PTY pool (the LEADER_TIMEOUT flake root).
+[[test]]
+name = "pty_e2e_smoke"
+path = "tests/pty_e2e_smoke.rs"
+
+[[test]]
+name = "pty_e2e_queue"
+path = "tests/pty_e2e_queue.rs"
+
+[[test]]
+name = "pty_e2e_scroll_selection"
+path = "tests/pty_e2e_scroll_selection.rs"
+
+[[test]]
+name = "pty_e2e_minimal"
+path = "tests/pty_e2e_minimal.rs"
+
+[[test]]
+name = "pty_e2e_config_ui"
+path = "tests/pty_e2e_config_ui.rs"
+
+[[test]]
+name = "pty_e2e_shell_tools"
+path = "tests/pty_e2e_shell_tools.rs"
+
+[[test]]
+name = "pty_e2e_persistence"
+path = "tests/pty_e2e_persistence.rs"
+
+[[test]]
+name = "pty_e2e_clipboard"
+path = "tests/pty_e2e_clipboard.rs"
+
+# Leader-mode PTY e2e — split from ordinary PTY families so multi-process
+# cluster bring-up never contends with their bounded pools.
 [[test]]
 name = "leader_pty_e2e"
 path = "tests/leader_pty_e2e/mod.rs"
@@ -238,6 +274,12 @@ path = "src/bin/question_view_playground.rs"
 [[bin]]
 name = "todo-pane-playground"
 path = "src/bin/todo_pane_playground.rs"
+
+# Opt into [workspace.lints.clippy] (too_many_arguments etc.). Without this,
+# `cargo clippy --workspace -- -D warnings` on this package is stricter than
+# the workspace-default clippy allows used in CI.
+[lints]
+workspace = true
 
 [features]
 default = ["jemalloc", "sandbox-enforce"]

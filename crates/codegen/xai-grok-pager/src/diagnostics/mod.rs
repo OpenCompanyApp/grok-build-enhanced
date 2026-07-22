@@ -1,16 +1,77 @@
 //! Route-aware terminal diagnostics engine.
 //!
-//! Classifies startup warnings by category using [`TerminalContext`] and an
-//! injectable [`TmuxOptionQuery`] trait. Warnings are data-only; the engine
-//! returns `Vec<TerminalWarning>` for downstream banner rendering.
+//! Warnings are data-only; the engine returns `Vec<TerminalWarning>` for
+//! downstream banner rendering.
 
-use std::process::Command;
+use std::path::Path;
 
 use crate::notifications::NotificationCondition;
 use crate::notifications::protocol::NotificationProtocol;
 use crate::terminal::{ByobuBackend, MultiplexerKind, TerminalContext, TerminalName};
 use crate::theme::color_support::ColorLevel;
-use crate::theme::{ThemeKind, ThemeStatus};
+
+mod doctor_format;
+mod fix;
+mod model;
+pub mod probes;
+mod view;
+
+pub use doctor_format::format_doctor;
+pub(crate) use fix::human_fix_command;
+pub use fix::{
+    AutomaticRemediation, FixError, FixOutcome, FixPlan, FixRequest, FixStatus, PlannedChange,
+    SSH_WRAP_FIX_COMMAND, SSH_WRAP_ID, SSH_WRAP_ONE_OFF, ShellKind, apply_fix, configured_report,
+    managed_alias_configured, plan_fix, resolve_fix_id, ssh_wrap_automatic_remediation,
+};
+pub(crate) use model::probe_requires_live_tui;
+pub use model::{
+    ClipboardFacts, ColorFacts, DataControlFact, DiagnosticFacts, DiagnosticFinding, DiagnosticId,
+    DiagnosticReport, FindingDisposition, KeyboardFact, ManualRemediation, NewlineFact, ProbeNote,
+    ProbeStatus, RuntimeFact, VoiceFacts,
+};
+pub use view::{DiagnosticSnapshot, view};
+
+/// Passive input-device probe for doctor / `/terminal-setup`.
+///
+/// Does not open a capture stream (no macOS mic-permission prompt). When
+/// `emit_missing_issue` is true and no device exists, appends an issue finding
+/// (TUI with voice on). Doctor passes false so headless hosts only show a fact.
+pub fn apply_voice_probe(report: &mut DiagnosticReport, emit_missing_issue: bool) {
+    if !xai_grok_voice::AUDIO_SUPPORTED {
+        return;
+    }
+    match xai_grok_voice::input_device_info() {
+        Ok(device) => {
+            report.facts.voice = Some(VoiceFacts::Device {
+                name: device.name,
+                detail: device.detail,
+            });
+        }
+        Err(err) => {
+            let error = match err {
+                xai_grok_voice::VoiceError::Config(message) => message,
+                other => other.to_string(),
+            };
+            report.facts.voice = Some(VoiceFacts::Missing {
+                error: error.clone(),
+            });
+            if emit_missing_issue {
+                report.findings.push(DiagnosticFinding {
+                    id: DiagnosticId::new("voice", "no-input-device"),
+                    disposition: FindingDisposition::Issue,
+                    message: format!("Voice dictation can't capture audio — {error}"),
+                    remediation: None,
+                    automatic_remediation: None,
+                    note: Some(
+                        "Connect or select an input device in your system sound settings, then \
+                         re-run /terminal-setup or grok doctor."
+                            .to_owned(),
+                    ),
+                });
+            }
+        }
+    }
+}
 
 /// Broad classification of a startup warning.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -47,8 +108,13 @@ pub enum WarningCategory {
     /// no-data-control fallback) and fails if the terminal loses focus
     /// mid-copy.
     WaylandNoDataControl,
-    /// Below truecolor: truecolor themes hidden. `/terminal-setup` only.
+    /// Below truecolor: truecolor themes hidden. Explicit `/doctor` only.
     LimitedColorSupport,
+    SandboxProfileConflict,
+    /// The session runs over SSH without `grok wrap` on the local end, so
+    /// clipboard forwarding and terminal-mode restore on dropped connections
+    /// are not guaranteed. Informational recommendation, not a breakage.
+    SshWithoutWrap,
 }
 
 /// A structured startup warning carrying category, human-readable description,
@@ -91,23 +157,19 @@ impl TerminalWarning {
 ///
 /// The welcome screen doesn't need to know what's wrong -- only that
 /// something is wrong and where to go for details.
-pub fn summarize_warnings(warnings: &[TerminalWarning]) -> Option<crate::startup::StartupWarning> {
-    // Only surface warnings over SSH — locally these tmux misconfigurations
-    // don't actually break clipboard, so showing the banner would be noise.
-    let is_ssh = xai_grok_shell::util::clipboard::is_remote_session();
-    summarize_warnings_inner(warnings, is_ssh)
-}
-
-/// Inner implementation of [`summarize_warnings`] that accepts the SSH flag
-/// as a parameter so tests can exercise both paths without manipulating
-/// environment variables.
-fn summarize_warnings_inner(
+pub fn summarize_warnings(
     warnings: &[TerminalWarning],
     is_ssh: bool,
 ) -> Option<crate::startup::StartupWarning> {
     if !is_ssh {
         return None;
     }
+    summarize_warnings_inner(warnings)
+}
+
+fn summarize_warnings_inner(
+    warnings: &[TerminalWarning],
+) -> Option<crate::startup::StartupWarning> {
     // Allow-list of categories where detection is a direct tmux subprocess
     // query that only triggers on an explicit non-good value, and the fix is
     // a single config line. Other categories stay suppressed until their
@@ -125,60 +187,29 @@ fn summarize_warnings_inner(
     })
 }
 
-/// Abstraction over tmux option queries so diagnostic logic can be tested
-/// without a live tmux server.
-///
-/// The two methods mirror the subprocess helpers [`tmux_show_option`] and
-/// [`tmux_option_exists`] but can be replaced with deterministic fixtures in
-/// tests.
-pub trait TmuxOptionQuery {
-    /// Return the value of a global tmux option, or `None` if the query fails
-    /// or the value is empty.
-    fn show_option(&self, option: &str) -> Option<String>;
-
-    /// Return `true` if the tmux server recognises `option` as a valid global
-    /// option name.
-    fn option_exists(&self, option: &str) -> bool;
-}
-
-/// The real, subprocess-backed implementation used at runtime.
-pub struct LiveTmuxQuery;
-
-impl TmuxOptionQuery for LiveTmuxQuery {
-    fn show_option(&self, option: &str) -> Option<String> {
-        tmux_show_option(option)
-    }
-
-    fn option_exists(&self, option: &str) -> bool {
-        tmux_option_exists(option)
-    }
-}
-
 /// Collect all applicable startup warnings for the current terminal context.
 ///
 /// This is the primary entry point for the diagnostics engine. It returns
 /// structured warnings as data — no stderr output, no sleep, no side effects.
 ///
-/// # Arguments
-///
-/// * `ctx` — The resolved terminal context (multiplexer, Byobu state, etc.).
-/// * `query` — A tmux option query implementation (live or fake for tests).
-/// * `is_control_mode` — Whether the tmux session is in control mode.
-/// * `fullscreen_active` — Whether fullscreen (alt-screen) is effectively
-///   active. Used to tailor the control-mode warning message.
-pub fn collect_startup_warnings(
+pub fn collect_startup_warnings(snapshot: &probes::ProbeSnapshot<'_>) -> Vec<TerminalWarning> {
+    collect_startup_warnings_from(
+        snapshot.terminal,
+        &snapshot.tmux,
+        Some(snapshot.runtime.fullscreen_active),
+    )
+}
+
+pub(crate) fn collect_startup_warnings_from(
     ctx: &TerminalContext,
-    query: &dyn TmuxOptionQuery,
-    is_control_mode: bool,
-    fullscreen_active: bool,
+    tmux: &probes::TmuxProbeFacts,
+    fullscreen_active: Option<bool>,
 ) -> Vec<TerminalWarning> {
     let mut warnings = Vec::new();
 
     // Apple Terminal.app does not support OSC 52. Over SSH, this means
     // clipboard writes can never reach the user's local machine.
-    if ctx.brand == TerminalName::AppleTerminal
-        && xai_grok_shell::util::clipboard::is_remote_session()
-    {
+    if ctx.brand == TerminalName::AppleTerminal && ctx.is_ssh {
         warnings.push(TerminalWarning::new(
             WarningCategory::UnsupportedTerminal,
             "macOS Terminal does not support clipboard escape sequences (OSC 52) \
@@ -203,11 +234,14 @@ pub fn collect_startup_warnings(
     // fullscreen state so callers that force fullscreen in control mode
     // (e.g. `alt_screen = "always"`) see an accurate warning rather than a
     // blanket "inline mode" claim.
-    if ctx.is_tmux_backed() && is_control_mode {
-        let message = if fullscreen_active {
-            "tmux control mode detected -- fullscreen may be unreliable in control mode"
-        } else {
-            "tmux control mode detected -- running in degraded inline mode"
+    if ctx.is_tmux_backed() && matches!(tmux.control_mode, probes::TmuxProbeResult::Available(true))
+    {
+        let message = match fullscreen_active {
+            Some(true) => {
+                "tmux control mode detected -- fullscreen may be unreliable in control mode"
+            }
+            Some(false) => "tmux control mode detected -- running in degraded inline mode",
+            None => "tmux control mode detected -- terminal display may be degraded",
         };
         warnings.push(TerminalWarning::new(
             WarningCategory::ControlMode,
@@ -222,8 +256,7 @@ pub fn collect_startup_warnings(
 
     // tmux-backed clipboard and DCS passthrough checks.
     if ctx.is_tmux_backed() {
-        let clipboard_warnings = diagnose_clipboard_with_query(query, &config_path);
-        warnings.extend(clipboard_warnings);
+        warnings.extend(diagnose_clipboard_from_facts(tmux, &config_path));
     }
 
     if ctx.kitty_skip_reason() == Some("tmux_extended_keys_off") {
@@ -258,8 +291,8 @@ pub fn collect_startup_warnings(
 /// - the async XTVERSION self-report (`xtversion_payload`) for SSH
 ///   sessions, where `TERM_PROGRAM` isn't forwarded and the brand falls
 ///   back to `Unknown`. The reply arrives through the event loop after
-///   startup, so this path lights up for `/terminal-setup` (and any
-///   warning pass re-run after the reply landed) rather than the very
+///   startup, so this path lights up for `/doctor` (and any warning pass
+///   re-run after the reply landed) rather than the very
 ///   first startup banner.
 ///
 /// `kitty_flags_pushed` is the runtime negotiation outcome from
@@ -269,39 +302,48 @@ pub fn collect_startup_warnings(
 /// tmux) — in that case the wezterm.lua fix alone wouldn't help and other
 /// warnings cover it.
 pub fn wezterm_kitty_keyboard_warning(
+    snapshot: &probes::ProbeSnapshot<'_>,
+) -> Option<TerminalWarning> {
+    wezterm_kitty_keyboard_warning_from(
+        snapshot.terminal,
+        snapshot.runtime.kitty_flags_pushed,
+        snapshot.runtime.xtversion,
+    )
+}
+
+pub(crate) fn wezterm_shape(
+    ctx: &TerminalContext,
+    xtversion_payload: Option<&str>,
+) -> Option<WezTermShape> {
+    if ctx.brand == TerminalName::WezTerm {
+        return Some(WezTermShape::Environment);
+    }
+    (ctx.brand == TerminalName::Unknown
+        && ctx.multiplexer == MultiplexerKind::Undetected
+        && ctx.is_ssh
+        && xtversion_payload.is_some_and(|v| v.trim_start().starts_with("WezTerm")))
+    .then_some(WezTermShape::SshXtversion)
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum WezTermShape {
+    Environment,
+    SshXtversion,
+}
+
+pub(crate) fn wezterm_kitty_keyboard_warning_from(
     ctx: &TerminalContext,
     kitty_flags_pushed: bool,
     xtversion_payload: Option<&str>,
 ) -> Option<TerminalWarning> {
-    let is_wezterm_by_env = ctx.brand == TerminalName::WezTerm;
-    // SSH shape: brand Unknown, no multiplexer, over SSH, but the terminal
-    // identified itself as WezTerm via XTVERSION. (Under tmux the reply
-    // would describe tmux itself, and the brand gate below rejects it.)
-    //
-    // The `is_ssh` gate matters: a *local* WezTerm with a stripped
-    // `TERM_PROGRAM` (brand falls back to Unknown) can still answer
-    // XTVERSION with "WezTerm". Without this gate it would receive the
-    // "over SSH" copy below, which is both wrong (it's local) and would
-    // drop the actionable `wezterm.lua` fix. We only treat XTVERSION as
-    // the WezTerm signal when env detection genuinely can't apply, i.e.
-    // over SSH where `TERM_PROGRAM` isn't forwarded.
-    let is_wezterm_by_xtversion = ctx.brand == TerminalName::Unknown
-        && ctx.multiplexer == MultiplexerKind::Undetected
-        && ctx.is_ssh
-        && xtversion_payload.is_some_and(|v| v.trim_start().starts_with("WezTerm"));
-    if !(is_wezterm_by_env || is_wezterm_by_xtversion) || kitty_flags_pushed {
+    let shape = wezterm_shape(ctx, xtversion_payload)?;
+    if kitty_flags_pushed {
         return None;
     }
-    // For env-detected WezTerm, a skip reason (tmux etc.) means KKP was
-    // never even probed and the wezterm.lua fix alone wouldn't help.
-    if is_wezterm_by_env && ctx.kitty_skip_reason().is_some() {
+    if shape == WezTermShape::Environment && ctx.kitty_skip_reason().is_some() {
         return None;
     }
-    if is_wezterm_by_xtversion {
-        // Over SSH the pager skips KKP for Unknown brands entirely (no
-        // positive evidence policy — see `kitty_skip_reason`), so the
-        // wezterm.lua change cannot clear this warning for SSH sessions.
-        // Be honest: lead with the workaround that does work.
+    if shape == WezTermShape::SshXtversion {
         let mut warning = TerminalWarning::new(
             WarningCategory::WezTermKittyKeyboardOff,
             "WezTerm over SSH: Shift+Enter can't insert newlines",
@@ -330,21 +372,106 @@ pub fn wezterm_kitty_keyboard_warning(
     Some(warning)
 }
 
+pub fn sandbox_profile_conflict_warning(workspace: &Path) -> Option<TerminalWarning> {
+    sandbox_profile_conflict_warning_from(xai_grok_sandbox::sandbox_profile_conflicts(workspace))
+}
+
+fn sandbox_profile_conflict_warning_from(conflicts: Vec<String>) -> Option<TerminalWarning> {
+    if conflicts.is_empty() {
+        return None;
+    }
+    let profiles = conflicts
+        .iter()
+        .map(|name| format!("'{name}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(TerminalWarning {
+        category: WarningCategory::SandboxProfileConflict,
+        message: format!(
+            "Your project sandbox profile conflicts with user config.\nProfile: {profiles}\nProject config: .grok/sandbox.toml\nUser config: ~/.grok/sandbox.toml"
+        ),
+        fix: Some("Using the user profile instead.".to_string()),
+        config_path: None,
+        note: None,
+    })
+}
+
+/// Pure SSH `grok wrap` recommendation — suggests launching the session
+/// through `grok wrap ssh <host>` on the user's local machine, which gives a
+/// remote session reliable clipboard forwarding plus terminal-mode restore
+/// when the connection drops.
+///
+/// Gates (all must hold):
+/// - `is_ssh` — the session runs over SSH ([`TerminalContext::is_ssh`]);
+/// - `!osc52_sink_active` — no wrap is already capturing our output. `grok
+///   wrap` advertises its OSC 52 sink through the SSH hop via an env var
+///   (see `clipboard::osc52_sink_active`), so once a user adopts wrap the
+///   hint silences itself with no further bookkeeping. Env-based, so stale
+///   under tmux (panes inherit the server's env at server start): a server
+///   started before wrap misses the sink and the hint fires despite wrap,
+///   and one started under wrap keeps suppressing after wrap is gone —
+///   accepted, the same exposure the SSH env checks already live with;
+/// - `!is_official_vscode_remote` — a VS Code remote integrated terminal is
+///   not a plain ssh terminal the user could wrap.
+///
+/// This detector describes environment shape only; the
+/// `[ui.contextual_hints].ssh_wrap` policy gate is applied by the ephemeral
+/// tip's trigger (`AppView::maybe_trigger_ssh_wrap_tip`), while
+/// `/doctor` deliberately lists the recommendation unconditionally.
+/// All inputs are injected so tests never touch ambient env (pattern:
+/// [`diagnose_wayland_data_control`]).
+pub fn ssh_wrap_hint(
+    is_ssh: bool,
+    osc52_sink_active: bool,
+    is_official_vscode_remote: bool,
+) -> Option<TerminalWarning> {
+    if !is_ssh || osc52_sink_active || is_official_vscode_remote {
+        return None;
+    }
+    let mut warning = TerminalWarning::new(
+        WarningCategory::SshWithoutWrap,
+        "Running over SSH without `grok wrap` -- clipboard copies depend on the \
+         terminal's escape-sequence support, and a dropped connection can leave \
+         your local terminal in a bad state",
+        Some("grok wrap ssh <host>"),
+        None,
+    );
+    warning.note = Some(
+        "Run it on your local machine in place of plain `ssh` -- it forwards \
+         clipboard copies to your local system and restores terminal modes if \
+         the connection drops."
+            .to_string(),
+    );
+    Some(warning)
+}
+
 /// Assemble the welcome-screen startup warning list.
 ///
-/// The WezTerm kitty-keyboard warning (when present) goes **first**: the
-/// welcome screen renders only the first entry, and a broken-local-input
-/// warning outranks the SSH clipboard advisories from
-/// [`summarize_warnings`]. The Wayland no-data-control warning follows the
-/// same bypass (surfaced locally — [`summarize_warnings`] is SSH-gated — but
-/// after WezTerm: broken input outranks focus-dependent copies). Keeping the
-/// banner copy here (instead of at the call site) ties it to the warnings so
-/// the surfaces can't drift.
+/// The welcome screen renders a single entry — the severity-aware pick from
+/// `startup::banner_warning`, whose doc owns the selection contract — so
+/// assemble order decides precedence among Warnings. The WezTerm kitty-keyboard
+/// warning (when present) goes **first**: a broken-local-input warning
+/// outranks the SSH clipboard advisories from [`summarize_warnings`]. The
+/// Wayland no-data-control warning follows the same bypass (surfaced locally
+/// — [`summarize_warnings`] is SSH-gated — but after WezTerm: broken input
+/// outranks focus-dependent copies). Keeping the banner copy here (instead of
+/// at the call site) ties it to the warnings so the surfaces can't drift.
 pub fn assemble_startup_warnings(
     wezterm_warning: Option<&TerminalWarning>,
     wayland_clipboard_warning: Option<&TerminalWarning>,
+    sandbox_profile_warning: Option<&TerminalWarning>,
     mut summarized: Vec<crate::startup::StartupWarning>,
 ) -> Vec<crate::startup::StartupWarning> {
+    if let Some(w) = sandbox_profile_warning {
+        summarized.insert(
+            0,
+            crate::startup::StartupWarning {
+                severity: crate::startup::WarningSeverity::Warning,
+                message: w.message.clone(),
+                action: w.fix.clone(),
+            },
+        );
+    }
     if wayland_clipboard_warning.is_some() {
         summarized.insert(
             0,
@@ -380,11 +507,11 @@ fn supports_focus_tracking(brand: TerminalName) -> bool {
 /// [`collect_startup_warnings`] and depend on the resolved notification
 /// protocol and condition.
 pub fn collect_notification_warnings(
-    ctx: &TerminalContext,
+    snapshot: &probes::ProbeSnapshot<'_>,
     protocol: NotificationProtocol,
     condition: NotificationCondition,
-    query: &dyn TmuxOptionQuery,
 ) -> Vec<TerminalWarning> {
+    let ctx = snapshot.terminal;
     let mut warnings = Vec::new();
 
     // Protocol fallback: BEL selected for an unknown terminal in auto mode.
@@ -404,8 +531,7 @@ pub fn collect_notification_warnings(
             protocol,
             NotificationProtocol::Osc9 | NotificationProtocol::Osc99 | NotificationProtocol::Osc777
         )
-        && query.option_exists("allow-passthrough")
-        && let Some(val) = query.show_option("allow-passthrough")
+        && let probes::TmuxProbeResult::Available(val) = &snapshot.tmux.allow_passthrough
         && !matches!(val.as_str(), "on" | "all")
     {
         let config_path = ctx.tmux_config_path();
@@ -432,24 +558,26 @@ pub fn collect_notification_warnings(
     warnings
 }
 
-/// Query tmux clipboard settings via the given [`TmuxOptionQuery`] and return
-/// structured clipboard/DCS warnings.
-fn diagnose_clipboard_with_query(
-    query: &dyn TmuxOptionQuery,
+fn diagnose_clipboard_from_facts(
+    tmux: &probes::TmuxProbeFacts,
     config_path: &str,
 ) -> Vec<TerminalWarning> {
-    let set_clipboard = query.show_option("set-clipboard");
-    let passthrough_exists = query.option_exists("allow-passthrough");
-    let allow_passthrough = if passthrough_exists {
-        query.show_option("allow-passthrough")
-    } else {
-        None
+    let set_clipboard = match &tmux.set_clipboard {
+        probes::TmuxProbeResult::Available(value) => Some(value.as_str()),
+        _ => None,
     };
-
+    let passthrough_exists = !matches!(
+        tmux.allow_passthrough_support,
+        probes::TmuxProbeResult::Unsupported
+    );
+    let allow_passthrough = match &tmux.allow_passthrough {
+        probes::TmuxProbeResult::Available(value) => Some(value.as_str()),
+        _ => None,
+    };
     diagnose_clipboard_from_values(
-        set_clipboard.as_deref(),
+        set_clipboard,
         passthrough_exists,
-        allow_passthrough.as_deref(),
+        allow_passthrough,
         config_path,
     )
 }
@@ -542,21 +670,29 @@ pub fn diagnose_wayland_data_control(
     ))
 }
 
-/// Live-environment wrapper for [`diagnose_wayland_data_control`], called from
-/// the two warning surfaces (startup event loop and `/terminal-setup`) — NOT
-/// from `collect_startup_warnings`, whose integration tests stay hermetic on
-/// Wayland dev boxes that way (pattern: `wezterm_kitty_keyboard_warning`).
-///
-/// The `is_wayland` short-circuits keep the compositor probe and the tool
-/// probe off non-Wayland sessions. On a Wayland session `native_tool_name()`
-/// resolves to "wl-copy" exactly when wl-copy is installed (it is the first
-/// probe candidate).
-pub fn diagnose_wayland_data_control_live() -> Option<TerminalWarning> {
-    let is_wayland = crate::host::DisplayServer::current() == crate::host::DisplayServer::Wayland;
+pub fn diagnose_wayland_data_control_from_snapshot(
+    snapshot: &probes::ProbeSnapshot<'_>,
+) -> Option<TerminalWarning> {
     diagnose_wayland_data_control(
-        is_wayland,
-        is_wayland && xai_grok_shell::util::clipboard::wayland_data_control_supported(),
-        is_wayland && xai_grok_shell::util::clipboard::native_tool_name() == "wl-copy",
+        snapshot.wayland.is_wayland,
+        matches!(
+            snapshot.wayland.data_control,
+            probes::TmuxProbeResult::Available(true)
+        ),
+        snapshot.wayland.wl_copy_available,
+    )
+}
+
+pub(crate) fn diagnose_wayland_data_control_from_common(
+    snapshot: &probes::CommonProbeSnapshot<'_>,
+) -> Option<TerminalWarning> {
+    let probes::TmuxProbeResult::Available(data_control) = snapshot.wayland.data_control else {
+        return None;
+    };
+    diagnose_wayland_data_control(
+        snapshot.wayland.is_wayland,
+        data_control,
+        snapshot.wayland.wl_copy_available,
     )
 }
 
@@ -669,118 +805,7 @@ pub fn format_clipboard_diagnostics(input: ClipboardDiagnosticsInput<'_>) -> Cli
     }
 }
 
-/// `/terminal-setup` Environment `color` row.
-pub fn format_color_env_line(level: ColorLevel) -> String {
-    format!("  color        {}\n", level.as_str())
-}
-
-/// `/terminal-setup` Environment `themes` row (mirrors [`ThemeKind::available`]).
-pub fn format_themes_env_line(level: ColorLevel) -> String {
-    if level.has_truecolor() {
-        return "  themes       all\n".to_string();
-    }
-    let names: Vec<&str> = ThemeKind::ALL
-        .iter()
-        .filter(|k| !k.requires_truecolor())
-        .map(|k| k.display_name())
-        .collect();
-    format!(
-        "  themes       {}/{}: {} + terminal, warp-sync\n",
-        names.len() + 2,
-        ThemeKind::ALL.len() + 2,
-        names.join(", ")
-    )
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum WarpEnvDiagnostics<'a> {
-    Inactive {
-        detected: bool,
-    },
-    Active {
-        channel: &'a str,
-        is_local: bool,
-        selected_name: &'a str,
-        settings_path: Option<&'a str>,
-        official_theme_count: usize,
-        installed_theme_count: usize,
-        fallback_reason: Option<&'a str>,
-    },
-}
-
-/// Format already-collected Warp diagnostics. Keeping formatting pure makes
-/// exact output fixtures independent of the host filesystem and process cache.
-fn format_warp_env_diagnostics(diagnostics: &WarpEnvDiagnostics<'_>) -> String {
-    match diagnostics {
-        WarpEnvDiagnostics::Inactive { detected: true } => {
-            "  warp         detected (inactive)\n".to_owned()
-        }
-        WarpEnvDiagnostics::Inactive { detected: false } => String::new(),
-        WarpEnvDiagnostics::Active {
-            channel,
-            is_local,
-            selected_name,
-            settings_path,
-            official_theme_count,
-            installed_theme_count,
-            fallback_reason,
-        } => {
-            let mut out = String::new();
-            let locality = if *is_local { "local" } else { "not local" };
-            out.push_str(&format!("  warp         {channel} ({locality})\n"));
-            out.push_str(&format!("  warp theme   {selected_name}\n"));
-            if let Some(path) = settings_path {
-                out.push_str(&format!("  warp config  {path}\n"));
-            }
-            out.push_str(&format!(
-                "  warp themes  {} official, {} installed\n",
-                official_theme_count, installed_theme_count
-            ));
-            if let Some(reason) = fallback_reason {
-                out.push_str(&format!("  warp status  fallback: {reason}\n"));
-            }
-            out
-        }
-    }
-}
-
-/// `/terminal-setup` Warp rows. Empty outside Warp-related sessions/themes.
-/// Runtime discovery is confined to this wrapper; formatting is pure above.
-pub fn format_warp_env_lines() -> String {
-    let resolved = crate::theme::cache::current_resolved();
-    let is_warp = crate::theme::warp::settings::is_local_warp();
-    let ThemeStatus::Warp {
-        channel,
-        selected_name,
-        settings_path,
-        fallback_reason,
-        ..
-    } = &resolved.status
-    else {
-        return format_warp_env_diagnostics(&WarpEnvDiagnostics::Inactive { detected: is_warp });
-    };
-
-    let channel = channel
-        .map(|value| value.display_name())
-        .unwrap_or("unknown channel");
-    let selected_name = selected_name
-        .as_deref()
-        .unwrap_or(resolved.display_name.as_str());
-    let settings_path = settings_path
-        .as_deref()
-        .map(crate::theme::warp::settings::display_path);
-    format_warp_env_diagnostics(&WarpEnvDiagnostics::Active {
-        channel,
-        is_local: is_warp,
-        selected_name,
-        settings_path: settings_path.as_deref(),
-        official_theme_count: crate::theme::warp::catalog::all().len(),
-        installed_theme_count: crate::theme::warp::discovery::discover_all().len(),
-        fallback_reason: fallback_reason.as_deref(),
-    })
-}
-
-/// `/terminal-setup` warning when truecolor themes are locked out.
+/// Explicit `/doctor` warning when truecolor themes are locked out.
 ///
 /// Not in `collect_startup_warnings` — limited color is normal on some
 /// emulators and would spam the welcome banner.
@@ -842,24 +867,6 @@ pub fn color_support_warning(
     Some(warning)
 }
 
-/// Returns `true` if the tmux server recognises this option name.
-///
-/// Uses the non-quiet form (`tmux show-option -gv`) which returns non-zero for
-/// unknown options, as opposed to `-q` which always returns 0.
-fn tmux_option_exists(option: &str) -> bool {
-    let mut cmd = Command::new("tmux");
-    cmd.args(["show-option", "-gv", option])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null());
-    xai_tty_utils::detach_std_command(&mut cmd);
-    cmd.status().map(|s| s.success()).unwrap_or(false)
-}
-
-#[cfg(test)]
-pub(crate) use crate::terminal::parse_tmux_show_option_output;
-pub(crate) use crate::terminal::tmux_show_option;
-
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -871,15 +878,11 @@ mod tests {
         ByobuBackend, MultiplexerKind, TerminalContext, TerminalName, TmuxClientMeta,
     };
 
-    // -- Deterministic TmuxOptionQuery fixture --------------------------------
-
-    /// A fake [`TmuxOptionQuery`] that returns pre-configured values without
-    /// touching the tmux subprocess. Use this in all diagnostic tests to avoid
-    /// host-state dependencies.
     struct FakeTmuxQuery {
         set_clipboard: Option<String>,
         allow_passthrough_exists: bool,
         allow_passthrough: Option<String>,
+        error: Option<String>,
     }
 
     impl FakeTmuxQuery {
@@ -889,6 +892,7 @@ mod tests {
                 set_clipboard: Some("on".to_owned()),
                 allow_passthrough_exists: true,
                 allow_passthrough: Some("on".to_owned()),
+                error: None,
             }
         }
 
@@ -898,26 +902,135 @@ mod tests {
                 set_clipboard: None,
                 allow_passthrough_exists: false,
                 allow_passthrough: None,
+                error: None,
+            }
+        }
+
+        fn error() -> Self {
+            Self {
+                set_clipboard: None,
+                allow_passthrough_exists: true,
+                allow_passthrough: None,
+                error: Some("tmux unavailable".to_owned()),
             }
         }
     }
 
-    impl TmuxOptionQuery for FakeTmuxQuery {
-        fn show_option(&self, option: &str) -> Option<String> {
+    impl probes::TmuxOptionQuery for FakeTmuxQuery {
+        fn show_option(&self, option: &str) -> probes::TmuxProbeResult<String> {
+            if let Some(error) = &self.error {
+                return probes::TmuxProbeResult::Error(error.clone());
+            }
             match option {
-                "set-clipboard" => self.set_clipboard.clone(),
-                "allow-passthrough" => self.allow_passthrough.clone(),
-                _ => None,
+                "set-clipboard" => self
+                    .set_clipboard
+                    .clone()
+                    .map(probes::TmuxProbeResult::Available)
+                    .unwrap_or(probes::TmuxProbeResult::Unavailable),
+                "allow-passthrough" if !self.allow_passthrough_exists => {
+                    probes::TmuxProbeResult::Unsupported
+                }
+                "allow-passthrough" => self
+                    .allow_passthrough
+                    .clone()
+                    .map(probes::TmuxProbeResult::Available)
+                    .unwrap_or(probes::TmuxProbeResult::Unavailable),
+                _ => probes::TmuxProbeResult::Unsupported,
             }
         }
 
-        fn option_exists(&self, option: &str) -> bool {
+        fn option_support(&self, option: &str) -> probes::TmuxProbeResult<()> {
+            if let Some(error) = &self.error {
+                return probes::TmuxProbeResult::Error(error.clone());
+            }
             match option {
-                "allow-passthrough" => self.allow_passthrough_exists,
-                "set-clipboard" => self.set_clipboard.is_some(),
-                _ => false,
+                "allow-passthrough" if self.allow_passthrough_exists => {
+                    probes::TmuxProbeResult::Available(())
+                }
+                "allow-passthrough" => probes::TmuxProbeResult::Unsupported,
+                _ => probes::TmuxProbeResult::Unsupported,
             }
         }
+
+        fn control_mode(&self) -> probes::TmuxProbeResult<bool> {
+            probes::TmuxProbeResult::Unavailable
+        }
+    }
+
+    fn test_snapshot<'a>(
+        ctx: &'a TerminalContext,
+        query: &dyn probes::TmuxOptionQuery,
+        control_mode: bool,
+        fullscreen_active: bool,
+        kitty_flags_pushed: bool,
+        xtversion: Option<&'a str>,
+    ) -> probes::ProbeSnapshot<'a> {
+        probes::ProbeSnapshot {
+            terminal: ctx,
+            tmux: probes::TmuxProbeFacts {
+                version: probes::TmuxProbeResult::Unavailable,
+                extended_keys: probes::TmuxProbeResult::Unavailable,
+                set_clipboard: query.show_option("set-clipboard"),
+                allow_passthrough_support: query.option_support("allow-passthrough"),
+                allow_passthrough: query.show_option("allow-passthrough"),
+                control_mode: probes::TmuxProbeResult::Available(control_mode),
+            },
+            wayland: probes::WaylandProbeFacts {
+                is_wayland: false,
+                data_control: probes::TmuxProbeResult::Available(false),
+                wl_copy_available: false,
+            },
+            runtime: probes::TuiProbeEvidence {
+                fullscreen_active,
+                kitty_flags_pushed,
+                xtversion,
+            },
+        }
+    }
+
+    fn collect_startup_warnings(
+        ctx: &TerminalContext,
+        query: &dyn probes::TmuxOptionQuery,
+        control_mode: bool,
+        fullscreen_active: bool,
+    ) -> Vec<TerminalWarning> {
+        super::collect_startup_warnings(&test_snapshot(
+            ctx,
+            query,
+            control_mode,
+            fullscreen_active,
+            false,
+            None,
+        ))
+    }
+
+    fn wezterm_kitty_keyboard_warning(
+        ctx: &TerminalContext,
+        kitty_flags_pushed: bool,
+        xtversion: Option<&str>,
+    ) -> Option<TerminalWarning> {
+        let query = FakeTmuxQuery::unavailable();
+        super::wezterm_kitty_keyboard_warning(&test_snapshot(
+            ctx,
+            &query,
+            false,
+            true,
+            kitty_flags_pushed,
+            xtversion,
+        ))
+    }
+
+    fn collect_notification_warnings(
+        ctx: &TerminalContext,
+        protocol: NotificationProtocol,
+        condition: NotificationCondition,
+        query: &dyn probes::TmuxOptionQuery,
+    ) -> Vec<TerminalWarning> {
+        super::collect_notification_warnings(
+            &test_snapshot(ctx, query, false, true, false, None),
+            protocol,
+            condition,
+        )
     }
 
     // -- Test context builders ------------------------------------------------
@@ -971,9 +1084,10 @@ mod tests {
         }
     }
 
-    fn apple_terminal_ctx() -> TerminalContext {
+    fn apple_terminal_ctx(is_ssh: bool) -> TerminalContext {
         TerminalContext {
             brand: TerminalName::AppleTerminal,
+            is_ssh,
             ..Default::default()
         }
     }
@@ -989,127 +1103,6 @@ mod tests {
     // =====================================================================
     // diagnose_clipboard_from_values: pure clipboard logic
     // =====================================================================
-
-    #[test]
-    fn clipboard_all_good_modern_tmux() {
-        let w = diagnose_clipboard_from_values(Some("on"), true, Some("on"), "~/.tmux.conf");
-        assert!(w.is_empty());
-    }
-
-    #[test]
-    fn clipboard_all_good_external() {
-        let w = diagnose_clipboard_from_values(Some("external"), true, Some("all"), "~/.tmux.conf");
-        assert!(w.is_empty());
-    }
-
-    #[test]
-    fn clipboard_all_good_old_tmux() {
-        let w = diagnose_clipboard_from_values(Some("on"), false, None, "~/.tmux.conf");
-        assert!(w.is_empty());
-    }
-
-    #[test]
-    fn clipboard_off_is_flagged() {
-        let w = diagnose_clipboard_from_values(Some("off"), true, Some("on"), "~/.tmux.conf");
-        assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::Clipboard);
-        assert_eq!(w[0].fix.as_deref(), Some("set -g set-clipboard on"));
-        assert_eq!(w[0].config_path.as_deref(), Some("~/.tmux.conf"));
-    }
-
-    #[test]
-    fn clipboard_query_unavailable_does_not_warn() {
-        // `None` means the query failed — not proof that the setting is
-        // disabled.  No warning should be emitted.
-        let w = diagnose_clipboard_from_values(None, true, Some("on"), "~/.tmux.conf");
-        assert!(
-            w.is_empty(),
-            "Query-unavailable set-clipboard should not produce a warning"
-        );
-    }
-
-    #[test]
-    fn dcs_passthrough_off_is_flagged() {
-        let w = diagnose_clipboard_from_values(Some("on"), true, Some("off"), "~/.tmux.conf");
-        assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::DcsPassthrough);
-        assert_eq!(w[0].fix.as_deref(), Some("set -g allow-passthrough on"));
-    }
-
-    #[test]
-    fn dcs_passthrough_query_unavailable_does_not_warn() {
-        // `allow_passthrough` query returned `None` — the probe could not
-        // obtain a value, so we must not claim the setting is disabled.
-        let w = diagnose_clipboard_from_values(Some("on"), true, None, "~/.tmux.conf");
-        assert!(
-            w.is_empty(),
-            "Query-unavailable allow-passthrough should not produce a warning"
-        );
-    }
-
-    #[test]
-    fn dcs_passthrough_not_checked_on_old_tmux() {
-        let w = diagnose_clipboard_from_values(Some("on"), false, None, "~/.tmux.conf");
-        assert!(w.is_empty());
-    }
-
-    #[test]
-    fn clipboard_both_bad_produces_two_warnings() {
-        let w = diagnose_clipboard_from_values(Some("off"), true, Some("off"), "~/.tmux.conf");
-        assert_eq!(w.len(), 2);
-        assert_eq!(w[0].category, WarningCategory::Clipboard);
-        assert_eq!(w[1].category, WarningCategory::DcsPassthrough);
-    }
-
-    #[test]
-    fn clipboard_both_bad_old_tmux_produces_one_warning() {
-        let w = diagnose_clipboard_from_values(Some("off"), false, None, "~/.tmux.conf");
-        assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::Clipboard);
-    }
-
-    #[test]
-    fn clipboard_byobu_config_path_propagated() {
-        let w =
-            diagnose_clipboard_from_values(Some("off"), true, Some("on"), "~/.byobu/.tmux.conf");
-        assert_eq!(w.len(), 1);
-        assert_eq!(w[0].config_path.as_deref(), Some("~/.byobu/.tmux.conf"));
-    }
-
-    // =====================================================================
-    // diagnose_wayland_data_control: pure Wayland clipboard logic
-    // =====================================================================
-
-    #[test]
-    fn wayland_no_data_control_warns() {
-        let w = diagnose_wayland_data_control(true, false, true).expect("must warn");
-        assert_eq!(w.category, WarningCategory::WaylandNoDataControl);
-        assert!(w.message.contains("focused"));
-        assert!(w.fix.is_none(), "wl-copy present: nothing to install");
-    }
-
-    #[test]
-    fn wayland_no_data_control_missing_wl_copy_suggests_install() {
-        let w = diagnose_wayland_data_control(true, false, false).expect("must warn");
-        assert_eq!(w.category, WarningCategory::WaylandNoDataControl);
-        assert!(
-            w.fix.as_deref().is_some_and(|f| f.contains("wl-clipboard")),
-            "fix must suggest installing wl-clipboard, got: {:?}",
-            w.fix
-        );
-    }
-
-    #[test]
-    fn wayland_with_data_control_is_quiet() {
-        assert!(diagnose_wayland_data_control(true, true, true).is_none());
-        assert!(diagnose_wayland_data_control(true, true, false).is_none());
-    }
-
-    #[test]
-    fn non_wayland_is_quiet() {
-        assert!(diagnose_wayland_data_control(false, false, false).is_none());
-        assert!(diagnose_wayland_data_control(false, true, true).is_none());
-    }
 
     fn clipboard_input(brand: TerminalName) -> ClipboardDiagnosticsInput<'static> {
         ClipboardDiagnosticsInput {
@@ -1239,6 +1232,142 @@ mod tests {
                 .text
                 .contains("fix          grok wrap <command> or /minimal")
         );
+
+        let remote_container = format_clipboard_diagnostics(ClipboardDiagnosticsInput {
+            container_no_display: true,
+            ..clipboard_input(TerminalName::Unknown)
+        });
+        assert!(
+            remote_container
+                .text
+                .contains("native       container (arboard)")
+        );
+        assert!(
+            remote_container
+                .text
+                .contains("fix          grok wrap <ssh command> or /minimal")
+        );
+    }
+
+    #[test]
+    fn clipboard_all_good_modern_tmux() {
+        let w = diagnose_clipboard_from_values(Some("on"), true, Some("on"), "~/.tmux.conf");
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn clipboard_all_good_external() {
+        let w = diagnose_clipboard_from_values(Some("external"), true, Some("all"), "~/.tmux.conf");
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn clipboard_all_good_old_tmux() {
+        let w = diagnose_clipboard_from_values(Some("on"), false, None, "~/.tmux.conf");
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn clipboard_off_is_flagged() {
+        let w = diagnose_clipboard_from_values(Some("off"), true, Some("on"), "~/.tmux.conf");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].category, WarningCategory::Clipboard);
+        assert_eq!(w[0].fix.as_deref(), Some("set -g set-clipboard on"));
+        assert_eq!(w[0].config_path.as_deref(), Some("~/.tmux.conf"));
+    }
+
+    #[test]
+    fn clipboard_query_unavailable_does_not_warn() {
+        // `None` means the query failed — not proof that the setting is
+        // disabled.  No warning should be emitted.
+        let w = diagnose_clipboard_from_values(None, true, Some("on"), "~/.tmux.conf");
+        assert!(
+            w.is_empty(),
+            "Query-unavailable set-clipboard should not produce a warning"
+        );
+    }
+
+    #[test]
+    fn dcs_passthrough_off_is_flagged() {
+        let w = diagnose_clipboard_from_values(Some("on"), true, Some("off"), "~/.tmux.conf");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].category, WarningCategory::DcsPassthrough);
+        assert_eq!(w[0].fix.as_deref(), Some("set -g allow-passthrough on"));
+    }
+
+    #[test]
+    fn dcs_passthrough_query_unavailable_does_not_warn() {
+        // `allow_passthrough` query returned `None` — the probe could not
+        // obtain a value, so we must not claim the setting is disabled.
+        let w = diagnose_clipboard_from_values(Some("on"), true, None, "~/.tmux.conf");
+        assert!(
+            w.is_empty(),
+            "Query-unavailable allow-passthrough should not produce a warning"
+        );
+    }
+
+    #[test]
+    fn dcs_passthrough_not_checked_on_old_tmux() {
+        let w = diagnose_clipboard_from_values(Some("on"), false, None, "~/.tmux.conf");
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn clipboard_both_bad_produces_two_warnings() {
+        let w = diagnose_clipboard_from_values(Some("off"), true, Some("off"), "~/.tmux.conf");
+        assert_eq!(w.len(), 2);
+        assert_eq!(w[0].category, WarningCategory::Clipboard);
+        assert_eq!(w[1].category, WarningCategory::DcsPassthrough);
+    }
+
+    #[test]
+    fn clipboard_both_bad_old_tmux_produces_one_warning() {
+        let w = diagnose_clipboard_from_values(Some("off"), false, None, "~/.tmux.conf");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].category, WarningCategory::Clipboard);
+    }
+
+    #[test]
+    fn clipboard_byobu_config_path_propagated() {
+        let w =
+            diagnose_clipboard_from_values(Some("off"), true, Some("on"), "~/.byobu/.tmux.conf");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].config_path.as_deref(), Some("~/.byobu/.tmux.conf"));
+    }
+
+    // =====================================================================
+    // diagnose_wayland_data_control: pure Wayland clipboard logic
+    // =====================================================================
+
+    #[test]
+    fn wayland_no_data_control_warns() {
+        let w = diagnose_wayland_data_control(true, false, true).expect("must warn");
+        assert_eq!(w.category, WarningCategory::WaylandNoDataControl);
+        assert!(w.message.contains("focused"));
+        assert!(w.fix.is_none(), "wl-copy present: nothing to install");
+    }
+
+    #[test]
+    fn wayland_no_data_control_missing_wl_copy_suggests_install() {
+        let w = diagnose_wayland_data_control(true, false, false).expect("must warn");
+        assert_eq!(w.category, WarningCategory::WaylandNoDataControl);
+        assert!(
+            w.fix.as_deref().is_some_and(|f| f.contains("wl-clipboard")),
+            "fix must suggest installing wl-clipboard, got: {:?}",
+            w.fix
+        );
+    }
+
+    #[test]
+    fn wayland_with_data_control_is_quiet() {
+        assert!(diagnose_wayland_data_control(true, true, true).is_none());
+        assert!(diagnose_wayland_data_control(true, true, false).is_none());
+    }
+
+    #[test]
+    fn non_wayland_is_quiet() {
+        assert!(diagnose_wayland_data_control(false, false, false).is_none());
+        assert!(diagnose_wayland_data_control(false, true, true).is_none());
     }
 
     // =====================================================================
@@ -1439,45 +1568,20 @@ mod tests {
 
     // -- Apple Terminal (unsupported OSC 52) ----------------------------------
 
-    // Note: the Apple Terminal warning is gated on `is_remote_session()` which
-    // reads ambient env vars. In CI / local dev, SSH_CONNECTION is typically
-    // unset, so `collect_startup_warnings` won't fire this warning. We test
-    // the rendering and category independently.
-
     #[test]
-    fn apple_terminal_warning_category_exists() {
-        // Verify the warning renders correctly via the banner.
-        let w = [TerminalWarning::new(
-            WarningCategory::UnsupportedTerminal,
-            "macOS Terminal does not support clipboard escape sequences (OSC 52) \
-             — copy over SSH will not work. Use iTerm2 or Ghostty instead",
-            None,
-            None,
-        )];
-        assert_eq!(w[0].category, WarningCategory::UnsupportedTerminal);
-        assert!(w[0].fix.is_none(), "No fix — user must switch terminals");
+    fn apple_terminal_ssh_warns() {
+        let query = FakeTmuxQuery::healthy_modern();
+        let warnings = collect_startup_warnings(&apple_terminal_ctx(true), &query, false, true);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].category, WarningCategory::UnsupportedTerminal);
+        assert!(warnings[0].fix.is_none());
     }
 
     #[test]
     fn apple_terminal_non_ssh_no_warning() {
-        // When not over SSH, Apple Terminal can use pbcopy — no warning needed.
-        // Since we can't inject `is_remote_session()`, we verify that the
-        // context builder with AppleTerminal + no SSH env doesn't produce
-        // the warning in a typical local environment.
-        let ctx = apple_terminal_ctx();
         let query = FakeTmuxQuery::healthy_modern();
-        let w = collect_startup_warnings(&ctx, &query, false, true);
-        // In a non-SSH test environment, this should be empty.
-        // (If CI sets SSH_CONNECTION, this test would see the warning — acceptable.)
-        let unsupported: Vec<_> = w
-            .iter()
-            .filter(|w| w.category == WarningCategory::UnsupportedTerminal)
-            .collect();
-        // We can't assert empty because CI might have SSH_CONNECTION set,
-        // but we CAN assert that if the warning fires, it has no fix.
-        for warning in &unsupported {
-            assert!(warning.fix.is_none());
-        }
+        let warnings = collect_startup_warnings(&apple_terminal_ctx(false), &query, false, true);
+        assert!(warnings.is_empty());
     }
 
     // -- Multi-warning coalescing ---------------------------------------------
@@ -1529,13 +1633,19 @@ mod tests {
 
     #[test]
     fn tmux_query_unavailable_in_control_mode_only_shows_control_warning() {
-        // Even with all queries unavailable, the control-mode warning is
-        // purely env-based and should still appear.
         let ctx = plain_tmux_ctx();
         let query = FakeTmuxQuery::unavailable();
         let w = collect_startup_warnings(&ctx, &query, true, false);
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].category, WarningCategory::ControlMode);
+    }
+
+    #[test]
+    fn tmux_query_error_does_not_warn() {
+        let ctx = plain_tmux_ctx();
+        let query = FakeTmuxQuery::error();
+        let w = collect_startup_warnings(&ctx, &query, false, true);
+        assert!(w.is_empty());
     }
 
     #[test]
@@ -1551,13 +1661,6 @@ mod tests {
         // the server knows the option but couldn't read it.  No warning.
         let w = diagnose_clipboard_from_values(Some("on"), true, None, "~/.tmux.conf");
         assert!(w.is_empty());
-    }
-
-    // -- tmux_option_exists: deterministic known-bad option --------------------
-
-    #[test]
-    fn tmux_option_exists_returns_false_for_nonexistent_option() {
-        assert!(!tmux_option_exists("nonexistent-option-xyz"));
     }
 
     // =====================================================================
@@ -1790,7 +1893,7 @@ mod tests {
         // The welcome screen renders only the first warning; the WezTerm
         // banner (broken local input) must displace clipboard advisories.
         let w = wezterm_kitty_keyboard_warning(&wezterm_ctx(), false, None).unwrap();
-        let out = assemble_startup_warnings(Some(&w), None, vec![clipboard_banner()]);
+        let out = assemble_startup_warnings(Some(&w), None, None, vec![clipboard_banner()]);
         assert_eq!(out.len(), 2);
         assert!(
             out[0].message.contains("WezTerm"),
@@ -1802,7 +1905,7 @@ mod tests {
 
     #[test]
     fn no_wezterm_warning_leaves_summarized_untouched() {
-        let out = assemble_startup_warnings(None, None, vec![clipboard_banner()]);
+        let out = assemble_startup_warnings(None, None, None, vec![clipboard_banner()]);
         assert_eq!(out.len(), 1);
         assert!(out[0].message.contains("Clipboard"));
     }
@@ -1812,7 +1915,7 @@ mod tests {
         // `summarize_warnings` is SSH-gated, so the Wayland warning reaches the
         // welcome banner through the assemble bypass instead.
         let w = diagnose_wayland_data_control(true, false, true).unwrap();
-        let out = assemble_startup_warnings(None, Some(&w), vec![clipboard_banner()]);
+        let out = assemble_startup_warnings(None, Some(&w), None, vec![clipboard_banner()]);
         assert_eq!(out.len(), 2);
         assert!(
             out[0].message.contains("focused"),
@@ -1826,11 +1929,80 @@ mod tests {
     fn wezterm_banner_outranks_wayland_banner() {
         let wez = wezterm_kitty_keyboard_warning(&wezterm_ctx(), false, None).unwrap();
         let way = diagnose_wayland_data_control(true, false, true).unwrap();
-        let out = assemble_startup_warnings(Some(&wez), Some(&way), vec![clipboard_banner()]);
+        let out = assemble_startup_warnings(Some(&wez), Some(&way), None, vec![clipboard_banner()]);
         assert_eq!(out.len(), 3);
         assert!(out[0].message.contains("WezTerm"));
         assert!(out[1].message.contains("focused"));
         assert!(out[2].message.contains("Clipboard"));
+    }
+
+    #[test]
+    fn sandbox_profile_conflict_warning_reports_conflicts() {
+        assert!(sandbox_profile_conflict_warning_from(vec![]).is_none());
+
+        let w = sandbox_profile_conflict_warning_from(vec!["dev".to_string()]).unwrap();
+        assert_eq!(w.category, WarningCategory::SandboxProfileConflict);
+        assert!(
+            w.message
+                .starts_with("Your project sandbox profile conflicts with user config.")
+        );
+        assert!(w.message.contains("Profile: 'dev'"));
+        assert_eq!(w.fix.as_deref(), Some("Using the user profile instead."));
+    }
+
+    #[test]
+    fn sandbox_banner_sits_below_terminal_banners() {
+        let sandbox = sandbox_profile_conflict_warning_from(vec!["dev".to_string()]).unwrap();
+
+        let out = assemble_startup_warnings(None, None, Some(&sandbox), vec![]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].message.contains("sandbox profile"));
+
+        let wez = wezterm_kitty_keyboard_warning(&wezterm_ctx(), false, None).unwrap();
+        let out = assemble_startup_warnings(Some(&wez), None, Some(&sandbox), vec![]);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].message.contains("WezTerm"));
+        assert!(out[1].message.contains("sandbox profile"));
+    }
+
+    // -- ssh_wrap_hint: `grok wrap ssh` recommendation --------------------------
+
+    #[test]
+    fn ssh_wrap_hint_fires_over_plain_ssh() {
+        // is_ssh, no sink, not VS Code remote → recommend wrap.
+        let w = ssh_wrap_hint(true, false, false).expect("hint must fire");
+        assert_eq!(w.category, WarningCategory::SshWithoutWrap);
+        assert_eq!(w.fix.as_deref(), Some("grok wrap ssh <host>"));
+        assert!(
+            w.config_path.is_none(),
+            "fix is a command, not a config line"
+        );
+        assert!(
+            w.note
+                .as_deref()
+                .is_some_and(|n| n.contains("local machine")),
+            "note must say where to run the command, got: {:?}",
+            w.note
+        );
+    }
+
+    #[test]
+    fn ssh_wrap_hint_suppressed_without_ssh() {
+        assert!(ssh_wrap_hint(false, false, false).is_none());
+    }
+
+    #[test]
+    fn ssh_wrap_hint_suppressed_when_sink_active() {
+        // An active OSC 52 sink means the session already runs under
+        // `grok wrap` — adoption silences the hint by itself.
+        assert!(ssh_wrap_hint(true, true, false).is_none());
+    }
+
+    #[test]
+    fn ssh_wrap_hint_suppressed_in_vscode_remote() {
+        // VS Code remote's integrated terminal is not a plain ssh terminal
+        // the user could wrap.
+        assert!(ssh_wrap_hint(true, false, true).is_none());
     }
 
     // -- Warning ordering: clipboard before DCS --------------------------------
@@ -1976,8 +2148,7 @@ mod tests {
     fn summarize_warnings_surfaces_extended_keys_off() {
         let ctx = extended_keys_ctx(plain_tmux_ctx(), Some("off"));
         let warnings = collect_extended_keys_warnings(&ctx);
-        let summary =
-            summarize_warnings_inner(&warnings, true).expect("welcome banner must surface");
+        let summary = summarize_warnings_inner(&warnings).expect("welcome banner must surface");
         assert_eq!(summary.severity, crate::startup::WarningSeverity::Warning);
         assert_eq!(summary.message, "Clipboard may be unreachable.");
         assert_eq!(
@@ -1990,8 +2161,7 @@ mod tests {
     fn summarize_warnings_surfaces_dcs_passthrough_off() {
         let warnings =
             diagnose_clipboard_from_values(Some("on"), true, Some("off"), "~/.tmux.conf");
-        let summary =
-            summarize_warnings_inner(&warnings, true).expect("welcome banner must surface");
+        let summary = summarize_warnings_inner(&warnings).expect("welcome banner must surface");
         assert_eq!(summary.severity, crate::startup::WarningSeverity::Warning);
         assert_eq!(summary.message, "Clipboard may be unreachable.");
         assert_eq!(
@@ -2010,7 +2180,7 @@ mod tests {
             !warnings.is_empty(),
             "fixture sanity: clipboard warnings must fire"
         );
-        assert!(summarize_warnings_inner(&warnings, true).is_none());
+        assert!(summarize_warnings_inner(&warnings).is_none());
     }
 
     #[test]
@@ -2023,13 +2193,13 @@ mod tests {
             warnings.len() >= 2,
             "fixture sanity: multiple warnings must fire"
         );
-        let summary = summarize_warnings_inner(&warnings, true).expect("surfaces allowed warning");
+        let summary = summarize_warnings_inner(&warnings).expect("surfaces allowed warning");
         assert_eq!(summary.message, "Clipboard may be unreachable.");
     }
 
     #[test]
     fn summarize_warnings_empty_input_returns_none() {
-        assert!(summarize_warnings_inner(&[], true).is_none());
+        assert!(summarize_warnings_inner(&[]).is_none());
     }
 
     #[test]
@@ -2043,39 +2213,7 @@ mod tests {
             !warnings.is_empty(),
             "fixture sanity: extended-keys warning must fire"
         );
-        assert!(summarize_warnings_inner(&warnings, false).is_none());
-    }
-
-    // -- parse_tmux_show_option_output (pure helper) --------------------------
-
-    #[test]
-    fn parse_tmux_show_option_output_success_cases() {
-        assert_eq!(
-            parse_tmux_show_option_output(true, b"on\n"),
-            Some("on".to_owned()),
-        );
-        assert_eq!(
-            parse_tmux_show_option_output(true, b"off"),
-            Some("off".to_owned()),
-        );
-        // Symmetric trim: leading whitespace is stripped too.
-        assert_eq!(
-            parse_tmux_show_option_output(true, b"  on"),
-            Some("on".to_owned()),
-        );
-        assert_eq!(
-            parse_tmux_show_option_output(true, b"\tor"),
-            Some("or".to_owned()),
-        );
-    }
-
-    #[test]
-    fn parse_tmux_show_option_output_collapses_to_none() {
-        assert_eq!(parse_tmux_show_option_output(true, b""), None);
-        assert_eq!(parse_tmux_show_option_output(true, b"\n"), None);
-        assert_eq!(parse_tmux_show_option_output(true, b"   "), None);
-        // Subprocess failure ignores stdout entirely.
-        assert_eq!(parse_tmux_show_option_output(false, b"on"), None);
+        assert!(summarize_warnings(&warnings, false).is_none());
     }
 
     // =====================================================================
@@ -2205,7 +2343,7 @@ mod tests {
 
     #[test]
     fn notification_focus_tracking_unavailable_apple_terminal() {
-        let ctx = apple_terminal_ctx();
+        let ctx = apple_terminal_ctx(false);
         let query = FakeTmuxQuery::healthy_modern();
         let w = collect_notification_warnings(
             &ctx,
@@ -2355,88 +2493,6 @@ mod tests {
     // -- Color / theme rows + LimitedColorSupport warnings --------------------
 
     #[test]
-    fn format_color_env_line_uses_canonical_level_label() {
-        assert_eq!(
-            format_color_env_line(ColorLevel::TrueColor),
-            "  color        truecolor\n"
-        );
-        assert_eq!(
-            format_color_env_line(ColorLevel::Ansi256),
-            "  color        256\n"
-        );
-        assert_eq!(
-            format_color_env_line(ColorLevel::Basic),
-            "  color        basic\n"
-        );
-        assert_eq!(
-            format_color_env_line(ColorLevel::None),
-            "  color        none\n"
-        );
-    }
-
-    #[test]
-    fn format_themes_env_line_all_on_truecolor() {
-        assert_eq!(
-            format_themes_env_line(ColorLevel::TrueColor),
-            "  themes       all\n"
-        );
-    }
-
-    #[test]
-    fn format_themes_env_line_lists_available_below_truecolor() {
-        let n = ThemeKind::ALL
-            .iter()
-            .filter(|k| !k.requires_truecolor())
-            .count();
-        let total = ThemeKind::ALL.len();
-        for level in [ColorLevel::Ansi256, ColorLevel::Basic, ColorLevel::None] {
-            let line = format_themes_env_line(level);
-            assert!(
-                line.starts_with(&format!("  themes       {}/{}: ", n + 2, total + 2)),
-                "level {level:?}: {line}"
-            );
-            assert!(line.contains("groknight") && line.contains("grokday"));
-            assert!(line.contains("terminal") && line.contains("warp-sync"));
-            assert!(!line.contains("tokyonight"));
-        }
-    }
-
-    #[test]
-    fn format_warp_env_diagnostics_inactive_fixtures() {
-        assert_eq!(
-            format_warp_env_diagnostics(&WarpEnvDiagnostics::Inactive { detected: false }),
-            ""
-        );
-        assert_eq!(
-            format_warp_env_diagnostics(&WarpEnvDiagnostics::Inactive { detected: true }),
-            "  warp         detected (inactive)\n"
-        );
-    }
-
-    #[test]
-    fn format_warp_env_diagnostics_active_fixture() {
-        let fixture = WarpEnvDiagnostics::Active {
-            channel: "Preview",
-            is_local: true,
-            selected_name: "Fixture Gradient",
-            settings_path: Some("~/.warp-terminal-preview/settings.json"),
-            official_theme_count: 340,
-            installed_theme_count: 2,
-            fallback_reason: Some("fixture theme missing"),
-        };
-        assert_eq!(
-            format_warp_env_diagnostics(&fixture),
-            concat!(
-                "  warp         Preview (local)\n",
-                "  warp theme   Fixture Gradient\n",
-                "  warp config  ~/.warp-terminal-preview/settings.json\n",
-                "  warp themes  340 official, 2 installed\n",
-                "  warp status  fallback: fixture theme missing\n",
-            )
-        );
-    }
-
-    #[test]
     fn color_support_warning_none_on_truecolor() {
         assert!(
             color_support_warning(
@@ -2523,6 +2579,6 @@ mod tests {
             "~/.tmux.conf",
         )
         .expect("fixture");
-        assert!(summarize_warnings_inner(&[w], true).is_none());
+        assert!(summarize_warnings_inner(&[w]).is_none());
     }
 }

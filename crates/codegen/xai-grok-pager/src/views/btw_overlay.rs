@@ -463,6 +463,7 @@ pub fn render_btw_panel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::osc8::LinkTarget;
 
     fn render_with_model(
         state: &BtwOverlayState,
@@ -693,14 +694,17 @@ mod tests {
             !overlay.is_empty(),
             "expected at least one overlay link for markdown href"
         );
-        let found = overlay.links().iter().any(|l| l.url.as_ref() == url);
+        let found = overlay
+            .links()
+            .iter()
+            .any(|link| matches!(&link.target, LinkTarget::Url(target) if target.as_ref() == url));
         assert!(
             found,
             "overlay should contain {url}, got: {:?}",
             overlay
                 .links()
                 .iter()
-                .map(|l| l.url.as_ref())
+                .map(|link| &link.target)
                 .collect::<Vec<_>>()
         );
         // Links live in the body (row >= 1), not the title border.
@@ -720,12 +724,14 @@ mod tests {
         let state = BtwOverlayState::done("q".to_string(), format!("Visit {url} please."));
         let (_model, overlay) = render_with_links(&state, 60, 8);
         assert!(
-            overlay.links().iter().any(|l| l.url.as_ref() == url),
+            overlay.links().iter().any(
+                |link| matches!(&link.target, LinkTarget::Url(target) if target.as_ref() == url)
+            ),
             "plain URL should become an overlay link, got: {:?}",
             overlay
                 .links()
                 .iter()
-                .map(|l| l.url.as_ref())
+                .map(|link| &link.target)
                 .collect::<Vec<_>>()
         );
     }
@@ -737,11 +743,17 @@ mod tests {
         let path = "/Users/test/project/src/main.rs";
         let state = BtwOverlayState::done("q".to_string(), format!("See {path} for details."));
         let (_model, overlay) = render_with_links(&state, 80, 8);
-        let urls: Vec<&str> = overlay.links().iter().map(|l| l.url.as_ref()).collect();
+        let found = overlay.links().iter().any(|link| {
+            matches!(&link.target, LinkTarget::File(target) if target.ends_with("src/main.rs"))
+        });
         assert!(
-            urls.iter()
-                .any(|u| u.contains("main.rs") && u.starts_with("file://")),
-            "file path should map to file:// overlay, got: {urls:?}"
+            found,
+            "file path should map to a semantic file target, got: {:?}",
+            overlay
+                .links()
+                .iter()
+                .map(|link| &link.target)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -767,7 +779,7 @@ mod tests {
         let link = overlay
             .links()
             .iter()
-            .find(|l| l.url.as_ref() == url)
+            .find(|link| matches!(&link.target, LinkTarget::Url(target) if target.as_ref() == url))
             .expect("scrolled link should still map when visible");
         // Body starts at row 1; clamped offset 17 + 4 visible rows → link at
         // visible index 3 → screen_row = 1 + 3 = 4.

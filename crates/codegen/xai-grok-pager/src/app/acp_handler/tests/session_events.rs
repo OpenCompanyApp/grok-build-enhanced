@@ -11,6 +11,7 @@
             text: "hi".into(),
             images: Vec::new(),
             scrollback_entry: EntryId::new(1),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
         let update = XaiSessionUpdate::AutoCompactStarted {
@@ -102,6 +103,7 @@
             text: "retry me".into(),
             images: Vec::new(),
             scrollback_entry: EntryId::new(2),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
         let retry = RetryState::Retrying {
@@ -206,6 +208,7 @@
             text: "try me again".into(),
             images: Vec::new(),
             scrollback_entry: EntryId::new(2),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
 
@@ -245,6 +248,7 @@
             text: "stash me".into(),
             images: Vec::new(),
             scrollback_entry: EntryId::new(2),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
         apply_retry_state(
@@ -276,6 +280,7 @@
             text: "stash me too".into(),
             images: Vec::new(),
             scrollback_entry: EntryId::new(3),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
         apply_retry_state(
@@ -306,6 +311,7 @@
             text: "pool blocked".into(),
             images: Vec::new(),
             scrollback_entry: EntryId::new(5),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
         apply_retry_state(
@@ -334,6 +340,7 @@
             text: "gone".into(),
             images: Vec::new(),
             scrollback_entry: EntryId::new(4),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
         apply_retry_state(
@@ -413,6 +420,7 @@
             text: "retry after login".into(),
             images: Vec::new(),
             scrollback_entry: EntryId::new(5),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
         apply_retry_state(

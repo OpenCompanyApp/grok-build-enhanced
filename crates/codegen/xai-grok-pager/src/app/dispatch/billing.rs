@@ -1,6 +1,6 @@
 //! Subscription tier checks, credit-limit upsells, and auto-topup handling.
 
-use super::queue::maybe_drain_queue;
+use super::queue::{maybe_drain_queue, note_peek_page_flip};
 use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentView;
@@ -101,6 +101,7 @@ pub(crate) fn is_free_usage_exhausted_error(reason: &str) -> bool {
 /// Whether a rate-limited (-32003) ACP error is the free-usage exhaustion.
 /// `data` may be a bare string or the `{message, promptUsage?}` object
 /// `attach_prompt_usage` produces — always read via the shared detail helper.
+#[cfg(test)]
 pub(crate) fn acp_error_is_free_usage_exhausted(err: &agent_client_protocol::Error) -> bool {
     err.data
         .as_ref()
@@ -108,11 +109,6 @@ pub(crate) fn acp_error_is_free_usage_exhausted(err: &agent_client_protocol::Err
         .as_deref()
         .is_some_and(is_free_usage_exhausted_error)
 }
-
-/// User-facing message for free-usage exhaustion. Shown by headless mode and
-/// `format_acp_error` in place of auth-aware rate-limit copy. Deliberately
-/// promises no reset duration — the quota window is backend-config-driven.
-pub(crate) const FREE_USAGE_USER_MESSAGE: &str = "You\u{2019}ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, or try again later: https://grok.com/supergrok?referrer=grok-build";
 
 /// Open the credit-limit upsell on the given agent.
 ///
@@ -578,13 +574,14 @@ pub(super) fn handle_credit_limit_recheck_complete(
     // Either way, drop the stashed prompt.
     agent.credit_limit_stashed_prompt = None;
 
-    let mut effects = maybe_drain_queue(agent);
-    effects.push(Effect::FetchBilling {
+    let mut drain = maybe_drain_queue(agent);
+    drain.effects.push(Effect::FetchBilling {
         agent_id,
         session_id: agent.session.session_id.clone(),
         silent: true,
     });
-    effects
+    note_peek_page_flip(app, agent_id, drain.page_flip_entry);
+    drain.effects
 }
 
 // Action handlers.

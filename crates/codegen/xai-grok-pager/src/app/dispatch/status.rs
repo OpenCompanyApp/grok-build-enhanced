@@ -1,5 +1,7 @@
 //! Session status, sharing, privacy, usage, and info dispatchers.
 
+use agent_client_protocol as acp;
+
 use super::ctx::get_active_agent;
 use super::settings::ui::refresh_open_settings_modals;
 use crate::app::actions::Effect;
@@ -244,32 +246,72 @@ pub(super) fn dispatch_show_context_info(app: &mut AppView) -> Vec<Effect> {
     }]
 }
 
-/// Show credit usage: fetch billing data and display inline.
-///
-/// When the remote settings `grok_build_usage_redirect_url` flag is set (delivered via
-/// RemoteSettings, targeted at personal-team users), skip the backend fetch and
-/// just point the user at that URL instead. This is a kill switch for the
-/// personal-team billing path while it is unreliable.
+/// `/usage` — session token/cost, then provider-owned usage when visible.
+/// Usage is chained after the session block so layout stays ordered.
 pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
-    let ActiveView::Agent(id) = app.active_view else {
+    let ActiveView::Agent(agent_id) = app.active_view else {
         return vec![];
     };
-    let (session_id, is_openai_codex_session) = app
-        .agents
-        .get(&id)
-        .map(|agent| {
-            (
-                agent.session.session_id.clone(),
-                agent.session.models.current_model_is_openai_codex(),
-            )
-        })
-        .unwrap_or((None, false));
-    // This remote switch controls only the xAI personal-team billing path.
-    // Codex model keys are provider-qualified by the shell, so a Codex
-    // session must continue to its provider-scoped subscription limits even
-    // when the user also has xAI remote settings in memory.
-    if !is_openai_codex_session && let Some(url) = app.usage_billing_redirect_url.clone() {
-        if let Some(agent) = app.agents.get_mut(&id) {
+    let session_id = {
+        let Some(agent) = app.agents.get(&agent_id) else {
+            return vec![];
+        };
+        agent.session.session_id.clone()
+    };
+    match session_id {
+        Some(session_id) => vec![Effect::FetchSessionUsage {
+            agent_id,
+            session_id,
+        }],
+        None => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.scrollback.push_block(RenderBlock::system(
+                    "Session usage is unavailable until the session starts.".to_string(),
+                ));
+            }
+            append_provider_usage_surface(app, agent_id)
+        }
+    }
+}
+
+/// Commit a session-usage block if the result still belongs to the active
+/// session, then fetch the active provider's own usage surface.
+pub(super) fn commit_session_usage_block(
+    app: &mut AppView,
+    agent_id: AgentId,
+    session_id: &acp::SessionId,
+    text: String,
+) -> Vec<Effect> {
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        return vec![];
+    };
+    if agent.session.session_id.as_ref() != Some(session_id) {
+        return vec![];
+    }
+    agent.scrollback.push_block(RenderBlock::system(text));
+    append_provider_usage_surface(app, agent_id)
+}
+
+/// Provider-aware usage follow-up for `/usage`.
+///
+/// The remote redirect is an xAI consumer-billing switch. Provider-qualified
+/// Codex, Kimi Code, and Z.AI sessions must continue through the session-bound
+/// billing extension so their credentials, endpoints, and limits remain
+/// isolated from xAI state.
+pub(super) fn append_provider_usage_surface(app: &mut AppView, agent_id: AgentId) -> Vec<Effect> {
+    if !app.usage_visible {
+        return vec![];
+    }
+    let Some(agent) = app.agents.get(&agent_id) else {
+        return vec![];
+    };
+    let session_id = agent.session.session_id.clone();
+    let uses_isolated_plan = agent.session.models.current_model_is_openai_codex()
+        || agent.session.models.current_model_is_kimi_code()
+        || agent.session.models.current_model_is_zai_coding_plan();
+
+    if !uses_isolated_plan && let Some(url) = app.usage_billing_redirect_url.clone() {
+        if let Some(agent) = app.agents.get_mut(&agent_id) {
             agent.scrollback.push_block(RenderBlock::System(
                 crate::scrollback::blocks::SystemMessageBlock::new(format!(
                     "Please check your usage on {url}"
@@ -278,13 +320,23 @@ pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
         }
         return vec![];
     }
-    // Non-silent fetch: the effect also pulls the auto top-up rule so the
-    // summary can render usage, prepaid credits, and auto top-up together.
+
     vec![Effect::FetchBilling {
-        agent_id: id,
+        agent_id,
         session_id,
         silent: false,
     }]
+}
+
+/// `/usage manage` — open consumer billing. No-op when the surface is hidden.
+pub(super) fn dispatch_manage_billing(app: &mut AppView) -> Vec<Effect> {
+    if !app.usage_visible {
+        return vec![];
+    }
+    super::router::dispatch(
+        crate::app::actions::Action::OpenUrl("https://grok.com/?_s=usage".to_string()),
+        app,
+    )
 }
 
 /// Commit a one-line "update available" notice into the active agent's

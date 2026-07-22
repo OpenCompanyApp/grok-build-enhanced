@@ -83,6 +83,7 @@ pub(super) fn make_subagent_info(child_sid: &str) -> SubagentInfo {
         context_source: None,
         resumed_from: None,
         capability_mode: None,
+        workflow_run_id: None,
         context_normalized: false,
         parent_prompt_id: None,
         started_at: Instant::now(),
@@ -110,6 +111,47 @@ pub(super) fn make_subagent_info(child_sid: &str) -> SubagentInfo {
         worktree_path: None,
         child_updates_replayed: false,
     }
+}
+#[test]
+fn workflow_catalog_projection_and_open_modal_refresh_are_coalesced() {
+    let workflow = acp::AvailableCommand::new("review", "review")
+        .meta(serde_json::json!({ "workflowSource" : "project" }).as_object().cloned());
+    assert_eq!(
+        workflow_commands(& [workflow]), vec![("review", "review", Some("project"),
+        None)]
+    );
+    let mut app = make_app_with_agent("session-workflows");
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().extensions_modal = Some(
+        crate::views::extensions_modal::ExtensionsModalState::new(
+            crate::views::extensions_modal::ExtensionsTab::Skills,
+        ),
+    );
+    queue_open_workflows_modal_refresh(&mut app, id);
+    queue_open_workflows_modal_refresh(&mut app, id);
+    assert_eq!(app.pending_effects.len(), 1);
+    assert!(
+        matches!(app.pending_effects.first(), Some(Effect::FetchWorkflowsList { agent_id,
+        session_id }) if * agent_id == id && session_id.0.as_ref() ==
+        "session-workflows")
+    );
+}
+#[test]
+fn workflow_catalog_projection_detects_same_name_metadata_changes() {
+    let command = |description: &str, path: &str| {
+        acp::AvailableCommand::new("review", description)
+            .meta(
+                serde_json::json!(
+                    { "workflowSource" : "project", "workflowPath" : path, }
+                )
+                    .as_object()
+                    .cloned(),
+            )
+    };
+    assert_ne!(
+        workflow_commands(& [command("Workflow: old", "/old/review.rhai")]),
+        workflow_commands(& [command("Workflow: new", "/new/review.rhai")]),
+    );
 }
 pub(super) fn compressed_entry(
     index: usize,
@@ -393,6 +435,18 @@ pub(super) fn queue_changed_running(
     ids: &[&str],
     running: Option<&str>,
 ) -> acp::ExtNotification {
+    queue_changed_running_ex(session_id, ids, running, None, None, None)
+}
+/// Like [`queue_changed_running`], with optional running-turn display
+/// fields (`runningText` / `runningKind` / `runningCombinedTexts`).
+pub(super) fn queue_changed_running_ex(
+    session_id: &str,
+    ids: &[&str],
+    running: Option<&str>,
+    running_text: Option<&str>,
+    running_kind: Option<&str>,
+    running_combined_texts: Option<&[&str]>,
+) -> acp::ExtNotification {
     let entries: Vec<serde_json::Value> = ids
         .iter()
         .enumerate()
@@ -408,6 +462,15 @@ pub(super) fn queue_changed_running(
     );
     if let Some(r) = running {
         params["runningPromptId"] = serde_json::Value::String(r.to_string());
+    }
+    if let Some(t) = running_text {
+        params["runningText"] = serde_json::Value::String(t.to_string());
+    }
+    if let Some(k) = running_kind {
+        params["runningKind"] = serde_json::Value::String(k.to_string());
+    }
+    if let Some(segs) = running_combined_texts {
+        params["runningCombinedTexts"] = serde_json::json!(segs);
     }
     acp::ExtNotification::new(
         "x.ai/queue/changed",
@@ -925,8 +988,8 @@ pub(super) fn xai_turn_completed_notif(
         std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
     )
 }
-/// A live durable `TurnCompleted`, optionally stamped with the shell
-/// completion clock (`agentTimestampMs`) the wake marker's elapsed reads.
+/// A live durable wake `TurnCompleted`, optionally stamped with the shell
+/// completion clock for wire-compatibility coverage.
 pub(super) fn xai_wake_turn_completed_notif(
     session_id: &str,
     prompt_id: &str,
@@ -950,18 +1013,6 @@ pub(super) fn xai_wake_turn_completed_notif(
         "x.ai/session/update",
         std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
     )
-}
-/// The newest turn-marker block on the agent's scrollback.
-pub(super) fn last_marker_block(
-    sb: &ScrollbackState,
-) -> &crate::scrollback::blocks::SessionEventBlock {
-    (0..sb.len())
-        .rev()
-        .find_map(|i| match sb.get(i).map(|e| &e.block) {
-            Some(RenderBlock::SessionEvent(b)) => Some(b),
-            _ => None,
-        })
-        .expect("a turn-end marker must exist")
 }
 /// Build a `HookExecution` update (one successful run) on the
 /// `x.ai/session/update` rail, optionally stamped `isReplay`.
@@ -1036,9 +1087,8 @@ pub(super) fn work_status_lines(sb: &ScrollbackState) -> Vec<String> {
         .collect()
 }
 /// Register two running background commands on the (idle) agent through
-/// the wire, then open the between-turns status window the way a
-/// counted turn-end marker would.
-pub(super) fn seed_two_bg_tasks_and_announce(app: &mut AppView, session_id: &str) {
+/// the wire.
+pub(super) fn seed_two_bg_tasks(app: &mut AppView, session_id: &str) {
     let _ = handle_ext_notification(
         &make_task_backgrounded_notif(session_id, "tc-1", "task-1", "sleep 98"),
         app,
@@ -1047,6 +1097,11 @@ pub(super) fn seed_two_bg_tasks_and_announce(app: &mut AppView, session_id: &str
         &make_task_backgrounded_notif(session_id, "tc-2", "task-2", "sleep 99"),
         app,
     );
+}
+
+/// Seed the same work and open the no-wake fallback window explicitly.
+pub(super) fn seed_two_bg_tasks_and_announce(app: &mut AppView, session_id: &str) {
+    seed_two_bg_tasks(app, session_id);
     app.agents.get_mut(&AgentId(0)).unwrap().end_work_announced = true;
 }
 /// Build an `x.ai/session/interjection` ext-notification (no id).
@@ -1214,6 +1269,7 @@ pub(super) fn test_subagent_spawned(
         effective_context_source: None,
         context_normalized: false,
         capability_mode: None,
+        workflow_run_id: None,
         persona: None,
         role: None,
         model: None,
@@ -1918,9 +1974,9 @@ pub(super) fn seed_owner_agent_with_open_modal(app: &mut AppView) {
             vec![
                 McpServerInfo { name : "alpha".into(), display_name : None, status :
                 McpServerDisplayStatus::Initializing, tool_count : 0, auth_required :
-                false, tools : Vec::new(), enabled : true, source : "local".into(),
-                wire_source : McpWireSource::Local, plugin_name : None,
-                is_managed_gateway : false, }
+                false, setup_required : false, setup : None, setup_values : Default::default(),
+                tools : Vec::new(), enabled : true, source : "local".into(), wire_source :
+                McpWireSource::Local, plugin_name : None, is_managed_gateway : false, }
             ],
         ),
     );

@@ -612,6 +612,10 @@ impl QueuePane {
         self.list_state.handle_key_event(key, &self.entries)
     }
 
+    pub fn handle_paste(&mut self, text: &str) -> bool {
+        self.list_state.handle_paste(text, &self.entries)
+    }
+
     /// Get the stable ID of the currently selected entry, if any.
     pub fn selected_id(&self) -> Option<u64> {
         self.list_state.selected_id()
@@ -1016,6 +1020,7 @@ mod tests {
             last_editor: None,
             kind: "prompt".into(),
             text: text.into(),
+            combined_texts: None,
             position: pos,
         }
     }

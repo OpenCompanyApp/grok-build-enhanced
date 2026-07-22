@@ -184,10 +184,7 @@ pub(crate) fn build_screen_mode_relaunch_args(
 
     out.push(OsString::from("--resume"));
     out.push(OsString::from(session_id));
-    // Explicit mode flag: the env override (set by the exec caller) already
-    // forces this relaunch's mode, but the flag is what makes the choice
-    // sticky — startup persists `[ui] screen_mode` when it sees an explicit
-    // `--minimal`/`--fullscreen`.
+    // Keep a CLI mode flag for hand-pasted resume hints that omit GROK_SCREEN_MODE.
     if want_minimal {
         out.push(OsString::from("--minimal"));
     } else {
@@ -210,10 +207,7 @@ pub(crate) fn screen_mode_env_value(want_minimal: bool) -> &'static str {
 /// Includes [`GROK_SCREEN_MODE_ENV`] so the resume hits the same override path
 /// as a successful `exec` — plain `grok --resume <id>` (or even
 /// `grok --minimal --resume <id>`) is not enough after `/fullscreen` when
-/// config/CLI would pick minimal or inline alt-screen policy. The explicit
-/// `--minimal`/`--fullscreen` flag is included too so following the hint also
-/// persists the sticky `[ui] screen_mode` preference, exactly like a
-/// successful `exec` would have.
+/// config/CLI would pick minimal or inline alt-screen policy.
 pub(crate) fn screen_mode_relaunch_resume_hint(session_id: &str, want_minimal: bool) -> String {
     let mode = screen_mode_env_value(want_minimal);
     let flag = if want_minimal {
@@ -449,9 +443,8 @@ mod tests {
         );
     }
 
-    /// The fullscreen direction appends an explicit `--fullscreen` so the
-    /// relaunched process persists the sticky preference (the env override
-    /// alone would switch the mode without recording it).
+    /// The fullscreen direction appends an explicit `--fullscreen` so mode
+    /// resolution still works without the env override.
     #[test]
     fn adds_fullscreen_and_resume() {
         let out = build_screen_mode_relaunch_args(args(&["grok", "--no-leader"]), "abc", false);
@@ -809,10 +802,9 @@ mod tests {
 
     #[test]
     fn failed_relaunch_hint_includes_screen_mode_env() {
-        // Recovery command must carry GROK_SCREEN_MODE so following the
-        // hint after a failed `/fullscreen` does not reopen minimal/inline. The
-        // explicit flag makes the manual resume persist the sticky preference
-        // like a successful exec would.
+        // Recovery command must carry GROK_SCREEN_MODE so following the hint
+        // after a failed `/fullscreen` does not reopen minimal/inline. The
+        // explicit flag preserves mode resolution if the env prefix is omitted.
         assert_eq!(
             screen_mode_relaunch_resume_hint("abc-sid", false),
             "GROK_SCREEN_MODE=fullscreen grok --fullscreen --resume abc-sid"
