@@ -281,6 +281,7 @@ fn default_grok_build_toolset() -> ToolServerConfig {
             (&search_tool::SearchTool).into(),
             (&use_tool::UseTool).into(),
             (&grok_build::UpdateGoalTool).into(),
+            (&grok_build::WorkflowTool).into(),
         ],
         behavior_preset: None,
     }
@@ -301,6 +302,7 @@ fn grok_build_concise_toolset() -> ToolServerConfig {
             (&grok_build::SchedulerListTool).into(),
             (&grok_build::MonitorTool).into(),
             (&grok_build::UpdateGoalTool).into(),
+            (&grok_build::WorkflowTool).into(),
         ],
         behavior_preset: None,
     }
@@ -330,6 +332,7 @@ pub fn grok_build_hashline_toolset(
         (&search_tool::SearchTool).into(),
         (&use_tool::UseTool).into(),
         (&grok_build::UpdateGoalTool).into(),
+        (&grok_build::WorkflowTool).into(),
     ]);
     ToolServerConfig {
         tools,
@@ -411,6 +414,7 @@ fn grok_build_plan_toolset() -> ToolServerConfig {
             (&search_tool::SearchTool).into(),
             (&use_tool::UseTool).into(),
             (&grok_build::UpdateGoalTool).into(),
+            (&grok_build::WorkflowTool).into(),
             (&grok_build::EnterPlanModeTool).into(),
             (&grok_build::ExitPlanModeTool).into(),
             (&grok_build::AskUserQuestionTool).into(),
@@ -442,6 +446,7 @@ fn orchestrator_toolset() -> ToolServerConfig {
             (&grok_build::ExitPlanModeTool).into(),
             (&grok_build::AskUserQuestionTool).into(),
             (&grok_build::UpdateGoalTool).into(),
+            (&grok_build::WorkflowTool).into(),
             (&grok_build::SchedulerCreateTool).into(),
             (&grok_build::SchedulerDeleteTool).into(),
             (&grok_build::SchedulerListTool).into(),
@@ -481,6 +486,7 @@ fn grok_build_plan_no_subagents_toolset() -> ToolServerConfig {
             (&search_tool::SearchTool).into(),
             (&use_tool::UseTool).into(),
             (&grok_build::UpdateGoalTool).into(),
+            (&grok_build::WorkflowTool).into(),
             (&grok_build::EnterPlanModeTool).into(),
             (&grok_build::ExitPlanModeTool).into(),
             (&grok_build::AskUserQuestionTool).into(),
@@ -512,6 +518,7 @@ fn grok_build_ask_user_toolset() -> ToolServerConfig {
             (&search_tool::SearchTool).into(),
             (&use_tool::UseTool).into(),
             (&grok_build::UpdateGoalTool).into(),
+            (&grok_build::WorkflowTool).into(),
             (&grok_build::AskUserQuestionTool).into(),
         ],
         behavior_preset: None,

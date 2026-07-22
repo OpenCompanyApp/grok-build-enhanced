@@ -76,8 +76,14 @@ pub fn patch_touches_any(patch: &toml::Table, paths: &[PatchPath]) -> bool {
 }
 
 /// Keys stripped from every applied patch: an override cannot re-inject nested
-/// `version_overrides`/`campaigns` or define `[auth_provider.*]` command tables.
-pub const PATCH_STRIP_KEYS: &[&str] = &["version_overrides", "campaigns", "auth_provider"];
+/// `version_overrides`/`campaigns` or define `[auth_provider.*]` /
+/// `[model_providers.*]` command tables.
+pub const PATCH_STRIP_KEYS: &[&str] = &[
+    "version_overrides",
+    "campaigns",
+    "auth_provider",
+    "model_providers",
+];
 
 /// Remove provider credential, routing, and request-header authority from an
 /// untrusted overlay while preserving ordinary model selection and tuning.

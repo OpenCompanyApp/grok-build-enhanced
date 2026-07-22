@@ -1752,7 +1752,7 @@ mod tests {
         let spec = xai_grok_hooks::config::HookSpec {
             name: "global/safety".to_string(),
             event: xai_grok_hooks::event::HookEventName::PreToolUse,
-            handler_type: "command".to_string(),
+            handler_type: xai_grok_hooks::config::HandlerType::Command,
             configured_matcher: Some("Bash".to_string()),
             matcher: None,
             enabled: true,
@@ -1862,7 +1862,7 @@ mod tests {
             HookSpecWire {
                 name,
                 event,
-                handler_type,
+                handler_type: handler_type.as_str().to_owned(),
                 configured_matcher,
                 enabled,
                 command,
@@ -1877,7 +1877,7 @@ mod tests {
         let spec = HookSpec {
             name: "global/safety".to_string(),
             event: xai_grok_hooks::event::HookEventName::PreToolUse,
-            handler_type: "command".to_string(),
+            handler_type: xai_grok_hooks::config::HandlerType::Command,
             configured_matcher: Some("Bash".to_string()),
             matcher: None,
             enabled: true,

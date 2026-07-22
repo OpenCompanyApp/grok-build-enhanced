@@ -151,6 +151,16 @@ pub fn load_sandbox_config(workspace: &Path) -> SandboxConfig {
     config
 }
 
+/// Return custom profile names whose project definitions conflict with a
+/// different user-level definition. Diagnostics use this structured form so
+/// startup can surface the warning in the TUI as well as stderr.
+pub fn sandbox_profile_conflicts(workspace: &Path) -> Vec<String> {
+    let global = load_config_file(&grok_home().join("sandbox.toml")).unwrap_or_default();
+    let project =
+        load_config_file(&workspace.join(".grok").join("sandbox.toml")).unwrap_or_default();
+    mismatched_profile_names(&global, &project)
+}
+
 /// Warn when project config attempts to redefine a user-defined custom profile.
 /// Called once during process startup, separately from config loading because the
 /// enforcement path reads the merged config more than once.
@@ -206,6 +216,31 @@ fn load_config_file(path: &Path) -> Option<SandboxConfig> {
             tracing::warn!(path = %path.display(), error = %e, "Failed to parse sandbox config");
             None
         }
+    }
+}
+
+/// Whether a device **file** entry is safe to pass to `allow_file` / Landlock
+/// PathFd materialization.
+///
+/// `/dev/tty` always exists, but without a controlling terminal `open()` returns
+/// ENXIO and nono's apply aborts the **entire** ruleset. Built-in profiles fail
+/// open, which was a silent sandbox bypass under `setsid`/CI/headless launches.
+///
+/// Only that class of failure (and missing nodes) is filtered here. Other open
+/// errors — notably **EISDIR** on directory nodes — must not drop the path:
+/// directories are granted via [`DEVICE_DIRS`] / `allow_path`, and a plain
+/// `File::open` EISDIR does not mean Landlock would reject the grant.
+#[cfg(all(feature = "enforce", unix))]
+fn device_file_openable(path: &Path) -> bool {
+    match std::fs::File::open(path) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        // ENXIO/ENODEV: e.g. /dev/tty with no controlling terminal — PathFd
+        // materialization would abort the whole Landlock ruleset.
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENXIO) | Some(libc::ENODEV)) => false,
+        // EISDIR, EACCES, etc.: still attempt the grant path. allow_file may
+        // reject ExpectedFile; that only skips this entry, not the whole apply.
+        Err(_) => true,
     }
 }
 
@@ -272,7 +307,9 @@ impl ProfileName {
         // Device special files (character devices like /dev/null, /dev/tty, etc.).
         for dev in DEVICE_FILES {
             let p = Path::new(dev);
-            if !p.exists() {
+            // nono opens each entry read-only at apply time, so a node that exists
+            // but cannot be opened would abort the whole ruleset, not just itself.
+            if !device_file_openable(p) {
                 continue;
             }
             if let Err(e) = caps.allow_file_mut(p, AccessMode::ReadWrite) {
@@ -866,5 +903,95 @@ read_write = ["/tmp/ci-artifacts"]
             .resolve_profile(&workspace, &SandboxConfig::default())
             .expect_err("Off.resolve must Err");
         assert!(err.to_string().contains("off"), "unexpected error: {err}");
+    }
+
+    #[test]
+    #[cfg(all(feature = "enforce", unix))]
+    fn enxio_device_file_is_skipped_but_directory_is_not() {
+        assert!(
+            device_file_openable(Path::new("/dev/null")),
+            "openable device must still be allow-listed"
+        );
+
+        // /dev/tty without a controlling terminal → ENXIO (the apply-abort case).
+        // Skip the assertion when a ctty is present (open succeeds).
+        match std::fs::File::open("/dev/tty") {
+            Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {
+                assert!(
+                    !device_file_openable(Path::new("/dev/tty")),
+                    "ENXIO /dev/tty must be skipped so Landlock apply cannot abort"
+                );
+            }
+            Ok(_) | Err(_) => {}
+        }
+
+        // Directories must stay grantable. On Linux, File::open returns EISDIR;
+        // on macOS it often succeeds. Either way the probe must return true so
+        // directory devices (e.g. /dev/fd via DEVICE_DIRS) are not dropped.
+        let dir = std::env::temp_dir().join(format!("grok-sbx-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        match std::fs::File::open(&dir) {
+            Err(e) => {
+                assert_eq!(
+                    e.raw_os_error(),
+                    Some(libc::EISDIR),
+                    "unexpected directory open error: {e}"
+                );
+                assert!(
+                    device_file_openable(&dir),
+                    "EISDIR must not drop a path from grant consideration"
+                );
+            }
+            Ok(_) => {
+                assert!(
+                    device_file_openable(&dir),
+                    "openable directory must remain grantable"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Building the strict CapabilitySet must succeed even when /dev/tty cannot
+    /// be opened (no controlling terminal). Regression for the silent Landlock
+    /// apply-abort under setsid/CI/headless.
+    #[test]
+    #[cfg(all(feature = "enforce", unix))]
+    fn strict_capability_set_builds_without_openable_dev_tty() {
+        let workspace = std::env::current_dir().unwrap();
+        let result = ProfileName::Strict.to_capability_set(&workspace);
+        assert!(
+            result.is_ok(),
+            "strict CapabilitySet must build even if /dev/tty is unopenable: {:?}",
+            result.err()
+        );
+    }
+
+    /// `/dev/fd` is a directory (→ `/proc/self/fd` on Linux). It must be granted
+    /// via DEVICE_DIRS/`allow_path`, not dropped by a file-open EISDIR probe.
+    #[test]
+    #[cfg(all(feature = "enforce", unix))]
+    fn dev_fd_is_granted_as_device_dir_not_skipped_as_file() {
+        assert!(
+            !DEVICE_FILES.contains(&"/dev/fd"),
+            "/dev/fd must not sit in DEVICE_FILES (File::open → EISDIR)"
+        );
+        assert!(
+            DEVICE_DIRS.contains(&"/dev/fd"),
+            "/dev/fd must be in DEVICE_DIRS so allow_path can grant it"
+        );
+        let dev_fd = Path::new("/dev/fd");
+        if dev_fd.exists() {
+            // Directory open fails with EISDIR for plain File::open — the probe
+            // must still report grantable so we don't regress directory devices.
+            assert!(
+                device_file_openable(dev_fd),
+                "/dev/fd must not be filtered out by the ENXIO-only open probe"
+            );
+            assert!(
+                dev_fd.is_dir(),
+                "expected /dev/fd to be a directory on this platform"
+            );
+        }
     }
 }

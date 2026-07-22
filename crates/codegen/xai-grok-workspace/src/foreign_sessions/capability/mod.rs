@@ -155,8 +155,22 @@ impl ApprovedRoot {
     }
 
     fn relative_path(&self, path: &Path) -> Option<PathBuf> {
+        let normalized;
         let relative = if path.is_absolute() {
-            path.strip_prefix(&self.path).ok()?
+            if let Ok(relative) = path.strip_prefix(&self.path) {
+                // Preserve the lexical path of the retained capability. The
+                // directory may have been renamed or replaced after approval,
+                // while its open descriptor remains the trusted root.
+                relative
+            } else {
+                // Canonicalize only the parent. This normalizes equivalent root
+                // spellings such as macOS `/var` and `/private/var` while the
+                // final component remains protected by the relative open's
+                // `O_NOFOLLOW` check.
+                let parent = dunce::canonicalize(path.parent()?).ok()?;
+                normalized = parent.join(path.file_name()?);
+                normalized.strip_prefix(&self.path).ok()?
+            }
         } else {
             path
         };

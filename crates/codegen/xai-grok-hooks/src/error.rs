@@ -49,7 +49,7 @@ pub enum HookError {
     },
 
     #[error(
-        "hook {name} in {path}: unsupported handler type '{handler_type}', only 'command' is supported in v0"
+        "hook {name} in {path}: unsupported handler type '{handler_type}', expected 'command' or 'http'"
     )]
     UnsupportedHandlerType {
         name: String,

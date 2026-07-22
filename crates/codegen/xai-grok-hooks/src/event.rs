@@ -266,6 +266,32 @@ pub enum BackgroundTaskType {
     Subagent,
 }
 
+/// `StopFailure` error type. Capacity failures fold into `RateLimit`; the
+/// provider-neutral hook contract deliberately has no provider billing type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopFailureKind {
+    RateLimit,
+    AuthenticationFailed,
+    InvalidRequest,
+    ServerError,
+    MaxOutputTokens,
+    Unknown,
+}
+
+impl StopFailureKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RateLimit => "rate_limit",
+            Self::AuthenticationFailed => "authentication_failed",
+            Self::InvalidRequest => "invalid_request",
+            Self::ServerError => "server_error",
+            Self::MaxOutputTokens => "max_output_tokens",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Whitelisted, credential-free projection of one in-flight work item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -375,7 +401,16 @@ pub enum HookPayload {
         session_crons: Option<Vec<StopSessionCron>>,
     },
     StopFailure {
-        error: String,
+        error: StopFailureKind,
+        #[serde(rename = "errorDetails", skip_serializing_if = "Option::is_none")]
+        error_details: Option<String>,
+        /// Rendered error text shown in the conversation: unlike `Stop`, this is
+        /// the sanitized error message rather than assistant output.
+        #[serde(
+            rename = "lastAssistantMessage",
+            skip_serializing_if = "Option::is_none"
+        )]
+        last_assistant_message: Option<String>,
     },
 
     // ── Tool events ─────────────────────────────────────────────
@@ -526,7 +561,8 @@ impl HookPayload {
             | Self::PreCompact { source }
             | Self::PostCompact { source } => source,
             Self::SessionEnd { reason, .. } => reason,
-            Self::StopFailure { error } => error,
+            // The structured kind is always a non-empty stable matcher value.
+            Self::StopFailure { error, .. } => return Some(error.as_str()),
             Self::Stop { .. } | Self::UserPromptSubmit { .. } => return None,
         };
         Some(value.as_str()).filter(|value| !value.is_empty())

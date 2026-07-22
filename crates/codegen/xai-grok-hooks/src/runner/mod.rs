@@ -114,17 +114,12 @@ pub async fn run_hook(
     ctx: &RunContext<'_>,
     mode: GateKind,
 ) -> HookRunOutput {
-    match spec.handler_type.as_str() {
-        "command" => {
+    match spec.handler_type {
+        crate::config::HandlerType::Command => {
             let (result, elapsed) = command::run_command_hook(spec, envelope, ctx, mode).await;
             (result, elapsed, None)
         }
-        "http" => http::run_http_hook(spec, envelope, ctx, mode).await,
-        _ => (
-            HookRunnerResult::Failed(format!("unsupported handler type '{}'", spec.handler_type)),
-            Duration::ZERO,
-            None,
-        ),
+        crate::config::HandlerType::Http => http::run_http_hook(spec, envelope, ctx, mode).await,
     }
 }
 

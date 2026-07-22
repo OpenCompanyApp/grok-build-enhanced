@@ -759,7 +759,7 @@ mod tests {
         let spec = HookSpec {
             name: "test".into(),
             event: crate::event::HookEventName::PreToolUse,
-            handler_type: "command".into(),
+            handler_type: crate::config::HandlerType::Command,
             configured_matcher: None,
             matcher: None,
             enabled: true,
@@ -782,7 +782,7 @@ mod tests {
         let spec = HookSpec {
             name: "test".into(),
             event: crate::event::HookEventName::PreToolUse,
-            handler_type: "command".into(),
+            handler_type: crate::config::HandlerType::Command,
             configured_matcher: None,
             matcher: None,
             enabled: true,
@@ -807,7 +807,7 @@ mod tests {
         let spec = HookSpec {
             name: "test".into(),
             event: crate::event::HookEventName::PreToolUse,
-            handler_type: "http".into(),
+            handler_type: crate::config::HandlerType::Http,
             configured_matcher: None,
             matcher: None,
             enabled: true,
@@ -827,7 +827,7 @@ mod tests {
         HookSpec {
             name: "test-hook".into(),
             event: crate::event::HookEventName::Stop,
-            handler_type: "command".into(),
+            handler_type: crate::config::HandlerType::Command,
             configured_matcher: None,
             matcher: None,
             enabled: true,
@@ -993,7 +993,7 @@ mod tests {
         let spec = HookSpec {
             name: "test-env-interp".into(),
             event: crate::event::HookEventName::Stop,
-            handler_type: "command".into(),
+            handler_type: crate::config::HandlerType::Command,
             configured_matcher: None,
             matcher: None,
             enabled: true,
@@ -1049,7 +1049,7 @@ mod tests {
         let spec = HookSpec {
             name: "test-claude-project-dir".into(),
             event: crate::event::HookEventName::Stop,
-            handler_type: "command".into(),
+            handler_type: crate::config::HandlerType::Command,
             configured_matcher: None,
             matcher: None,
             enabled: true,
@@ -1216,7 +1216,7 @@ mod tests {
         let spec = HookSpec {
             name: "test-undef".into(),
             event: crate::event::HookEventName::Stop,
-            handler_type: "command".into(),
+            handler_type: crate::config::HandlerType::Command,
             configured_matcher: None,
             matcher: None,
             enabled: true,
@@ -1289,7 +1289,7 @@ mod tests {
         let spec = HookSpec {
             name: "test-tilde".into(),
             event: crate::event::HookEventName::Stop,
-            handler_type: "command".into(),
+            handler_type: crate::config::HandlerType::Command,
             configured_matcher: None,
             matcher: None,
             enabled: true,
@@ -1351,7 +1351,7 @@ mod tests {
         let spec = HookSpec {
             name: "test-default".into(),
             event: crate::event::HookEventName::Stop,
-            handler_type: "command".into(),
+            handler_type: crate::config::HandlerType::Command,
             configured_matcher: None,
             matcher: None,
             enabled: true,

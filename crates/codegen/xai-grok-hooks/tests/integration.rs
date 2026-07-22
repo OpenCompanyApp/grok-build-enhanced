@@ -494,11 +494,15 @@ async fn new_event_types_fire_and_receive_correct_envelope() {
             event_name: HookEventName::StopFailure,
             json_key: "StopFailure",
             payload: HookPayload::StopFailure {
-                error: "rate_limit".into(),
+                error: xai_grok_hooks::event::StopFailureKind::RateLimit,
+                error_details: Some("429 Too Many Requests".into()),
+                last_assistant_message: Some("Turn failed: rate limited".into()),
             },
             assertions: vec![
                 ("hookEventName", "stop_failure".into()),
                 ("error", "rate_limit".into()),
+                ("errorDetails", "429 Too Many Requests".into()),
+                ("lastAssistantMessage", "Turn failed: rate limited".into()),
             ],
         },
     ];

@@ -806,7 +806,7 @@ mod tests {
         let spec = HookSpec {
             name: "test-ssrf-post-expand".into(),
             event: HookEventName::PreToolUse,
-            handler_type: "http".into(),
+            handler_type: crate::config::HandlerType::Http,
             configured_matcher: None,
             matcher: None,
             enabled: true,
@@ -894,7 +894,7 @@ mod tests {
         let spec = HookSpec {
             name: "test-scrub-reqwest-error".into(),
             event: HookEventName::PreToolUse,
-            handler_type: "http".into(),
+            handler_type: crate::config::HandlerType::Http,
             configured_matcher: None,
             matcher: None,
             enabled: true,

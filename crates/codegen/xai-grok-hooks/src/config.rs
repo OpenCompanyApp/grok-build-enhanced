@@ -118,13 +118,44 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
 /// Default timeout in milliseconds (derived from DEFAULT_TIMEOUT_SECS).
 pub const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_SECS * 1000;
 
+/// Stop gates run real verification (builds, tests) and fail open on timeout, so
+/// the short observe default would silently disable a ported stop policy.
+pub const DEFAULT_STOP_GATE_TIMEOUT_SECS: u64 = 600;
+
+pub const DEFAULT_STOP_GATE_TIMEOUT_MS: u64 = DEFAULT_STOP_GATE_TIMEOUT_SECS * 1000;
+
+fn default_timeout_ms(event: HookEventName) -> u64 {
+    if event.gate_kind() == crate::event::GateKind::Stop {
+        DEFAULT_STOP_GATE_TIMEOUT_MS
+    } else {
+        DEFAULT_TIMEOUT_MS
+    }
+}
+
+/// The validated handler kind. `RawHandler::handler_type` keeps the untrusted
+/// string; parsing validates it into this so consumers dispatch exhaustively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandlerType {
+    Command,
+    Http,
+}
+
+impl HandlerType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Http => "http",
+        }
+    }
+}
+
 /// A validated hook specification, ready for use by the dispatcher.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookSpec {
     pub name: String,
     pub event: HookEventName,
-    /// Handler type: `"command"` or `"http"`.
-    pub handler_type: String,
+    pub handler_type: HandlerType,
     /// The configured matcher pattern as written in the JSON file (e.g. `"Bash"`).
     /// Used for display in `/hooks-list`. Separate from the compiled matcher
     /// (which applies compat alias expansion and matching).
@@ -369,7 +400,7 @@ pub fn parse_hook_file(content: &str, file_path: &Path) -> (Vec<HookSpec>, Vec<H
                 let timeout_ms = handler
                     .timeout
                     .map(|secs| secs * 1000)
-                    .unwrap_or(DEFAULT_TIMEOUT_MS);
+                    .unwrap_or(default_timeout_ms(event));
 
                 // Strip user attempts to override runner-reserved keys
                 // and emit a tracing warning per stripped key. The
@@ -381,8 +412,21 @@ pub fn parse_hook_file(content: &str, file_path: &Path) -> (Vec<HookSpec>, Vec<H
                 let mut extra_env: HashMap<String, String> = handler.env;
                 strip_reserved_env_keys(&mut extra_env, &name, file_path);
 
-                match handler.handler_type.as_str() {
-                    "command" => {
+                let handler_type = match handler.handler_type.as_str() {
+                    "command" => HandlerType::Command,
+                    "http" => HandlerType::Http,
+                    _ => {
+                        errors.push(HookError::UnsupportedHandlerType {
+                            name,
+                            path: file_path.to_path_buf(),
+                            handler_type: handler.handler_type,
+                        });
+                        continue;
+                    }
+                };
+
+                let (command, command_raw, url, url_raw) = match handler_type {
+                    HandlerType::Command => {
                         let Some(command) = handler.command else {
                             errors.push(HookError::InvalidConfig {
                                 name,
@@ -401,23 +445,14 @@ pub fn parse_hook_file(content: &str, file_path: &Path) -> (Vec<HookSpec>, Vec<H
                         // pre-flight check (see `crate::runner::command`).
                         let expanded_command =
                             crate::env_expand::expand_env_vars_with_extra(&command, &extra_env);
-                        specs.push(HookSpec {
-                            name,
-                            event,
-                            handler_type: "command".into(),
-                            configured_matcher: matcher_pattern.clone(),
-                            matcher: compiled_matcher.clone(),
-                            enabled: true,
-                            command: Some(PathBuf::from(expanded_command)),
-                            command_raw: Some(command),
-                            url: None,
-                            url_raw: None,
-                            timeout_ms,
-                            source_dir: source_dir.clone(),
-                            extra_env,
-                        });
+                        (
+                            Some(PathBuf::from(expanded_command)),
+                            Some(command),
+                            None,
+                            None,
+                        )
                     }
-                    "http" => {
+                    HandlerType::Http => {
                         let Some(url) = handler.url else {
                             errors.push(HookError::InvalidConfig {
                                 name,
@@ -433,31 +468,25 @@ pub fn parse_hook_file(content: &str, file_path: &Path) -> (Vec<HookSpec>, Vec<H
                         // the plugin adapter).
                         let expanded_url =
                             crate::env_expand::expand_env_vars_with_extra(&url, &extra_env);
-                        specs.push(HookSpec {
-                            name,
-                            event,
-                            handler_type: "http".into(),
-                            configured_matcher: matcher_pattern.clone(),
-                            matcher: compiled_matcher.clone(),
-                            enabled: true,
-                            command: None,
-                            command_raw: None,
-                            url: Some(expanded_url),
-                            url_raw: Some(url),
-                            timeout_ms,
-                            source_dir: source_dir.clone(),
-                            extra_env,
-                        });
+                        (None, None, Some(expanded_url), Some(url))
                     }
-                    _ => {
-                        errors.push(HookError::UnsupportedHandlerType {
-                            name,
-                            path: file_path.to_path_buf(),
-                            handler_type: handler.handler_type,
-                        });
-                        continue;
-                    }
-                }
+                };
+
+                specs.push(HookSpec {
+                    name,
+                    event,
+                    handler_type,
+                    configured_matcher: matcher_pattern.clone(),
+                    matcher: compiled_matcher.clone(),
+                    enabled: true,
+                    command,
+                    command_raw,
+                    url,
+                    url_raw,
+                    timeout_ms,
+                    source_dir: source_dir.clone(),
+                    extra_env,
+                });
             }
         }
     }
@@ -577,12 +606,24 @@ mod tests {
             "hooks": {
                 "SessionEnd": [
                     { "hooks": [{ "type": "command", "command": "end.sh" }] }
+                ],
+                "Stop": [
+                    { "hooks": [{ "type": "command", "command": "verify.sh" }] }
+                ],
+                "SubagentStop": [
+                    { "hooks": [{ "type": "command", "command": "sub.sh" }] }
                 ]
             }
         }"#;
         let (specs, errors) = parse_hook_file(json, Path::new("/tmp/test.json"));
         assert!(errors.is_empty());
-        assert_eq!(specs[0].timeout_ms, DEFAULT_TIMEOUT_MS);
+        for spec in &specs {
+            let expected = match spec.event {
+                HookEventName::Stop | HookEventName::SubagentStop => DEFAULT_STOP_GATE_TIMEOUT_MS,
+                _ => DEFAULT_TIMEOUT_MS,
+            };
+            assert_eq!(spec.timeout_ms, expected, "event {}", spec.event);
+        }
     }
 
     #[test]
@@ -657,7 +698,7 @@ mod tests {
         let (specs, errors) = parse_hook_file(json, Path::new("/tmp/test.json"));
         assert!(errors.is_empty());
         assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].handler_type, "http");
+        assert_eq!(specs[0].handler_type, HandlerType::Http);
         assert!(specs[0].command.is_none());
         assert_eq!(
             specs[0].url.as_deref(),

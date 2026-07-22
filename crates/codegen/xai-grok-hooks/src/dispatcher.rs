@@ -591,7 +591,7 @@ mod tests {
         HookSpec {
             name: name.into(),
             event: HookEventName::PreToolUse,
-            handler_type: "command".into(),
+            handler_type: crate::config::HandlerType::Command,
             configured_matcher: matcher.map(|s| s.to_string()),
             matcher: matcher.map(|s| HookMatcher::new(s).unwrap()),
             enabled,
