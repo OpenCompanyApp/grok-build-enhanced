@@ -160,7 +160,7 @@
       "remote": "https://github.com/openai/codex.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "b9800de4867e500a92add3cde795cf4790306d0f"
+        "commit": "51200321eb7b862a29ffceaba8b19db1934a9b38"
       },
       "latest_fetched": {
         "commit": "51200321eb7b862a29ffceaba8b19db1934a9b38"
@@ -172,7 +172,7 @@
       "remote": "https://github.com/anomalyco/opencode.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "cb562b2c6289c2eee707078f9ab644cbe1d3d8a9"
+        "commit": "0317531906d3f3bb01cf33c16319870cfde9170c"
       },
       "latest_fetched": {
         "commit": "0317531906d3f3bb01cf33c16319870cfde9170c"
@@ -184,7 +184,7 @@
       "remote": "https://github.com/xai-org/grok-build.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "a881e6703f46b01d8c7d4a5437683546df30449d"
+        "commit": "3af4d5d39897855bdcc74f23e690024a5dc05573"
       },
       "latest_fetched": {
         "commit": "3af4d5d39897855bdcc74f23e690024a5dc05573"
@@ -220,7 +220,7 @@
       "remote": "https://github.com/MoonshotAI/kimi-code.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "a3699dd6aa7b41efd3129a117007d195282379fd"
+        "commit": "b5efba7abcaf4041f81ec520097a61e6546e8c50"
       },
       "latest_fetched": {
         "commit": "b5efba7abcaf4041f81ec520097a61e6546e8c50"
@@ -325,6 +325,22 @@
         "evidence": {
           "path": "docs/upstream-refresh-2026-07-20.md",
           "sha256": "185051fe05270162ebe9d1a7ea31692202794baed29bd332894554aec4d36c8c"
+        }
+      },
+      {
+        "source_id": "grok-build-upstream",
+        "commit": "3af4d5d39897855bdcc74f23e690024a5dc05573",
+        "tree": "e595174931be9bfb490aacf149e2c9cc0ca0ebba",
+        "reviewed_from": {
+          "commit": "a881e6703f46b01d8c7d4a5437683546df30449d",
+          "tree": "e3a013ffc66a6dd77ec1c35dfe261741bcf84928"
+        },
+        "target_parents": [
+          "a881e6703f46b01d8c7d4a5437683546df30449d"
+        ],
+        "evidence": {
+          "path": "docs/upstream-refresh-2026-07-21-r3.md",
+          "sha256": "196129c46aab5b71a3c60ade6c4693f19640a709d7cbfecff76a5b3922624521"
         }
       }
     ]
@@ -1897,7 +1913,8 @@
         "crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/tests/notes.rs",
         "crates/codegen/xai-grok-pager/src/app/effects/mod.rs",
-        "crates/codegen/xai-grok-pager/src/minimal/api.rs"
+        "crates/codegen/xai-grok-pager/src/minimal/api.rs",
+        "crates/codegen/xai-grok-pager/src/views/btw_overlay.rs"
       ],
       "integration_paths": [
         "crates/codegen/xai-grok-pager-minimal/src/live.rs",
@@ -1924,14 +1941,21 @@
         "crates/codegen/xai-chat-state/src/commands.rs",
         "crates/codegen/xai-chat-state/src/handle.rs",
         "crates/codegen/xai-chat-state/src/types.rs",
+        "crates/codegen/xai-grok-hooks/examples/hooks/bin/stop-verify.sh",
+        "crates/codegen/xai-grok-hooks/examples/hooks/stop-verify.json",
+        "crates/codegen/xai-grok-hooks/src/config.rs",
         "crates/codegen/xai-grok-hooks/src/discovery.rs",
         "crates/codegen/xai-grok-hooks/src/dispatcher.rs",
+        "crates/codegen/xai-grok-hooks/src/error.rs",
         "crates/codegen/xai-grok-hooks/src/event.rs",
         "crates/codegen/xai-grok-hooks/src/result.rs",
         "crates/codegen/xai-grok-hooks/src/runner/command.rs",
         "crates/codegen/xai-grok-hooks/src/runner/http.rs",
         "crates/codegen/xai-grok-hooks/src/runner/mod.rs",
+        "crates/codegen/xai-grok-hooks/tests/integration.rs",
         "crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/turn_completion.rs",
+        "crates/codegen/xai-grok-pager/src/app/turn_completion.rs",
         "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/hook.rs",
         "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
         "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
@@ -1946,7 +1970,10 @@
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/types.rs",
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/updates.rs",
         "crates/codegen/xai-grok-shell/src/session/acp_session_tests/client_hooks_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/turn_completion_emit_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/telemetry.rs",
         "crates/codegen/xai-grok-shell/tests/common/mod.rs",
+        "crates/codegen/xai-grok-shell/tests/test_stop_hook_e2e.rs",
         "crates/codegen/xai-grok-telemetry/src/events.rs",
         "crates/codegen/xai-grok-tools/src/bridge.rs"
       ],
@@ -2422,6 +2449,927 @@
       "legal_paths": [
         "LICENSE",
         "THIRD-PARTY-NOTICES"
+      ]
+    },
+    {
+      "id": "codex-cuda-syntax-compatibility",
+      "description": "Case-insensitive CUDA extension and fence-token mapping to the C++ syntax grammar without importing Codex TUI architecture.",
+      "source_ids": [
+        "openai-codex"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-markdown/src/syntax.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-markdown/src/syntax.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-audit-provenance",
+      "description": "Exhaustive third-pass Grok and provider-reference parity evidence for the exact immutable source pins.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode",
+        "kimi-code"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-07-21-r3.md",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-07-21-r3.md",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-background-dashboard",
+      "description": "Pinned Grok background descendant, loop gate, dashboard reconnect, and task-state presentation compatibility.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/docs/user-guide/16-subagents.md",
+        "crates/codegen/xai-grok-pager/docs/user-guide/20-background-tasks.md",
+        "crates/codegen/xai-grok-pager/docs/user-guide/23-dashboard.md",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs",
+        "crates/codegen/xai-grok-pager/src/app/subagent.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/dashboard.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/loop_cmd.rs",
+        "crates/codegen/xai-grok-pager/src/views/dashboard/layout.rs",
+        "crates/codegen/xai-grok-pager/src/views/dashboard/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/dashboard/peek.rs",
+        "crates/codegen/xai-grok-pager/src/views/dashboard/peek_tail.rs",
+        "crates/codegen/xai-grok-pager/src/views/dashboard/state.rs",
+        "crates/codegen/xai-grok-pager/src/views/subagent_catalog_pane.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/background_task_reaped_on_quit.rs",
+        "crates/codegen/xai-grok-subagent-resolution/src/lib.rs",
+        "crates/codegen/xai-grok-workspace-types/src/rpc/workspace.rs",
+        "crates/codegen/xai-grok-workspace/src/hub_server.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs",
+        "crates/codegen/xai-grok-pager/src/app/subagent.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/dashboard.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-custom-model-provider-auth",
+      "description": "Pinned Grok custom model-provider configuration and rotating external credential refresh with explicit first-party provider isolation.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-shell/src/agent/model_providers.rs",
+        "crates/codegen/xai-grok-shell/src/auth/refresh/external_refresher.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/agent/model_providers.rs",
+        "crates/codegen/xai-grok-shell/src/auth/refresh/external_refresher.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-deterministic-pty-inference",
+      "description": "Pinned Grok endpoint-scoped inference expectations and deterministic PTY harness regressions.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager-pty-harness/src/content.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/src/lib.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/src/pty.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/src/scenarios/empty_enter_send_now.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/src/scenarios/plan_approval_resume.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/src/scripted.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/src/scroll_matrix/runner.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/tests/scroll_correctness_ptyctl.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/tests/scroll_matrix_curated.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/common.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/mod.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e_clipboard.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e_config_ui.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e_minimal.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e_persistence.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e_queue.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e_scroll_selection.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e_shell_tools.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e_smoke.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_xtversion.rs",
+        "crates/codegen/xai-grok-test-support/README.md",
+        "crates/codegen/xai-grok-test-support/src/headless.rs",
+        "crates/codegen/xai-grok-test-support/src/inference_override.rs",
+        "crates/codegen/xai-grok-test-support/src/lib.rs",
+        "crates/codegen/xai-grok-test-support/src/mock_server.rs",
+        "crates/codegen/xai-grok-test-support/src/scripted.rs",
+        "crates/codegen/xai-grok-test-support/src/sse.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager-pty-harness/src/content.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/src/lib.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/src/scenarios/empty_enter_send_now.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-doctor-diagnostics",
+      "description": "Pinned Grok early doctor command, terminal/tmux diagnostics, report formats, and explicit SSH-wrap repair.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager-render/src/terminal/tmux_probe.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/doctor_format_tests.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/fix.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/fix_tests.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/mod.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/model.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/probes/mod.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/probes/tmux.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/view.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/view_tests.rs",
+        "crates/codegen/xai-grok-pager/src/doctor_cmd/human.rs",
+        "crates/codegen/xai-grok-pager/src/doctor_cmd/json.rs",
+        "crates/codegen/xai-grok-pager/src/doctor_cmd/mod.rs",
+        "crates/codegen/xai-grok-pager/src/doctor_cmd/tests.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/doctor.rs",
+        "crates/codegen/xai-grok-pager/tests/doctor_early_dispatch.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager-render/src/terminal/tmux_probe.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/doctor_format.rs",
+        "crates/codegen/xai-grok-pager/src/diagnostics/fix.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-execution-risk-permissions",
+      "description": "Pinned Grok execution-risk classification and workspace permission integration without bypassing the established approval model.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md",
+        "crates/codegen/xai-grok-sandbox/src/network_policy.rs",
+        "crates/codegen/xai-grok-sandbox/src/paths.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/exec_risk.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/mod.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sandbox/src/paths.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/exec_risk.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/mod.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-external-editor",
+      "description": "Pinned Grok typed external draft editing with terminal suspend/restore and minimal-mode round-trip coverage.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/app/dispatch/external_editor.rs",
+        "crates/codegen/xai-grok-pager/src/app/external_editor.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/edit_prompt.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_external_editor_round_trip.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/app/dispatch/external_editor.rs",
+        "crates/codegen/xai-grok-pager/src/app/external_editor.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/edit_prompt.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-goal-feedback-loop",
+      "description": "Pinned Grok auto-mode denial feedback, goal orchestration, evaluation, attribution, and bounded escalation.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/goals.rs",
+        "crates/codegen/xai-grok-pager/src/views/goal_detail.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/feedback.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/goal.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/goal_support.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/goal/goal_backoff_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/goal/goal_strategist_e2e_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/goal/goal_summarizer_e2e_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/feedback_manager.rs",
+        "crates/codegen/xai-grok-shell/src/session/goal_classifier.rs",
+        "crates/codegen/xai-grok-shell/src/session/goal_evaluator.rs",
+        "crates/codegen/xai-grok-shell/src/session/goal_orchestrator.rs",
+        "crates/codegen/xai-grok-shell/src/session/goal_planner.rs",
+        "crates/codegen/xai-grok-shell/src/session/goal_role_tools.rs",
+        "crates/codegen/xai-grok-shell/src/session/goal_strategist.rs",
+        "crates/codegen/xai-grok-shell/src/session/goal_summarizer.rs",
+        "crates/codegen/xai-grok-shell/src/session/goal_tracker.rs",
+        "crates/codegen/xai-grok-shell/src/session/templates/goal_continuation_directive.md",
+        "crates/codegen/xai-grok-shell/src/session/templates/goal_continuation_directive_legacy.md",
+        "crates/codegen/xai-grok-shell/src/session/templates/goal_rules.md",
+        "crates/codegen/xai-grok-shell/src/session/templates/goal_rules_legacy.md",
+        "crates/codegen/xai-grok-shell/tests/test_doom_loop_recovery.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/views/goal_detail.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/feedback.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/goal.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-managed-text-config",
+      "description": "Pinned Grok transactional, validated, source-aware managed-text configuration and reload integration.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-config-types/src/mcp.rs",
+        "crates/codegen/xai-grok-config/src/loader.rs",
+        "crates/codegen/xai-grok-config/src/managed_text/format.rs",
+        "crates/codegen/xai-grok-config/src/managed_text/mod.rs",
+        "crates/codegen/xai-grok-config/src/managed_text/source.rs",
+        "crates/codegen/xai-grok-config/src/managed_text/tests.rs",
+        "crates/codegen/xai-grok-config/src/managed_text/transaction.rs",
+        "crates/codegen/xai-grok-config/src/managed_text/validator.rs",
+        "crates/codegen/xai-grok-config/src/paths.rs",
+        "crates/codegen/xai-grok-config/src/validation.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/hints.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/mcp.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/mod.rs",
+        "crates/codegen/xai-grok-shell/tests/team_managed_config.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-config/src/managed_text/format.rs",
+        "crates/codegen/xai-grok-config/src/managed_text/mod.rs",
+        "crates/codegen/xai-grok-config/src/managed_text/source.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-max-reasoning-effort",
+      "description": "Pinned Grok catalog-advertised max reasoning effort selection and fallback-menu compatibility.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/slash/commands/effort.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/reasoning_efforts_fallback_menu_matches_builtin.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/reasoning_efforts_from_config_toml_menu.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/slash/commands/effort.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/reasoning_efforts_fallback_menu_matches_builtin.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/reasoning_efforts_from_config_toml_menu.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-minimal-recap",
+      "description": "Pinned Grok minimal-mode queue, continuation, scrollback, and recap-context fidelity.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager-minimal/src/panel.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_continue_reprints_transcript.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_ctrl_o_send_now_queued_apple_terminal.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_double_esc_committed_queued_prompt_single_render.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_flush_left_no_hpad.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_queue_indicator_shows_while_running.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_continue_reprints_transcript.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_ctrl_o_send_now_queued_apple_terminal.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_double_esc_committed_queued_prompt_single_render.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-pager-command-runtime",
+      "description": "Pinned Grok pager actions, prompt editing, provider-aware dispatch, and turn/effect integration.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/actions/defaults.rs",
+        "crates/codegen/xai-grok-pager/src/actions/mod.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/modals.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/panes.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/prompt.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/auth.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/ctx.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/modes.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/rewind.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/auth.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/turn.rs",
+        "crates/codegen/xai-grok-pager/src/app/effects/tests.rs",
+        "crates/codegen/xai-grok-pager/src/app/inline_edit.rs",
+        "crates/codegen/xai-grok-pager/src/input/line_editor.rs",
+        "crates/codegen/xai-grok-pager/src/input/mod.rs",
+        "crates/codegen/xai-grok-pager/src/lib.rs",
+        "crates/codegen/xai-grok-shared/src/ui_config.rs",
+        "crates/codegen/xai-ratatui-textarea/src/editor.rs",
+        "crates/codegen/xai-ratatui-textarea/src/editor_keys.rs",
+        "crates/codegen/xai-ratatui-textarea/src/editor_tests/editing.rs",
+        "crates/codegen/xai-ratatui-textarea/src/editor_tests/keys.rs",
+        "crates/codegen/xai-ratatui-textarea/src/editor_tests/mod.rs",
+        "crates/codegen/xai-ratatui-textarea/src/editor_tests/planning.rs",
+        "crates/codegen/xai-ratatui-textarea/src/editor_tests/viewport.rs",
+        "crates/codegen/xai-ratatui-textarea/src/lib.rs",
+        "crates/codegen/xai-ratatui-textarea/src/textarea.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/actions/defaults.rs",
+        "crates/codegen/xai-grok-pager/src/actions/mod.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/panes.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-pager-command-surface",
+      "description": "Pinned Grok slash-command registry, help/settings views, status presentation, and user-facing pager command compatibility.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/app/screen_mode_relaunch.rs",
+        "crates/codegen/xai-grok-pager/src/docs.rs",
+        "crates/codegen/xai-grok-pager/src/mcp_cmd.rs",
+        "crates/codegen/xai-grok-pager/src/settings/mod.rs",
+        "crates/codegen/xai-grok-pager/src/slash/command.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/always_approve.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/auto.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/cd.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/debug.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/docs.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/expand.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/export.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/find.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/fork.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/help.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/history.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/multiline.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/plan.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/privacy.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/screen_mode_switch.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/settings_cmd.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/tasks.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/toggle_mouse_reporting.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/transcript.rs",
+        "crates/codegen/xai-grok-pager/src/slash/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/agent_status.rs",
+        "crates/codegen/xai-grok-pager/src/views/extensions_modal.rs",
+        "crates/codegen/xai-grok-pager/src/views/mcps_modal.rs",
+        "crates/codegen/xai-grok-pager/src/views/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/persona_detail/tests.rs",
+        "crates/codegen/xai-grok-pager/src/views/settings_modal/input.rs",
+        "crates/codegen/xai-grok-pager/src/views/settings_modal/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/settings_modal/render.rs",
+        "crates/codegen/xai-grok-pager/src/views/settings_modal/state.rs",
+        "crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs",
+        "crates/codegen/xai-grok-pager/src/views/shortcuts_help.rs",
+        "crates/codegen/xai-grok-pager/src/views/turn_status.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_cli_screen_mode_does_not_persist.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_sticky_screen_mode_persists.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/docs.rs",
+        "crates/codegen/xai-grok-pager/src/slash/command.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/always_approve.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-pager-navigation-timeline",
+      "description": "Pinned Grok jump picker, timeline rail, stable scrollback anchors, selection, and overlay navigation.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/app/agent_view/jump.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/links.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/selection.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/jump.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/jump.rs",
+        "crates/codegen/xai-grok-pager/src/diff.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/block.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/mod.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/read.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/snapshots/xai_grok_pager__scrollback__blocks__tool__edit__tests__diff_merged_hunks_gap_markers.snap",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/snapshots/xai_grok_pager__scrollback__blocks__tool__edit__tests__diff_multiple_hunks.snap",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/snapshots/xai_grok_pager__scrollback__blocks__tool__edit__tests__diff_multiple_hunks_dual.snap",
+        "crates/codegen/xai-grok-pager/src/scrollback/link_map.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/render.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/search.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/state/layout.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/state/mod.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/state/nav.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/state/selection.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/state/timeline.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/state/types.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/types.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/wrappers/entry_renderer.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/jump.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/timeline.rs",
+        "crates/codegen/xai-grok-pager/src/views/jump.rs",
+        "crates/codegen/xai-grok-pager/src/views/list_pane/state/methods.rs",
+        "crates/codegen/xai-grok-pager/src/views/overlay_list.rs",
+        "crates/codegen/xai-grok-pager/src/views/timeline.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/drag_select_autoscroll_full_scrollout_copy_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/edit_collapsed_oneliner_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/edit_hl_inplace_refresh_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/read_tool_header_selection_copies_path_only_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/scroll.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/show_thinking_blocks_toggle_hides_existing_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/stuck_drag_recovers_on_esc_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/verb_group_fold_expand_collapse_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/verb_group_header_drag_copy_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/verb_group_settings_toggle_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/verb_group_streaming_fold_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/verb_group_thinking_fold_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/wheel_overscroll_at_bottom_reengages_follow_mid_stream.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/wheel_scrolls_viewport_during_streaming_turn.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/app/agent_view/jump.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/links.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/selection.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-scheduler-queue-durability",
+      "description": "Pinned Grok durable scheduler acknowledgement, wake suppression, reminder persistence, and prompt-queue combination.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/auto_wake_cancel_preserves_queued_user_prompt.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/prompt_queue.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/reminders.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/prompt_queue_actor_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/reminder_policy_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/prompt_queue.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/scheduler/delete.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/scheduler/list.rs",
+        "crates/codegen/xai-grok-tools/src/notification/mod.rs",
+        "crates/codegen/xai-grok-tools/src/persistence.rs",
+        "crates/codegen/xai-grok-tools/src/reminders/task_completion.rs",
+        "crates/codegen/xai-prompt-queue/Cargo.toml",
+        "crates/codegen/xai-prompt-queue/src/combine.rs",
+        "crates/codegen/xai-prompt-queue/src/lib.rs",
+        "crates/codegen/xai-prompt-queue/src/types.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/prompt_queue.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/reminders.rs",
+        "crates/codegen/xai-grok-shell/src/session/prompt_queue.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-session-provider-usage",
+      "description": "Pinned Grok session-first usage rendering and explicit provider-managed billing selection, including Custom negative isolation.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/app/snapshots/xai_grok_pager__app__status_blocks__tests__session_usage_block_absent_cost.snap",
+        "crates/codegen/xai-grok-pager/src/app/snapshots/xai_grok_pager__app__status_blocks__tests__session_usage_block_full.snap",
+        "crates/codegen/xai-grok-pager/src/app/status_blocks.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/usage.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/app/snapshots/xai_grok_pager__app__status_blocks__tests__session_usage_block_absent_cost.snap",
+        "crates/codegen/xai-grok-pager/src/app/snapshots/xai_grok_pager__app__status_blocks__tests__session_usage_block_full.snap",
+        "crates/codegen/xai-grok-pager/src/app/status_blocks.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-session-relocation-acp",
+      "description": "Pinned Grok eager session persistence, relocation/mirroring, ACP replay, adoption, and terminal reconciliation.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager-pty-harness/src/scroll_matrix/session.rs",
+        "crates/codegen/xai-grok-pager/src/acp/meta.rs",
+        "crates/codegen/xai-grok-pager/src/acp/tracker.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/prompt_origin.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/settings.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/mcp.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/plan_mode.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/session/foreign.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/foreign.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/fork.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/session/load.rs",
+        "crates/codegen/xai-grok-pager/src/app/session_startup.rs",
+        "crates/codegen/xai-grok-pager/src/slash/acp_command.rs",
+        "crates/codegen/xai-grok-pager/src/views/session_picker.rs",
+        "crates/codegen/xai-grok-pager/src/views/session_title.rs",
+        "crates/codegen/xai-grok-shell/benches/session_list.rs",
+        "crates/codegen/xai-grok-shell/src/auth/single_flight.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/session_admin.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/notification_drain.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tasks_cancel.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn_end.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/observability_bridge_mapping_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/chat_persistence.rs",
+        "crates/codegen/xai-grok-shell/src/session/commands.rs",
+        "crates/codegen/xai-grok-shell/src/session/handle.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/compaction_context.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/memory_flush.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/session_recap.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/relocation/fs.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/relocation/journal.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/relocation/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/relocation/tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/unified_list/mod.rs",
+        "crates/codegen/xai-grok-shell/tests/test_refusal_stop_reason.rs",
+        "crates/codegen/xai-grok-test-support/src/acp_client.rs",
+        "crates/codegen/xai-grok-workspace/src/foreign_sessions/capability/mod.rs",
+        "crates/codegen/xai-grok-workspace/src/foreign_sessions/codex/tests/db.rs",
+        "crates/codegen/xai-grok-workspace/src/session/mod.rs",
+        "crates/codegen/xai-hunk-tracker/src/handle.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager-pty-harness/src/scroll_matrix/session.rs",
+        "crates/codegen/xai-grok-pager/src/acp/meta.rs",
+        "crates/codegen/xai-grok-pager/src/acp/tracker.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-shell-runtime-maintenance",
+      "description": "Pinned Grok shell parsing, rewind, upload metadata, subprocess, and identity support required by adopted session behavior.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/basename_path_demo_pty.rs",
+        "crates/codegen/xai-grok-shell/src/agent/ext_parsers.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mod.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests/dhat_soak.rs",
+        "crates/codegen/xai-grok-shell/src/builtin.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/bundle.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/rewind.rs",
+        "crates/codegen/xai-grok-shell/src/tools/tool_context.rs",
+        "crates/codegen/xai-grok-shell/src/upload/config_files.rs",
+        "crates/codegen/xai-grok-shell/src/upload/manifest.rs",
+        "crates/codegen/xai-grok-shell/src/upload/mod.rs",
+        "crates/codegen/xai-grok-shell/src/upload/trace.rs",
+        "crates/codegen/xai-grok-shell/src/upload/turn.rs",
+        "crates/codegen/xai-grok-shell/src/util/mod.rs",
+        "crates/codegen/xai-grok-shell/src/util/subprocess.rs",
+        "crates/codegen/xai-grok-shell/src/util/user_identity.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/agent/ext_parsers.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mod.rs",
+        "crates/codegen/xai-grok-shell/src/builtin.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-skill-packaging",
+      "description": "Pinned Grok builtin skill packaging and full Markdown skill-file delivery.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-shell/skills/best-of-n/SKILL.md",
+        "crates/codegen/xai-grok-shell/skills/check-work/SKILL.md",
+        "crates/codegen/xai-grok-shell/skills/code-review/SKILL.md",
+        "crates/codegen/xai-grok-shell/skills/create-skill/SKILL.md",
+        "crates/codegen/xai-grok-shell/skills/help/SKILL.md",
+        "crates/codegen/xai-grok-shell/skills/imagine/SKILL.md",
+        "crates/codegen/xai-grok-shell/src/extensions/skills.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/extensions/skills.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-terminal-input-rendering",
+      "description": "Pinned Grok terminal, tmux, glyph, input, clipboard, appearance, and remote-paste compatibility.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager-render/src/appearance/cache.rs",
+        "crates/codegen/xai-grok-pager-render/src/appearance/config.rs",
+        "crates/codegen/xai-grok-pager-render/src/glyphs.rs",
+        "crates/codegen/xai-grok-pager-render/src/link_opener.rs",
+        "crates/codegen/xai-grok-pager-render/src/render/draw.rs",
+        "crates/codegen/xai-grok-pager-render/src/render/osc8.rs",
+        "crates/codegen/xai-grok-pager-render/src/terminal/mod.rs",
+        "crates/codegen/xai-grok-pager-render/src/terminal/test.rs",
+        "crates/codegen/xai-grok-pager-render/src/util.rs",
+        "crates/codegen/xai-grok-pager/docs/user-guide/03-keyboard-shortcuts.md",
+        "crates/codegen/xai-grok-pager/src/app/csi_filter.rs",
+        "crates/codegen/xai-grok-pager/src/app/signal_handler.rs",
+        "crates/codegen/xai-grok-pager/src/app/xt_filter.rs",
+        "crates/codegen/xai-grok-pager/src/input/keyboard_normalizer.rs",
+        "crates/codegen/xai-grok-pager/src/input/mouse.rs",
+        "crates/codegen/xai-grok-pager/src/input/mouse/tests.rs",
+        "crates/codegen/xai-grok-pager/src/pty_wrap.rs",
+        "crates/codegen/xai-grok-pager/src/tips/mod.rs",
+        "crates/codegen/xai-grok-pager/src/tips/ssh_wrap.rs",
+        "crates/codegen/xai-grok-pager/src/wrap_filter.rs",
+        "crates/codegen/xai-grok-pager/src/wrap_restore.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/iterm_readline_editing.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/wrap_child_killed_with_latched_modes_restores_terminal.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/wrap_clean_exit_stays_byte_transparent.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/wrap_sigterm_restores_terminal_and_exit_code.rs",
+        "crates/codegen/xai-grok-shared/src/clipboard.rs",
+        "crates/codegen/xai-grok-telemetry/src/external/schema.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager-render/src/appearance/cache.rs",
+        "crates/codegen/xai-grok-pager-render/src/appearance/config.rs",
+        "crates/codegen/xai-grok-pager-render/src/glyphs.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-tools-notification-runtime",
+      "description": "Pinned Grok tool metadata, normalization, task backend, notification handle, and taxonomy maintenance.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-tools-api/src/slash_commands.rs",
+        "crates/codegen/xai-grok-tools/schema/tool_meta.schema.json",
+        "crates/codegen/xai-grok-tools/src/computer/local/static_shell.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/task/backend.rs",
+        "crates/codegen/xai-grok-tools/src/normalization.rs",
+        "crates/codegen/xai-grok-tools/src/notification/handle.rs",
+        "crates/codegen/xai-grok-tools/src/notification/handle_tests.rs",
+        "crates/codegen/xai-grok-tools/src/tool_taxonomy.rs",
+        "crates/codegen/xai-grok-tools/src/types/tool.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-tools-api/src/slash_commands.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/task/backend.rs",
+        "crates/codegen/xai-grok-tools/src/normalization.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-turn-queue-page-flip",
+      "description": "Pinned Grok structured queue draining, combined prompts, page-flip notifications, and parked-marker folding.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/queue.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/interjection.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/queue_and_adoption.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/session_events.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/queue.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/turn.rs",
+        "crates/codegen/xai-grok-pager/src/app/queue_edit.rs",
+        "crates/codegen/xai-grok-pager/src/app/turn_completion/tests.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/session_event.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/queue.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/bash_queued_mid_turn_drains_as_bash.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/cancel_discards_buffered_interjection.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/cancel_then_resend_prompt_appears_once.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/ctrlc_after_activity_no_rewind_prompt_once.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/ctrlc_with_queued_prompt_no_dup.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/edit_interject_lone_queued_row_keeps_tui_alive.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/edit_merge_parallel_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/edit_merge_sequential_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/empty_enter_force_sends_top_queued.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/empty_enter_sends_top_not_last_of_two.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/endline_park_two_static_markers.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/endline_wake_markers_close_each_wakeup.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/endline_wakeups_are_markerless.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/interjection_reaches_model_ctrl_l_in_vscode_family.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/interjection_reaches_model_in_same_turn.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/page_flip_on_send_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/queue_and_interjection_lifecycle.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/queued_bash_promotion_renders_output_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/queued_message_renders_once_not_twice.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/removed_queued_prompt_never_sent.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/reparked_wait_repushes_buried_marker.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/send_now_tip_after_mid_turn_queue.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/spinner_reappears_after_wait_resumes.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/verify_bashq_claim2_force_interject.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/verify_bashq_claim3_edit_keeps_bash.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/queue.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/queue.rs",
+        "crates/codegen/xai-grok-pager/src/app/queue_edit.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-user-guide-changelogs",
+      "description": "Pinned Grok user-guide and shell changelog updates for adopted controls and behavior.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/README.md",
+        "crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md",
+        "crates/codegen/xai-grok-pager/docs/user-guide/README.md",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.102.json",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.102.md",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.103.json",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.103.md",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.104.json",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.104.md",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.105.json",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.105.md",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.106.json",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.106.md",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.107.json",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.107.md",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.108.json",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.108.md",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.109.json",
+        "crates/codegen/xai-grok-shell/changelogs/0.2.109.md"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/README.md",
+        "crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md",
+        "crates/codegen/xai-grok-pager/docs/user-guide/README.md"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-voice-capture-diagnostics",
+      "description": "Pinned Grok voice PCM, capture, silence, permission, and no-speech diagnostic distinctions.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/voice/handle.rs",
+        "crates/codegen/xai-grok-voice/src/audio/capture.rs",
+        "crates/codegen/xai-grok-voice/src/audio/capture_linux.rs",
+        "crates/codegen/xai-grok-voice/src/audio/mod.rs",
+        "crates/codegen/xai-grok-voice/src/event.rs",
+        "crates/codegen/xai-grok-voice/src/lib.rs",
+        "crates/codegen/xai-grok-voice/src/pcm.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/voice/handle.rs",
+        "crates/codegen/xai-grok-voice/src/audio/capture.rs",
+        "crates/codegen/xai-grok-voice/src/audio/capture_linux.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-workflow-runtime",
+      "description": "Pinned Grok workflow engine, durable journal/store, shell host, tools, notifications, overlays, and validation.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/workflow_ingest.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/workflows_overlay.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/workflow.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/workflows.rs",
+        "crates/codegen/xai-grok-pager/src/views/workflows.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/workflow.rs",
+        "crates/codegen/xai-grok-shell/src/session/workflow/host_service.rs",
+        "crates/codegen/xai-grok-shell/src/session/workflow/manager.rs",
+        "crates/codegen/xai-grok-shell/src/session/workflow/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/workflow/notify.rs",
+        "crates/codegen/xai-grok-shell/src/session/workflow/registry.rs",
+        "crates/codegen/xai-grok-shell/src/session/workflow/schema_contract.rs",
+        "crates/codegen/xai-grok-shell/src/session/workflow/store.rs",
+        "crates/codegen/xai-grok-shell/src/session/workflow/tracker.rs",
+        "crates/codegen/xai-grok-shell/src/session/workflows/deep_research.rhai",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/workflow/mod.rs",
+        "crates/codegen/xai-workflow/Cargo.toml",
+        "crates/codegen/xai-workflow/examples/validate.rs",
+        "crates/codegen/xai-workflow/src/engine.rs",
+        "crates/codegen/xai-workflow/src/host.rs",
+        "crates/codegen/xai-workflow/src/journal.rs",
+        "crates/codegen/xai-workflow/src/lib.rs",
+        "crates/codegen/xai-workflow/src/meta.rs",
+        "crates/codegen/xai-workflow/src/run.rs",
+        "crates/codegen/xai-workflow/src/validate.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/workflow_ingest.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/workflows_overlay.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/workflow.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-workspace-runtime-safety",
+      "description": "Pinned Grok workspace capability and preview supervision maintenance within existing permission boundaries.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-workspace/src/capability.rs",
+        "crates/codegen/xai-grok-workspace/src/preview_supervisor.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-workspace/src/capability.rs",
+        "crates/codegen/xai-grok-workspace/src/preview_supervisor.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-3af4-worktree-auto-gc",
+      "description": "Pinned Grok managed-worktree automatic garbage collection, discovery, checkout, and symlink-containment safety.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-fast-worktree/Cargo.toml",
+        "crates/codegen/xai-fast-worktree/src/api.rs",
+        "crates/codegen/xai-fast-worktree/src/auto_gc.rs",
+        "crates/codegen/xai-fast-worktree/src/db/mod.rs",
+        "crates/codegen/xai-fast-worktree/src/discovery.rs",
+        "crates/codegen/xai-fast-worktree/src/git/checkout.rs",
+        "crates/codegen/xai-fast-worktree/src/lib.rs",
+        "crates/codegen/xai-grok-pager/src/views/new_worktree_dialog.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/worktree.rs",
+        "crates/codegen/xai-grok-workspace/src/worktree/mod.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-fast-worktree/src/api.rs",
+        "crates/codegen/xai-fast-worktree/src/auto_gc.rs",
+        "crates/codegen/xai-fast-worktree/src/db/mod.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
       ]
     }
   ]
