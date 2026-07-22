@@ -43,7 +43,7 @@ Grok processes the prompt, runs any necessary tools, and prints the result to st
 | `--no-auto-update`      | Disable update checks for this session                |
 | `--sandbox <PROFILE>`   | Sandbox profile for filesystem/network access         |
 
-> **Note:** `--tools`, `--disallowed-tools`, `--max-turns`, and `--agents` are headless-only flags. If used in the interactive TUI, a warning is printed and the flag is ignored. `--reasoning-effort`/`--effort`, `--permission-mode`, `--allow`, and `--deny` work in both modes. For more flags (agents, verification, worktrees), see [Additional Headless Flags](#additional-headless-flags).
+> **Note:** `--tools`, `--disallowed-tools`, `--max-turns`, and `--agents` are headless-only flags. If used in the interactive TUI, a warning is printed and the flag is ignored. `--reasoning-effort`/`--effort`, `--permission-mode`, `--allow`, and `--deny` work in both modes. For more flags (agents and worktrees), see [Additional Headless Flags](#additional-headless-flags).
 
 ### Tool Filtering
 
@@ -569,8 +569,6 @@ These flags supplement the [Command-Line Options](#command-line-options) table a
 | `--agent <NAME>`              | Agent name or definition file path                |
 | `--agents <JSON>`             | Inline subagent definitions as JSON               |
 | `--system-prompt-override`    | Override the agent's system prompt                |
-| `--check` / `--self-verify`   | Append verification loop (headless only)          |
-| `--best-of-n <N>`             | Run task N ways, pick best (headless only)         |
 | `--no-plan`                   | Disable plan mode                                 |
 | `--no-subagents`              | Disable subagent spawning                         |
 | `--no-memory`                 | Disable cross-session memory                      |

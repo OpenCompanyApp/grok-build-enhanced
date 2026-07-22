@@ -264,11 +264,11 @@ grok --resume <session-id>
 # Continue the most recent session
 grok -c
 
-# Experimental scrollback-native render mode. Sticky: plain `grok` reopens in
-# the mode last chosen via --minimal/--fullscreen (or /minimal//fullscreen).
+# Experimental scrollback-native render mode for this session only.
+# To make it the default, set [ui] screen_mode = "minimal" in config.toml.
 grok --minimal
 
-# Back to the standard fullscreen TUI (and make it sticky again)
+# Use the standard fullscreen TUI for this session only.
 grok --fullscreen
 
 # Headless mode (for scripts)

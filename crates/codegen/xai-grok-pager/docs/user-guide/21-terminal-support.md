@@ -33,12 +33,13 @@ tmux source-file ~/.tmux.conf
 # or detach and reattach
 ```
 
-### Live diagnostics inside Grok
+### Terminal diagnostics
 
-Run this slash command:
+Run a read-only report from your shell without starting the TUI:
 
-```
-/terminal-setup
+```bash
+grok doctor
+grok doctor --json  # machine-readable report
 ```
 
 The command reports the terminal, multiplexer, **color level**, **available themes**, and clipboard routes Grok detected, then lists any issues and how to fix them. When color is below truecolor, it explains how to unlock the truecolor-only themes (TokyoNight, RosePineMoon, OscuraMidnight) — or notes that Terminal.app is inherently 256-color. The aliases `/terminal-check` and `/terminal-info` run the same command.
@@ -80,11 +81,11 @@ Detection has these limitations:
 
 **Fix**: Apply the two settings above, then restart Grok.
 
-**Verify**: Run `/terminal-setup`. Expect `color truecolor` and `themes all`. If `color` is `256` or `basic`, the issues section has the unlock fix.
+**Verify**: Run `/doctor`. Expect `color truecolor` and `themes all`. If `color` is `256` or `basic`, the issues section has the unlock fix.
 
 ### Problem: Clipboard problems
 
-Grok writes to the clipboard through up to three routes, shown in the **Clipboard** section of `/terminal-setup`:
+Grok writes to the clipboard through up to three routes, shown in the **Clipboard** section of `/doctor`:
 
 - **native** — Grok always writes to the native OS clipboard first.
 - **tmux buffer** — inside tmux, Grok also writes to the tmux paste buffer (`tmux load-buffer`).
@@ -92,7 +93,7 @@ Grok writes to the clipboard through up to three routes, shown in the **Clipboar
 
 **Linux Wayland**: on compositors that support the data-control protocol (GNOME 48+, KDE, Sway, Hyprland — the **Clipboard** section shows `data-control on`; the line is omitted off Wayland) copies work even if the terminal loses focus mid-copy. On older compositors (GNOME 46/47), keep the terminal focused until the copy toast confirms, and install the `wl-clipboard` package (provides `wl-copy`) for the most reliable route — Grok shows a startup warning when this applies. If data-control misbehaves on your compositor, set `GROK_CLIPBOARD_NO_DATA_CONTROL=1` to stop Grok from speaking that protocol entirely — copies then go through the CLI tools (`wl-copy`/`xclip`).
 
-**OSC 52 kill switch**: Grok emits OSC 52 on every Linux copy (and over SSH/tmux/containers). Terminals that do not implement OSC 52 may paint the base64 payload as visible garbage (for example some VNC/X11 clients such as OpenText Exceed). Set `GROK_CLIPBOARD_NO_OSC52=1` before starting Grok to force the OSC 52 leg off; `/terminal-setup` then shows `osc 52 off`. Native and tmux clipboard legs are unchanged.
+**OSC 52 kill switch**: Grok emits OSC 52 on every Linux copy (and over SSH/tmux/containers). Terminals that do not implement OSC 52 may paint the base64 payload as visible garbage (for example some VNC/X11 clients such as OpenText Exceed). Set `GROK_CLIPBOARD_NO_OSC52=1` before starting Grok to force the OSC 52 leg off; `/doctor` then shows `osc 52 off`. Native and tmux clipboard legs are unchanged.
 
 **Linux X11 selections**: X11 **PRIMARY** and **CLIPBOARD** are separate. Selecting text usually fills PRIMARY; an explicit Copy action fills CLIPBOARD. In Grok:
 
@@ -145,6 +146,8 @@ Zellij intercepts many Ctrl/Alt key combinations before they reach full-screen T
 
 After this, Zellij starts **locked**. Most keys pass through to Grok. Press `Ctrl+g` to temporarily unlock Zellij when you need its pane/session management.
 
+In minimal mode, if `Ctrl+G` still does not reach Grok, open the command palette and select **Edit Prompt in External Editor**. This preserves the current draft; typing `/edit-prompt` starts an empty editor draft because the command itself occupies the composer.
+
 Zellij recommends this approach for TUI users.
 
 ### Problem: `Ctrl+Enter` doesn't interject in WezTerm
@@ -163,7 +166,7 @@ config.enable_kitty_keyboard = true
 
 Reload (`Cmd+Shift+R` or restart WezTerm) and restart `grok`.
 
-**Verify**: Run `/terminal-setup` inside Grok. While a turn is active, you see the interject hint, and `Ctrl+Enter` interjects.
+**Verify**: Run `/doctor` inside Grok. While a turn is active, you see the interject hint, and `Ctrl+Enter` interjects.
 
 **Quick workaround** (no global change):
 
@@ -192,7 +195,7 @@ terminal and skips the protocol for the same reason.
 **Fix**: Use **`Alt+Enter`** to insert a newline. xterm.js delivers it
 reliably as `ESC`+`CR` regardless of the keyboard protocol, and Grok's
 prompt hint bar advertises `Alt+Enter: newline` whenever it detects this
-situation. Run `/terminal-setup` to confirm — the `newline` row shows
+situation. Run `/doctor` to confirm — the `newline` row shows
 `Alt+Enter` when `Shift+Enter` is unavailable.
 
 ### Problem: Mouse scrolling stops working (native scrollbar takes over)
@@ -202,6 +205,15 @@ If Grok's mouse-driven scrolling stops responding and your terminal falls back t
 **Apple Terminal**: Go to **View > Allow Mouse Reporting** (keyboard shortcut `Cmd+R`) to re-enable it. A checkmark appears next to the option when active.
 
 **iTerm2**: Open **Settings** (`Cmd+,`) → **Profiles** → **Terminal** → ensure **"Enable mouse reporting"** is checked. Alternatively, restart iTerm2.
+
+### Problem: Voice dictation records nothing
+
+You start voice (`/voice` or `Ctrl+Space`), talk, and no words appear. After ~10 seconds Grok stops and shows a toast with the cause:
+
+- **"microphone delivered only silence"** — the mic opens but delivers essentially zero audio. On macOS this is almost always microphone permission: the OS feeds unauthorized apps silence instead of erroring, and the permission belongs to the *terminal app* hosting Grok (Ghostty, iTerm2, …), not Grok itself. Open **System Settings → Privacy & Security → Microphone**, enable your terminal, and **restart the terminal**. If access is already allowed, check the input device and level under **System Settings → Sound → Input** (a fully muted or dead input can look the same; residual noise may instead show the “heard audio” toast).
+- **"heard audio but no speech was detected"** — audio is flowing, so the mic path is open; speak into the selected device, or try again.
+
+**Verify**: Run `grok doctor` or `/terminal-setup` (with voice mode on). The **Voice** section shows the microphone Grok would capture from. Neither can detect a *denied permission* passively — macOS only reveals that once recording starts (the toast above).
 
 ### Problem: Byobu + GNU screen
 
