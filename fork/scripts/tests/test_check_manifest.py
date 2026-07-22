@@ -28,6 +28,19 @@ class CheckManifestTests(unittest.TestCase):
         self.assertIn(expected_fragment, result.stdout)
         self.assertEqual(result.stderr, "")
 
+    def successive_acknowledgement_rig(
+        self,
+    ) -> tuple[str, dict[str, object], list[dict[str, object]], str]:
+        marker, acknowledgements, latest = (
+            self.fixture.create_successive_upstream_acknowledgement_merges()
+        )
+        document = self.fixture.make_document()
+        document["sources"][0]["reviewed"]["commit"] = latest
+        document["sources"][0]["latest_fetched"]["commit"] = latest
+        document["coverage"]["upstream_acknowledgements"] = acknowledgements
+        self.fixture.write_upstream_versions(reviewed=latest, latest=latest)
+        return marker, document, acknowledgements, latest
+
     def test_valid_manifest_is_complete_read_only_and_tree_authoritative(self) -> None:
         before = self.fixture.repository_state()
         bytecode_before = self.fixture.bytecode_artifacts()
@@ -608,6 +621,40 @@ class CheckManifestTests(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("3/3 baseline-to-candidate downstream path(s) covered", result.stdout)
+
+    def test_successive_upstream_acknowledgements_keep_prior_marker_authenticated(self) -> None:
+        marker, document, _acknowledgements, _latest = self.successive_acknowledgement_rig()
+        self.fixture.write_manifest(document)
+
+        result = self.fixture.run_checker(
+            "--coverage-candidate", marker, "--strict-coverage"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "including 2 audited zero-delta upstream acknowledgement merge(s)",
+            result.stdout,
+        )
+
+    def test_successive_upstream_acknowledgements_require_exact_chain_transition(self) -> None:
+        marker, document, acknowledgements, _latest = self.successive_acknowledgement_rig()
+        acknowledgements[1]["reviewed_from"] = {
+            "commit": self.fixture.previous_upstream,
+            "tree": self.fixture.baseline_tree,
+        }
+        self.fixture.write_manifest(document)
+
+        result = self.fixture.run_checker("--coverage-candidate", marker)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(
+            "must advance",
+            result.stdout,
+        )
+        self.assertIn(
+            "from the exact prior acknowledged commit/tree",
+            result.stdout,
+        )
 
     def test_upstream_acknowledgement_merge_rejects_first_parent_tree_change(self) -> None:
         candidate, acknowledgement = self.fixture.create_upstream_acknowledgement_merge(

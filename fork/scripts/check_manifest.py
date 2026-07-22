@@ -1581,27 +1581,13 @@ def _acknowledgement_evidence_errors(
     return errors
 
 
-def _acknowledgement_source_errors(
+def _acknowledgement_revision_errors(
     context: CheckContext, acknowledgement: dict[str, Any]
 ) -> list[str]:
+    """Authenticate one acknowledgement's immutable source identities."""
+
     errors: list[str] = []
     commit = acknowledgement["commit"]
-    source_id = acknowledgement["source_id"]
-    source = next(
-        (item for item in context.document["sources"] if item["id"] == source_id),
-        None,
-    )
-    if source is None:
-        return [f"acknowledgement {commit} references unknown source {source_id!r}"]
-    if source["reviewed"]["commit"] != commit:
-        errors.append(
-            f"acknowledgement {commit} must equal source {source_id!r} reviewed revision"
-        )
-    if source["latest_fetched"]["commit"] != commit:
-        errors.append(
-            f"acknowledgement {commit} must equal source {source_id!r} latest-fetched revision"
-        )
-
     exists, detail = _git_object_exists(context, f"{commit}^{{commit}}")
     if not exists:
         return [f"acknowledged upstream commit {commit} is unavailable: {detail}"]
@@ -1650,6 +1636,59 @@ def _acknowledgement_source_errors(
     return errors
 
 
+def _acknowledgement_chain_errors(
+    context: CheckContext, acknowledgements: list[dict[str, Any]]
+) -> list[str]:
+    """Authenticate ordered acknowledgement history for every source.
+
+    Historical declarations remain in the current manifest so prior merge
+    markers stay auditable. Only the final declaration for a source must equal
+    that source's current reviewed/latest revision; each later declaration must
+    start from the exact commit/tree acknowledged immediately before it.
+    """
+
+    errors: list[str] = []
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for acknowledgement in acknowledgements:
+        errors.extend(_acknowledgement_revision_errors(context, acknowledgement))
+        by_source.setdefault(acknowledgement["source_id"], []).append(acknowledgement)
+
+    sources = {item["id"]: item for item in context.document["sources"]}
+    for source_id, chain in by_source.items():
+        source = sources.get(source_id)
+        if source is None:
+            errors.append(
+                f"acknowledgement {chain[-1]['commit']} references unknown source {source_id!r}"
+            )
+            continue
+
+        latest = chain[-1]
+        latest_commit = latest["commit"]
+        if source["reviewed"]["commit"] != latest_commit:
+            errors.append(
+                f"acknowledgement {latest_commit} must equal source {source_id!r} "
+                "reviewed revision"
+            )
+        if source["latest_fetched"]["commit"] != latest_commit:
+            errors.append(
+                f"acknowledgement {latest_commit} must equal source {source_id!r} "
+                "latest-fetched revision"
+            )
+
+        for previous, current in zip(chain, chain[1:], strict=False):
+            reviewed_from = current["reviewed_from"]
+            if (
+                reviewed_from["commit"] != previous["commit"]
+                or reviewed_from["tree"] != previous["tree"]
+            ):
+                errors.append(
+                    f"acknowledgement chain for source {source_id!r} must advance "
+                    f"{previous['commit']} -> {current['commit']} from the exact prior "
+                    "acknowledged commit/tree"
+                )
+    return errors
+
+
 def check_coverage_candidate(context: CheckContext) -> Outcome:
     """Authenticate first-parent history plus declared zero-delta upstream merges."""
 
@@ -1679,8 +1718,7 @@ def check_coverage_candidate(context: CheckContext) -> Outcome:
     # Reading the tree up front proves that the resolved candidate is a usable
     # immutable commit/tree pair; feature and coverage checks reuse this cache.
     context.tree_map(context.coverage_tree)
-    for acknowledgement in acknowledgements:
-        errors.extend(_acknowledgement_source_errors(context, acknowledgement))
+    errors.extend(_acknowledgement_chain_errors(context, acknowledgements))
 
     while current not in checkpoints:
         if current in seen:

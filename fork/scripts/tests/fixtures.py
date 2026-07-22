@@ -556,6 +556,64 @@ class ForkFixture:
         }
         return marker, acknowledgement
 
+    def create_successive_upstream_acknowledgement_merges(
+        self,
+    ) -> tuple[str, list[dict[str, Any]], str]:
+        """Create two zero-delta markers for one advancing source."""
+
+        first_marker, first = self.create_upstream_acknowledgement_merge()
+        second_upstream = self.commit_tree(
+            self.tip_tree,
+            [self.upstream],
+            "fixture second audited upstream snapshot",
+        )
+        evidence = "\n".join(
+            [
+                "# Fixture second upstream parity ledger",
+                "",
+                "Source ID: `fixture-source`",
+                f"Previous commit: `{self.upstream}`",
+                f"Previous tree: `{self.tip_tree}`",
+                f"Target commit: `{second_upstream}`",
+                f"Target tree: `{self.tip_tree}`",
+                f"Target parent: `{self.upstream}`",
+                "",
+                "## Complete 0 raw-path ledger",
+                "",
+                "| # | Upstream status and path | Outcome | Evidence |",
+                "| ---: | --- | --- | --- |",
+                "",
+            ]
+        )
+
+        self.git("checkout", "--quiet", "--detach", first_marker)
+        self.write_repo_file("src/integration.txt", evidence)
+        self.git("add", "--", "src/integration.txt")
+        self.git("commit", "--quiet", "-m", "fixture second upstream audit evidence")
+        first_parent = self.git_text("rev-parse", "HEAD")
+        first_parent_tree = self.git_text("rev-parse", "HEAD^{tree}")
+        trailer = f"{ACKNOWLEDGEMENT_TRAILER}: fixture-source@{second_upstream}"
+        second_marker = self.commit_tree(
+            first_parent_tree,
+            [first_parent, second_upstream],
+            f"fixture second audited upstream acknowledgement\n\n{trailer}",
+        )
+        second = {
+            "source_id": "fixture-source",
+            "commit": second_upstream,
+            "tree": self.tip_tree,
+            "reviewed_from": {
+                "commit": self.upstream,
+                "tree": self.tip_tree,
+            },
+            "target_parents": [self.upstream],
+            "evidence": {
+                "path": "src/integration.txt",
+                "sha256": hashlib.sha256(evidence.encode("utf-8")).hexdigest(),
+            },
+        }
+        return second_marker, [first, second], second_upstream
+
     def adopt_symlink_frozen_tip(self, relative_path: str, target: str) -> None:
         self.git("checkout", "--quiet", "--detach", self.tip)
         self.symlink_repo_path(relative_path, target)
