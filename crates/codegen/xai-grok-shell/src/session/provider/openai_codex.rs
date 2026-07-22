@@ -350,8 +350,8 @@ async fn bind_openai_codex_with_manager(
 }
 
 /// Pin a subscription-provider model/auxiliary candidate to the active session
-/// record. Cross-provider transitions are intentional fresh selections and
-/// remain untouched.
+/// record. A cross-provider candidate must start unbound so it cannot retain a
+/// process-current record from a different provider selection.
 pub(crate) fn pin_provider_candidate_to_active_record(
     candidate: &mut SamplerConfig,
     active_provider: ProviderId,
@@ -361,9 +361,9 @@ pub(crate) fn pin_provider_candidate_to_active_record(
         && active_provider.is_openai_codex())
         || (candidate.provider.is_kimi_code() && active_provider.is_kimi_code())
         || (candidate.provider.is_zai_coding_plan() && active_provider.is_zai_coding_plan());
-    if same_pinned_provider {
-        candidate.credential_binding = active_binding.cloned();
-    }
+    candidate.credential_binding = same_pinned_provider
+        .then(|| active_binding.cloned())
+        .flatten();
 }
 
 /// Interpret the optional binding stored in session/config state.

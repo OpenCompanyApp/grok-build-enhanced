@@ -1263,8 +1263,8 @@ impl SessionActor {
             }
             bridge
                 .update_resource(
-                    xai_grok_tools::implementations::grok_build::update_goal::GoalUpdateHandle(
-                        self.goal_update_tx.clone(),
+                    xai_grok_tools::implementations::grok_build::workflow::WorkflowLaunchHandle(
+                        self.workflow_launch_tx.clone(),
                     ),
                 )
                 .await;

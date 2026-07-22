@@ -12,9 +12,11 @@ use xai_grok_tools::notification::types::{ToolNotification, ToolNotificationHand
 use xai_grok_tools::types::output::{BashOutput, ToolOutput};
 use xai_hunk_tracker::HunkTrackerHandle;
 
+const TASK_WAKE_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
 use crate::session::commands::SessionCommand;
 use crate::session::commands::{NotificationPriority, NotificationSource};
-use crate::session::persistence::PersistenceMsg;
+use crate::session::persistence::{DurableAppendError, PersistenceHandle, PersistenceMsg};
 use xai_grok_workspace::session::file_state::FileStateTracker;
 
 /// Configuration for the notification bridge.
@@ -34,9 +36,8 @@ pub struct NotificationBridgeConfig {
     /// Shared gate: when false, suppress gateway forwarding.
     /// Events are still processed for hunk tracking and file state.
     pub gateway_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Persistence channel for durably storing notifications.
-    /// Used to persist bash output even when the gateway gate is closed.
-    pub persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
+    /// Persistence handle for FIFO ordinary writes and durable tombstone barriers.
+    pub persistence: PersistenceHandle,
     /// When true, send incremental `output_delta` instead of full `output`
     /// in bash streaming updates. The client must opt in via the
     /// `x.ai/incrementalBashOutput` capability.
@@ -55,6 +56,9 @@ pub struct NotificationBridgeConfig {
     pub turn_prompt_mode: Arc<parking_lot::Mutex<crate::session::plan_mode::PromptMode>>,
     /// Session command channel for monitor events and task-completed injections.
     pub session_cmd_tx: mpsc::UnboundedSender<SessionCommand>,
+    pub task_completion_reservations:
+        xai_grok_tools::reminders::task_completion::TaskCompletionReservations,
+    pub task_wake_suppressed: xai_grok_tools::reminders::task_completion::TaskWakeSuppressed,
     /// Shared set of IDs delivered via auto-wake, used to suppress duplicate
     /// `TaskCompletionReminder` entries for the same task/subagent.
     pub auto_wake_delivered: xai_grok_tools::reminders::task_completion::AutoWakeDeliveredIds,
@@ -110,18 +114,115 @@ fn stamp_event_id(config: &NotificationBridgeConfig, meta: &mut Option<acp::Meta
     crate::util::event_id::ensure_event_id_meta(&config.session_id.0, meta);
 }
 
+fn stamp_scheduler_meta(
+    config: &NotificationBridgeConfig,
+    meta: &mut Option<acp::Meta>,
+    generation: &str,
+    revision: u64,
+) {
+    stamp_event_id(config, meta);
+    let meta = meta.get_or_insert_with(acp::Meta::new);
+    meta.insert("x.ai/schedulerGeneration".to_owned(), generation.into());
+    meta.insert("x.ai/schedulerRevision".to_owned(), revision.into());
+}
+
+fn durable_append_landed(result: Result<(), DurableAppendError>) -> Result<(), String> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(DurableAppendError::Committed(error)) => {
+            tracing::warn!(%error, "Scheduler tombstone committed with bookkeeping failure");
+            Ok(())
+        }
+        Err(DurableAppendError::NotCommitted(error)) => {
+            Err(format!("scheduler tombstone was not committed: {error}"))
+        }
+        Err(DurableAppendError::AcknowledgementLost(error)) => Err(format!(
+            "scheduler tombstone commit status is unknown: {error}"
+        )),
+    }
+}
+
+async fn handle_scheduled_task_removed(
+    config: &NotificationBridgeConfig,
+    removed: xai_grok_tools::notification::ScheduledTaskRemoved,
+    acknowledgement: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+) -> Result<(), String> {
+    tracing::info!(task_id = %removed.task_id, "Scheduled task removed");
+    let result: Result<Box<serde_json::value::RawValue>, String> = async {
+        let mut meta = None;
+        stamp_scheduler_meta(config, &mut meta, &removed.generation, removed.revision);
+        let notification = crate::extensions::notification::SessionNotification {
+            session_id: config.session_id.clone(),
+            update: crate::extensions::notification::SessionUpdate::ScheduledTaskDeleted {
+                task_id: removed.task_id,
+            },
+            meta: meta.map(serde_json::Value::Object),
+        };
+        let params = serde_json::to_value(&notification)
+            .and_then(|value| serde_json::value::to_raw_value(&value))
+            .map_err(|error| format!("failed to serialize scheduled task deletion: {error}"))?;
+        let update = crate::session::storage::SessionUpdate::Xai(Box::new(notification));
+        if acknowledgement.is_some() {
+            durable_append_landed(config.persistence.append_update_durably(update).await)?;
+        } else {
+            config
+                .persistence
+                .tx
+                .send(PersistenceMsg::Update(update))
+                .map_err(|_| "session persistence stopped".to_owned())?;
+        }
+        Ok(params)
+    }
+    .await;
+    match result {
+        Ok(params) => {
+            if let Some(acknowledgement) = acknowledgement {
+                let _ = acknowledgement.send(Ok(()));
+            }
+            config
+                .gateway
+                .forward_fire_and_forget(acp::ExtNotification::new(
+                    "x.ai/scheduled_task_deleted",
+                    params.into(),
+                ));
+            Ok(())
+        }
+        Err(error) => {
+            if let Some(acknowledgement) = acknowledgement {
+                let _ = acknowledgement.send(Err(error.clone()));
+            }
+            Err(error)
+        }
+    }
+}
+
 /// Create a `ToolNotificationHandle` and spawn a bridge task that
 /// translates notifications into shell-native systems.
 pub fn spawn_notification_bridge(config: NotificationBridgeConfig) -> ToolNotificationHandle {
-    let (handle, mut rx) = ToolNotificationHandle::channel();
+    let (handle, mut rx) = ToolNotificationHandle::acknowledged_channel();
 
     tokio::task::spawn_local(async move {
         // Per-tool-call byte offset for incremental delta computation.
         // Only used when `config.incremental_bash_output` is true.
         let mut offsets: HashMap<String, usize> = HashMap::new();
 
-        while let Some(notification) = rx.recv().await {
-            handle_notification(&config, notification, &mut offsets).await;
+        while let Some(delivery) = rx.recv().await {
+            let acknowledgement = delivery.acknowledgement;
+            match delivery.notification {
+                ToolNotification::ScheduledTaskRemoved(removed) => {
+                    if let Err(error) =
+                        handle_scheduled_task_removed(&config, removed, acknowledgement).await
+                    {
+                        tracing::warn!(%error, "Failed to handle scheduled task removal");
+                    }
+                }
+                notification => {
+                    handle_notification(&config, notification, &mut offsets).await;
+                    if let Some(acknowledgement) = acknowledgement {
+                        let _ = acknowledgement.send(Ok(()));
+                    }
+                }
+            }
         }
         tracing::debug!("Notification bridge task exiting (sender dropped)");
     });
@@ -144,7 +245,7 @@ async fn emit_current_mode_update(
     );
     stamp_event_id(config, &mut notification.meta);
 
-    let _ = config.persistence_tx.send(PersistenceMsg::Update(
+    let _ = config.persistence.tx.send(PersistenceMsg::Update(
         crate::session::storage::SessionUpdate::Acp(Box::new(notification.clone())),
     ));
 
@@ -212,7 +313,7 @@ async fn handle_notification(
             stamp_event_id(config, &mut notification.meta);
             // Always persist — even when the gateway gate is closed, so bash
             // output survives replay when the client later calls loadSession.
-            let _ = config.persistence_tx.send(PersistenceMsg::Update(
+            let _ = config.persistence.tx.send(PersistenceMsg::Update(
                 crate::session::storage::SessionUpdate::Acp(Box::new(notification.clone())),
             ));
             // Only forward to the client if the gateway gate is open.
@@ -281,7 +382,7 @@ async fn handle_notification(
             }
 
             // Persist so task correlation survives reconnect/replay.
-            let _ = config.persistence_tx.send(PersistenceMsg::Update(
+            let _ = config.persistence.tx.send(PersistenceMsg::Update(
                 crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
             ));
 
@@ -355,21 +456,9 @@ async fn handle_notification(
                     "auto-wake: suppressed completion (goal loop active)"
                 );
             } else if config.auto_wake_enabled {
-                // Mark delivered so `TaskCompletionReminder` suppresses the
-                // duplicate on the next tool call (bash and monitor alike).
-                config.auto_wake_delivered.insert(task_id.clone());
-
-                // Monitor exit: the TaskCompleted Prompt is the sole model-facing
-                // wake. Drop any already-queued pipeline MonitorEvents for this
-                // task (stdout lines + terminal ended) so they do not start a
-                // second NotificationDrain turn after the wake.
-                if is_monitor {
-                    let _ = config
-                        .session_cmd_tx
-                        .send(SessionCommand::DropMonitorNotifications {
-                            task_id: task_id.clone(),
-                        });
-                }
+                // Reserve before enqueue so reminders cannot race the actor's
+                // admission decision and duplicate this completion.
+                config.task_completion_reservations.reserve(task_id.clone());
 
                 let tool_name = resolved_tool_name(&config.task_output_tool_name);
                 let read_name = resolved_tool_name(&config.read_tool_name);
@@ -388,26 +477,20 @@ async fn handle_notification(
                 let message = xai_grok_tools::reminders::wrap_reminder(&body);
                 let prompt_id = format!("task-completed-{task_id}");
                 let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(message))];
-
-                // Capture a pre-prompt session snapshot for the trace upload path.
-                let (before_copy_tx, before_copy_rx) = tokio::sync::oneshot::channel();
-                let _ = config.session_cmd_tx.send(SessionCommand::CopyFile {
-                    respond_to: before_copy_tx,
-                });
-
+                let synthetic_trace_tx = config
+                    .synthetic_trace_tx
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
                 let (respond_to, completion_rx) = tokio::sync::oneshot::channel();
+                let (admission_tx, admission_rx) = tokio::sync::oneshot::channel();
                 tracing::info!(
                     task_id = %task_id,
                     prompt_id = %prompt_id,
                     is_monitor,
-                    "auto-wake: injecting synthetic prompt for completed background task"
+                    "auto-wake: requesting synthetic prompt admission for completed background task"
                 );
-                // Stamp from the actual enqueue: `will_wake` on the completion
-                // notification must never promise a wake this send didn't queue
-                // (mirrors `parent_channel_open` in `should_auto_wake_subagent`).
-                // The channel is unbounded, so this only fails when the session
-                // actor is already gone.
-                will_wake = config
+                let enqueued = config
                     .session_cmd_tx
                     .send(SessionCommand::Prompt {
                         prompt_id: prompt_id.clone(),
@@ -420,32 +503,99 @@ async fn handle_notification(
                         traceparent: xai_file_utils::trace_context::current_traceparent(),
                         json_schema: None,
                         send_now: false,
+                        admission: Some(crate::session::commands::TaskWakeAdmission {
+                            respond_to: admission_tx,
+                            fallback: crate::session::commands::TaskWakeFallback {
+                                prompt_id: if is_monitor {
+                                    format!("monitor-completed-{task_id}")
+                                } else {
+                                    format!("bash-completed-{task_id}")
+                                },
+                                prompt_blocks: vec![acp::ContentBlock::Text(
+                                    acp::TextContent::new(body.clone()),
+                                )],
+                                source: if is_monitor {
+                                    NotificationSource::MonitorCompleted {
+                                        task_id: task_id.clone(),
+                                    }
+                                } else {
+                                    NotificationSource::BashTaskCompleted {
+                                        task_id: task_id.clone(),
+                                    }
+                                },
+                            },
+                        }),
                         respond_to,
                         persist_ack: None,
                         parsed_prompt_tx: None,
                     })
                     .is_ok();
-
-                if let Some(ref trace_tx) = *config
-                    .synthetic_trace_tx
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                {
-                    tracing::info!(
-                        task_id = %task_id,
-                        "auto-wake: sending synthetic turn trace request"
-                    );
-                    let _ = trace_tx.send(crate::upload::turn::SyntheticTurnTraceRequest {
-                        session_id: config.session_id.clone(),
-                        prompt_id,
-                        completion_rx,
-                        before_session_copy_rx: before_copy_rx,
-                    });
+                if !enqueued {
+                    config.task_completion_reservations.release(&task_id);
+                }
+                let admitted = if enqueued {
+                    tokio::time::timeout(TASK_WAKE_ADMISSION_TIMEOUT, admission_rx)
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(false)
                 } else {
-                    tracing::debug!(
-                        task_id = %task_id,
-                        "auto-wake: no synthetic_trace_tx, skipping trace request"
-                    );
+                    false
+                };
+                will_wake = admitted;
+                xai_grok_telemetry::unified_log::info(
+                    "shell.task_wake.bridge_admission",
+                    Some(config.session_id.0.as_ref()),
+                    Some(serde_json::json!({
+                        "task_id": &task_id,
+                        "monitor": is_monitor,
+                        "enqueued": enqueued,
+                        "admitted": admitted,
+                        "gate": config.task_wake_suppressed.get(),
+                    })),
+                );
+                if will_wake {
+                    config.auto_wake_delivered.insert(task_id.clone());
+                    if is_monitor {
+                        let _ =
+                            config
+                                .session_cmd_tx
+                                .send(SessionCommand::DropMonitorNotifications {
+                                    task_id: task_id.clone(),
+                                });
+                    }
+                    if let Some(trace_tx) = synthetic_trace_tx {
+                        let (before_copy_tx, before_session_copy_rx) =
+                            tokio::sync::oneshot::channel();
+                        let copy_requested = config
+                            .session_cmd_tx
+                            .send(SessionCommand::CopyFile {
+                                respond_to: before_copy_tx,
+                            })
+                            .is_ok();
+                        if copy_requested {
+                            tracing::info!(
+                                task_id = %task_id,
+                                "auto-wake: sending synthetic turn trace request"
+                            );
+                            let _ = trace_tx.send(crate::upload::turn::SyntheticTurnTraceRequest {
+                                session_id: config.session_id.clone(),
+                                prompt_id,
+                                completion_rx,
+                                before_session_copy_rx,
+                            });
+                        } else {
+                            tracing::debug!(
+                                task_id = %task_id,
+                                "auto-wake: session snapshot request failed, skipping trace request"
+                            );
+                        }
+                    } else {
+                        tracing::debug!(
+                            task_id = %task_id,
+                            "auto-wake: no synthetic trace consumer, skipping trace request"
+                        );
+                    }
                 }
             } else {
                 // Auto-wake disabled — fall back to idle-gated notification drain.
@@ -463,17 +613,28 @@ async fn handle_notification(
                         read_name,
                     )
                 };
-                let prompt_id = format!("bash-completed-{task_id}");
-                let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(message))];
+                let source = if is_monitor {
+                    NotificationSource::MonitorCompleted {
+                        task_id: task_id.clone(),
+                    }
+                } else {
+                    NotificationSource::BashTaskCompleted {
+                        task_id: task_id.clone(),
+                    }
+                };
                 let _ = config
                     .session_cmd_tx
                     .send(SessionCommand::InjectNotification {
-                        prompt_id,
-                        prompt_blocks,
-                        priority: NotificationPriority::Later,
-                        source: NotificationSource::BashTaskCompleted {
-                            task_id: task_id.clone(),
+                        prompt_id: if is_monitor {
+                            format!("monitor-completed-{task_id}")
+                        } else {
+                            format!("bash-completed-{task_id}")
                         },
+                        prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(
+                            message,
+                        ))],
+                        priority: NotificationPriority::Later,
+                        source,
                     });
             }
 
@@ -493,7 +654,7 @@ async fn handle_notification(
             }
 
             // Persist so task completion history survives reconnect/replay.
-            let _ = config.persistence_tx.send(PersistenceMsg::Update(
+            let _ = config.persistence.tx.send(PersistenceMsg::Update(
                 crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
             ));
 
@@ -524,7 +685,8 @@ async fn handle_notification(
 
                 let snapshot = config.plan_mode.lock().snapshot();
                 let _ = config
-                    .persistence_tx
+                    .persistence
+                    .tx
                     .send(PersistenceMsg::PlanModeState(snapshot));
 
                 // Notify the frontend immediately so the plan-mode chip appears in the UI
@@ -560,7 +722,8 @@ async fn handle_notification(
 
                 let snapshot = config.plan_mode.lock().snapshot();
                 let _ = config
-                    .persistence_tx
+                    .persistence
+                    .tx
                     .send(PersistenceMsg::PlanModeState(snapshot));
 
                 // Mirror the entry path: emit a `CurrentModeUpdate("default")`
@@ -635,6 +798,8 @@ async fn handle_notification(
                 }
             }
 
+            let mut meta = None;
+            stamp_scheduler_meta(config, &mut meta, &fired.generation, fired.revision);
             let fired_notif = crate::extensions::notification::SessionNotification {
                 session_id: config.session_id.clone(),
                 update: crate::extensions::notification::SessionUpdate::ScheduledTaskFired {
@@ -644,7 +809,7 @@ async fn handle_notification(
                     next_fire_at: fired.next_fire_at,
                     subagent_id: fired.subagent_id,
                 },
-                meta: None,
+                meta: meta.map(serde_json::Value::Object),
             };
             if let Ok(params) =
                 serde_json::to_value(&fired_notif).and_then(|v| serde_json::value::to_raw_value(&v))
@@ -709,7 +874,9 @@ async fn handle_notification(
             // If this monitor already auto-woke via TaskCompleted, do not inject
             // model-facing notifications (avoids a second NotificationDrain turn
             // with the same ended signal). Pager UI still got the event above.
-            if config.auto_wake_delivered.contains(&event.task_id) {
+            if config.task_completion_reservations.contains(&event.task_id)
+                || config.auto_wake_delivered.contains(&event.task_id)
+            {
                 tracing::debug!(
                     task_id = %event.task_id,
                     "skipping model inject for monitor event: task already auto-woke via TaskCompleted"
@@ -735,41 +902,17 @@ async fn handle_notification(
         }
 
         ToolNotification::ScheduledTaskRemoved(removed) => {
-            tracing::info!(task_id = %removed.task_id, "Scheduled task removed");
-
-            let mut notification = crate::extensions::notification::SessionNotification {
-                session_id: config.session_id.clone(),
-                update: crate::extensions::notification::SessionUpdate::ScheduledTaskDeleted {
-                    task_id: removed.task_id,
-                },
-                meta: None,
-            };
-            {
-                let mut meta_map = None;
-                stamp_event_id(config, &mut meta_map);
-                notification.meta = meta_map.map(serde_json::Value::Object);
-            }
-            // Persist the deletion too, so replay on resume nets out a removed
-            // loop instead of resurrecting it from a persisted `created` line.
-            let _ = config.persistence_tx.send(PersistenceMsg::Update(
-                crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
-            ));
-            if let Ok(params) = serde_json::to_value(&notification)
-                .and_then(|v| serde_json::value::to_raw_value(&v))
-            {
-                config
-                    .gateway
-                    .forward_fire_and_forget(acp::ExtNotification::new(
-                        "x.ai/scheduled_task_deleted",
-                        params.into(),
-                    ));
+            if let Err(error) = handle_scheduled_task_removed(config, removed, None).await {
+                tracing::warn!(%error, "Failed to handle scheduled task removal");
             }
         }
 
         ToolNotification::ScheduledTaskCreated(created) => {
             tracing::info!(task_id = %created.task_id, "Scheduled task created");
+            let mut meta = None;
+            stamp_scheduler_meta(config, &mut meta, &created.generation, created.revision);
 
-            let mut notification = crate::extensions::notification::SessionNotification {
+            let notification = crate::extensions::notification::SessionNotification {
                 session_id: config.session_id.clone(),
                 update: crate::extensions::notification::SessionUpdate::ScheduledTaskCreated {
                     task_id: created.task_id,
@@ -777,13 +920,8 @@ async fn handle_notification(
                     human_schedule: created.human_schedule,
                     next_fire_at: created.next_fire_at,
                 },
-                meta: None,
+                meta: meta.map(serde_json::Value::Object),
             };
-            {
-                let mut meta_map = None;
-                stamp_event_id(config, &mut meta_map);
-                notification.meta = meta_map.map(serde_json::Value::Object);
-            }
             // Persist so the loop survives reconnect/replay, mirroring
             // TaskBackgrounded/TaskCompleted. Without this, a second terminal
             // that resumes the session restores monitors and subagents (whose
@@ -792,7 +930,7 @@ async fn handle_notification(
             // are infrequent (bounded by the number of live loops); the
             // recurring `_fired` notification is deliberately NOT persisted to
             // avoid unbounded log growth.
-            let _ = config.persistence_tx.send(PersistenceMsg::Update(
+            let _ = config.persistence.tx.send(PersistenceMsg::Update(
                 crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
             ));
             if let Ok(params) = serde_json::to_value(&notification)
@@ -814,6 +952,37 @@ mod tests {
     use super::*;
     use xai_grok_tools::computer::types::TaskKind;
     use xai_grok_tools::types::TaskSnapshot;
+
+    /// Drive the admission handshake inline so receiver assertions observe the
+    /// bridge's command order without racing a detached proxy task.
+    async fn handle_notification_with_admission(
+        config: &NotificationBridgeConfig,
+        notification: ToolNotification,
+        offsets: &mut HashMap<String, usize>,
+        cmd_rx: &mut mpsc::UnboundedReceiver<SessionCommand>,
+        accepted: bool,
+    ) {
+        let notification = handle_notification(config, notification, offsets);
+        tokio::pin!(notification);
+        let mut command = tokio::select! {
+            _ = &mut notification => panic!("notification completed before requesting admission"),
+            command = cmd_rx.recv() => command.expect("expected task-wake prompt"),
+        };
+        let SessionCommand::Prompt { admission, .. } = &mut command else {
+            panic!("expected task-wake prompt");
+        };
+        admission
+            .take()
+            .expect("expected task-wake admission request")
+            .respond_to
+            .send(accepted)
+            .expect("notification must still be awaiting admission");
+        config
+            .session_cmd_tx
+            .send(command)
+            .expect("test command receiver must remain open");
+        notification.await;
+    }
 
     fn make_test_config() -> (
         NotificationBridgeConfig,
@@ -845,7 +1014,7 @@ mod tests {
             prompt_index: Arc::new(TokioMutex::new(0)),
             cwd: PathBuf::from("/tmp"),
             gateway_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            persistence_tx,
+            persistence: PersistenceHandle::from_sender_for_test(persistence_tx),
             incremental_bash_output: false,
             plan_mode: Arc::new(parking_lot::Mutex::new(
                 crate::session::plan_mode::PlanModeTracker::new(PathBuf::from("/tmp/test-session")),
@@ -857,6 +1026,10 @@ mod tests {
                 crate::session::plan_mode::PromptMode::Agent,
             )),
             session_cmd_tx,
+            task_completion_reservations:
+                xai_grok_tools::reminders::task_completion::TaskCompletionReservations::default(),
+            task_wake_suppressed:
+                xai_grok_tools::reminders::task_completion::TaskWakeSuppressed::default(),
             auto_wake_delivered:
                 xai_grok_tools::reminders::task_completion::AutoWakeDeliveredIds::default(),
             synthetic_trace_tx: Arc::new(std::sync::Mutex::new(None)),
@@ -903,14 +1076,11 @@ mod tests {
         let notification = ToolNotification::TaskCompleted(snapshot);
         let mut offsets = HashMap::new();
 
-        handle_notification(&config, notification, &mut offsets).await;
+        handle_notification_with_admission(&config, notification, &mut offsets, &mut cmd_rx, true)
+            .await;
 
-        // Auto-wake sends CopyFile first, then Prompt (not InjectNotification).
-        let cmd1 = cmd_rx.try_recv().expect("expected CopyFile");
-        assert!(matches!(cmd1, SessionCommand::CopyFile { .. }));
-
-        let cmd2 = cmd_rx.try_recv().expect("expected Prompt");
-        match cmd2 {
+        let command = cmd_rx.try_recv().expect("expected Prompt");
+        match command {
             SessionCommand::Prompt {
                 prompt_id,
                 prompt_blocks,
@@ -1025,18 +1195,15 @@ mod tests {
         let snapshot = make_task_snapshot("bg-normal", TaskKind::Bash);
         let mut offsets = HashMap::new();
 
-        handle_notification(
+        handle_notification_with_admission(
             &config,
             ToolNotification::TaskCompleted(snapshot),
             &mut offsets,
+            &mut cmd_rx,
+            true,
         )
         .await;
 
-        // Auto-wake sends CopyFile, then the synthetic Prompt.
-        assert!(matches!(
-            cmd_rx.try_recv(),
-            Ok(SessionCommand::CopyFile { .. })
-        ));
         assert!(matches!(
             cmd_rx.try_recv(),
             Ok(SessionCommand::Prompt { .. })
@@ -1073,16 +1240,18 @@ mod tests {
     #[tokio::test]
     async fn task_completed_notification_stamps_will_wake() {
         // Wake leg: auto-wake enabled, no suppression.
-        let (config, mut gateway_rx, _persistence_rx, _cmd_rx) = make_test_config_full();
+        let (config, mut gateway_rx, _persistence_rx, mut cmd_rx) = make_test_config_full();
         config
             .task_output_tool_name
             .set(Some("get_command_or_subagent_output".to_string()))
             .expect("slot is fresh in this test fixture");
         let mut offsets = HashMap::new();
-        handle_notification(
+        handle_notification_with_admission(
             &config,
             ToolNotification::TaskCompleted(make_task_snapshot("bg-wake", TaskKind::Bash)),
             &mut offsets,
+            &mut cmd_rx,
+            true,
         )
         .await;
         assert_eq!(
@@ -1193,27 +1362,15 @@ mod tests {
         snapshot.exit_code = Some(0);
         let mut offsets = HashMap::new();
 
-        handle_notification(
+        handle_notification_with_admission(
             &config,
             ToolNotification::TaskCompleted(snapshot),
             &mut offsets,
+            &mut cmd_rx,
+            true,
         )
         .await;
 
-        // Drop queued pipeline events first (sole-wake guarantee).
-        match cmd_rx
-            .try_recv()
-            .expect("expected DropMonitorNotifications")
-        {
-            SessionCommand::DropMonitorNotifications { task_id } => {
-                assert_eq!(task_id, "mon-456");
-            }
-            _ => panic!("expected DropMonitorNotifications before auto-wake Prompt"),
-        }
-        assert!(matches!(
-            cmd_rx.try_recv(),
-            Ok(SessionCommand::CopyFile { .. })
-        ));
         let cmd = cmd_rx.try_recv().expect("expected Prompt auto-wake");
         match cmd {
             SessionCommand::Prompt {
@@ -1242,6 +1399,15 @@ mod tests {
                 );
             }
             _ => panic!("expected Prompt auto-wake for natural monitor exit"),
+        }
+        match cmd_rx
+            .try_recv()
+            .expect("accepted monitor wake must drop pipeline notifications")
+        {
+            SessionCommand::DropMonitorNotifications { task_id } => {
+                assert_eq!(task_id, "mon-456");
+            }
+            _ => panic!("expected DropMonitorNotifications after accepted Prompt"),
         }
         assert!(matches!(
             cmd_rx.try_recv(),
@@ -1358,6 +1524,8 @@ mod tests {
                 prompt: "check deploy".into(),
                 human_schedule: "every 5 minutes".into(),
                 next_fire_at: Some("2026-01-01T00:00:00Z".into()),
+                generation: "generation-a".into(),
+                revision: 1,
             },
         );
         let mut offsets = HashMap::new();
@@ -1373,6 +1541,9 @@ mod tests {
                     &notif.update,
                     crate::extensions::notification::SessionUpdate::ScheduledTaskCreated { .. }
                 ));
+                let meta = notif.meta.as_ref().expect("scheduler metadata");
+                assert_eq!(meta["x.ai/schedulerGeneration"], "generation-a");
+                assert_eq!(meta["x.ai/schedulerRevision"], 1);
                 assert!(
                     notif
                         .meta
@@ -1444,6 +1615,8 @@ mod tests {
         let notification = ToolNotification::ScheduledTaskRemoved(
             xai_grok_tools::notification::types::ScheduledTaskRemoved {
                 task_id: "loop-1".into(),
+                generation: "generation-a".into(),
+                revision: 2,
             },
         );
         let mut offsets = HashMap::new();
@@ -1463,9 +1636,49 @@ mod tests {
                     xai_persisted_event_id(&notif).is_some(),
                     "the persisted deletion line must be stamped"
                 );
+                let meta = notif.meta.as_ref().expect("scheduler metadata");
+                assert_eq!(meta["x.ai/schedulerGeneration"], "generation-a");
+                assert_eq!(meta["x.ai/schedulerRevision"], 2);
             }
             _ => panic!("expected PersistenceMsg::Update(Xai(ScheduledTaskDeleted))"),
         }
+    }
+
+    #[tokio::test]
+    async fn acknowledged_scheduler_removal_appends_before_ack_and_broadcast() {
+        let (config, mut gateway_rx, mut persistence_rx, _cmd_rx) = make_test_config_full();
+        let removed = xai_grok_tools::notification::ScheduledTaskRemoved {
+            task_id: "loop-ack".into(),
+            generation: "generation-a".into(),
+            revision: 17,
+        };
+        let (acknowledgement, mut receipt) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let persistence = async {
+            let PersistenceMsg::AppendUpdateDurablyAndAck {
+                update: crate::session::storage::SessionUpdate::Xai(notification),
+                respond_to,
+            } = persistence_rx.recv().await.expect("durable append")
+            else {
+                panic!("expected durable scheduler tombstone");
+            };
+            assert_eq!(notification.meta.unwrap()["x.ai/schedulerRevision"], 17);
+            assert!(gateway_rx.try_recv().is_err());
+            assert!(matches!(
+                receipt.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            respond_to.send(Ok(())).unwrap();
+            receipt.await.unwrap().unwrap();
+        };
+        let (result, ()) = tokio::join!(
+            handle_scheduled_task_removed(&config, removed, Some(acknowledgement)),
+            persistence,
+        );
+        result.unwrap();
+        assert!(matches!(
+            gateway_rx.try_recv(),
+            Ok(xai_acp_lib::AcpClientMessage::ExtNotification(_))
+        ));
     }
 
     fn xai_persisted_event_id(
@@ -1562,20 +1775,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn durable_append_mapping_respects_commit_disposition() {
+        assert!(
+            durable_append_landed(Err(DurableAppendError::Committed(std::io::Error::other(
+                "summary failed"
+            ),)))
+            .is_ok()
+        );
+        for failure in [
+            DurableAppendError::NotCommitted(std::io::Error::other("append failed")),
+            DurableAppendError::AcknowledgementLost(std::io::Error::other("lost")),
+        ] {
+            assert!(durable_append_landed(Err(failure)).is_err());
+        }
+    }
+
     #[tokio::test]
     async fn scheduled_task_fired_is_not_persisted() {
         // `_fired` recurs on every interval; persisting it would grow the
         // updates log without bound. Loops are restored from create/delete, so
         // the fire stays gateway-only (the pager self-heals the entry on a live
         // fire if needed).
-        let (config, _gateway_rx, mut persistence_rx, _cmd_rx) = make_test_config_full();
+        let (config, mut gateway_rx, mut persistence_rx, _cmd_rx) = make_test_config_full();
         let notification = ToolNotification::ScheduledTaskFired(
             xai_grok_tools::notification::types::ScheduledTaskFired {
                 task_id: "loop-1".into(),
                 prompt: "check deploy".into(),
                 human_schedule: "every 5 minutes".into(),
                 next_fire_at: Some("2026-01-01T00:00:00Z".into()),
-                subagent_id: None,
+                subagent_id: Some("subagent-1".into()),
+                generation: "generation-a".into(),
+                revision: 3,
             },
         );
         let mut offsets = HashMap::new();
@@ -1586,6 +1817,15 @@ mod tests {
             persistence_rx.try_recv().is_err(),
             "scheduled_task_fired must NOT be persisted (recurring \u{2192} unbounded log growth)"
         );
+        let fired = gateway_rx
+            .try_recv()
+            .expect("scheduled fire must be broadcast");
+        let xai_acp_lib::AcpClientMessage::ExtNotification(fired) = fired else {
+            panic!("expected scheduler fire notification");
+        };
+        let value: serde_json::Value = serde_json::from_str(fired.request.params.get()).unwrap();
+        assert_eq!(value["_meta"]["x.ai/schedulerGeneration"], "generation-a");
+        assert_eq!(value["_meta"]["x.ai/schedulerRevision"], 3);
     }
 
     #[tokio::test]
@@ -1598,6 +1838,8 @@ mod tests {
                 human_schedule: "every 5 minutes".into(),
                 next_fire_at: Some("2026-01-01T00:00:00Z".into()),
                 subagent_id: Some("child-1".into()),
+                generation: "generation-a".into(),
+                revision: 1,
             },
         );
         let mut offsets = HashMap::new();
@@ -1857,10 +2099,9 @@ mod tests {
         let notification = ToolNotification::TaskCompleted(snapshot);
         let mut offsets = HashMap::new();
 
-        handle_notification(&config, notification, &mut offsets).await;
+        handle_notification_with_admission(&config, notification, &mut offsets, &mut cmd_rx, true)
+            .await;
 
-        // Skip CopyFile
-        let _ = cmd_rx.try_recv().unwrap();
         let cmd = cmd_rx.try_recv().unwrap();
         if let SessionCommand::Prompt { prompt_id, .. } = cmd {
             assert_eq!(prompt_id, "task-completed-unique-id-789");
@@ -2087,7 +2328,6 @@ mod tests {
 
     /// Extract the auto-wake prompt text emitted on the session command channel.
     fn auto_wake_prompt_text(cmd_rx: &mut mpsc::UnboundedReceiver<SessionCommand>) -> String {
-        let _ = cmd_rx.try_recv().expect("expected CopyFile");
         let cmd = cmd_rx.try_recv().expect("expected Prompt");
         match cmd {
             SessionCommand::Prompt { prompt_blocks, .. } => match &prompt_blocks[0] {
@@ -2130,10 +2370,12 @@ mod tests {
             .expect("fresh slot");
         let snapshot = make_large_bash_snapshot("bg-disk-1", output_file.clone());
         let mut offsets = HashMap::new();
-        handle_notification(
+        handle_notification_with_admission(
             &config_auto,
             ToolNotification::TaskCompleted(snapshot),
             &mut offsets,
+            &mut cmd_rx_auto,
+            true,
         )
         .await;
         let prompt = auto_wake_prompt_text(&mut cmd_rx_auto);

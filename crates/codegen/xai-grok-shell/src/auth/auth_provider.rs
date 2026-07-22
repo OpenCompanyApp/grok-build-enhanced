@@ -69,17 +69,23 @@ pub struct AuthProviderRef {
     /// `false` and never mints or reads until [`AuthProviderRef::attach_trusted_config`]
     /// joins the shared slot for its name.
     resolved: bool,
+    fail_closed: bool,
 }
 
-/// Serialized form: the name only, so persisted bytes never carry a command.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AuthProviderRefData {
     name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    fail_closed: bool,
 }
 
 impl From<AuthProviderRefData> for AuthProviderRef {
     fn from(data: AuthProviderRefData) -> Self {
-        AuthProviderRef::unresolved(data.name)
+        if data.fail_closed {
+            AuthProviderRef::fail_closed(data.name)
+        } else {
+            AuthProviderRef::unresolved(data.name)
+        }
     }
 }
 
@@ -87,6 +93,7 @@ impl From<AuthProviderRef> for AuthProviderRefData {
     fn from(provider: AuthProviderRef) -> Self {
         Self {
             name: provider.name,
+            fail_closed: provider.fail_closed,
         }
     }
 }
@@ -114,6 +121,7 @@ impl AuthProviderRef {
             slot,
             route_base_url: Some(route_base_url.to_owned()),
             resolved: true,
+            fail_closed: false,
         }
     }
 
@@ -126,6 +134,18 @@ impl AuthProviderRef {
             slot: ProviderSlot::default(),
             route_base_url: None,
             resolved: false,
+            fail_closed: false,
+        }
+    }
+
+    pub(crate) fn fail_closed(name: String) -> Self {
+        Self {
+            name,
+            config: AuthProviderConfig::default(),
+            slot: ProviderSlot::default(),
+            route_base_url: None,
+            resolved: true,
+            fail_closed: true,
         }
     }
 
@@ -137,6 +157,13 @@ impl AuthProviderRef {
         config: Option<&AuthProviderConfig>,
         route_base_url: Option<&str>,
     ) {
+        if self.fail_closed {
+            self.config = AuthProviderConfig::default();
+            self.route_base_url = None;
+            self.slot = ProviderSlot::default();
+            self.resolved = true;
+            return;
+        }
         self.config = config.cloned().unwrap_or_default();
         self.route_base_url = route_base_url.map(str::to_owned);
         self.slot = match (config, route_base_url) {
@@ -513,7 +540,9 @@ impl AuthProviderRef {
                     "auth provider removed from config: dropping its cached token"
                 );
             }
-            warn_empty_command(&self.name);
+            if !self.fail_closed {
+                warn_empty_command(&self.name);
+            }
             return None;
         }
         Some(slot)
@@ -527,7 +556,9 @@ impl AuthProviderRef {
             return None;
         }
         if !self.config.is_usable() {
-            warn_empty_command(&self.name);
+            if !self.fail_closed {
+                warn_empty_command(&self.name);
+            }
             return None;
         }
         // A mint in progress holds the lock; treat it as a miss rather than

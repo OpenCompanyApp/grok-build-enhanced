@@ -86,14 +86,44 @@ pub fn is_cli_chat_proxy_url(url: &str) -> bool {
 /// non-production first-party hosts when that feature is enabled).
 /// `disable_api_key_auth` refuses keys only for these; other hosts are BYOK and
 /// exempt. Safe against invalid URLs and suffix attacks (`evil-x.ai.example`).
-pub fn is_first_party_xai_url(url: &str) -> bool {
+///
+/// Scheme-agnostic so credential *refusal* fails closed. To decide where to
+/// *attach* a session bearer, use [`is_xai_api_bearer_url`].
+pub fn is_xai_api_url(url: &str) -> bool {
     if is_cli_chat_proxy_url(url) {
         return true;
     }
     reqwest::Url::parse(url)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_owned()))
+        .and_then(|u| u.host_str().map(str::to_owned))
         .is_some_and(|host| host == "x.ai" || host.ends_with(".x.ai"))
+}
+
+/// Backward-compatible name retained for downstream credential-seam callers.
+pub fn is_first_party_xai_url(url: &str) -> bool {
+    is_xai_api_url(url)
+}
+
+/// True only when a session bearer may be attached to an xAI API URL.
+/// HTTPS is mandatory and all loopback spellings are rejected, including
+/// local HTTPS, so a co-located process cannot receive the session token.
+pub fn is_xai_api_bearer_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" || is_loopback_host(&parsed) {
+        return false;
+    }
+    is_xai_api_url(url)
+}
+
+fn is_loopback_host(parsed: &reqwest::Url) -> bool {
+    match parsed.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
 }
 /// Truncate a string to at most `max_chars` characters.
 /// Slices at char boundaries so multi-byte UTF-8 never panics.

@@ -1394,11 +1394,11 @@ async fn lock_contention_does_not_fall_through_to_team() {
     assert_eq!(*count.lock().unwrap(), 1);
 }
 
-/// `grok setup` with config served but the lock held by another writer reports
-/// Installed (the holder is persisting it), not NothingConfigured.
+/// `grok setup` with config served but the apply lock held by another writer reports
+/// Skipped, not Installed or NothingConfigured, so the user gets accurate retry guidance.
 #[tokio::test]
 #[serial]
-async fn setup_lock_skip_is_not_reported_as_no_config() {
+async fn setup_lock_contention_reports_skipped() {
     let home = test_home().clone();
     reset(&home);
 
@@ -1421,9 +1421,9 @@ async fn setup_lock_skip_is_not_reported_as_no_config() {
     assert!(
         matches!(
             outcome,
-            xai_grok_shell::managed_config::SetupOutcome::Installed
+            xai_grok_shell::managed_config::SetupOutcome::Skipped
         ),
-        "served config with the lock held must not report NothingConfigured"
+        "served config with a contended apply lock must report Skipped"
     );
 }
 

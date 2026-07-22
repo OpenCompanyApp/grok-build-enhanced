@@ -32,6 +32,7 @@ pub mod update_goal;
 pub mod video_gen;
 pub mod web_fetch;
 pub mod web_search;
+pub mod workflow;
 pub mod zai_vision;
 pub mod zai_zread;
 pub use ask_user_question::AskUserQuestionTool;
@@ -67,6 +68,7 @@ pub use video_gen::{
 };
 pub use web_fetch::{WebFetchClient, WebFetchConfig, WebFetchParams, WebFetchTool};
 pub use web_search::{CodexWebSearchTool, WebSearchTool};
+pub use workflow::{WORKFLOW_TOOL_NAME, WorkflowTool};
 pub use zai_vision::{
     ZAI_VISION_ANALYZE_DATA_TOOL_NAME, ZAI_VISION_ANALYZE_IMAGE_TOOL_NAME,
     ZAI_VISION_ANALYZE_VIDEO_TOOL_NAME, ZAI_VISION_DIAGNOSE_ERROR_TOOL_NAME,

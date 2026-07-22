@@ -69,7 +69,7 @@ async fn run_rewind_scenario() {
     let session_dir = crate::session::persistence::session_dir(&actor.session_info);
     std::fs::create_dir_all(session_dir.join("compaction_checkpoints")).unwrap();
 
-    let ckpt_id = "ckpt5";
+    let ckpt_id = "00000000-0000-4000-8000-000000000005";
     let ckpt_file = CompactionCheckpointFile {
         checkpoint_id: ckpt_id.to_string(),
         prompt_index_at_compaction: 5,
@@ -289,7 +289,7 @@ async fn run_clears_marker_scenario() {
     let session_dir = crate::session::persistence::session_dir(&actor.session_info);
     std::fs::create_dir_all(session_dir.join("compaction_checkpoints")).unwrap();
 
-    let ckpt_id = "ckptm";
+    let ckpt_id = "00000000-0000-4000-8000-000000000006";
     let ckpt_file = CompactionCheckpointFile {
         checkpoint_id: ckpt_id.to_string(),
         prompt_index_at_compaction: 5,
@@ -365,6 +365,15 @@ async fn run_clears_marker_scenario() {
 
     // End-to-end: advertise support so the gate runs, then read the header
     // off the reconstructed config — it must report a fresh "1", not stale "0".
+    // The helper uses a local custom origin by default; this wire contract is
+    // xAI-specific, so bind this assertion to the trusted xAI proxy route.
+    let mut sampling = actor
+        .chat_state_handle
+        .get_sampling_config()
+        .await
+        .expect("sampling config");
+    sampling.base_url = crate::env::PROD_CLI_CHAT_PROXY_BASE_URL.to_owned();
+    actor.chat_state_handle.update_sampling_config(sampling);
     actor
         .compactions_remaining
         .set(Some(CompactionsRemaining::Dynamic(true)));

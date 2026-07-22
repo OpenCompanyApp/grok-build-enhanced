@@ -1611,6 +1611,38 @@ fn build_minimal_agent_for_tests() -> MvpAgent {
     let cfg = AgentConfig::default();
     MvpAgent::new(gateway, &cfg, auth_manager, None).expect("valid test config")
 }
+fn session_usage_request(session_id: &str) -> acp::ExtRequest {
+    acp::ExtRequest::new(
+        "x.ai/session/usage",
+        serde_json::value::to_raw_value(&serde_json::json!({ "sessionId" : session_id }))
+            .unwrap()
+            .into(),
+    )
+}
+#[tokio::test(flavor = "current_thread")]
+async fn session_usage_unknown_session_is_resource_not_found() {
+    let agent = build_minimal_agent_for_tests();
+    let err = crate::extensions::usage::handle(&agent, &session_usage_request("no-such-session"))
+        .await
+        .expect_err("unknown session");
+    assert_eq!(
+        err.code,
+        acp::Error::resource_not_found(None::<String>).code
+    );
+}
+#[tokio::test(flavor = "current_thread")]
+async fn session_usage_dead_chat_state_actor_fails_closed() {
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("usage-dead-actor-sess");
+    let mut handle = make_test_handle("test-model", false, None);
+    handle.info.id = sid.clone();
+    agent.sessions.borrow_mut().insert(sid, handle);
+    let err =
+        crate::extensions::usage::handle(&agent, &session_usage_request("usage-dead-actor-sess"))
+            .await
+            .expect_err("dead chat-state actor");
+    assert_eq!(err.code, acp::Error::internal_error().code);
+}
 /// Build a minimal MvpAgent with pre-loaded auth for gate tests.
 fn build_agent_with_auth(auth: crate::auth::GrokAuth) -> MvpAgent {
     use crate::agent::config::Config as AgentConfig;
@@ -3112,7 +3144,9 @@ fn cancel_does_not_forward_to_bridge_in_local_mode() {
 fn cancel_then_close_drains_registries_and_preserves_cancelled_subagent_lookup() {
     use acp::Agent as _;
     use crate::agent::subagent::{PendingSubagent, SnapshotLookup};
-    use xai_grok_tools::implementations::grok_build::task::types::SubagentSnapshotStatus;
+    use xai_grok_tools::implementations::grok_build::task::types::{
+        SubagentOwner, SubagentSnapshotStatus,
+    };
 
     run_local_for_bridge_test(|| async {
         let agent = build_minimal_agent_for_tests();
@@ -3143,6 +3177,7 @@ fn cancel_then_close_drains_registries_and_preserves_cancelled_subagent_lookup()
                 persona: None,
                 parent_prompt_id: Some("parent-prompt".into()),
                 parent_session_id: sid.0.to_string(),
+                owner: SubagentOwner::Task,
                 started_at: std::time::Instant::now(),
                 run_in_background: true,
                 surface_completion: true,

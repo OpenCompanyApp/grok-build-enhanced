@@ -785,7 +785,7 @@ fn file_registry_with_stop_spec(
     registry.append_specs(vec![xai_grok_hooks::config::HookSpec {
         name: "test/stop-hook".into(),
         event,
-        handler_type: "command".into(),
+        handler_type: xai_grok_hooks::config::HandlerType::Command,
         configured_matcher: None,
         matcher: None,
         enabled: true,

@@ -26,6 +26,75 @@ pub const RATE_LIMITED_USER_MESSAGE_OAUTH: &str =
 /// See https://docs.x.ai/developers/rate-limits#rate-limit-tiers
 pub const RATE_LIMITED_USER_MESSAGE_API_KEY: &str = "You\u{2019}ve hit your team\u{2019}s API rate limit. Ask a team admin to purchase more credits for higher limits, or try again later. See https://docs.x.ai/developers/rate-limits#rate-limit-tiers";
 
+/// Well-known free-usage exhaustion code returned on HTTP 429.
+pub const FREE_USAGE_EXHAUSTED_ERROR_CODE: &str = "subscription:free-usage-exhausted";
+
+/// User-facing free-usage exhaustion copy. It deliberately promises no reset
+/// duration because the quota window is backend-configured.
+pub const FREE_USAGE_USER_MESSAGE: &str = "You\u{2019}ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, or try again later: https://grok.com/supergrok?referrer=grok-build";
+
+/// Whether flattened server detail is free-usage exhaustion rather than
+/// transient throttling.
+pub fn is_free_usage_exhausted_error(detail: &str) -> bool {
+    detail.contains(FREE_USAGE_EXHAUSTED_ERROR_CODE)
+}
+
+/// Format an ACP rate-limit detail for the active auth method.
+///
+/// Free-usage exhaustion wins first. Otherwise this preserves a non-empty
+/// provider detail after removing the sampling Display prefix, except that an
+/// API-key route must not receive a personal SuperGrok upsell.
+pub fn format_rate_limited_user_message(
+    server_detail: Option<&str>,
+    is_api_key_auth: bool,
+) -> String {
+    if server_detail.is_some_and(is_free_usage_exhausted_error) {
+        return FREE_USAGE_USER_MESSAGE.to_string();
+    }
+    if let Some(detail) = server_detail.map(str::trim).filter(|s| !s.is_empty()) {
+        let detail = strip_sampling_api_error_prefix(detail);
+        if is_generic_rate_limit_detail(detail) {
+            return rate_limited_user_message(is_api_key_auth).to_string();
+        }
+        if is_api_key_auth && pushes_consumer_subscription_upsell(detail) {
+            return RATE_LIMITED_USER_MESSAGE_API_KEY.to_string();
+        }
+        return detail.to_string();
+    }
+    rate_limited_user_message(is_api_key_auth).to_string()
+}
+
+fn is_generic_rate_limit_detail(detail: &str) -> bool {
+    let normalized = detail
+        .trim()
+        .trim_matches(|ch: char| !ch.is_alphanumeric())
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "rate limit"
+            | "rate limited"
+            | "rate limit exceeded"
+            | "too many requests"
+            | "429 too many requests"
+    )
+}
+
+fn strip_sampling_api_error_prefix(detail: &str) -> &str {
+    const PREFIX: &str = "API error (status ";
+    const SEP: &str = "): ";
+    if let Some(rest) = detail.strip_prefix(PREFIX)
+        && let Some(idx) = rest.find(SEP)
+    {
+        return rest[idx + SEP.len()..].trim();
+    }
+    detail.trim()
+}
+
+fn pushes_consumer_subscription_upsell(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("grok.com/supergrok") || detail.contains("upgrade to a grok subscription")
+}
+
 /// Pick rate-limit copy from the *active* auth method.
 ///
 /// Pass the real `is_api_key_auth` flag (pager `AppView`, `AuthMethodKind::is_api_key`
@@ -342,6 +411,29 @@ mod tests {
         assert_eq!(
             error_detail_from_data(&data).as_deref(),
             Some("upstream unavailable")
+        );
+    }
+
+    #[test]
+    fn generic_rate_limit_detail_uses_auth_aware_fallback() {
+        assert_eq!(
+            format_rate_limited_user_message(Some("rate limited"), false),
+            RATE_LIMITED_USER_MESSAGE_OAUTH
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some("rate limited"), true),
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+        );
+    }
+
+    #[test]
+    fn actionable_rate_limit_detail_is_preserved() {
+        assert_eq!(
+            format_rate_limited_user_message(
+                Some("Requests are limited to 20 per minute; retry in 12 seconds."),
+                false,
+            ),
+            "Requests are limited to 20 per minute; retry in 12 seconds."
         );
     }
 

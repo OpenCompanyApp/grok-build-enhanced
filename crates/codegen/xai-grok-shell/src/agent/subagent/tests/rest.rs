@@ -327,6 +327,7 @@ fn resumable_source_returns_info_for_completed_subagent() {
                 subagent_id: "sub-resume".into(),
                 parent_session_id: "parent-1".into(),
                 parent_prompt_id: Some("prompt-1".into()),
+                owner: SubagentOwner::Task,
                 child_session_id: "child-resume".into(),
                 description: "resumable task".into(),
                 subagent_type: "general-purpose".into(),
@@ -708,6 +709,34 @@ fn coordinator_with_completed(id: &str) -> SubagentCoordinator {
             },
         );
     coordinator
+}
+#[tokio::test]
+async fn loop_unit_active_tracks_and_prunes_owned_subagents() {
+    let mut coordinator = SubagentCoordinator::new();
+    coordinator
+        .insert(
+            dummy_tracker("iter-1", "root-sess", "general-purpose", "loop: watch ci"),
+        );
+    coordinator.record_loop_owner("iter-1", "task-42");
+    assert!(coordinator.loop_unit_active("task-42"));
+    assert!(! coordinator.loop_unit_active("other-task"));
+    assert_eq!(
+        coordinator.loop_task_id_of_child_session("iter-1"), Some("task-42".to_string())
+    );
+    assert_eq!(coordinator.loop_task_id_of_child_session("unknown"), None);
+    coordinator
+        .move_to_completed(
+            "iter-1",
+            "loop: watch ci".into(),
+            "general-purpose".into(),
+            SubagentResult {
+                success: true,
+                subagent_id: "iter-1".into(),
+                child_session_id: "iter-1".into(),
+                ..Default::default()
+            },
+        );
+    assert!(! coordinator.loop_unit_active("task-42"));
 }
 /// End-to-end glue: gate ON + a worktree present runs the completion
 /// sequence (snapshot → persist ref to meta.json AND in-memory → remove)
@@ -1336,6 +1365,7 @@ fn resumable_source_rejects_cross_session_lookup() {
                 subagent_id: "sub-other".into(),
                 parent_session_id: "session-A".into(),
                 parent_prompt_id: None,
+                owner: SubagentOwner::Task,
                 child_session_id: "child-other".into(),
                 description: "other task".into(),
                 subagent_type: "explore".into(),
@@ -1632,6 +1662,7 @@ fn reconcile_orphan_skips_pending_ids_in_live_registry() {
             persona: None,
             parent_prompt_id: None,
             parent_session_id: "parent-x".to_string(),
+            owner: SubagentOwner::Task,
             started_at: std::time::Instant::now(),
             run_in_background: false,
             surface_completion: true,
@@ -2164,6 +2195,7 @@ fn notification_subagent_spawned_includes_resumed_from() {
         role: None,
         model: None,
         resumed_from: Some("prev-agent-id".into()),
+        workflow_run_id: None,
     };
     let json = serde_json::to_value(&notification).unwrap();
     assert_eq!(json["resumed_from"], "prev-agent-id");
@@ -2184,6 +2216,7 @@ fn notification_subagent_spawned_includes_resumed_from() {
         role: None,
         model: None,
         resumed_from: None,
+        workflow_run_id: None,
     };
     let json = serde_json::to_value(&fresh).unwrap();
     assert!(json.get("resumed_from").is_none());
@@ -2228,6 +2261,7 @@ fn completed_subagent_propagates_resumed_from() {
                 subagent_id: "sub-prov".into(),
                 parent_session_id: "parent".into(),
                 parent_prompt_id: Some("prompt-1".into()),
+                owner: SubagentOwner::Task,
                 child_session_id: "child-prov".into(),
                 description: "provenance test".into(),
                 subagent_type: "general-purpose".into(),
@@ -2360,6 +2394,7 @@ async fn outstanding_for_prompt_includes_pending_and_active() {
             persona: None,
             parent_prompt_id: Some("prompt-X".to_string()),
             parent_session_id: String::new(),
+            owner: SubagentOwner::Task,
             started_at: std::time::Instant::now(),
             run_in_background: false,
             surface_completion: true,
@@ -2470,6 +2505,7 @@ fn outstanding_for_prompt_returns_sorted_ids() {
             persona: None,
             parent_prompt_id: Some("p".to_string()),
             parent_session_id: String::new(),
+            owner: SubagentOwner::Task,
             started_at: std::time::Instant::now(),
             run_in_background: false,
             surface_completion: true,
@@ -2484,6 +2520,7 @@ fn outstanding_for_prompt_returns_sorted_ids() {
             persona: None,
             parent_prompt_id: Some("p".to_string()),
             parent_session_id: String::new(),
+            owner: SubagentOwner::Task,
             started_at: std::time::Instant::now(),
             run_in_background: false,
             surface_completion: true,

@@ -21,7 +21,7 @@ use crate::types::output::ToolOutput;
 use crate::types::resources::{SharedResources, State, Terminal};
 use crate::types::tool::{Reminder, ToolKind};
 use crate::util::truncate::{PREVIEW_SIZE, truncate_with_preview};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use xai_tool_types::KillTaskOutput;
 use xai_tool_types::SubagentCompletedOutput;
@@ -33,6 +33,66 @@ pub const DEFAULT_TASK_OUTPUT_TOOL: &str = "get_task_output";
 /// disk-backed output file) are never truncated -- the inline branch is
 /// their only chance to see the output.
 const MAX_INLINE_COMPLETION_BYTES: usize = 4_000;
+
+#[derive(Clone, Debug, Default)]
+pub struct TaskCompletionReservations(pub Arc<std::sync::Mutex<HashMap<String, usize>>>);
+
+impl TaskCompletionReservations {
+    pub fn reserve(&self, id: String) {
+        let mut ids = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *ids.entry(id).or_default() += 1;
+    }
+
+    pub fn release(&self, id: &str) {
+        let mut ids = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = ids.get_mut(id) {
+            if *count > 1 {
+                *count -= 1;
+            } else {
+                ids.remove(id);
+            }
+        }
+    }
+
+    pub fn contains(&self, id: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(id)
+    }
+
+    pub fn snapshot(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect()
+    }
+}
+
+crate::register_resource!(
+    "grok_build",
+    "TaskCompletionReservations",
+    TaskCompletionReservations
+);
+
+#[derive(Clone, Debug, Default)]
+pub struct TaskWakeSuppressed(pub Arc<std::sync::atomic::AtomicBool>);
+
+impl TaskWakeSuppressed {
+    pub fn set(&self, suppressed: bool) {
+        self.0
+            .store(suppressed, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn get(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+crate::register_resource!("grok_build", "TaskWakeSuppressed", TaskWakeSuppressed);
+
 /// Shared set of IDs that have already been delivered via auto-wake synthetic
 /// prompts. `TaskCompletionReminder` drains this set on each reminder pass
 /// and extends its suppress list, preventing duplicate reminders for
@@ -597,6 +657,7 @@ pub fn consumed_completion_ids(output: &ToolOutput) -> Vec<&str> {
         | ToolOutput::SchedulerDelete(_)
         | ToolOutput::SchedulerList(_)
         | ToolOutput::UpdateGoal(_)
+        | ToolOutput::Workflow(_)
         | ToolOutput::ImageGen(_)
         | ToolOutput::ImageToVideo(_)
         | ToolOutput::ReferenceToVideo(_)
@@ -625,12 +686,23 @@ impl Reminder for TaskCompletionReminder {
             .into_iter()
             .map(str::to_string)
             .collect();
-        {
+        let reserved_ids = {
             let res = resources.lock().await;
+            if res
+                .get::<TaskWakeSuppressed>()
+                .is_some_and(TaskWakeSuppressed::get)
+            {
+                tracing::debug!("task wake reminder suppressed");
+                return Vec::new();
+            }
             if let Some(auto_wake) = res.get::<AutoWakeDeliveredIds>() {
                 suppress.extend(auto_wake.drain());
             }
-        }
+            res.get::<TaskCompletionReservations>()
+                .map(TaskCompletionReservations::snapshot)
+                .unwrap_or_default()
+        };
+        suppress.extend(reserved_ids.iter().cloned());
         let (terminal, event_sender) = {
             let res = resources.lock().await;
             (
@@ -681,7 +753,9 @@ impl Reminder for TaskCompletionReminder {
                     tasks
                         .iter()
                         .filter(|task| {
-                            task.completed && state.reported.insert(task.task_id.clone())
+                            task.completed
+                                && !reserved_ids.contains(&task.task_id)
+                                && state.reported.insert(task.task_id.clone())
                         })
                         .map(|task| {
                             format_bash_completion(
@@ -693,7 +767,7 @@ impl Reminder for TaskCompletionReminder {
                 );
             } else {
                 for task in &tasks {
-                    if task.completed {
+                    if task.completed && !reserved_ids.contains(&task.task_id) {
                         state.reported.insert(task.task_id.clone());
                     }
                 }

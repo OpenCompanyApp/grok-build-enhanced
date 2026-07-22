@@ -392,6 +392,22 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
         });
     }
 
+    if provider == xai_grok_sampling_types::ProviderId::Custom {
+        // Generic custom providers do not have an Enhanced-owned usage route.
+        // Return an explicit empty provider-scoped surface rather than falling
+        // through to xAI auth, credentials, or billing endpoints.
+        tracing::info!("billing: custom provider has no managed usage surface");
+        return to_raw_response(&BillingConfigResponse {
+            config: None,
+            codex_usage: None,
+            kimi_usage: None,
+            zai_usage: None,
+            codex_api_equivalent_cost: None,
+            on_demand_enabled: None,
+            subscription_tier: None,
+        });
+    }
+
     if provider == xai_grok_sampling_types::ProviderId::ZaiCodingPlan {
         let grok_home = crate::util::grok_home::grok_home();
         let (credentials, current_binding) =
@@ -654,6 +670,22 @@ mod tests {
         assert_eq!(
             billing_provider(None, xai_grok_sampling_types::ProviderId::Xai),
             xai_grok_sampling_types::ProviderId::Xai
+        );
+    }
+
+    #[test]
+    fn custom_billing_selection_never_falls_through_to_configured_xai() {
+        use xai_grok_sampling_types::ProviderId;
+
+        assert_eq!(
+            billing_provider(None, ProviderId::Custom),
+            ProviderId::Custom,
+            "Custom startup billing must not fall through to xAI"
+        );
+        assert_eq!(
+            billing_provider(Some(ProviderId::Custom), ProviderId::Xai),
+            ProviderId::Custom,
+            "a Custom session must override the configured xAI provider"
         );
     }
 

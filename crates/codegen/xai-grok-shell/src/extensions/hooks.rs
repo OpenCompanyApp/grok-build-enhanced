@@ -284,7 +284,7 @@ mod tests {
         HookSpec {
             name: "test:pre_tool_use[0].hooks[0]".to_string(),
             event: HookEventName::PreToolUse,
-            handler_type: "command".to_string(),
+            handler_type: xai_grok_hooks::config::HandlerType::Command,
             configured_matcher: None,
             matcher: None,
             enabled: true,

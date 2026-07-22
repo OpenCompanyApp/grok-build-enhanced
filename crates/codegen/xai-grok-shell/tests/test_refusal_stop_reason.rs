@@ -88,8 +88,8 @@ async fn test_refusal_turn_completes_with_single_messages_request() {
         });
         assert_eq!(
             response.stop_reason,
-            acp::StopReason::EndTurn,
-            "refusal must end the turn cleanly"
+            acp::StopReason::Refusal,
+            "refusal must complete once and remain distinguishable to the ACP client"
         );
         assert!(
             client.captured_text().contains("Echo:"),
@@ -171,8 +171,8 @@ mod leader {
             });
             assert_eq!(
                 response.stop_reason,
-                acp::StopReason::EndTurn,
-                "refusal must end the turn cleanly under the leader"
+                acp::StopReason::Refusal,
+                "refusal must complete once and remain distinguishable under the leader"
             );
             assert!(
                 client.captured_text().contains("Echo:"),

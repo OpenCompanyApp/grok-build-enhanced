@@ -657,6 +657,7 @@ pub fn acp_tool_update(
             ))
         }
         ToolOutput::UpdateGoal(_)
+        | ToolOutput::Workflow(_)
         | ToolOutput::Monitor(_)
         | ToolOutput::SchedulerCreate(_)
         | ToolOutput::SchedulerDelete(_)
@@ -807,17 +808,16 @@ mod tests {
     }
 
     #[test]
-    fn external_content_meta_is_namespaced_and_preserves_existing_meta() {
-        let output = ToolOutput::WebSearch(WebSearchOutput {
-            query: "query".to_string(),
-            content: "result".to_string(),
-            citations: Vec::new(),
-            references: Vec::new(),
-            allowed_domains: None,
-            pre_formatted: None,
-        });
-        let existing = serde_json::json!({ "ui": { "resourceUri": "ui://example" } });
-        let mut update = acp_tool_update(&output, "call-web", None, Some(existing)).unwrap();
+    fn attaching_external_content_metadata_preserves_existing_acp_metadata() {
+        let existing = serde_json::from_value(serde_json::json!({
+            "ui": { "resourceUri": "ui://example" }
+        }))
+        .unwrap();
+        let mut update = acp::ToolCallUpdate::new(
+            acp::ToolCallId::new(Arc::from("call-web")),
+            acp::ToolCallUpdateFields::new(),
+        )
+        .meta(Some(existing));
         let metadata = ExternalContentMetadata::direct(ExternalContentSource::WebSearch);
 
         attach_external_content_meta(&mut update, Some(&metadata));

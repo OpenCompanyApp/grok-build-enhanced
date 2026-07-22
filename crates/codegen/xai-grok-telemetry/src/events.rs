@@ -64,6 +64,8 @@ pub enum ContextualTipKind {
     SmallScreen,
     /// Double-click fold/nav path → tip to enable Word select in settings.
     WordSelect,
+    /// SSH session without `grok wrap` → tip to wrap the ssh command locally.
+    SshWrap,
 }
 
 #[derive(Serialize, Clone, Copy)]
