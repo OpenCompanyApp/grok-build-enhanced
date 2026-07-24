@@ -67,6 +67,64 @@ fn codex_comp_hash_trigger_info(
     })
 }
 
+fn should_recover_kimi_request_size(
+    provider: xai_grok_sampling_types::ProviderId,
+    message: &str,
+    recovery_available: bool,
+    auto_compaction_suppressed: bool,
+) -> bool {
+    recovery_available
+        && !auto_compaction_suppressed
+        && provider.is_kimi_code()
+        && xai_grok_sampling_types::is_kimi_code_request_too_large_error(message)
+}
+
+#[cfg(test)]
+mod kimi_request_size_recovery_tests {
+    use super::should_recover_kimi_request_size;
+    use xai_grok_sampling_types::{KIMI_CODE_REQUEST_TOO_LARGE_ERROR, ProviderId};
+
+    #[test]
+    fn available_kimi_size_error_enables_compaction_recovery() {
+        assert!(should_recover_kimi_request_size(
+            ProviderId::KimiCode,
+            KIMI_CODE_REQUEST_TOO_LARGE_ERROR,
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn foreign_provider_disables_kimi_size_recovery() {
+        assert!(!should_recover_kimi_request_size(
+            ProviderId::Xai,
+            KIMI_CODE_REQUEST_TOO_LARGE_ERROR,
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn exhausted_attempt_disables_kimi_size_recovery() {
+        assert!(!should_recover_kimi_request_size(
+            ProviderId::KimiCode,
+            KIMI_CODE_REQUEST_TOO_LARGE_ERROR,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn suppressed_auto_compaction_disables_kimi_size_recovery() {
+        assert!(!should_recover_kimi_request_size(
+            ProviderId::KimiCode,
+            KIMI_CODE_REQUEST_TOO_LARGE_ERROR,
+            true,
+            true,
+        ));
+    }
+}
+
 /// Default percentage points below the auto-compact threshold at which prefire
 /// (background pass-1) starts, giving pass-1 runway to finish before the limit.
 /// Override with `GROK_PREFIRE_LEAD_PERCENT`.
@@ -1962,6 +2020,42 @@ impl SessionActor {
         let estimated_total = self.chat_state_handle.get_estimated_total_tokens().await;
         estimated_total > context_window
     }
+
+    /// Convert Kimi Code's provider-specific JSON-body ceiling into one guarded
+    /// auto-compaction attempt. The sampler catches the exact serialized size,
+    /// which includes tool schemas and wire overhead that token preflight cannot
+    /// see. The caller owns the per-turn one-shot guard so an uncompactable
+    /// current prompt cannot loop forever.
+    pub(crate) async fn kimi_request_size_compaction_trigger(
+        &self,
+        error_message: &str,
+        recovery_available: bool,
+    ) -> Option<AutoCompactTriggerInfo> {
+        let sampling_config = self.chat_state_handle.get_sampling_config().await?;
+        if !should_recover_kimi_request_size(
+            sampling_config.provider,
+            error_message,
+            recovery_available,
+            self.auto_compaction_is_suppressed(),
+        ) {
+            return None;
+        }
+        let estimated_total = self.chat_state_handle.get_estimated_total_tokens().await;
+        let context_window = sampling_config.context_window.get();
+        let percentage = xai_token_estimation::usage_percentage_u8(estimated_total, context_window);
+        tracing::warn!(
+            estimated_total,
+            context_window,
+            model = %sampling_config.model,
+            "Kimi Code request reached the JSON-body ceiling; compacting once before resubmission"
+        );
+        Some(AutoCompactTriggerInfo {
+            tokens_used: estimated_total,
+            context_window,
+            percentage,
+        })
+    }
+
     /// Pre-sampling compaction check. Uses `get_estimated_total_tokens()`
     /// (exact prior count + byte-estimate of items since last response) so
     /// tool results are accounted for. Returns `None` when `is_flushing`.

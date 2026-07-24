@@ -23,10 +23,12 @@ impl FailureKind {
     }
 }
 
-/// True when an error message indicates a context-window overflow. Backends report
-/// this inconsistently with no stable error code, so we match bounded message markers.
-/// Broad token wording is accepted only after excluding rate-limit and throttling
-/// responses; those remain transient even when they contain "too many tokens".
+/// True when an error message indicates that the current compaction input is too
+/// large for its provider route. Backends report context overflow inconsistently,
+/// and Kimi Code additionally enforces a fixed JSON-body ceiling, so we match
+/// bounded message markers. Broad token wording is accepted only after excluding
+/// rate-limit and throttling responses; those remain transient even when they
+/// contain "too many tokens".
 pub fn is_context_length_error(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     if m.contains("throttling error")
@@ -51,6 +53,7 @@ pub fn is_context_length_error(message: &str) -> bool {
         || m.contains("exceeded model token limit")
         || m.contains("context_length_exceeded")
         || m.contains("model_context_window_exceeded")
+        || m.contains("kimi code request exceeds the 2 mib json body limit")
         || m.contains("request entity too large")
         || m.contains("context length is only")
         || m.contains("configured context size")
@@ -213,6 +216,7 @@ mod tests {
             "exceeds the maximum prompt length",
             "This model's maximum context length is 128000 tokens",
             "error code: context_length_exceeded",
+            "compact failed: invalid client configuration: Kimi Code request exceeds the 2 MiB JSON body limit",
             r#"{"error":{"type":"request_too_large","message":"Request exceeds the maximum size"}}"#,
             "Input is too long for requested model",
             "Input token count 300000 exceeds the maximum 262144",

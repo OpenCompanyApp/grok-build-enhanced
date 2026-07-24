@@ -15,7 +15,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use xai_grok_sampling_types::{
     ApiBackend, ChatCompletionRequest, CredentialBinding, CredentialSourceId, KIMI_CODE_BASE_URL,
-    KIMI_CODE_MAX_REQUEST_BYTES, ProviderId, ReasoningEffort, Result, SamplingError,
+    KIMI_CODE_MAX_REQUEST_BYTES, KIMI_CODE_REQUEST_TOO_LARGE_ERROR, ProviderId, ReasoningEffort,
+    Result, SamplingError,
 };
 
 const KIMI_MESSAGES_BETA_QUERY: &str = "beta=true";
@@ -401,7 +402,7 @@ pub(crate) fn validate_body_size<T: Serialize>(body: &T) -> Result<()> {
     let bytes = serde_json::to_vec(body).map_err(SamplingError::Serialization)?;
     if bytes.len() > KIMI_CODE_MAX_REQUEST_BYTES {
         return Err(SamplingError::InvalidConfiguration(
-            "Kimi Code request exceeds the 2 MiB JSON body limit",
+            KIMI_CODE_REQUEST_TOO_LARGE_ERROR,
         ));
     }
     Ok(())
@@ -497,7 +498,7 @@ pub(crate) fn response_message(status: reqwest::StatusCode, body: &[u8]) -> Stri
         408 | 409 | 529 => {
             "Kimi Code is temporarily overloaded or at its concurrency limit".to_owned()
         }
-        413 => "Kimi Code request exceeds the 2 MiB JSON body limit".to_owned(),
+        413 => KIMI_CODE_REQUEST_TOO_LARGE_ERROR.to_owned(),
         429 => "Kimi Code quota or concurrency limit was reached".to_owned(),
         500..=599 => "Kimi Code is temporarily unavailable".to_owned(),
         400..=499 => "Kimi Code rejected the request contract".to_owned(),
@@ -542,7 +543,7 @@ pub(crate) fn canonical_error_message(message: &str) -> String {
         "Kimi Code rejected preserved-thinking history because reasoning content is missing"
             .to_owned()
     } else if lower.contains("total message size") || lower.contains("2097152") {
-        "Kimi Code request exceeds the 2 MiB JSON body limit".to_owned()
+        KIMI_CODE_REQUEST_TOO_LARGE_ERROR.to_owned()
     } else if lower.contains("token limit") || lower.contains("context") {
         "Kimi Code request exceeds the maximum context length".to_owned()
     } else if lower.contains("function name") && lower.contains("duplicated") {
@@ -662,6 +663,19 @@ mod tests {
         assert_eq!(kimi_effort(ReasoningEffort::Medium), "medium");
         assert_eq!(kimi_effort(ReasoningEffort::Xhigh), "xhigh");
         assert_eq!(kimi_effort(ReasoningEffort::Ultra), "ultra");
+    }
+
+    #[test]
+    fn oversized_body_returns_the_provider_scoped_recovery_marker() {
+        let body = serde_json::json!({"input": "x".repeat(KIMI_CODE_MAX_REQUEST_BYTES)});
+
+        let error = validate_body_size(&body).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SamplingError::InvalidConfiguration(message)
+                if message == KIMI_CODE_REQUEST_TOO_LARGE_ERROR
+        ));
     }
 
     #[test]

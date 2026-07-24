@@ -1157,7 +1157,7 @@ impl SessionActor {
         self: &Arc<Self>,
         error: xai_grok_sampler::SamplingErrorInfo,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
-        self.handle_sampling_failure_with_codex_policy(error, true)
+        self.handle_sampling_failure_with_codex_policy(error, true, true)
             .await
     }
 
@@ -1165,6 +1165,7 @@ impl SessionActor {
         self: &Arc<Self>,
         error: xai_grok_sampler::SamplingErrorInfo,
         _allow_codex_recovery: bool,
+        allow_kimi_size_recovery: bool,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
         use xai_grok_sampler::SamplingErrorKind;
         let request_provider = self
@@ -1228,6 +1229,13 @@ impl SessionActor {
                 self.run_compact_only(trigger_info).await?;
                 return Ok(SamplerFailureRecovery::CompactAndResubmit);
             }
+        }
+        if let Some(trigger_info) = self
+            .kimi_request_size_compaction_trigger(&error.message, allow_kimi_size_recovery)
+            .await
+        {
+            self.run_compact_only(trigger_info).await?;
+            return Ok(SamplerFailureRecovery::CompactAndResubmit);
         }
         let detailed_message = error.message.clone();
         let (request_provider, failed_model_id, failed_base_url) = self
@@ -1571,6 +1579,7 @@ impl SessionActor {
         self: &Arc<Self>,
         mut request: ConversationRequest,
         allow_codex_auth_recovery: bool,
+        allow_kimi_size_recovery: bool,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
         self.prepare_sampler_for_turn().await?;
         // Resolve against the active provider/model and the live authenticated
@@ -1622,7 +1631,11 @@ impl SessionActor {
                 self.turn_stream_drained.lock().take();
                 let info = xai_grok_sampler::SamplingErrorInfo::from(&rich_err);
                 match self
-                    .handle_sampling_failure_with_codex_policy(info, allow_codex_auth_recovery)
+                    .handle_sampling_failure_with_codex_policy(
+                        info,
+                        allow_codex_auth_recovery,
+                        allow_kimi_size_recovery,
+                    )
                     .await?
                 {
                     SamplerFailureRecovery::CompactAndResubmit => {

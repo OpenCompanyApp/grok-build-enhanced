@@ -2062,6 +2062,7 @@ impl SessionActor {
         let mut todo_gate_fires: u32 = 0;
         let mut auth_retry_schedule = AuthRetrySchedule::new();
         let mut codex_auth_retry_attempted = false;
+        let mut kimi_size_recovery_attempted = false;
         let mut turn_span_totals = TurnSpanTotals::default();
         let mut model_fingerprint: Option<String> = None;
         let mut structured_output_retries: u32 = 0;
@@ -2230,12 +2231,17 @@ impl SessionActor {
             );
             let model_timer = std::time::Instant::now();
             let (response, latency) = match self
-                .run_turn_via_sampler(request.clone(), !codex_auth_retry_attempted)
+                .run_turn_via_sampler(
+                    request.clone(),
+                    !codex_auth_retry_attempted,
+                    !kimi_size_recovery_attempted,
+                )
                 .await?
             {
                 SamplerTurnOutcome::Response(r, latency) => (r, latency),
                 SamplerTurnOutcome::CompactAndResubmit => {
                     auth_retry_schedule.reset();
+                    kimi_size_recovery_attempted = true;
                     continue;
                 }
                 SamplerTurnOutcome::RefreshAuthAndResubmit => {
@@ -2288,6 +2294,10 @@ impl SessionActor {
                 }
             };
             auth_retry_schedule.reset();
+            // A successful response proves the compacted payload fit. A later
+            // tool-result request is a new payload and may use its own guarded
+            // Kimi size-recovery attempt.
+            kimi_size_recovery_attempted = false;
             let model_elapsed_ms = model_timer.elapsed().as_millis() as u64;
             let usage = response.usage.as_ref();
             let prompt_tokens = usage.map(|u| u.prompt_tokens);
