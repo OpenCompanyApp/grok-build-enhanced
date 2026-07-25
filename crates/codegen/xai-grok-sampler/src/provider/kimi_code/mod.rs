@@ -8,7 +8,10 @@ mod wire;
 
 pub(crate) use wire::{deserialize_chat_chunk, deserialize_chat_response, stream_error};
 
-use std::fmt::Write as _;
+use std::{
+    fmt::Write as _,
+    sync::{Arc, Mutex},
+};
 
 use reqwest::header::{HeaderMap, HeaderName};
 use serde::Serialize;
@@ -20,6 +23,116 @@ use xai_grok_sampling_types::{
 };
 
 const KIMI_MESSAGES_BETA_QUERY: &str = "beta=true";
+const DEFAULT_REASONING_KEY: &str = "reasoning_content";
+const REASONING_KEYS: [&str; 3] = ["reasoning_content", "reasoning_details", "reasoning"];
+
+#[derive(Clone, Copy, Default)]
+enum ReasoningDialect {
+    #[default]
+    Content,
+    Details,
+    Reasoning,
+}
+
+impl ReasoningDialect {
+    fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "reasoning_content" => Some(Self::Content),
+            "reasoning_details" => Some(Self::Details),
+            "reasoning" => Some(Self::Reasoning),
+            _ => None,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Content => "reasoning_content",
+            Self::Details => "reasoning_details",
+            Self::Reasoning => "reasoning",
+        }
+    }
+}
+
+#[derive(Default)]
+struct ReasoningDialectInner {
+    credential_binding: Option<CredentialBinding>,
+    dialect: ReasoningDialect,
+}
+
+/// Kimi Chat Completions can expose preserved thinking under one of three
+/// compatible keys. Cheap sampling-client clones share this small cell so a
+/// key observed in a streamed response is reused on the next tool-loop step.
+#[derive(Clone, Default)]
+pub(crate) struct ReasoningDialectState {
+    inner: Arc<Mutex<ReasoningDialectInner>>,
+}
+
+impl ReasoningDialectState {
+    pub(crate) fn bind(&self, binding: Option<&CredentialBinding>) {
+        let binding = binding.cloned();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if inner.credential_binding != binding {
+            inner.credential_binding = binding;
+            inner.dialect = ReasoningDialect::default();
+        }
+    }
+
+    fn key(&self) -> &'static str {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dialect
+            .key()
+    }
+
+    fn observe(&self, key: &str) {
+        let Some(dialect) = ReasoningDialect::from_key(key) else {
+            return;
+        };
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dialect = dialect;
+    }
+
+    fn normalize_response_value(&self, value: &mut serde_json::Value, container: &str) {
+        let Some(choices) = value
+            .get_mut("choices")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return;
+        };
+        for choice in choices {
+            let Some(message) = choice
+                .get_mut(container)
+                .and_then(serde_json::Value::as_object_mut)
+            else {
+                continue;
+            };
+            let observed = REASONING_KEYS.iter().find_map(|key| {
+                message
+                    .get(*key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| (*key, value.to_owned()))
+            });
+            let Some((key, reasoning)) = observed else {
+                continue;
+            };
+            self.observe(key);
+            for known_key in REASONING_KEYS {
+                message.remove(known_key);
+            }
+            message.insert(
+                DEFAULT_REASONING_KEY.to_owned(),
+                serde_json::Value::String(reasoning),
+            );
+            break;
+        }
+    }
+}
 
 pub(crate) fn is_valid_base_url(raw: &str) -> bool {
     let trimmed = raw.trim_end_matches('/');
@@ -254,6 +367,7 @@ pub(crate) fn kimi_effort(effort: ReasoningEffort) -> &'static str {
 pub(crate) fn chat_body(
     request: &ChatCompletionRequest,
     stream: bool,
+    reasoning_dialect: &ReasoningDialectState,
 ) -> Result<serde_json::Value> {
     let mut body = serde_json::to_value(request).map_err(SamplingError::Serialization)?;
     let Some(object) = body.as_object_mut() else {
@@ -290,6 +404,7 @@ pub(crate) fn chat_body(
     wire::normalize_chat_history(
         &mut body,
         request.reasoning_effort != Some(ReasoningEffort::None),
+        reasoning_dialect.key(),
     )?;
     schema::normalize_tool_schemas(&mut body, "chat_completions")?;
     wire::normalize_tool_call_ids(&mut body, "chat_completions")?;
@@ -646,7 +761,7 @@ mod tests {
         request.max_tokens = Some(123);
         request.reasoning_effort = Some(ReasoningEffort::Max);
         request.x_grok_session_id = Some("session-1".to_owned());
-        let body = chat_body(&request, true).unwrap();
+        let body = chat_body(&request, true, &ReasoningDialectState::default()).unwrap();
         assert_eq!(body["max_completion_tokens"], 123);
         assert!(body.get("max_tokens").is_none());
         assert_eq!(body["thinking"]["effort"], "max");
@@ -683,7 +798,7 @@ mod tests {
         let assistant = ChatRequestMessage::assistant("answer", "private-model-id", None);
         let request = ChatCompletionRequest::new("k3", vec![assistant]);
 
-        let body = chat_body(&request, false).unwrap();
+        let body = chat_body(&request, false, &ReasoningDialectState::default()).unwrap();
 
         assert!(body["messages"][0].get("model_id").is_none());
     }
@@ -694,9 +809,107 @@ mod tests {
         let mut request = ChatCompletionRequest::new("k3", vec![assistant]);
         request.reasoning_effort = Some(ReasoningEffort::High);
 
-        let body = chat_body(&request, false).unwrap();
+        let body = chat_body(&request, false, &ReasoningDialectState::default()).unwrap();
 
         assert_eq!(body["messages"][0]["reasoning_content"], "");
+    }
+
+    #[test]
+    fn observed_reasoning_details_is_replayed_on_the_next_request() {
+        let state = ReasoningDialectState::default();
+        let mut response = serde_json::json!({
+            "choices": [{"delta": {"reasoning_details": "observed"}}]
+        });
+        state.normalize_response_value(&mut response, "delta");
+
+        let assistant = ChatRequestMessage::assistant("answer", "k3", Some("preserved".to_owned()));
+        let mut request = ChatCompletionRequest::new("k3", vec![assistant]);
+        request.reasoning_effort = Some(ReasoningEffort::High);
+        let body = chat_body(&request, false, &state).unwrap();
+
+        assert_eq!(
+            response["choices"][0]["delta"]["reasoning_content"],
+            "observed"
+        );
+        assert_eq!(body["messages"][0]["reasoning_details"], "preserved");
+        assert!(body["messages"][0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn reasoning_dialect_selects_the_first_string_field() {
+        let state = ReasoningDialectState::default();
+        let mut response = serde_json::json!({
+            "choices": [{"delta": {
+                "reasoning_content": null,
+                "reasoning_details": ["not a string"],
+                "reasoning": "fallback"
+            }}]
+        });
+
+        state.normalize_response_value(&mut response, "delta");
+
+        assert_eq!(state.key(), "reasoning");
+        assert_eq!(
+            response["choices"][0]["delta"]["reasoning_content"],
+            "fallback"
+        );
+    }
+
+    #[test]
+    fn empty_reasoning_content_still_selects_the_canonical_dialect() {
+        let state = ReasoningDialectState::default();
+        let mut response = serde_json::json!({
+            "choices": [{"delta": {
+                "reasoning_content": "",
+                "reasoning": "fallback"
+            }}]
+        });
+
+        state.normalize_response_value(&mut response, "delta");
+
+        assert_eq!(state.key(), "reasoning_content");
+        assert_eq!(response["choices"][0]["delta"]["reasoning_content"], "");
+    }
+
+    #[test]
+    fn response_without_reasoning_retains_the_observed_dialect() {
+        let state = ReasoningDialectState::default();
+        let mut observed = serde_json::json!({
+            "choices": [{"message": {"reasoning_details": "kept"}}]
+        });
+        state.normalize_response_value(&mut observed, "message");
+        let mut without_reasoning = serde_json::json!({
+            "choices": [{"message": {"content": "answer"}}]
+        });
+
+        state.normalize_response_value(&mut without_reasoning, "message");
+
+        assert_eq!(state.key(), "reasoning_details");
+    }
+
+    #[test]
+    fn credential_generation_change_resets_the_reasoning_dialect() {
+        let state = ReasoningDialectState::default();
+        let first = CredentialBinding {
+            provider: ProviderId::KimiCode,
+            source: CredentialSourceId::KimiCodeApiKey,
+            record_id: Some("kimi-code".to_owned()),
+            generation: 1,
+        };
+        state.bind(Some(&first));
+        let mut observed = serde_json::json!({
+            "choices": [{"message": {"reasoning_details": "kept"}}]
+        });
+        state.normalize_response_value(&mut observed, "message");
+        assert_eq!(state.key(), "reasoning_details");
+
+        let replacement = CredentialBinding {
+            generation: 2,
+            ..first
+        };
+        state.bind(Some(&replacement));
+
+        assert_eq!(state.key(), "reasoning_content");
     }
 
     #[test]
@@ -705,7 +918,7 @@ mod tests {
         let mut request = ChatCompletionRequest::new("k3", vec![assistant]);
         request.reasoning_effort = Some(ReasoningEffort::None);
 
-        let body = chat_body(&request, false).unwrap();
+        let body = chat_body(&request, false, &ReasoningDialectState::default()).unwrap();
 
         assert!(body["messages"][0].get("reasoning_content").is_none());
     }
@@ -718,7 +931,7 @@ mod tests {
         ];
         let request = ChatCompletionRequest::new("k3", vec![assistant]);
 
-        let body = chat_body(&request, false).unwrap();
+        let body = chat_body(&request, false, &ReasoningDialectState::default()).unwrap();
 
         assert!(body["messages"][0].get("content").is_none());
     }
@@ -738,7 +951,7 @@ mod tests {
             schema,
         )]);
 
-        let body = chat_body(&request, true).unwrap();
+        let body = chat_body(&request, true, &ReasoningDialectState::default()).unwrap();
 
         let parameters = &body["tools"][0]["function"]["parameters"];
         assert!(parameters.get("$defs").is_none());

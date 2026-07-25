@@ -522,6 +522,9 @@ pub struct SamplingClient {
     /// cannot bypass the post-recovery check by cloning the transport.
     /// Deliberately omitted from `Debug` and tracing.
     provider_auth_recovery_state: std::sync::Arc<std::sync::Mutex<ProviderAuthRecoveryState>>,
+    /// Kimi Chat Completions reasoning-key dialect shared by cheap clones but
+    /// reset whenever the provider credential record changes.
+    kimi_reasoning_dialect: kimi_code::ReasoningDialectState,
     /// Per-turn ChatGPT sticky-routing state shared by cheap client clones.
     /// An empty request ID (for example an auxiliary title call) neither reads
     /// nor clears this state, so concurrent auxiliary work cannot disturb the
@@ -962,6 +965,7 @@ impl SamplingClient {
             header_injector: config.header_injector,
             request_auth: config.request_auth,
             provider_auth_recovery_state: Default::default(),
+            kimi_reasoning_dialect: Default::default(),
             codex_turn_state,
         })
     }
@@ -972,6 +976,7 @@ impl SamplingClient {
         let mut rebuilt = Self::new_with_codex_turn_state(config, self.codex_turn_state.clone())?;
         rebuilt.provider_auth_recovery_state =
             std::sync::Arc::clone(&self.provider_auth_recovery_state);
+        rebuilt.kimi_reasoning_dialect = self.kimi_reasoning_dialect.clone();
         Ok(rebuilt)
     }
 
@@ -1599,15 +1604,17 @@ impl SamplingClient {
         }
 
         let completion = if self.defaults.provider.is_kimi_code() {
-            kimi_code::deserialize_chat_response(&bytes).map_err(|error| {
-                tracing::error!(
-                    error_kind = %error,
-                    provider = %self.defaults.provider,
-                    body_len = bytes.len(),
-                    "Failed to deserialize provider ChatCompletionResponse; body omitted"
-                );
-                error
-            })?
+            kimi_code::deserialize_chat_response(&bytes, &self.kimi_reasoning_dialect).map_err(
+                |error| {
+                    tracing::error!(
+                        error_kind = %error,
+                        provider = %self.defaults.provider,
+                        body_len = bytes.len(),
+                        "Failed to deserialize provider ChatCompletionResponse; body omitted"
+                    );
+                    error
+                },
+            )?
         } else {
             serde_json::from_slice::<ChatCompletionResponse>(&bytes).map_err(|error| {
                 tracing::error!(
@@ -1659,11 +1666,19 @@ impl SamplingClient {
             self.endpoint("chat/completions")
         };
         let prepared = self.post(endpoint).await?;
+        if self.defaults.provider.is_kimi_code() {
+            self.kimi_reasoning_dialect
+                .bind(prepared.credential_binding.as_ref());
+        }
         let request_credential = prepared.credential_binding;
         let request_builder =
             self.apply_provider_request_headers(prepared.builder, &grok_headers)?;
         let http_request = if self.defaults.provider.is_kimi_code() {
-            request_builder.json(&kimi_code::chat_body(&payload, false)?)
+            request_builder.json(&kimi_code::chat_body(
+                &payload,
+                false,
+                &self.kimi_reasoning_dialect,
+            )?)
         } else if self.defaults.provider.is_zai_coding_plan() {
             request_builder.json(&zai_coding_plan::chat_body(&payload, false)?)
         } else {
@@ -1731,13 +1746,21 @@ impl SamplingClient {
             self.endpoint("chat/completions")
         };
         let prepared = self.post(endpoint).await?;
+        if self.defaults.provider.is_kimi_code() {
+            self.kimi_reasoning_dialect
+                .bind(prepared.credential_binding.as_ref());
+        }
         let request_http = prepared.http.clone();
         let request_credential = prepared.credential_binding;
         let request_builder = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
         let http_request = if self.defaults.provider.is_kimi_code() {
-            request_builder.json(&kimi_code::chat_body(&payload, true)?)
+            request_builder.json(&kimi_code::chat_body(
+                &payload,
+                true,
+                &self.kimi_reasoning_dialect,
+            )?)
         } else if self.defaults.provider.is_zai_coding_plan() {
             request_builder.json(&zai_coding_plan::chat_body(&payload, true)?)
         } else {
@@ -1873,6 +1896,7 @@ impl SamplingClient {
         // when the HTTP/2 connection drops and h2 keeps producing errors.
         let stream_provider = self.defaults.provider;
         let redact_stream_diagnostics = self.defaults.redact_response_diagnostics;
+        let kimi_reasoning_dialect = self.kimi_reasoning_dialect.clone();
         let chunks = event_stream
             .scan(false, move |had_transport_error, event_res| {
                 if *had_transport_error {
@@ -1918,7 +1942,7 @@ impl SamplingClient {
                         } {
                             Some(Err(stream_error))
                         } else if stream_provider.is_kimi_code() {
-                            Some(kimi_code::deserialize_chat_chunk(data).map_err(|error| {
+                            Some(kimi_code::deserialize_chat_chunk(data, &kimi_reasoning_dialect).map_err(|error| {
                                 tracing::error!(
                                     error_kind = %error,
                                     provider = %stream_provider,

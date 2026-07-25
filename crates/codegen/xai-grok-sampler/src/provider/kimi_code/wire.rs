@@ -9,7 +9,11 @@ use xai_grok_sampling_types::{ChatCompletionChunk, ChatCompletionResponse, Resul
 const MAX_TOOL_CALL_ID_BYTES: usize = 64;
 const EMPTY_TOOL_CALL_ID: &str = "tool_call";
 
-pub(super) fn normalize_chat_history(body: &mut Value, preserved_thinking: bool) -> Result<()> {
+pub(super) fn normalize_chat_history(
+    body: &mut Value,
+    preserved_thinking: bool,
+    reasoning_key: &str,
+) -> Result<()> {
     let Some(messages) = body.get_mut("messages") else {
         return Ok(());
     };
@@ -34,11 +38,19 @@ pub(super) fn normalize_chat_history(body: &mut Value, preserved_thinking: bool)
             continue;
         }
 
-        if preserved_thinking && !object.contains_key("reasoning_content") {
+        let reasoning = object.remove(super::DEFAULT_REASONING_KEY);
+        for known_key in super::REASONING_KEYS {
+            object.remove(known_key);
+        }
+        if let Some(reasoning) = reasoning {
+            object.insert(reasoning_key.to_owned(), reasoning);
+        }
+
+        if preserved_thinking && !object.contains_key(reasoning_key) {
             // `thinking.keep: all` requires every prior assistant turn to carry
-            // the proprietary field, including turns that reasoned to an empty
-            // string. This mirrors the official Kimi adapter's round trip.
-            object.insert("reasoning_content".to_owned(), Value::String(String::new()));
+            // the observed proprietary field, including turns that reasoned to
+            // an empty string.
+            object.insert(reasoning_key.to_owned(), Value::String(String::new()));
         }
 
         if object
@@ -485,7 +497,9 @@ pub(crate) fn classify_stream_error(error_type: &str, message: &str) -> Sampling
         || classification.contains("message size")
         || classification.contains("validation")
         || classification.contains("invalid_request")
-        || classification.contains("reasoning_content is missing")
+        || super::REASONING_KEYS
+            .iter()
+            .any(|key| classification.contains(&format!("{key} is missing")))
     {
         (reqwest::StatusCode::BAD_REQUEST, Some(false))
     } else if classification.contains("overload")
@@ -509,8 +523,12 @@ pub(crate) fn classify_stream_error(error_type: &str, message: &str) -> Sampling
     }
 }
 
-pub(crate) fn deserialize_chat_response(bytes: &[u8]) -> Result<ChatCompletionResponse> {
+pub(crate) fn deserialize_chat_response(
+    bytes: &[u8],
+    reasoning_dialect: &super::ReasoningDialectState,
+) -> Result<ChatCompletionResponse> {
     let mut value: Value = serde_json::from_slice(bytes).map_err(SamplingError::Serialization)?;
+    reasoning_dialect.normalize_response_value(&mut value, "message");
     normalize_usage(&mut value);
     normalize_response_tool_call_ids(&mut value);
     serde_json::from_value(value).map_err(SamplingError::Serialization)
@@ -542,8 +560,12 @@ fn normalize_response_tool_call_ids(value: &mut Value) {
     }
 }
 
-pub(crate) fn deserialize_chat_chunk(data: &str) -> Result<ChatCompletionChunk> {
+pub(crate) fn deserialize_chat_chunk(
+    data: &str,
+    reasoning_dialect: &super::ReasoningDialectState,
+) -> Result<ChatCompletionChunk> {
     let mut value: Value = serde_json::from_str(data).map_err(SamplingError::Serialization)?;
+    reasoning_dialect.normalize_response_value(&mut value, "delta");
     normalize_usage(&mut value);
     serde_json::from_value(value).map_err(SamplingError::Serialization)
 }
@@ -654,6 +676,7 @@ mod tests {
     fn unknown_chat_finish_reason_survives_deserialization() {
         let chunk = deserialize_chat_chunk(
             r#"{"id":"chunk","object":"chat.completion.chunk","created":1,"model":"k3","choices":[{"index":0,"delta":{},"finish_reason":"future_reason"}]}"#,
+            &super::super::ReasoningDialectState::default(),
         )
         .unwrap();
 
@@ -668,6 +691,7 @@ mod tests {
     fn nonstream_tool_call_without_an_id_gets_a_generated_id() {
         let response = deserialize_chat_response(
             br#"{"id":"response","object":"chat.completion","created":1,"model":"k3","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#,
+            &super::super::ReasoningDialectState::default(),
         )
         .unwrap();
 
@@ -679,6 +703,7 @@ mod tests {
     fn proprietary_choice_usage_and_top_level_cache_tokens_are_projected() {
         let chunk = deserialize_chat_chunk(
             r#"{"id":"chunk","object":"chat.completion.chunk","created":1,"model":"k3","choices":[{"index":0,"delta":{},"finish_reason":null,"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23,"cached_tokens":12}}]}"#,
+            &super::super::ReasoningDialectState::default(),
         )
         .unwrap();
 
