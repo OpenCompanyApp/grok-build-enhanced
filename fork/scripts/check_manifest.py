@@ -1669,11 +1669,10 @@ def _acknowledgement_chain_errors(
                 f"acknowledgement {latest_commit} must equal source {source_id!r} "
                 "reviewed revision"
             )
-        if source["latest_fetched"]["commit"] != latest_commit:
-            errors.append(
-                f"acknowledgement {latest_commit} must equal source {source_id!r} "
-                "latest-fetched revision"
-            )
+        # `latest_fetched` is deliberately an independent review queue. A new
+        # immutable pin may advance while the last audited acknowledgement stays
+        # bound to `reviewed`; requiring equality here would force an unaudited
+        # ancestry marker merely to record that a source was fetched.
 
         for previous, current in zip(chain, chain[1:], strict=False):
             reviewed_from = current["reviewed_from"]

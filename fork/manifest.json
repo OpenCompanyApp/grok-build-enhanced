@@ -163,7 +163,7 @@
         "commit": "51200321eb7b862a29ffceaba8b19db1934a9b38"
       },
       "latest_fetched": {
-        "commit": "51200321eb7b862a29ffceaba8b19db1934a9b38"
+        "commit": "4c43465133428898aa84f0bfc02c306ed65fb66a"
       }
     },
     {
@@ -175,7 +175,7 @@
         "commit": "0317531906d3f3bb01cf33c16319870cfde9170c"
       },
       "latest_fetched": {
-        "commit": "0317531906d3f3bb01cf33c16319870cfde9170c"
+        "commit": "7534d23551f665e65080809975b4ca5c7d63807b"
       }
     },
     {
@@ -187,7 +187,7 @@
         "commit": "3af4d5d39897855bdcc74f23e690024a5dc05573"
       },
       "latest_fetched": {
-        "commit": "3af4d5d39897855bdcc74f23e690024a5dc05573"
+        "commit": "6e386420825bd44ae648c63e7c8cba12fcec9401"
       }
     },
     {
@@ -223,7 +223,7 @@
         "commit": "b5efba7abcaf4041f81ec520097a61e6546e8c50"
       },
       "latest_fetched": {
-        "commit": "b5efba7abcaf4041f81ec520097a61e6546e8c50"
+        "commit": "c497af60e6cd20aab05e590f98a28fb15dd3491d"
       }
     },
     {
@@ -3367,6 +3367,138 @@
         "crates/codegen/xai-fast-worktree/src/api.rs",
         "crates/codegen/xai-fast-worktree/src/auto_gc.rs",
         "crates/codegen/xai-fast-worktree/src/db/mod.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "upstream-review-queue-control-plane",
+      "description": "Manifest guardrail support for recording immutable latest-fetched review queues independently from the last authenticated reviewed upstream acknowledgement.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "fork/manifest.json",
+        "fork/scripts/check_manifest.py",
+        "fork/scripts/tests/test_check_manifest.py"
+      ],
+      "integration_paths": [
+        "fork/manifest.json",
+        "fork/scripts/check_manifest.py",
+        "fork/scripts/tests/test_check_manifest.py"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "provider-reference-refresh-2026-07-25",
+      "description": "Exhaustive 2026-07-25 Grok, Codex, OpenCode, and Kimi immutable-source audit, open-obligation ledger, provider compatibility adaptations, and unchanged-reference attestation.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode",
+        "kimi-code"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-07-25-grok-behaviors.md",
+        "docs/upstream-refresh-2026-07-25.md",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-07-25-grok-behaviors.md",
+        "docs/upstream-refresh-2026-07-25.md",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "kimi-reasoning-dialect-compatibility",
+      "description": "Credential-bound Kimi Chat Completions reasoning-key observation, normalization, and history replay across reasoning_content, reasoning_details, and reasoning dialects.",
+      "source_ids": [
+        "grok-build-upstream",
+        "kimi-code"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/kimi_code/mod.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/kimi_code/wire.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/kimi_code/mod.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/kimi_code/wire.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "codex-ent26-plan-presentation",
+      "description": "Lossless Codex ent26 plan-state preservation with Enterprise-only display normalization in the provider-aware usage surface.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/views/credit_bar.rs",
+        "crates/codegen/xai-grok-shell/src/auth/codex/credentials.rs",
+        "crates/codegen/xai-grok-shell/src/auth/codex/usage_tests.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/views/credit_bar.rs",
+        "crates/codegen/xai-grok-shell/src/auth/codex/credentials.rs",
+        "crates/codegen/xai-grok-shell/src/auth/codex/usage_tests.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "thread-resource-exhaustion-hardening",
+      "description": "Provider-neutral worker reduction and fallible optional thread creation so macOS EAGAIN disables background conveniences instead of aborting Grok.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "Cargo.lock",
+        "crates/codegen/xai-grok-http/Cargo.toml",
+        "crates/codegen/xai-grok-http/src/lib.rs",
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-pager-render/src/clipboard/mod.rs",
+        "crates/codegen/xai-grok-pager/src/app/mod.rs",
+        "crates/codegen/xai-grok-pager/src/git_info.rs",
+        "crates/codegen/xai-grok-pager/src/views/file_search/state.rs",
+        "crates/codegen/xai-grok-pager/src/views/history_search.rs",
+        "crates/codegen/xai-grok-provider-http/Cargo.toml",
+        "crates/codegen/xai-grok-provider-http/src/outbound_proxy.rs",
+        "crates/codegen/xai-grok-shell/src/agent/app.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs",
+        "crates/codegen/xai-grok-shell/src/agent/server.rs",
+        "crates/codegen/xai-grok-shell/src/remote/client.rs",
+        "crates/codegen/xai-grok-workspace/src/file_system/fuzzy.rs",
+        "crates/codegen/xai-grok-workspace/src/file_system/mod.rs"
+      ],
+      "integration_paths": [
+        "Cargo.lock",
+        "crates/codegen/xai-grok-http/Cargo.toml",
+        "crates/codegen/xai-grok-http/src/lib.rs",
+        "crates/codegen/xai-grok-pager/src/views/file_search/state.rs",
+        "crates/codegen/xai-grok-pager/src/views/history_search.rs",
+        "crates/codegen/xai-grok-provider-http/Cargo.toml",
+        "crates/codegen/xai-grok-provider-http/src/outbound_proxy.rs",
+        "crates/codegen/xai-grok-shell/src/agent/app.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models.rs",
+        "crates/codegen/xai-grok-shell/src/agent/server.rs",
+        "crates/codegen/xai-grok-shell/src/remote/client.rs",
+        "crates/codegen/xai-grok-workspace/src/file_system/fuzzy.rs",
+        "crates/codegen/xai-grok-workspace/src/file_system/mod.rs"
       ],
       "legal_paths": [
         "LICENSE"

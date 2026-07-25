@@ -622,6 +622,29 @@ class CheckManifestTests(unittest.TestCase):
         )
         self.assertIn("3/3 baseline-to-candidate downstream path(s) covered", result.stdout)
 
+    def test_latest_fetched_may_advance_beyond_reviewed_acknowledgement(self) -> None:
+        candidate, acknowledgement = self.fixture.create_upstream_acknowledgement_merge()
+        unreviewed = self.fixture.commit_tree(
+            self.fixture.tip_tree,
+            [self.fixture.upstream],
+            "fixture newly fetched source revision",
+        )
+        document = self.fixture.make_document()
+        document["coverage"]["upstream_acknowledgements"].append(acknowledgement)
+        document["sources"][0]["latest_fetched"]["commit"] = unreviewed
+        self.fixture.write_manifest(document)
+        self.fixture.write_upstream_versions(
+            reviewed=self.fixture.upstream,
+            latest=unreviewed,
+        )
+
+        result = self.fixture.run_checker(
+            "--coverage-candidate", candidate, "--strict-coverage"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("advancing source-review revisions remain independent", result.stdout)
+
     def test_successive_upstream_acknowledgements_keep_prior_marker_authenticated(self) -> None:
         marker, document, _acknowledgements, _latest = self.successive_acknowledgement_rig()
         self.fixture.write_manifest(document)
