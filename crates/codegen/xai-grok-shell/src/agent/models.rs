@@ -2589,6 +2589,49 @@ pub struct EarlyPrefetchResult {
 /// Handle for a startup prefetch thread.
 pub type EarlyPrefetchHandle = std::thread::JoinHandle<EarlyPrefetchResult>;
 
+fn retain_worker_thread<T>(
+    task: &'static str,
+    result: std::io::Result<std::thread::JoinHandle<T>>,
+) -> Option<std::thread::JoinHandle<T>> {
+    match result {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            tracing::warn!(
+                task,
+                error = %error,
+                error_kind = ?error.kind(),
+                "optional background work skipped because the OS could not create a thread"
+            );
+            None
+        }
+    }
+}
+
+/// Run optional blocking model work without entering Tokio's infallible
+/// blocking-pool spawn path. If macOS refuses another worker with `EAGAIN`, the
+/// caller receives `None` and can retain its current catalog/settings state.
+pub(crate) async fn spawn_optional_model_worker<T>(
+    task: &'static str,
+    worker: impl FnOnce() -> T + Send + 'static,
+) -> Option<T>
+where
+    T: Send + 'static,
+{
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let handle = retain_worker_thread(
+        task,
+        std::thread::Builder::new()
+            .name(task.replace(' ', "-"))
+            .spawn(move || {
+                let _ = sender.send(worker());
+            }),
+    )?;
+    // Dropping a JoinHandle detaches the fallibly-created worker. The oneshot
+    // keeps cancellation async without asking Tokio to grow its blocking pool.
+    drop(handle);
+    receiver.await.ok()
+}
+
 struct PrefetchEnv {
     auth: Option<GrokAuth>,
     endpoints: config::EndpointsConfig,
@@ -2659,7 +2702,7 @@ fn resolve_prefetch_env(grok_com_config: Option<GrokComConfig>) -> Option<Prefet
 /// credentials from disk.
 pub fn start_early_prefetch_with_auth(auth: Option<GrokAuth>) -> Option<EarlyPrefetchHandle> {
     let env = resolve_prefetch_env_with_auth(auth)?;
-    Some(spawn_prefetch_thread(env))
+    spawn_prefetch_thread(env)
 }
 
 /// Start model + settings prefetch on a background thread.
@@ -2668,34 +2711,40 @@ pub fn start_early_prefetch_with_auth(auth: Option<GrokAuth>) -> Option<EarlyPre
 /// `start_early_prefetch_with_auth` when you have pre-resolved credentials.
 pub fn start_early_prefetch(grok_com_config: Option<GrokComConfig>) -> Option<EarlyPrefetchHandle> {
     let env = resolve_prefetch_env(grok_com_config)?;
-    Some(spawn_prefetch_thread(env))
+    spawn_prefetch_thread(env)
 }
 
-fn spawn_prefetch_thread(env: PrefetchEnv) -> EarlyPrefetchHandle {
-    std::thread::spawn(move || {
-        let mut timer = crate::instrumentation_timer!("startup.early_prefetch");
-        let proxy_endpoint = env.endpoints.proxy_url();
-        timer.with_field("endpoint", proxy_endpoint.as_str());
-        let (models, settings) = prefetch_models_and_settings_blocking(
-            &env.endpoints,
-            env.auth.as_ref(),
-            env.model_fetch_auth,
-        );
-        if (env.endpoints.deployment_key.is_some() || crate::managed_config::has_active_team_auth())
-            && crate::config::is_managed_config_stale_for(
-                &crate::managed_config::current_serving_identity(),
-            )
-            && crate::managed_config::is_fetch_enabled()
-            && let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-        {
-            crate::managed_config::clear_orphan();
-            let _ = rt.block_on(crate::managed_config::sync());
-        }
+fn spawn_prefetch_thread(env: PrefetchEnv) -> Option<EarlyPrefetchHandle> {
+    retain_worker_thread(
+        "startup model prefetch",
+        std::thread::Builder::new()
+            .name("grok-early-prefetch".to_owned())
+            .spawn(move || {
+                let mut timer = crate::instrumentation_timer!("startup.early_prefetch");
+                let proxy_endpoint = env.endpoints.proxy_url();
+                timer.with_field("endpoint", proxy_endpoint.as_str());
+                let (models, settings) = prefetch_models_and_settings_blocking(
+                    &env.endpoints,
+                    env.auth.as_ref(),
+                    env.model_fetch_auth,
+                );
+                if (env.endpoints.deployment_key.is_some()
+                    || crate::managed_config::has_active_team_auth())
+                    && crate::config::is_managed_config_stale_for(
+                        &crate::managed_config::current_serving_identity(),
+                    )
+                    && crate::managed_config::is_fetch_enabled()
+                    && let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                {
+                    crate::managed_config::clear_orphan();
+                    let _ = rt.block_on(crate::managed_config::sync());
+                }
 
-        EarlyPrefetchResult { models, settings }
-    })
+                EarlyPrefetchResult { models, settings }
+            }),
+    )
 }
 
 /// Map a model id (catalog key or routing slug) to its catalog key.
@@ -3307,6 +3356,26 @@ pub(crate) fn validate_selectable(
     Ok(())
 }
 
+fn fetch_models_network_blocking(
+    endpoints: config::EndpointsConfig,
+    auth: Option<GrokAuth>,
+    fetch_auth: ModelFetchAuth,
+) -> Option<XaiNetworkCatalog> {
+    let FetchModelsResult { models, etag } =
+        fetch_models_blocking(&endpoints, auth.as_ref(), fetch_auth).ok()?;
+    if models.is_empty() {
+        tracing::warn!("Models endpoint returned empty list");
+        return None;
+    }
+    let api_base_url_override = match fetch_auth {
+        ModelFetchAuth::ApiKey => Some(endpoints.xai_api_base_url.clone()),
+        _ => None,
+    };
+    let models = build_prefetched_map(models, api_base_url_override);
+    tracing::info!(count = models.len(), etag = ?etag, "Fetched models for runtime refresh");
+    Some(XaiNetworkCatalog { models, etag })
+}
+
 /// Network-only xAI catalog fetch. Runtime `Online` refreshes must not consult
 /// or persist the cache before their generation/auth-origin snapshot is
 /// validated by `ModelsManager`; startup retains the cache-first helper above.
@@ -3315,28 +3384,24 @@ async fn fetch_models_network_async(
     auth: Option<GrokAuth>,
     fetch_auth: ModelFetchAuth,
 ) -> Option<XaiNetworkCatalog> {
-    tokio::task::spawn_blocking(move || {
-        let FetchModelsResult { models, etag } =
-            fetch_models_blocking(&endpoints, auth.as_ref(), fetch_auth).ok()?;
-        if models.is_empty() {
-            tracing::warn!("Models endpoint returned empty list");
-            return None;
-        }
-        let api_base_url_override = match fetch_auth {
-            ModelFetchAuth::ApiKey => Some(endpoints.xai_api_base_url.clone()),
-            _ => None,
-        };
-        let models = build_prefetched_map(models, api_base_url_override);
-        tracing::info!(count = models.len(), etag = ?etag, "Fetched models for runtime refresh");
-        Some(XaiNetworkCatalog { models, etag })
+    spawn_optional_model_worker("grok-model-refresh", move || {
+        fetch_models_network_blocking(endpoints, auth, fetch_auth)
     })
     .await
-    .unwrap_or(None)
+    .flatten()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_thread_creation_failure_is_nonfatal() {
+        let error = std::io::Error::from(std::io::ErrorKind::WouldBlock);
+        let failed: std::io::Result<std::thread::JoinHandle<()>> = Err(error);
+
+        assert!(retain_worker_thread("test worker", failed).is_none());
+    }
 
     fn test_manager() -> ModelsManager {
         let _ = tracing_subscriber::fmt()

@@ -18,7 +18,7 @@ use xai_acp_lib::{
 
 use crate::agent::config::{Config as AgentConfig, ModelEntry};
 use crate::agent::init::{bootstrap, exit_on_config_error};
-use crate::agent::models::{ModelFetchAuth, prefetch_models_blocking};
+use crate::agent::models::{ModelFetchAuth, prefetch_models_blocking, spawn_optional_model_worker};
 use crate::agent::mvp_agent::MvpAgent;
 use crate::auth::{AuthManager, AuthMode, GrokAuth, run_auth_flow};
 use crate::util::grok_home;
@@ -176,11 +176,10 @@ async fn prefetch_models(agent_config: &AgentConfig) -> Option<IndexMap<String, 
     let fetch_auth = ModelFetchAuth::resolve(&endpoints, auth.is_some());
 
     if auth.is_some() || endpoints.has_custom_endpoint() || fetch_auth != ModelFetchAuth::Session {
-        tokio::task::spawn_blocking(move || {
+        spawn_optional_model_worker("grok-acp-model-prefetch", move || {
             prefetch_models_blocking(&endpoints, auth.as_ref(), fetch_auth)
         })
         .await
-        .ok()
         .flatten()
     } else {
         None
@@ -515,22 +514,23 @@ async fn run_headless_inner(
             .await?;
     }
 
-    // Prefetch models from the models API before entering the LocalSet.
-    // This must be done via spawn_blocking because reqwest::blocking creates its own runtime.
+    // Prefetch models outside the LocalSet because reqwest::blocking creates
+    // its own runtime. Fallible OS-thread creation keeps a saturated process
+    // usable when macOS returns EAGAIN instead of letting Tokio panic.
     let auth_for_prefetch = auth.clone();
     let endpoints_for_prefetch = agent_config.endpoints.clone();
     // `true` — auth is always established by this point (run_auth_flow above).
     let fetch_auth_for_prefetch = ModelFetchAuth::resolve(&endpoints_for_prefetch, true);
-    let prefetched_models = tokio::task::spawn_blocking(move || {
-        prefetch_models_blocking(
-            &endpoints_for_prefetch,
-            Some(&auth_for_prefetch),
-            fetch_auth_for_prefetch,
-        )
-    })
-    .await
-    .ok()
-    .flatten();
+    let prefetched_models =
+        spawn_optional_model_worker("grok-headless-model-prefetch", move || {
+            prefetch_models_blocking(
+                &endpoints_for_prefetch,
+                Some(&auth_for_prefetch),
+                fetch_auth_for_prefetch,
+            )
+        })
+        .await
+        .flatten();
 
     tracing::info!("Prefetched models: {:?}", prefetched_models);
 
@@ -569,11 +569,20 @@ async fn run_headless_inner(
             );
             eprintln!();
             let url_for_open = grok_code_url.clone();
-            std::thread::spawn(move || {
-                let mut input = String::new();
-                let _ = std::io::stdin().read_line(&mut input);
-                let _ = webbrowser::open(&url_for_open);
-            });
+            if let Err(error) = std::thread::Builder::new()
+                .name("grok-browser-open".to_owned())
+                .spawn(move || {
+                    let mut input = String::new();
+                    let _ = std::io::stdin().read_line(&mut input);
+                    let _ = webbrowser::open(&url_for_open);
+                })
+            {
+                warn!(
+                    error = %error,
+                    error_kind = ?error.kind(),
+                    "browser-open prompt disabled because the OS could not create a thread"
+                );
+            }
         }
     });
 
@@ -952,12 +961,21 @@ pub async fn run_leader(
     // the sweep walks/stats/deletes the whole tree synchronously. Running it
     // inline here blocked the socket bind and lock acquisition below, so clients
     // could not connect until the sweep finished.
-    tokio::task::spawn_blocking(|| {
-        xai_file_utils::queue::cleanup_orphaned_uploads(
-            &grok_home::grok_home(),
-            xai_file_utils::queue::DEFAULT_MAX_AGE,
+    if let Err(error) = std::thread::Builder::new()
+        .name("grok-upload-cleanup".to_owned())
+        .spawn(|| {
+            xai_file_utils::queue::cleanup_orphaned_uploads(
+                &grok_home::grok_home(),
+                xai_file_utils::queue::DEFAULT_MAX_AGE,
+            );
+        })
+    {
+        warn!(
+            error = %error,
+            error_kind = ?error.kind(),
+            "orphaned-upload cleanup skipped because the OS could not create a thread"
         );
-    });
+    }
 
     let mut agent_config = agent_config.clone();
     agent_config.mode = crate::agent::config::AgentMode::Leader;
@@ -1119,28 +1137,46 @@ pub async fn run_leader(
         lock
     } else {
         const LEADER_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
-        // spawn_blocking so we don't stall the async runtime while waiting.
-        let lock_result = tokio::task::spawn_blocking(move || {
-            lock.try_acquire_timeout(LEADER_LOCK_TIMEOUT)?;
-            lock.write_pid()?;
-            Ok::<_, anyhow::Error>(lock)
-        })
-        .await;
+        // Keep the potentially blocking handoff off the async runtime, but use
+        // fallible thread creation so EAGAIN becomes a startup error rather
+        // than a process-aborting Tokio panic.
+        let (lock_tx, lock_rx) = tokio::sync::oneshot::channel();
+        let lock_thread = std::thread::Builder::new()
+            .name("grok-leader-lock".to_owned())
+            .spawn(move || {
+                let result = (|| {
+                    lock.try_acquire_timeout(LEADER_LOCK_TIMEOUT)?;
+                    lock.write_pid()?;
+                    Ok::<_, anyhow::Error>(lock)
+                })();
+                let _ = lock_tx.send(result);
+            });
+        if let Err(error) = lock_thread {
+            warn!(
+                error = %error,
+                error_kind = ?error.kind(),
+                "failed to create leader lock worker"
+            );
+            cancel.cancel();
+            return Err(anyhow::anyhow!(
+                "Failed to create leader lock worker: {error}"
+            ));
+        }
 
-        match lock_result {
+        match lock_rx.await {
             Ok(Ok(lock)) => {
                 info!("Leader lock acquired, PID written");
                 lock
             }
-            Ok(Err(e)) => {
-                warn!(error = ?e, "Failed to acquire leader lock");
+            Ok(Err(error)) => {
+                warn!(error = ?error, "Failed to acquire leader lock");
                 cancel.cancel();
-                return Err(anyhow::anyhow!("Failed to acquire leader lock: {}", e));
+                return Err(anyhow::anyhow!("Failed to acquire leader lock: {error}"));
             }
-            Err(e) => {
-                warn!(error = ?e, "Lock task panicked");
+            Err(error) => {
+                warn!(error = ?error, "Leader lock worker exited without a result");
                 cancel.cancel();
-                return Err(anyhow::anyhow!("Lock task failed: {}", e));
+                return Err(anyhow::anyhow!("Leader lock worker failed: {error}"));
             }
         }
     };
@@ -1162,15 +1198,16 @@ pub async fn run_leader(
     let fetch_auth_for_prefetch = ModelFetchAuth::resolve(&endpoints_for_prefetch, auth.is_some());
     // The shared pair helper owns the remote_fetch gate for both halves, so a
     // disabled knob cannot block leader readiness on settings retries.
-    let (prefetched_models, remote_settings) = tokio::task::spawn_blocking(move || {
-        crate::agent::models::prefetch_models_and_settings_blocking(
-            &endpoints_for_prefetch,
-            auth_for_prefetch.as_ref(),
-            fetch_auth_for_prefetch,
-        )
-    })
-    .await
-    .unwrap_or((None, None));
+    let (prefetched_models, remote_settings) =
+        spawn_optional_model_worker("grok-leader-model-prefetch", move || {
+            crate::agent::models::prefetch_models_and_settings_blocking(
+                &endpoints_for_prefetch,
+                auth_for_prefetch.as_ref(),
+                fetch_auth_for_prefetch,
+            )
+        })
+        .await
+        .unwrap_or((None, None));
 
     // Process-wide image normalize cache: off by default, toggled here from
     // `RemoteSettings.image_normalize_cache_enabled` once at startup.

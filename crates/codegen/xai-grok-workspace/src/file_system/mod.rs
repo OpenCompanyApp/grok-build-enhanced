@@ -162,7 +162,7 @@ pub enum FuzzyPollOutcome {
 }
 
 pub struct FuzzySearchContext {
-    pub daemon: FuzzyFileMatcherDaemon,
+    pub daemon: Option<FuzzyFileMatcherDaemon>,
     pub created_at: Instant,
     pub last_activity: Instant,
     pub hidden: bool,
@@ -186,12 +186,10 @@ impl FuzzySearchContext {
         session_id: Option<String>,
         target_client_id: TargetClientId,
     ) -> Self {
-        let matcher = FuzzyFileMatcher::new(root);
-        let daemon = FuzzyFileMatcherDaemon::new(matcher, DEFAULT_TOP_K);
-        daemon.restart_walk(hidden);
-
         Self {
-            daemon,
+            // Open is bookkeeping-only. The first query lazily creates the
+            // optional daemon and atomically pairs its walk with that query.
+            daemon: None,
             created_at: Instant::now(),
             last_activity: Instant::now(),
             hidden,
@@ -202,6 +200,21 @@ impl FuzzySearchContext {
             session_id,
             target_client_id,
         }
+    }
+
+    fn ensure_daemon(&mut self) -> Option<(&FuzzyFileMatcherDaemon, bool)> {
+        let created = self.daemon.is_none();
+        if created {
+            self.daemon =
+                FuzzyFileMatcherDaemon::new(FuzzyFileMatcher::new(&self.root), DEFAULT_TOP_K);
+            if self.daemon.is_some() {
+                // A recovered daemon starts its generation counter at zero.
+                // Discard generation debt accumulated while EAGAIN prevented
+                // creation so fresh results are not rejected as stale forever.
+                self.min_generation = 0;
+            }
+        }
+        self.daemon.as_ref().map(|daemon| (daemon, created))
     }
 
     pub fn is_stale(&self, timeout: Duration) -> bool {
@@ -270,12 +283,18 @@ impl FuzzySearchManager {
         let ctx = self.searches.get_mut(search_id)?;
         ctx.last_activity = Instant::now();
 
-        // Rewalk on empty query to refresh index when picker opens.
-        if query.is_empty() {
-            ctx.daemon.restart_walk(ctx.hidden);
+        let hidden = ctx.hidden;
+        if let Some((daemon, created)) = ctx.ensure_daemon() {
+            // Rewalk on empty query to refresh the index when the picker opens.
+            // A daemon recovered after thread exhaustion also needs its first walk.
+            // Pair the query with either restart under one generation so stale
+            // empty-query results cannot satisfy this request.
+            if created || query.is_empty() {
+                daemon.restart_walk_with_query(hidden, query, dirs_only);
+            } else {
+                daemon.set_query(query, dirs_only);
+            }
         }
-
-        ctx.daemon.set_query(query, dirs_only);
         ctx.min_generation += 1;
         ctx.has_query = !query.is_empty();
         ctx.query_version += 1;
@@ -292,7 +311,11 @@ impl FuzzySearchManager {
         let ctx = self.searches.get_mut(search_id)?;
         ctx.last_activity = Instant::now();
 
-        let results = ctx.daemon.get();
+        let results = ctx
+            .daemon
+            .as_ref()
+            .map(FuzzyFileMatcherDaemon::get)
+            .unwrap_or_default();
 
         Some(FuzzySearchData {
             matches: results.topk.to_vec(),
@@ -311,7 +334,11 @@ impl FuzzySearchManager {
         let ctx = self.searches.get_mut(search_id)?;
         ctx.last_activity = Instant::now();
 
-        let results = ctx.daemon.get();
+        let results = ctx
+            .daemon
+            .as_ref()
+            .map(FuzzyFileMatcherDaemon::get)
+            .unwrap_or_default();
 
         if results.generation < min_gen {
             return None;

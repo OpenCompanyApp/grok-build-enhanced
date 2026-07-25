@@ -928,10 +928,19 @@ pub struct MvpAgent {
 /// sampling client is discarded, but the TLS root certificates it loads
 /// are cached at the process level by `rustls-native-certs`.
 pub fn warm_async_http_client() {
-    std::thread::spawn(|| {
-        let _timer = crate::instrumentation_timer!("startup.async_http_warmup");
-        let _ = crate::http::shared_client();
-    });
+    if let Err(error) = std::thread::Builder::new()
+        .name("grok-http-warmup".to_owned())
+        .spawn(|| {
+            let _timer = crate::instrumentation_timer!("startup.async_http_warmup");
+            let _ = crate::http::shared_client();
+        })
+    {
+        tracing::warn!(
+            error = %error,
+            error_kind = ?error.kind(),
+            "HTTP client warmup skipped because the OS could not create a thread"
+        );
+    }
 }
 pub(crate) fn resolve_required_agent_type(
     model_agent_type: Option<&str>,

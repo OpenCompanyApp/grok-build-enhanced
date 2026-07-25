@@ -6,11 +6,15 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::error::Error;
 use std::fmt;
 use std::io;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::mpsc;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::time::Instant;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -26,6 +30,110 @@ const SYSTEM_PROXY_CACHE_MAX_ENTRIES: usize = 256;
 const MAX_CACHED_CODEX_ROUTES: usize = 16;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 static ASYNC_SYSTEM_PROXY_RESOLUTION_PERMIT: Semaphore = Semaphore::const_new(1);
+
+type DnsError = Box<dyn Error + Send + Sync>;
+type DnsReply = tokio::sync::oneshot::Sender<io::Result<Vec<SocketAddr>>>;
+
+struct DnsRequest {
+    hostname: String,
+    reply: DnsReply,
+}
+
+static DNS_WORKER: Mutex<Option<mpsc::Sender<DnsRequest>>> = Mutex::new(None);
+
+/// Reqwest resolver backed by one bounded, fallibly-created OS worker.
+///
+/// Reqwest's default `getaddrinfo` resolver enters Tokio's infallible blocking
+/// pool. If macOS returns `EAGAIN` while that pool grows, Tokio panics and the
+/// release profile aborts. This resolver creates at most one process-wide
+/// worker with `std::thread::Builder`; failure becomes an ordinary DNS error,
+/// and successful lookups never ask Tokio to allocate another thread.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FallibleDnsResolver;
+
+impl reqwest::dns::Resolve for FallibleDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let sender = match dns_worker_sender() {
+            Ok(sender) => sender,
+            Err(error) => return failed_dns_resolution(error),
+        };
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        if sender
+            .send(DnsRequest {
+                hostname: name.as_str().to_owned(),
+                reply,
+            })
+            .is_err()
+        {
+            return failed_dns_resolution(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "DNS worker stopped",
+            ));
+        }
+
+        Box::pin(async move {
+            let addresses = receiver
+                .await
+                .map_err(|error| Box::new(io::Error::other(error)) as DnsError)?
+                .map_err(|error| Box::new(error) as DnsError)?;
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+fn failed_dns_resolution(error: io::Error) -> reqwest::dns::Resolving {
+    Box::pin(async move { Err(Box::new(error) as DnsError) })
+}
+
+fn dns_worker_sender() -> io::Result<mpsc::Sender<DnsRequest>> {
+    let mut retained = DNS_WORKER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(sender) = retained.as_ref() {
+        return Ok(sender.clone());
+    }
+
+    let (sender, receiver) = mpsc::channel::<DnsRequest>();
+    let handle = retain_dns_worker(
+        thread::Builder::new()
+            .name("grok-dns-resolver".to_owned())
+            .spawn(move || {
+                while let Ok(request) = receiver.recv() {
+                    let result = (request.hostname.as_str(), 0)
+                        .to_socket_addrs()
+                        .map(|addresses| addresses.collect());
+                    let _ = request.reply.send(result);
+                }
+            }),
+    )?;
+    // The static sender owns this process-wide service for the process lifetime.
+    drop(handle);
+    *retained = Some(sender.clone());
+    Ok(sender)
+}
+
+fn retain_dns_worker(result: io::Result<JoinHandle<()>>) -> io::Result<JoinHandle<()>> {
+    result.map_err(|error| {
+        tracing::warn!(
+            error = %error,
+            error_kind = ?error.kind(),
+            "DNS lookup unavailable because the OS could not create its resolver thread"
+        );
+        error
+    })
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn retain_system_proxy_worker(result: io::Result<JoinHandle<()>>) -> io::Result<JoinHandle<()>> {
+    result.map_err(|error| {
+        tracing::warn!(
+            error = %error,
+            error_kind = ?error.kind(),
+            "system proxy lookup skipped because the OS could not create its worker thread"
+        );
+        error
+    })
+}
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -197,14 +305,21 @@ impl HttpClientFactory {
                 .await
                 .map_err(io::Error::other)?;
             let factory = self.clone();
-            tokio::task::spawn_blocking(move || {
-                // Keep the permit with the blocking task: cancelling the caller must not allow a
-                // second PAC/WinHTTP lookup to start while this one is still running.
-                let _permit = permit;
-                factory.resolve_proxy_route(&request_url)
-            })
-            .await
-            .map_err(io::Error::other)
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let handle = retain_system_proxy_worker(
+                thread::Builder::new()
+                    .name("grok-system-proxy".to_owned())
+                    .spawn(move || {
+                        // Keep the permit with the worker: cancelling the caller must not allow a
+                        // second PAC/WinHTTP lookup to start while this one is still running.
+                        let _permit = permit;
+                        let _ = sender.send(factory.resolve_proxy_route(&request_url));
+                    }),
+            )?;
+            // The oneshot owns completion; dropping the handle detaches the
+            // fallibly-created worker without blocking the async caller.
+            drop(handle);
+            receiver.await.map_err(io::Error::other)
         }
     }
 
@@ -460,6 +575,9 @@ fn configure_builder_for_resolved_route(
     route_class: ClientRouteClass,
     route: &OutboundProxyRoute,
 ) -> Result<reqwest::ClientBuilder, BuildRouteAwareHttpClientError> {
+    // Keep DNS on one fallibly-created process worker rather than Tokio's
+    // infallible, dynamically-growing `getaddrinfo` blocking pool.
+    let builder = builder.dns_resolver(Arc::new(FallibleDnsResolver));
     match route {
         OutboundProxyRoute::TransportDefault => Ok(builder),
         OutboundProxyRoute::Direct => Ok(builder.no_proxy()),
@@ -871,6 +989,26 @@ mod tests {
         SystemProxyDecision::Unavailable {
             failure: RouteFailureClass::ProxyResolutionUnavailable,
         }
+    }
+
+    #[test]
+    fn dns_worker_creation_returns_would_block_when_the_os_refuses_a_thread() {
+        let failed: io::Result<JoinHandle<()>> = Err(io::ErrorKind::WouldBlock.into());
+
+        let error = retain_dns_worker(failed).expect_err("thread exhaustion must remain fallible");
+
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn system_proxy_worker_creation_returns_would_block_when_the_os_refuses_a_thread() {
+        let failed: io::Result<JoinHandle<()>> = Err(io::ErrorKind::WouldBlock.into());
+
+        let error = retain_system_proxy_worker(failed)
+            .expect_err("optional proxy discovery must remain fallible");
+
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
     }
 
     #[tokio::test]

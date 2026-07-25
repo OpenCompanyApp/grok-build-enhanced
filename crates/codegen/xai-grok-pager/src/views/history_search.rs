@@ -7,9 +7,10 @@
 //!   to `Arc<Mutex<…>>`.
 //! - The UI thread polls results on each tick via `poll()`.
 
+use std::io;
 use std::sync::{
     Arc, Mutex,
-    mpsc::{SyncSender, sync_channel},
+    mpsc::{Sender, channel},
 };
 use std::thread::{self, JoinHandle};
 
@@ -50,7 +51,6 @@ struct Snapshot {
 // ---------------------------------------------------------------------------
 
 enum Msg {
-    SetItems(Vec<String>),
     SetItemsAndQuery(Vec<String>, String),
     SetQuery(String),
     Stop,
@@ -62,95 +62,109 @@ enum Msg {
 
 struct Daemon {
     shared: Arc<Mutex<Snapshot>>,
-    tx: SyncSender<Msg>,
+    tx: Sender<Msg>,
     _handle: JoinHandle<()>,
 }
 
 const MAX_RESULTS: usize = 100;
 
+fn retain_history_thread(result: io::Result<JoinHandle<()>>) -> Option<JoinHandle<()>> {
+    match result {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                error_kind = ?error.kind(),
+                "history search disabled because the OS could not create its daemon thread"
+            );
+            None
+        }
+    }
+}
+
 impl Daemon {
-    fn new() -> Self {
+    fn new() -> Option<Self> {
         let shared = Arc::new(Mutex::new(Snapshot::default()));
-        let (tx, rx) = sync_channel::<Msg>(256);
+        // Sending prompt edits must never wait for a long scoring pass; the
+        // daemon drains this queue to the latest query before each pass.
+        let (tx, rx) = channel::<Msg>();
 
         let out = shared.clone();
-        let handle = thread::spawn(move || {
-            let mut pattern = MultiPattern::new(1);
-            let mut matcher = Matcher::new(Config::DEFAULT);
-            let mut items: Vec<(String, Utf32String)> = Vec::new();
-            let mut generation: usize = 0;
-            let mut prev_q = String::new();
+        let handle = retain_history_thread(
+            thread::Builder::new()
+                .name("grok-history-search".to_owned())
+                .spawn(move || {
+                    let mut pattern = MultiPattern::new(1);
+                    let mut matcher = Matcher::new(Config::DEFAULT);
+                    let mut items: Vec<(String, Utf32String)> = Vec::new();
+                    let mut generation: usize = 0;
+                    let mut prev_q = String::new();
 
-            while let Ok(msg) = rx.recv() {
-                // Drain to latest — skip intermediate queries.
-                let msg = drain_to_latest(msg, &rx);
+                    while let Ok(msg) = rx.recv() {
+                        // Drain to latest — skip intermediate queries.
+                        let msg = drain_to_latest(msg, &rx);
 
-                match msg {
-                    Msg::SetItems(new) => {
-                        items = build_items(new);
-                        prev_q.clear();
-                        generation += 1;
-                        publish_matches(&items, "", &mut pattern, &mut matcher, &out, generation);
-                    }
-                    Msg::SetItemsAndQuery(new, query) => {
-                        items = build_items(new);
-                        prev_q.clear();
-                        generation += 1;
-                        let trimmed = query.trim().to_string();
-                        publish_matches(
-                            &items,
-                            &trimmed,
-                            &mut pattern,
-                            &mut matcher,
-                            &out,
-                            generation,
-                        );
-                        prev_q = trimmed;
-                    }
-                    Msg::SetQuery(query) => {
-                        generation += 1;
-                        let trimmed = query.trim().to_string();
+                        match msg {
+                            Msg::SetItemsAndQuery(new, query) => {
+                                items = build_items(new);
+                                prev_q.clear();
+                                generation += 1;
+                                let trimmed = query.trim().to_string();
+                                publish_matches(
+                                    &items,
+                                    &trimmed,
+                                    &mut pattern,
+                                    &mut matcher,
+                                    &out,
+                                    generation,
+                                );
+                                prev_q = trimmed;
+                            }
+                            Msg::SetQuery(query) => {
+                                generation += 1;
+                                let trimmed = query.trim().to_string();
 
-                        if trimmed.is_empty() {
-                            publish_matches(
-                                &items,
-                                "",
-                                &mut pattern,
-                                &mut matcher,
-                                &out,
-                                generation,
-                            );
-                            prev_q.clear();
-                        } else {
-                            let append = !prev_q.is_empty()
-                                && trimmed.as_bytes().starts_with(prev_q.as_bytes())
-                                && !trimmed.ends_with('\\')
-                                && !trimmed
-                                    .as_bytes()
-                                    .last()
-                                    .is_some_and(|b| b.is_ascii_whitespace());
-                            publish_query_matches(
-                                &items,
-                                &trimmed,
-                                append,
-                                &mut pattern,
-                                &mut matcher,
-                                &out,
-                                generation,
-                            );
-                            prev_q = trimmed;
+                                if trimmed.is_empty() {
+                                    publish_matches(
+                                        &items,
+                                        "",
+                                        &mut pattern,
+                                        &mut matcher,
+                                        &out,
+                                        generation,
+                                    );
+                                    prev_q.clear();
+                                } else {
+                                    let append = !prev_q.is_empty()
+                                        && trimmed.as_bytes().starts_with(prev_q.as_bytes())
+                                        && !trimmed.ends_with('\\')
+                                        && !trimmed
+                                            .as_bytes()
+                                            .last()
+                                            .is_some_and(|b| b.is_ascii_whitespace());
+                                    publish_query_matches(
+                                        &items,
+                                        &trimmed,
+                                        append,
+                                        &mut pattern,
+                                        &mut matcher,
+                                        &out,
+                                        generation,
+                                    );
+                                    prev_q = trimmed;
+                                }
+                            }
+                            Msg::Stop => break,
                         }
                     }
-                    Msg::Stop => break,
-                }
-            }
-        });
+                }),
+        )?;
 
-        Self {
+        Some(Self {
             shared,
             tx,
             _handle: handle,
-        }
+        })
     }
 }
 
@@ -246,13 +260,12 @@ fn drain_to_latest(first: Msg, rx: &std::sync::mpsc::Receiver<Msg>) -> Msg {
             // Coalesce consecutive SetQuery — keep latest.
             (Msg::SetQuery(_), next @ Msg::SetQuery(_)) => next,
             // Preserve the item refresh and latest query as one atomic update.
-            (Msg::SetItems(items), Msg::SetQuery(query)) => Msg::SetItemsAndQuery(items, query),
             (Msg::SetItemsAndQuery(items, _), Msg::SetQuery(query)) => {
                 Msg::SetItemsAndQuery(items, query)
             }
             // Stop always wins.
             (_, stop @ Msg::Stop) => return stop,
-            // SetItems after SetQuery — keep SetItems (reset).
+            // A later item refresh replaces any older pending message.
             (_, next) => next,
         };
     }
@@ -297,7 +310,12 @@ pub struct HistorySearchState {
     /// and Down at the newest closes. Search mode (`/history`)
     /// keeps the composer as the filter query instead.
     browse: bool,
-    daemon: Daemon,
+    /// Last active history payload. Retaining it on the UI side lets a daemon
+    /// that initially failed with EAGAIN be initialized on a later retry.
+    history_items: Vec<String>,
+    /// Created only while the overlay is active so idle prompt widgets do not
+    /// each retain an OS thread.
+    daemon: Option<Daemon>,
 }
 
 impl Default for HistorySearchState {
@@ -318,8 +336,24 @@ impl HistorySearchState {
             last_query: String::new(),
             hovered: None,
             browse: false,
-            daemon: Daemon::new(),
+            history_items: Vec::new(),
+            daemon: None,
         }
+    }
+
+    fn ensure_daemon(&mut self) -> Option<(&Daemon, bool)> {
+        let created = self.daemon.is_none();
+        if created {
+            self.snapshot = Snapshot::default();
+            self.last_gen = 0;
+            let daemon = Daemon::new()?;
+            let _ = daemon.tx.send(Msg::SetItemsAndQuery(
+                self.history_items.clone(),
+                self.last_query.clone(),
+            ));
+            self.daemon = Some(daemon);
+        }
+        self.daemon.as_ref().map(|daemon| (daemon, created))
     }
 
     pub fn is_active(&self) -> bool {
@@ -335,8 +369,17 @@ impl HistorySearchState {
     }
 
     pub fn refresh_items(&mut self, history: &[HistoryEntry]) {
-        let items: Vec<String> = history.iter().map(|e| e.text.clone()).collect();
-        let _ = self.daemon.tx.send(Msg::SetItems(items));
+        if !self.active {
+            return;
+        }
+        self.history_items = history.iter().map(|entry| entry.text.clone()).collect();
+        let query = self.last_query.clone();
+        let items = self.history_items.clone();
+        if let Some((daemon, created)) = self.ensure_daemon()
+            && !created
+        {
+            let _ = daemon.tx.send(Msg::SetItemsAndQuery(items, query));
+        }
     }
 
     /// Activate in SEARCH mode (`/history`): send items to the
@@ -363,8 +406,13 @@ impl HistorySearchState {
         self.stick_to_bottom = true;
         self.last_query.clear();
         self.refresh_items(history);
-        // Eagerly grab the initial snapshot.
-        self.snapshot = self.daemon.shared.lock().unwrap().clone();
+        // Eagerly grab the initial snapshot without retaining a borrow of the
+        // daemon while updating the rest of the state.
+        let snapshot = self.ensure_daemon().map(|(daemon, _created)| {
+            let snapshot = daemon.shared.lock().unwrap().clone();
+            snapshot
+        });
+        self.snapshot = snapshot.unwrap_or_default();
         self.last_gen = self.snapshot.generation;
         self.selected = self.snapshot.items.len().saturating_sub(1);
     }
@@ -374,12 +422,15 @@ impl HistorySearchState {
         self.active && self.browse
     }
 
-    /// Deactivate: clear overlay (daemon thread stays alive for reuse).
+    /// Deactivate: clear the overlay and release its optional daemon thread.
     pub fn deactivate(&mut self) {
         self.active = false;
         self.browse = false;
         self.snapshot = Snapshot::default();
         self.selected = 0;
+        self.daemon = None;
+        self.history_items.clear();
+        self.last_gen = 0;
     }
 
     /// Send a query update to the daemon (non-blocking, never stalls UI).
@@ -392,7 +443,12 @@ impl HistorySearchState {
             self.last_query = query.to_string();
             self.stick_to_bottom = true;
         }
-        let _ = self.daemon.tx.send(Msg::SetQuery(query.to_string()));
+        if self.active
+            && let Some((daemon, created)) = self.ensure_daemon()
+            && !created
+        {
+            let _ = daemon.tx.send(Msg::SetQuery(query.to_string()));
+        }
     }
 
     /// Poll for new results from the daemon. Returns `true` if changed.
@@ -401,7 +457,10 @@ impl HistorySearchState {
         if !self.active {
             return false;
         }
-        let snap = self.daemon.shared.lock().unwrap().clone();
+        let Some(daemon) = self.daemon.as_ref() else {
+            return false;
+        };
+        let snap = daemon.shared.lock().unwrap().clone();
         if snap.generation == self.last_gen {
             return false;
         }
@@ -520,6 +579,14 @@ impl HistorySearchState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_daemon_thread_creation_failure_is_nonfatal() {
+        let error = io::Error::from(io::ErrorKind::WouldBlock);
+        let failed: io::Result<JoinHandle<()>> = Err(error);
+
+        assert!(retain_history_thread(failed).is_none());
+    }
 
     fn entries(texts: &[&str]) -> Vec<HistoryEntry> {
         texts

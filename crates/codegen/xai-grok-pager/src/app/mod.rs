@@ -410,13 +410,16 @@ pub fn join_early_prefetch(
             Err(_) => None,
         };
     }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(handle.join());
-    });
-    match rx.recv_timeout(std::time::Duration::from_secs(2)) {
-        Ok(Ok(r)) => r.settings,
-        _ => None,
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !handle.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if !handle.is_finished() {
+        return None;
+    }
+    match handle.join() {
+        Ok(result) => result.settings,
+        Err(_) => None,
     }
 }
 /// First non-blank of CLI > env > config (precedence + blank-skip). `None` →
@@ -467,7 +470,6 @@ pub async fn run(
     let early_prefetch =
         xai_grok_shell::agent::models::start_early_prefetch_with_auth(refreshed_auth);
     xai_grok_shell::agent::mvp_agent::warm_async_http_client();
-    tokio::task::spawn_blocking(|| {});
     if let Ok(cwd) = std::env::current_dir() {
         crate::git_info::populate_from_cwd_async(cwd);
     }

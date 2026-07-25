@@ -161,7 +161,7 @@ async fn handle_connection(ws: WebSocket, state: Arc<ServerState>, peer_addr: So
             let (conn_tx, conn_rx) = mpsc::unbounded_channel();
 
             let agent_config = state.agent_config.clone();
-            let _agent_thread = thread::Builder::new()
+            match thread::Builder::new()
                 .name("agent-persistent".to_string())
                 .spawn(move || {
                     // Prefetch models before creating the runtime (blocking is OK here)
@@ -190,10 +190,19 @@ async fn handle_connection(ws: WebSocket, state: Arc<ServerState>, peer_addr: So
                     });
 
                     warn!("Persistent agent thread exiting");
-                });
-
-            *agent_tx_guard = Some(conn_tx);
-            info!("Persistent agent thread spawned");
+                }) {
+                Ok(_agent_thread) => {
+                    *agent_tx_guard = Some(conn_tx);
+                    info!("Persistent agent thread spawned");
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        error_kind = ?error.kind(),
+                        "persistent agent unavailable because the OS could not create its thread"
+                    );
+                }
+            }
         }
 
         // Send new WS channels to the agent thread

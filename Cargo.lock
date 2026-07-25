@@ -13252,6 +13252,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "xai-grok-auth",
+ "xai-grok-provider-http",
  "xai-grok-sampler",
  "xai-grok-telemetry",
  "xai-grok-version",
@@ -13653,6 +13654,7 @@ dependencies = [
  "system-configuration",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "windows-sys 0.52.0",
 ]
 

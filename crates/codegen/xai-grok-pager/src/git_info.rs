@@ -67,8 +67,8 @@ pub fn update_from_notification(dir: &Path, branch: Option<&str>, main_repo: Opt
 /// show the branch + worktree on the next frame instead of waiting for the
 /// first lazy refresh.
 ///
-/// No subprocess (libgit2 is filesystem-based) and a no-op when there is no
-/// tokio runtime, so callers stay infallible.
+/// No subprocess is created (libgit2 is filesystem-based). If the OS cannot
+/// create this optional worker, the cache remains unchanged.
 pub fn populate_from_cwd_async(cwd: PathBuf) {
     spawn_cwd_git_refresh(cwd);
 }
@@ -149,21 +149,31 @@ pub fn cwd_git_info_lazy(cwd: &Path) -> Option<CwdGitInfo> {
     cached
 }
 
-/// Off-thread refresh of one cwd's entry in [`CWD_GIT_CACHE`]. No-op when
-/// there is no tokio runtime (e.g. unit tests) so callers stay infallible.
+/// Off-thread refresh of one cwd's entry in [`CWD_GIT_CACHE`].
+///
+/// This optional cache warmup uses fallible OS-thread creation instead of
+/// Tokio's infallible blocking pool, so process thread exhaustion merely
+/// leaves the previous cached value in place.
 fn spawn_cwd_git_refresh(cwd: PathBuf) {
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        return;
-    };
-    handle.spawn_blocking(move || {
-        // Guard against panics from the vendored libgit2 C bindings.
-        let info =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compute_cwd_git_info(&cwd)))
-                .unwrap_or(None);
-        if let Ok(mut cache) = CWD_GIT_CACHE.lock() {
-            apply_cwd_git_refresh(&mut cache, cwd, info);
-        }
-    });
+    if let Err(error) = std::thread::Builder::new()
+        .name("grok-git-info".to_owned())
+        .spawn(move || {
+            // Guard against panics from the vendored libgit2 C bindings.
+            let info = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                compute_cwd_git_info(&cwd)
+            }))
+            .unwrap_or(None);
+            if let Ok(mut cache) = CWD_GIT_CACHE.lock() {
+                apply_cwd_git_refresh(&mut cache, cwd, info);
+            }
+        })
+    {
+        tracing::warn!(
+            error = %error,
+            error_kind = ?error.kind(),
+            "Git status cache warmup skipped because the OS could not create a thread"
+        );
+    }
 }
 
 /// Apply an off-thread refresh result to [`CWD_GIT_CACHE`].

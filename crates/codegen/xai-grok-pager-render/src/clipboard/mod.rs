@@ -1131,7 +1131,16 @@ pub fn prewarm_image_probe() {
         return;
     }
     WARMED.call_once(|| {
-        std::thread::spawn(xai_grok_shared::clipboard::clipboard_prewarm);
+        if let Err(error) = std::thread::Builder::new()
+            .name("grok-clipboard-warmup".to_owned())
+            .spawn(xai_grok_shared::clipboard::clipboard_prewarm)
+        {
+            tracing::warn!(
+                error = %error,
+                error_kind = ?error.kind(),
+                "clipboard warmup skipped because the OS could not create a thread"
+            );
+        }
     });
 }
 

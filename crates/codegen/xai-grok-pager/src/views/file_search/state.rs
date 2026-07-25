@@ -38,8 +38,9 @@ pub struct FileSearchState {
     /// otherwise moved into its worker thread) so callers can introspect
     /// where `@`-completion is currently pointed.
     root: PathBuf,
-    /// Background fuzzy matcher daemon.
-    daemon: FuzzyFileMatcherDaemon,
+    /// Background fuzzy matcher daemon. Created only while an `@` token is
+    /// active so every idle prompt does not permanently consume a worker.
+    daemon: Option<FuzzyFileMatcherDaemon>,
     /// Latest results snapshot from the daemon.
     results: FuzzyMatcherDaemonResults,
     /// Current @-context (if cursor is inside an @-token).
@@ -63,7 +64,7 @@ impl FileSearchState {
     pub fn new(root: &Path) -> Self {
         Self {
             root: root.to_owned(),
-            daemon: FuzzyFileMatcherDaemon::new(FuzzyFileMatcher::new(root), MATCHER_TOP_K),
+            daemon: None,
             results: FuzzyMatcherDaemonResults::default(),
             context: None,
             selected: 0,
@@ -79,7 +80,7 @@ impl FileSearchState {
     /// Used after worktree creation to point @-completion at the new tree.
     pub fn retarget(&mut self, root: &Path) {
         self.root = root.to_owned();
-        self.daemon = FuzzyFileMatcherDaemon::new(FuzzyFileMatcher::new(root), MATCHER_TOP_K);
+        self.daemon = None;
         self.results = FuzzyMatcherDaemonResults::default();
         self.context = None;
         self.selected = 0;
@@ -92,6 +93,23 @@ impl FileSearchState {
     /// The directory the matcher currently walks (the `@`-completion root).
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn ensure_daemon(&mut self) -> Option<(&FuzzyFileMatcherDaemon, bool)> {
+        let created = self.daemon.is_none();
+        if created {
+            self.results = FuzzyMatcherDaemonResults::default();
+            self.min_generation = 0;
+            self.daemon =
+                FuzzyFileMatcherDaemon::new(FuzzyFileMatcher::new(&self.root), MATCHER_TOP_K);
+        }
+        self.daemon.as_ref().map(|daemon| (daemon, created))
+    }
+
+    fn release_daemon(&mut self) {
+        self.daemon = None;
+        self.results = FuzzyMatcherDaemonResults::default();
+        self.min_generation = 0;
     }
 
     // ── Visibility ──────────────────────────────────────────────────────
@@ -157,16 +175,21 @@ impl FileSearchState {
     /// Called after every text change or cursor movement.
     pub fn update_context(&mut self, text: &str, cursor: usize) {
         let new_ctx = context::detect_with_drill(text, cursor, self.drill_prefix.as_deref());
+        let old_ctx = self.context.clone();
 
-        match (&self.context, &new_ctx) {
+        match (&old_ctx, &new_ctx) {
             (None, Some(ctx)) => {
                 // Fresh `@` token is never a drill — drop any stale anchor.
                 self.drill_prefix = None;
-                // Entering @-mode: restart the directory walk.
-                self.daemon.restart_walk(ctx.is_hidden_mode());
-                // A trailing `/` scopes the query to a folder; it must not hide
-                // that folder's files, so never filter to directories only.
-                self.daemon.set_query(ctx.matcher_query(), false);
+                let hidden = ctx.is_hidden_mode();
+                let query = ctx.matcher_query().to_owned();
+                // Entering @-mode lazily creates the one search worker needed
+                // by this active prompt, then restarts its directory walk.
+                if let Some((daemon, _created)) = self.ensure_daemon() {
+                    // A trailing `/` scopes the query to a folder; it must not hide
+                    // that folder's files, so never filter to directories only.
+                    daemon.restart_walk_with_query(hidden, query, false);
+                }
                 self.min_generation += 1;
                 self.selected = 0;
                 self.hovered = None;
@@ -184,11 +207,19 @@ impl FileSearchState {
                 if anchor_stale {
                     self.drill_prefix = None;
                 }
-                // Staying in @-mode: check if hidden mode toggled (needs re-walk).
-                if old.is_hidden_mode() != new.is_hidden_mode() {
-                    self.daemon.restart_walk(new.is_hidden_mode());
+                let hidden_changed = old.is_hidden_mode() != new.is_hidden_mode();
+                let hidden = new.is_hidden_mode();
+                let query = new.matcher_query().to_owned();
+                if let Some((daemon, created)) = self.ensure_daemon() {
+                    // A newly recovered daemon and a hidden-mode toggle both
+                    // require a fresh index. Pair that restart with the query
+                    // so one generation can never publish stale results.
+                    if created || hidden_changed {
+                        daemon.restart_walk_with_query(hidden, query, false);
+                    } else {
+                        daemon.set_query(query, false);
+                    }
                 }
-                self.daemon.set_query(new.matcher_query(), false);
                 self.min_generation += 1;
                 // Reset selection when query changes to avoid showing stale
                 // matches from an obscure position in the list.
@@ -197,10 +228,11 @@ impl FileSearchState {
                 self.scroll_offset = 0;
             }
             (Some(_), None) => {
-                // Leaving @-mode: clear results and the drill anchor.
+                // Leaving @-mode releases its worker instead of keeping one
+                // background thread alive for every idle prompt.
                 self.context = None;
                 self.drill_prefix = None;
-                self.results = FuzzyMatcherDaemonResults::default();
+                self.release_daemon();
                 return;
             }
             (None, None) => return,
@@ -209,11 +241,11 @@ impl FileSearchState {
         self.context = new_ctx;
     }
 
-    /// Clear the context (e.g., on Esc).
+    /// Clear the context (e.g., on Esc) and release its optional worker.
     pub fn clear_context(&mut self) {
         self.context = None;
         self.drill_prefix = None;
-        self.results = FuzzyMatcherDaemonResults::default();
+        self.release_daemon();
     }
 
     // ── Tick / polling ──────────────────────────────────────────────────
@@ -226,7 +258,10 @@ impl FileSearchState {
             return false;
         }
 
-        let results = self.daemon.get();
+        let Some(daemon) = self.daemon.as_ref() else {
+            return false;
+        };
+        let results = daemon.get();
 
         // Check if results actually changed (pointer comparison on Arc).
         if Arc::ptr_eq(&results.topk, &self.results.topk) {
@@ -342,6 +377,7 @@ impl FileSearchState {
         if dismiss {
             self.context = None;
             self.drill_prefix = None;
+            self.release_daemon();
         }
 
         Some(FileSearchReplacement {

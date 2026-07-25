@@ -560,7 +560,16 @@ pub fn fetch_settings_blocking(
     auth: &GrokAuth,
     alpha_test_key: Option<&str>,
 ) -> Option<crate::util::config::RemoteSettings> {
-    let client = crate::http::shared_blocking_client();
+    let client = match crate::http::shared_blocking_client() {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "settings prefetch skipped because the blocking HTTP client could not start"
+            );
+            return None;
+        }
+    };
     let url = format!("{}/settings", cli_chat_proxy_base_url);
     for attempt in 0u64..3 {
         if attempt > 0 {
@@ -717,7 +726,7 @@ pub(crate) fn fetch_models_blocking(
     auth: Option<&GrokAuth>,
     fetch_auth: crate::agent::models::ModelFetchAuth,
 ) -> Result<FetchModelsResult, BackendError> {
-    let client = crate::http::shared_blocking_client();
+    let client = crate::http::shared_blocking_client()?;
     let source = ListModelsEndpoint::from_endpoints(endpoints, fetch_auth);
     let inference_base_url = endpoints.resolve_inference_base_url();
     tracing::info!("Fetching models from {}", source.url);

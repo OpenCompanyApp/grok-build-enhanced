@@ -26,7 +26,7 @@
 //! TLS root certificates are warmed at process start via
 //! `warm_async_http_client()` (in `mvp_agent.rs`).
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use xai_grok_workspace::permission::ClientType;
 
@@ -488,21 +488,29 @@ where
 /// (~60-100s; 30s is a conservative default) closes it. The HTTP/2 keepalive-ping
 /// setters that `shared_client()` uses are NOT exposed on reqwest's blocking
 /// `ClientBuilder` (0.12), so only the idle/TCP-eviction half applies here.
-pub fn shared_blocking_client() -> reqwest::blocking::Client {
+pub fn shared_blocking_client() -> Result<reqwest::blocking::Client, reqwest::Error> {
     static BLOCKING_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-    BLOCKING_CLIENT
-        .get_or_init(|| {
-            let _timer = startup_timer!("startup.http_blocking_client_build");
-            reqwest::blocking::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(30))
-                .timeout(std::time::Duration::from_secs(30))
-                .user_agent(process_user_agent_string())
-                .pool_idle_timeout(std::time::Duration::from_secs(30))
-                .tcp_keepalive(std::time::Duration::from_secs(30))
-                .build()
-                .expect("failed to build shared blocking HTTP client")
-        })
-        .clone()
+    if let Some(client) = BLOCKING_CLIENT.get() {
+        return Ok(client.clone());
+    }
+
+    // Building reqwest's blocking client creates an internal runtime thread and
+    // can fail with EAGAIN when the process is at the OS thread limit. Keep the
+    // initialization fallible so optional startup prefetch can degrade cleanly
+    // instead of aborting through an `expect`. DNS uses one separately fallible
+    // process worker rather than growing that runtime's blocking pool.
+    let _timer = startup_timer!("startup.http_blocking_client_build");
+    let client = reqwest::blocking::Client::builder()
+        .dns_resolver(Arc::new(
+            xai_grok_provider_http::outbound_proxy::FallibleDnsResolver,
+        ))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(process_user_agent_string())
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .tcp_keepalive(std::time::Duration::from_secs(30))
+        .build()?;
+    Ok(BLOCKING_CLIENT.get_or_init(|| client).clone())
 }
 
 #[cfg(test)]
