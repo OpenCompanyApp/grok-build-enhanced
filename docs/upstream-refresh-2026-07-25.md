@@ -3003,8 +3003,9 @@ A raw-path `adopt` classification means the path contains an open behavior or su
 
 ## Validation and acknowledgement gate
 
-- Focused Kimi, fuzzy matcher, history search, Codex plan presentation/raw-preservation, and synthetic worker-failure tests are required on the final formatted tree.
-- `CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin`, full manifest guardrail tests, strict ownership coverage, and `git diff --check` are required before any local candidate commit is reported complete.
+- Focused Rust validation passed on the formatted committed candidate: 46 Kimi provider tests; 22 route-aware HTTP/DNS/proxy tests; 5 synchronous fuzzy tests; 18 history-search tests; 45 file-search tests; 3 Codex `ent26` presentation/raw-preservation tests; and the synthetic model-worker `WouldBlock` test.
+- `CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin` passed. The complete fork-script suite passed 73 tests, the aggregate branding/provider/Codex-search/Warp/updater/workspace/workflow/secret contracts passed, `cargo fmt --all -- --check` passed, and `git diff --check` was clean.
+- Strict committed-candidate validation passed with 97 feature path sets and 1,424/1,424 baseline-to-candidate downstream paths covered. The 12 immutable source records and their independent reviewed/latest-fetched state cross-checked successfully.
 - Live provider calls were not run: they require explicitly entitled credentials and must not expose authenticated payloads. Thread exhaustion was validated through deterministic failure seams rather than exhausting the user’s machine.
 - The prior Grok acknowledgement remains bound to reviewed `3af4d5d39897855bdcc74f23e690024a5dc05573`. `6e386420825bd44ae648c63e7c8cba12fcec9401` is **not acknowledgement-eligible** because 91 applicable atomic Grok behavior obligations remain open.
 - No `coverage.upstream_acknowledgements` record or two-parent marker may be created for this target. A later refresh must carry every open stable ID forward or cite implementation and tests that close it.
