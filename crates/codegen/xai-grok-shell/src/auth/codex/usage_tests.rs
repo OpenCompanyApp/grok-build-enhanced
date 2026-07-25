@@ -115,6 +115,16 @@ fn binding(record_id: &str, generation: u64) -> CredentialBinding {
     binding
 }
 
+#[test]
+fn ent26_plan_type_remains_raw_in_usage_snapshot() {
+    let usage: CodexUsageSnapshot = serde_json::from_value(json!({
+        "plan_type": "ent26"
+    }))
+    .unwrap();
+
+    assert_eq!(usage.plan_type.as_deref(), Some("ent26"));
+}
+
 fn cached_usage(binding: CredentialBinding, age: std::time::Duration) -> CodexUsageCache {
     CodexUsageCache {
         entry: Some(CachedUsage {

@@ -257,7 +257,13 @@ pub fn format_codex_usage_summary(
 ) -> String {
     let mut lines = vec!["OpenAI Codex subscription usage".to_owned()];
     if let Some(plan) = usage.plan_type.as_deref().filter(|plan| !plan.is_empty()) {
-        lines.push(format!("Plan: {plan}"));
+        let display_plan = match plan {
+            // OpenAI's July 2026 enterprise workspace code. Preserve the raw
+            // value in the provider snapshot, but present its public plan name.
+            "ent26" => "Enterprise",
+            plan => plan,
+        };
+        lines.push(format!("Plan: {display_plan}"));
     }
     if let Some(limit) = &usage.rate_limit {
         if let Some(primary) = &limit.primary_window {
@@ -688,6 +694,17 @@ mod tests {
         assert!(summary.contains("Standard API comparison: $6.200000"));
         assert!(summary.contains("Pricing basis gpt-5.6-sol"));
         assert!(!summary.contains("Subscription spend: $"));
+    }
+
+    #[test]
+    fn codex_ent26_plan_is_presented_as_enterprise() {
+        let mut usage = codex_usage();
+        usage.plan_type = Some("ent26".to_owned());
+
+        let summary = format_codex_usage_summary(&usage, None);
+
+        assert!(summary.contains("Plan: Enterprise"));
+        assert!(!summary.contains("ent26"));
     }
 
     #[test]

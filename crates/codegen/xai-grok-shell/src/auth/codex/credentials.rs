@@ -524,6 +524,36 @@ mod tests {
     }
 
     #[test]
+    fn ent26_plan_claim_remains_raw_in_credentials() {
+        let id_token = jwt_for_test(serde_json::json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct-enterprise",
+                "chatgpt_plan_type": "ent26",
+            }
+        }));
+        let access_token = jwt_for_test(serde_json::json!({
+            "exp": (Utc::now() + Duration::hours(1)).timestamp(),
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct-enterprise",
+            }
+        }));
+
+        let credentials = CodexCredentials::from_token_response(
+            TokenResponse {
+                id_token: Some(id_token),
+                access_token: Some(access_token),
+                refresh_token: Some("enterprise-refresh".to_owned()),
+                expires_in: Some(3600),
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(credentials.plan_type.as_deref(), Some("ent26"));
+    }
+
+    #[test]
     fn equal_fedramp_claims_are_accepted() {
         let enabled = CodexCredentials::from_token_response(
             response_with_fedramp_claims(Some(true), Some(true)),
