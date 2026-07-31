@@ -408,8 +408,9 @@ impl ShellState {
                  builtin export GROK_AGENT=1; \
                  builtin export PWD=\"$(builtin pwd)\"; \
                  builtin shopt -s expand_aliases 2>/dev/null; {sudo_inject}{search_inject}\
-                 builtin eval \"$1\" 2>&1; }}; \
-                 COMMAND_EXIT_CODE=$?; {dump_fn} >&4; builtin exit $COMMAND_EXIT_CODE"
+                 __grok_user_cmd=\"$1\"; builtin declare +x __grok_user_cmd 2>/dev/null; builtin set --; \
+                 builtin eval \"$__grok_user_cmd\" 2>&1; }}; \
+                 COMMAND_EXIT_CODE=$?; builtin unset __grok_user_cmd 2>/dev/null; {dump_fn} >&4; builtin exit $COMMAND_EXIT_CODE"
             ),
             // After snapshot restore: force nonomatch so login dumps cannot re-arm NOMATCH for model globs.
             ShellKind::Zsh => format!(
@@ -423,8 +424,9 @@ impl ShellState {
                  builtin export GROK_AGENT=1; \
                  builtin export PWD=\"$(builtin pwd)\"; \
                  builtin setopt aliases 2>/dev/null; {sudo_inject}{search_inject}\
-                 builtin eval \"$1\" 2>&1; }}; \
-                 COMMAND_EXIT_CODE=$?; {dump_fn} >&4; builtin exit $COMMAND_EXIT_CODE"
+                 __grok_user_cmd=\"$1\"; builtin typeset +x __grok_user_cmd 2>/dev/null; builtin set --; \
+                 builtin eval \"$__grok_user_cmd\" 2>&1; }}; \
+                 COMMAND_EXIT_CODE=$?; builtin unset __grok_user_cmd 2>/dev/null; {dump_fn} >&4; builtin exit $COMMAND_EXIT_CODE"
             ),
         };
 
@@ -1087,6 +1089,26 @@ mod tests {
         let (code, stdout) = run_command(&mut state, "greet world").await;
         assert_eq!(code, 0);
         assert_eq!(stdout.trim(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_sourced_script_does_not_inherit_wrapper_positional_args_bash() {
+        if !bash_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("activate_probe.sh");
+        std::fs::write(&probe, "echo \"SOURCED_ARGC=$#\"\n").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd).await.unwrap();
+        let (code, stdout) = run_command(
+            &mut state,
+            &format!("source {} && echo AFTER_SOURCE_OK", probe.display()),
+        )
+        .await;
+        assert_eq!(code, 0, "command failed, stdout={stdout:?}");
+        assert!(stdout.contains("SOURCED_ARGC=0"), "got: {stdout:?}");
+        assert!(stdout.contains("AFTER_SOURCE_OK"), "got: {stdout:?}");
     }
 
     #[tokio::test]

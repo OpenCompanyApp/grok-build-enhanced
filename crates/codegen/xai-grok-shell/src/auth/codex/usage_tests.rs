@@ -125,6 +125,15 @@ fn ent26_plan_type_remains_raw_in_usage_snapshot() {
     assert_eq!(usage.plan_type.as_deref(), Some("ent26"));
 }
 
+#[test]
+fn business_plan_types_remain_raw_in_usage_snapshot() {
+    for plan in ["self_serve_business_prolite", "enterprise_cbp_automation"] {
+        let usage: CodexUsageSnapshot =
+            serde_json::from_value(serde_json::json!({"plan_type": plan})).unwrap();
+        assert_eq!(usage.plan_type.as_deref(), Some(plan));
+    }
+}
+
 fn cached_usage(binding: CredentialBinding, age: std::time::Duration) -> CodexUsageCache {
     CodexUsageCache {
         entry: Some(CachedUsage {

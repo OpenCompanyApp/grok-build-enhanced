@@ -1402,6 +1402,11 @@ impl MvpAgent {
             return ImageGenConfig::Disabled;
         }
         if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex {
+            if crate::auth::codex::current_plan_is_exact_free(
+                sampling_config.credential_binding.as_ref(),
+            ) {
+                return ImageGenConfig::Disabled;
+            }
             // Codex generation/editing is a standalone provider capability
             // backed by gpt-image-2. Whether the selected reasoning model can
             // *read* image inputs must not disable these separate tools.

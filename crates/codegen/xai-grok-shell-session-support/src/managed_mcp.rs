@@ -451,7 +451,9 @@ pub async fn fetch_managed_configs(
     Ok(response.mcp_servers)
 }
 
-const GATEWAY_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+// Above the server-side tool-call budget so the client is not the first hop
+// to abort a slow managed MCP call.
+const GATEWAY_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
 
 pub async fn call_gateway_tool(
     proxy_base_url: &str,
@@ -1007,6 +1009,12 @@ pub fn spawn_cache_refresh_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gateway_tool_call_timeout_exceeds_server_budget() {
+        assert_eq!(GATEWAY_TOOL_CALL_TIMEOUT.as_secs(), 75);
+        assert!(GATEWAY_TOOL_CALL_TIMEOUT > std::time::Duration::from_secs(60));
+    }
 
     fn make_managed(name: &str, endpoint: &str, scope: &str) -> ManagedMcpConfig {
         ManagedMcpConfig {

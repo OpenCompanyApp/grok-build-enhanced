@@ -51,11 +51,22 @@ pub(crate) fn git_bin() -> OsString {
     }
 }
 
-/// A `sh -c <script>` command: the portable shell escape hatch shared by the
-/// identity and auth providers.
-pub(crate) fn sh_c(script: &str) -> Command {
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", script]);
+/// A platform-shell command shared by identity and auth providers.
+///
+/// Windows uses `cmd /C`; Unix-family platforms use `sh -c`.
+pub(crate) fn shell_c(script: &str) -> Command {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", script]);
+        cmd
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    };
     cmd
 }
 
@@ -246,7 +257,28 @@ mod tests {
     use super::*;
 
     fn sh(script: &str) -> Command {
-        sh_c(script)
+        shell_c(script)
+    }
+
+    #[test]
+    fn shell_command_uses_the_platform_shell() {
+        let command = shell_c("exit 0");
+        #[cfg(windows)]
+        {
+            assert_eq!(command.as_std().get_program(), "cmd");
+            assert_eq!(
+                command.as_std().get_args().collect::<Vec<_>>(),
+                ["/C", "exit 0"]
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(command.as_std().get_program(), "sh");
+            assert_eq!(
+                command.as_std().get_args().collect::<Vec<_>>(),
+                ["-c", "exit 0"]
+            );
+        }
     }
 
     fn opts(label: &str) -> RunOptions<'_> {

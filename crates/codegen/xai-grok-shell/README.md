@@ -341,7 +341,9 @@ Common log messages:
 ```toml
 # ~/.grok/config.toml
 [auth_provider.litellm]
-command = "/usr/local/bin/litellm-token"   # run via `sh -c`
+command = "./bin/litellm-token"            # run relative to `cwd`
+args = []                                   # direct execution, without a shell
+cwd = "~/gateway-auth"                     # optional; leading `~` expands
 token_ttl_secs = 3600                      # optional: see below
 timeout_secs = 10                          # optional: command timeout (default 30)
 
@@ -355,7 +357,7 @@ auth_provider = "litellm"
 
 **Contract** (the strict named-provider stdout contract accepts only `access_token`, optional `refresh_token`, and optional `expires_in`; unknown JSON fields such as `issuer` are rejected, and a returned refresh token is handed back to the command on refresh):
 
-- Without `args`, the command runs via POSIX `sh -c`, so it can be a binary path, a script, or a pipeline. With `args = ["..."]`, the command runs directly with those arguments and no shell: `command` is a program name resolved via `PATH`, or a path. Use `args` to avoid shell quoting, and on Windows, where there is no `sh`.
+- Without `args`, the command runs through the platform shell (`sh -c` on Unix, `cmd /C` on Windows), so it can be a binary path, script, or pipeline. With `args = ["..."]`, it runs directly with no shell. A bare direct command is resolved via `PATH`; a relative path is resolved against optional `cwd`. A leading `~` in `cwd` expands to the home directory.
 - stdout: a bare token, or JSON `{"access_token": "...", "refresh_token": "...", "expires_in": 3600}`.
 - stderr: drained but never surfaced or logged because helper output may contain credentials or private diagnostics; exit 0 = success.
 - `GROK_AUTH_EXPIRED=1` is set whenever Grok re-mints over a token still cached in memory, whether from near-expiry rotation or a rejection. The first mint on a cold cache runs without it.

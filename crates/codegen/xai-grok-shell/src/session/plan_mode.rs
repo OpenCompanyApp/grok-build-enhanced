@@ -73,6 +73,10 @@ pub struct PlanModeTracker {
     /// deferring an exit the model never knew about. Not persisted — a restart
     /// loses the buffer, and the next turn's Active-state injection covers it.
     pending_activation: Option<PendingActivation>,
+    /// Last account-scoped Codex catalog collaboration fragment injected into
+    /// the conversation. This is deliberately not persisted: restored turns
+    /// re-emit current authenticated metadata after provider/model attestation.
+    catalog_collaboration: Option<CatalogCollaborationState>,
     /// Absolute path to the plan file on disk.
     /// Lives inside the session directory:
     /// `~/.grok/sessions/<cwd>/<session_id>/plan.md`
@@ -86,6 +90,12 @@ struct PendingActivation {
     /// `was_previously_active` before this activation, restored on withdrawal
     /// so a rolled-back activation doesn't fake a reentry.
     prior_was_previously_active: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CatalogCollaborationState {
+    model: String,
+    plan: bool,
+    message: String,
 }
 /// Serializable snapshot of plan mode lifecycle state.
 ///
@@ -115,6 +125,7 @@ impl PlanModeTracker {
             pending_exit_reminder: false,
             awaiting_plan_approval: false,
             pending_activation: None,
+            catalog_collaboration: None,
             plan_file_path: session_dir.join("plan.md"),
         }
     }
@@ -143,6 +154,7 @@ impl PlanModeTracker {
             pending_exit_reminder: snapshot.pending_exit_reminder,
             awaiting_plan_approval: snapshot.awaiting_plan_approval,
             pending_activation: None,
+            catalog_collaboration: None,
             plan_file_path: session_dir.join("plan.md"),
         }
     }
@@ -337,6 +349,31 @@ impl PlanModeTracker {
     /// Called after injecting the exit reminder. Clears the flag.
     pub fn clear_pending_exit_reminder(&mut self) {
         self.pending_exit_reminder = false;
+    }
+    /// Advance the provider/model/mode collaboration fragment. Returns the
+    /// exact catalog message when it changed, an empty message when a prior
+    /// Codex fragment must be cleared, and `None` for a stable or never-set
+    /// fallback state.
+    pub fn transition_catalog_collaboration(
+        &mut self,
+        model: Option<&str>,
+        plan: bool,
+        message: Option<String>,
+    ) -> Option<String> {
+        let next = model
+            .zip(message)
+            .map(|(model, message)| CatalogCollaborationState {
+                model: model.to_owned(),
+                plan,
+                message,
+            });
+        if self.catalog_collaboration == next {
+            return None;
+        }
+        let had_previous = self.catalog_collaboration.is_some();
+        self.catalog_collaboration = next.clone();
+        next.map(|state| state.message)
+            .or_else(|| had_previous.then(String::new))
     }
     /// Called after compaction. Resets reminder counter so next
     /// injection is the full variant.
@@ -1221,5 +1258,40 @@ mod tests {
         assert!(!snapshot.awaiting_plan_approval);
         let restored = PlanModeTracker::from_snapshot(PathBuf::from("/tmp/test-session"), snapshot);
         assert!(!restored.is_awaiting_plan_approval());
+    }
+    #[test]
+    fn catalog_collaboration_transitions_are_mode_model_and_provider_scoped() {
+        let mut tracker = test_tracker();
+        assert_eq!(
+            tracker.transition_catalog_collaboration(
+                Some("gpt-codex"),
+                false,
+                Some("default guidance".into()),
+            ),
+            Some("default guidance".into())
+        );
+        assert_eq!(
+            tracker.transition_catalog_collaboration(
+                Some("gpt-codex"),
+                false,
+                Some("default guidance".into()),
+            ),
+            None,
+            "stable mode/model/message is injected once"
+        );
+        assert_eq!(
+            tracker.transition_catalog_collaboration(Some("gpt-codex"), true, Some(String::new()),),
+            Some(String::new()),
+            "an explicit empty catalog variant is preserved"
+        );
+        assert_eq!(
+            tracker.transition_catalog_collaboration(None, false, None),
+            Some(String::new()),
+            "leaving Codex appends a clearing fragment"
+        );
+        assert_eq!(
+            tracker.transition_catalog_collaboration(None, false, None),
+            None
+        );
     }
 }

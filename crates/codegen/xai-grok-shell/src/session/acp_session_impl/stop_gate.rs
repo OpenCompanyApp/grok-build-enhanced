@@ -407,6 +407,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: owner.map(str::to_string),
+            is_backgrounded: true,
         }
     }
 

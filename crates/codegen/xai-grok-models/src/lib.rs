@@ -68,3 +68,11 @@ pub fn default_session_summary_model() -> &'static str {
         .as_deref()
         .unwrap_or(&DEFAULTS.default)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn web_search_defaults_to_current_xai_model() {
+        assert_eq!(super::default_web_search_model(), "grok-4.5");
+    }
+}

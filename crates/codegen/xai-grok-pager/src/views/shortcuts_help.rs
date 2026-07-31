@@ -104,6 +104,14 @@ Pastes clipboard images into the prompt as chips, and plain text as typed.\n\
 Use Ctrl+V for screenshots, browser \"Copy Image\", and file-manager image \
 copies (many terminals swallow Cmd+V and never deliver it to the TUI).\n\
 You can also drag an image file into the prompt.";
+
+const UNDO_LONG_HELP: &str = "\
+Undoes the last change in the prompt editor.\n\
+Covers typing, deletes, line/word kills, and clearing a draft.";
+
+const REDO_LONG_HELP: &str = "\
+Redoes the last undone change in the prompt editor.\n\
+Ctrl+Shift+Z is primary; Ctrl+R is an alternate.";
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 const PASTE_LONG_HELP: &str = "\
 Pastes clipboard images into the prompt as chips, and plain text as typed.\n\
@@ -268,18 +276,33 @@ pub fn build_entries(
         // Windows also Alt+V as a fallback. Super/Cmd omitted — many terminals
         // swallow it. Lit on the agent prompt and the dashboard (both paste).
         if cat == Category::Input {
-            let mut item = HintItem::new(crate::key!('v', CONTROL), "paste");
-            item.description = Some("Paste images (and text) from the clipboard".into());
-            #[cfg(target_os = "windows")]
-            item.keys.push(crate::key!('v', ALT));
             let dimmed = !active_contexts.contains(&When::PromptFocused)
                 && !active_contexts.contains(&When::DashboardFocused);
-            entries.push(ShortcutsHelpEntry::Hint {
-                item,
-                dimmed,
-                action_id: None,
-                long_help: Some(PASTE_LONG_HELP),
-            });
+            let push_pseudo = |entries: &mut Vec<ShortcutsHelpEntry>,
+                               item: HintItem,
+                               long_help: Option<&'static str>| {
+                entries.push(ShortcutsHelpEntry::Hint {
+                    item,
+                    dimmed,
+                    action_id: None,
+                    long_help,
+                });
+            };
+
+            let mut paste = HintItem::new(crate::key!('v', CONTROL), "paste");
+            paste.description = Some("Paste images (and text) from the clipboard".into());
+            #[cfg(target_os = "windows")]
+            paste.keys.push(crate::key!('v', ALT));
+            push_pseudo(&mut entries, paste, Some(PASTE_LONG_HELP));
+
+            let mut undo = HintItem::new(crate::key!('z', CONTROL), "undo");
+            undo.description = Some("Undo the last prompt edit".into());
+            push_pseudo(&mut entries, undo, Some(UNDO_LONG_HELP));
+
+            let mut redo = HintItem::new(crate::key!('z', CONTROL | SHIFT), "redo");
+            redo.description = Some("Redo the last undone prompt edit".into());
+            redo.keys.push(crate::key!('r', CONTROL));
+            push_pseudo(&mut entries, redo, Some(REDO_LONG_HELP));
         }
         let count = entries.len() - header_idx - 1;
         if count == 0 {
@@ -1936,6 +1959,39 @@ mod tests {
         assert!(item.keys.iter().any(|k| *k == key!('v', ALT)));
         #[cfg(not(target_os = "windows"))]
         assert!(!item.keys.iter().any(|k| *k == key!('v', ALT)));
+    }
+
+    #[test]
+    fn build_entries_lists_undo_and_redo() {
+        let registry = ActionRegistry::defaults();
+        let entries = build_entries(&all_contexts(), &registry, true);
+
+        let undo = entries.iter().find_map(|entry| match entry {
+            ShortcutsHelpEntry::Hint {
+                item,
+                action_id: None,
+                long_help,
+                ..
+            } if item.label == "undo" => Some((item, *long_help)),
+            _ => None,
+        });
+        let (undo, undo_help) = undo.expect("undo row");
+        assert!(undo.keys.contains(&key!('z', CONTROL)));
+        assert_eq!(undo_help, Some(UNDO_LONG_HELP));
+
+        let redo = entries.iter().find_map(|entry| match entry {
+            ShortcutsHelpEntry::Hint {
+                item,
+                action_id: None,
+                long_help,
+                ..
+            } if item.label == "redo" => Some((item, *long_help)),
+            _ => None,
+        });
+        let (redo, redo_help) = redo.expect("redo row");
+        assert!(redo.keys.contains(&key!('z', CONTROL | SHIFT)));
+        assert!(redo.keys.contains(&key!('r', CONTROL)));
+        assert_eq!(redo_help, Some(REDO_LONG_HELP));
     }
 
     fn paste_is_dimmed(entries: &[ShortcutsHelpEntry]) -> Option<bool> {

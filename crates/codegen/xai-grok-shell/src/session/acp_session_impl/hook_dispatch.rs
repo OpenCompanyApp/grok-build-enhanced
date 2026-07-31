@@ -379,6 +379,7 @@ mod notification_hook_filter_tests {
                 block_waited: false,
                 explicitly_killed: false,
                 owner_session_id: None,
+                is_backgrounded: false,
             },
             will_wake: false,
         };

@@ -214,7 +214,7 @@ async fn list_outstanding_background_tasks(
         .list_tasks()
         .await
         .into_iter()
-        .filter(|t| !t.completed)
+        .filter(|t| t.is_outstanding_background())
         .map(|t| {
             let command = t
                 .display_command
@@ -248,7 +248,7 @@ async fn tasks_snapshot(toolset: &FinalizedToolset) -> TasksSnapshotResponse {
             .list_tasks()
             .await
             .into_iter()
-            .filter(|t| !t.completed)
+            .filter(|t| t.is_outstanding_background())
             .map(|t| {
                 let command = t
                     .display_command

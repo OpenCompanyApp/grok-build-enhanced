@@ -287,6 +287,25 @@ mod tests {
     }
 
     #[test]
+    fn parser_accepts_minute_windows_and_reset_time() {
+        let snapshot = parse_usage(&serde_json::json!({
+            "limits": [{
+                "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                "detail": {
+                    "used": 7,
+                    "limit": 100,
+                    "resetTime": "2026-08-01T12:34:56Z"
+                }
+            }]
+        }));
+        assert_eq!(snapshot.limits[0].label, "5h limit");
+        assert_eq!(
+            snapshot.limits[0].reset_hint.as_deref(),
+            Some("resets at 2026-08-01T12:34:56Z")
+        );
+    }
+
+    #[test]
     fn remaining_usage_derivation_saturates_untrusted_integer_extremes() {
         let snapshot = parse_usage(&serde_json::json!({
             "usage": {"limit": i64::MAX, "remaining": i64::MIN}

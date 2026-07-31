@@ -509,6 +509,10 @@ impl ModelsManager {
             .as_ref()
             .map(|prefetch| prefetch.models.clone())
             .unwrap_or_default();
+        let codex_collaboration_messages = codex_prefetch
+            .as_ref()
+            .map(|prefetch| prefetch.collaboration_messages.clone())
+            .unwrap_or_default();
         let catalog = resolve_combined_model_catalog(cfg, prefetched_models.clone(), codex_models);
 
         // Validate only against a complete-enough real catalog. If one
@@ -566,6 +570,7 @@ impl ModelsManager {
             codex_catalog_identity,
             codex_catalog_needs_revalidation,
             has_codex_catalog,
+            codex_collaboration_messages,
         );
         mgr.inner.allowlist_excludes_all.store(
             allowlist_matches_nothing(cfg, &mgr.inner.models.read()),
@@ -755,6 +760,21 @@ impl ModelsManager {
     /// Whether authenticated Codex service-tier controls are enabled.
     pub fn fast_mode_enabled(&self) -> bool {
         self.inner.cfg.read().features.fast_mode.unwrap_or(true)
+    }
+
+    /// Provider-authored collaboration guidance for one authenticated Codex
+    /// model and Grok prompt mode. The controller clears this account-scoped
+    /// map on logout or identity change, so no other provider can inherit it.
+    pub(crate) fn codex_collaboration_message(
+        &self,
+        provider: ProviderId,
+        model: &str,
+        plan: bool,
+    ) -> Option<String> {
+        provider
+            .is_openai_codex()
+            .then(|| self.inner.codex_catalog.collaboration_message(model, plan))
+            .flatten()
     }
 
     /// Does the current credential grant access to OAuth-only models?
@@ -5387,6 +5407,7 @@ mod tests {
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
             "https://helper.example/v1",
         ));

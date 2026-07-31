@@ -2428,7 +2428,7 @@ impl Config {
     /// remote settings `doom_loop_recovery` object (a partial remote object only
     /// overrides the fields it sets). Gate precedence: env
     /// `GROK_DOOM_LOOP_RECOVERY` > TOML `enabled` > remote `enabled` >
-    /// default off — `None` IS the off state, so disabled has exactly one
+    /// default on — `None` IS the off state, so disabled has exactly one
     /// spelling. Tunables have no env layer (TOML > remote > default) and
     /// are clamped to their documented ranges. Returns the composite runtime
     /// policy rather than `Resolved` because each knob resolves from its own
@@ -2444,7 +2444,7 @@ impl Config {
         let enabled = BoolFlag::env("GROK_DOOM_LOOP_RECOVERY")
             .config(self.doom_loop_recovery.enabled)
             .feature_flag(remote.and_then(|s| s.enabled))
-            .default(false)
+            .default(true)
             .resolve()
             .value;
         enabled.then(|| Policy {
@@ -2612,6 +2612,8 @@ impl Config {
             .default(true)
             .resolve()
     }
+    /// Background workflows default on. Explicit remote, config, or env false
+    /// remains a kill switch.
     pub(crate) fn resolve_workflows(&self) -> Resolved<bool> {
         let ff = self
             .remote_settings
@@ -2623,7 +2625,7 @@ impl Config {
         BoolFlag::env("GROK_WORKFLOWS")
             .config(self.workflows.enabled)
             .feature_flag(ff)
-            .default(false)
+            .default(true)
             .resolve()
     }
     /// Classifier, planner, and summary all default to goal mode itself: when
@@ -6201,6 +6203,7 @@ reasoning_effort = "low"
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
             route,
         ));
@@ -6230,6 +6233,7 @@ reasoning_effort = "low"
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
             route,
         );
@@ -6276,6 +6280,7 @@ reasoning_effort = "low"
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
             route,
         ));
@@ -6305,6 +6310,7 @@ reasoning_effort = "low"
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
             route,
         );
@@ -6393,6 +6399,7 @@ reasoning_effort = "low"
             args = ["--scope", "corp"]
             token_ttl_secs = 3600
             timeout_secs = 10
+            cwd = "~/auth-helpers"
 
             [model.proxied-claude]
             model = "claude-sonnet-4-5"
@@ -6410,6 +6417,7 @@ reasoning_effort = "low"
                 args: Some(vec!["--scope".into(), "corp".into()]),
                 token_ttl_secs: Some(3600),
                 timeout_secs: Some(10),
+                cwd: Some("~/auth-helpers".into()),
             })
         );
         let resolved = resolve_model_list(&cfg, None);
@@ -6763,6 +6771,7 @@ reasoning_effort = "low"
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
             "https://litellm.example/v1",
         );
@@ -6791,6 +6800,7 @@ reasoning_effort = "low"
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
             "https://litellm.example/v1",
         );
@@ -6837,6 +6847,7 @@ reasoning_effort = "low"
                 args: None,
                 token_ttl_secs: None,
                 timeout_secs: None,
+                cwd: None,
             },
         );
         let resolved = resolve_model_list(&cfg, Some(prefetched));
@@ -9723,7 +9734,7 @@ reasoning_effort = "low"
         unsafe { std::env::remove_var("GROK_TWO_PASS_COMPACTION") };
     }
     /// Gate precedence: env > `[doom_loop_recovery]` > remote settings >
-    /// default(off), with the remote layer merged PER-FIELD from the nested
+    /// default(on), with the remote layer merged PER-FIELD from the nested
     /// `doom_loop_recovery` object. One test covers the full ladder (the
     /// `resolve_two_pass_compaction_precedence` pattern).
     #[test]
@@ -9732,10 +9743,30 @@ reasoning_effort = "low"
         use crate::util::config::DoomLoopRecoverySettings;
         unsafe { std::env::remove_var("GROK_DOOM_LOOP_RECOVERY") };
         let default_cfg = Config::default();
-        assert!(
-            default_cfg.resolve_doom_loop_recovery().is_none(),
-            "default is opt-in off"
-        );
+        let default_policy = default_cfg
+            .resolve_doom_loop_recovery()
+            .expect("doom-loop recovery defaults on");
+        assert_eq!(default_policy.max_threshold, 8);
+        assert_eq!(default_policy.max_retries, 2);
+        let config_off = Config {
+            doom_loop_recovery: DoomLoopRecoverySettings {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(config_off.resolve_doom_loop_recovery().is_none());
+        let remote_off = Config {
+            remote_settings: Some(crate::util::config::RemoteSettings {
+                doom_loop_recovery: Some(DoomLoopRecoverySettings {
+                    enabled: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(remote_off.resolve_doom_loop_recovery().is_none());
         let remote_on = Config {
             remote_settings: Some(crate::util::config::RemoteSettings {
                 doom_loop_recovery: Some(DoomLoopRecoverySettings {
@@ -9751,10 +9782,6 @@ reasoning_effort = "low"
         assert_eq!(p.max_threshold, 16);
         assert_eq!(p.max_retries, 1);
         let partial_remote = Config {
-            doom_loop_recovery: DoomLoopRecoverySettings {
-                enabled: Some(true),
-                ..Default::default()
-            },
             remote_settings: Some(crate::util::config::RemoteSettings {
                 doom_loop_recovery: Some(DoomLoopRecoverySettings {
                     max_threshold: Some(16),
@@ -9766,7 +9793,7 @@ reasoning_effort = "low"
         };
         let p = partial_remote
             .resolve_doom_loop_recovery()
-            .expect("gate from TOML despite remote object omitting enabled");
+            .expect("default-on gate survives a partial remote object");
         assert_eq!(p.max_threshold, 16, "remote tunable applies");
         assert_eq!(p.max_retries, 2, "unset field falls to the default");
         let config_over_remote = Config {
@@ -10074,15 +10101,15 @@ reasoning_effort = "low"
     }
     #[test]
     #[serial]
-    fn background_workflows_default_off_without_affecting_goal() {
+    fn background_workflows_default_on_without_affecting_goal() {
         unsafe { std::env::remove_var("GROK_WORKFLOWS") };
         let cfg = Config::default();
-        assert!(!cfg.resolve_workflows().value);
+        assert!(cfg.resolve_workflows().value);
         assert!(cfg.resolve_goal().value);
     }
     #[test]
     #[serial]
-    fn resolve_workflows_remote_settings_opt_in() {
+    fn resolve_workflows_remote_settings_enables() {
         unsafe { std::env::remove_var("GROK_WORKFLOWS") };
         let cfg = Config {
             remote_settings: Some(crate::util::config::RemoteSettings {
@@ -10113,11 +10140,11 @@ reasoning_effort = "low"
     #[test]
     #[serial]
     fn resolve_workflows_env_wins() {
-        unsafe { std::env::set_var("GROK_WORKFLOWS", "1") };
+        unsafe { std::env::set_var("GROK_WORKFLOWS", "0") };
         let cfg = Config::default();
         let r = cfg.resolve_workflows();
         assert_eq!(r.source, ConfigSource::Env);
-        assert!(r.value);
+        assert!(!r.value);
         unsafe { std::env::remove_var("GROK_WORKFLOWS") };
     }
     #[test]

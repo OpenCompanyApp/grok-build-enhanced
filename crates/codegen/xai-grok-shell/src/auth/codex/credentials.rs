@@ -10,6 +10,10 @@ use super::CodexAuthError;
 
 pub const CODEX_CREDENTIAL_SCHEMA_VERSION: u32 = 1;
 
+pub(crate) fn is_exact_free_plan(plan_type: Option<&str>) -> bool {
+    plan_type == Some("free")
+}
+
 /// A serializable secret whose formatting implementations never expose any
 /// credential material. Access is deliberately explicit at the request edge.
 #[derive(Clone, PartialEq, Eq, Serialize)]
@@ -554,6 +558,34 @@ mod tests {
     }
 
     #[test]
+    fn business_plan_claims_remain_raw_in_credentials() {
+        for plan in ["self_serve_business_prolite", "enterprise_cbp_automation"] {
+            let id_token = jwt_for_test(serde_json::json!({
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct",
+                    "chatgpt_plan_type": plan
+                }
+            }));
+            let access_token = jwt_for_test(serde_json::json!({
+                "exp": (Utc::now() + Duration::hours(1)).timestamp(),
+                "https://api.openai.com/auth": {"chatgpt_account_id": "acct"}
+            }));
+            let credentials = CodexCredentials::from_token_response(
+                TokenResponse {
+                    id_token: Some(id_token),
+                    access_token: Some(access_token),
+                    refresh_token: Some("business-refresh".to_owned()),
+                    expires_in: Some(3600),
+                },
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(credentials.plan_type.as_deref(), Some(plan));
+        }
+    }
+
+    #[test]
     fn equal_fedramp_claims_are_accepted() {
         let enabled = CodexCredentials::from_token_response(
             response_with_fedramp_claims(Some(true), Some(true)),
@@ -721,5 +753,13 @@ mod tests {
         }
         assert_eq!(credential_debug, alternate_debug);
         assert!(!credential_debug.to_ascii_lowercase().contains("fedramp"));
+    }
+
+    #[test]
+    fn free_plan_gate_matches_only_the_provider_code() {
+        assert!(is_exact_free_plan(Some("free")));
+        for value in [None, Some("Free"), Some(" free "), Some("plus")] {
+            assert!(!is_exact_free_plan(value));
+        }
     }
 }

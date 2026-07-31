@@ -19,8 +19,8 @@ use std::path::Path;
 
 use crate::computer::types::AsyncFileSystem;
 use crate::implementations::grok_build::image_gen::{
-    ImageGenBackend, ImageGenClient, OPENAI_CODEX_IMAGE_MODEL, read_image_response,
-    validate_generated_image,
+    CodexImageTurnContext, ImageGenBackend, ImageGenClient, OPENAI_CODEX_IMAGE_MODEL,
+    read_image_response, validate_generated_image,
 };
 use crate::types::output::{MediaGenOutput, ToolOutput};
 use crate::types::requirements::{Expr, ToolRequirement};
@@ -384,6 +384,14 @@ pub struct ImageEditInput {
         description = "The aspect ratio of the output image. For single-image edits this is ignored — the output matches the input image's aspect ratio. For multi-image edits, defaults to 'auto'. Supported values: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2, 19.5:9, 9:19.5, 20:9, 9:20, auto."
     )]
     pub aspect_ratio: String,
+
+    #[serde(
+        default,
+        rename = "_grok_codex_image_turn",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(skip)]
+    pub codex_turn_context: Option<CodexImageTurnContext>,
 }
 
 fn default_aspect_ratio() -> String {
@@ -521,7 +529,9 @@ impl xai_tool_runtime::Tool for ImageEditTool {
         // vector before reqwest serializes another copy of the request body.
         drop(data_urls);
 
-        let response = client.post_json("images/edits", &payload).await?;
+        let response = client
+            .post_json("images/edits", &payload, input.codex_turn_context.as_ref())
+            .await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -738,6 +748,7 @@ mod tests {
             .and(header("authorization", "Bearer edit-access"))
             .and(header("chatgpt-account-id", "edit-account"))
             .and(header("x-openai-fedramp", "true"))
+            .and(header("x-codex-image-turn-id", "turn-image-edit"))
             .and(header("originator", "grok_build_codex"))
             .and(header(
                 "version",
@@ -761,7 +772,16 @@ mod tests {
         };
         let provider: crate::types::SharedApiKeyProvider = Arc::new(CodexEditTestAuth);
         let client = ImageGenClient::new(&config, Some(provider)).unwrap();
-        let response = client.post_json("images/edits", &payload).await.unwrap();
+        let response = client
+            .post_json(
+                "images/edits",
+                &payload,
+                Some(&CodexImageTurnContext {
+                    turn_id: "turn-image-edit".to_owned(),
+                }),
+            )
+            .await
+            .unwrap();
         assert!(response.status().is_success());
 
         let requests = server.received_requests().await.unwrap();
@@ -789,7 +809,13 @@ mod tests {
             Arc::new(ZeroGenerationCodexEditTestAuth);
         let client = ImageGenClient::new(&config, Some(provider)).unwrap();
         let error = client
-            .post_json("images/edits", &serde_json::json!({}))
+            .post_json(
+                "images/edits",
+                &serde_json::json!({}),
+                Some(&CodexImageTurnContext {
+                    turn_id: "turn-zero-edit".to_owned(),
+                }),
+            )
             .await
             .expect_err("generation-zero credentials must fail before edit dispatch");
 
@@ -822,6 +848,16 @@ mod tests {
         assert!(input.image.is_empty());
     }
 
+    #[test]
+    fn image_edit_schema_hides_codex_turn_context() {
+        let schema = serde_json::to_value(schemars::schema_for!(ImageEditInput)).unwrap();
+        assert!(
+            !schema
+                .to_string()
+                .contains(super::super::image_gen::CODEX_IMAGE_TURN_CONTEXT_FIELD)
+        );
+    }
+
     #[tokio::test]
     async fn rejects_empty_image_array() {
         let tool = ImageEditTool;
@@ -833,6 +869,7 @@ mod tests {
                 prompt: "test".into(),
                 image: vec![],
                 aspect_ratio: "auto".into(),
+                codex_turn_context: None,
             },
         )
         .await;
@@ -851,6 +888,7 @@ mod tests {
                 prompt: "test".into(),
                 image: vec!["/some/path.jpg".into()],
                 aspect_ratio: "auto".into(),
+                codex_turn_context: None,
             },
         )
         .await;
@@ -1020,6 +1058,9 @@ mod tests {
                 prompt: "preserve every source detail".to_owned(),
                 image: vec!["/sandbox/source.png".to_owned()],
                 aspect_ratio: "auto".to_owned(),
+                codex_turn_context: Some(CodexImageTurnContext {
+                    turn_id: "turn-codex-edit-tool".to_owned(),
+                }),
             },
         )
         .await
@@ -1090,6 +1131,9 @@ mod tests {
             ImageGenInput {
                 prompt: "a reusable source".to_owned(),
                 aspect_ratio: "auto".to_owned(),
+                codex_turn_context: Some(CodexImageTurnContext {
+                    turn_id: "turn-codex-chain".to_owned(),
+                }),
             },
         )
         .await
@@ -1105,6 +1149,9 @@ mod tests {
                 prompt: "edit the generated source".to_owned(),
                 image: vec![generated_media.path.to_string_lossy().into_owned()],
                 aspect_ratio: "auto".to_owned(),
+                codex_turn_context: Some(CodexImageTurnContext {
+                    turn_id: "turn-codex-chain".to_owned(),
+                }),
             },
         )
         .await

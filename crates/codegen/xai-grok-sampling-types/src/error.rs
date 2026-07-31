@@ -256,8 +256,9 @@ impl SamplingError {
             self,
             SamplingError::Api {
                 status: StatusCode::TOO_MANY_REQUESTS,
+                should_retry,
                 ..
-            }
+            } if *should_retry != Some(false)
         )
     }
 
@@ -341,7 +342,14 @@ impl SamplingError {
             SamplingError::Http(err) => is_retryable_reqwest(err),
             SamplingError::RedactedTransport { retryable, .. } => *retryable,
             SamplingError::Serialization(_) => false,
-            SamplingError::Api { status, .. } => {
+            SamplingError::Api {
+                status,
+                should_retry,
+                ..
+            } => {
+                if *should_retry == Some(false) {
+                    return false;
+                }
                 matches!(
                     status.as_u16(),
                     408 | 409 | 429 | 500 | 502 | 503 | 504 | 520 | 529
@@ -842,6 +850,19 @@ mod tests {
         assert!(err.is_retryable(), "429 should be retryable");
         assert!(!err.is_auth_error());
         assert!(!err.is_payload_too_large());
+    }
+
+    #[test]
+    fn provider_retry_veto_makes_quota_429_non_retryable() {
+        let err = SamplingError::Api {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "provider quota exhausted".into(),
+            model_metadata: None,
+            retry_after_secs: Some(60),
+            should_retry: Some(false),
+        };
+        assert!(!err.is_rate_limited());
+        assert!(!err.is_retryable());
     }
 
     #[test]

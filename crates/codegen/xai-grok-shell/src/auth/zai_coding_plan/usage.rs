@@ -438,4 +438,18 @@ mod tests {
             Err(ZaiCodingPlanAuthError::Business(1001))
         ));
     }
+
+    #[test]
+    fn raw_percentage_fallback_is_clamped() {
+        let above = parse_limit(
+            &serde_json::json!({"usage": 0, "percentage": 250}),
+            "Provider limit".to_owned(),
+        );
+        let below = parse_limit(
+            &serde_json::json!({"usage": 0, "percentage": -25}),
+            "Provider limit".to_owned(),
+        );
+        assert_eq!(above.percentage, 100.0);
+        assert_eq!(below.percentage, 0.0);
+    }
 }

@@ -1,6 +1,6 @@
 {
   "default": "grok-build",
-  "web_search": "grok-4.20-multi-agent",
+  "web_search": "grok-4.5",
   "image_description": "grok-build",
   "session_summary": "grok-build",
   "models": [

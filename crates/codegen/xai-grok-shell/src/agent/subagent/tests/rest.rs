@@ -2979,6 +2979,7 @@ async fn subagent_override_custom_provider_uses_only_its_cached_token() {
             args: None,
             token_ttl_secs: Some(3600),
             timeout_secs: None,
+            cwd: None,
         },
         route,
     );

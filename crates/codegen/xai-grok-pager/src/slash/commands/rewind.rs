@@ -8,6 +8,10 @@ impl SlashCommand for RewindCommand {
         "rewind"
     }
 
+    fn aliases(&self) -> &[&str] {
+        &["undo"]
+    }
+
     fn description(&self) -> &str {
         "Rewind to a previous turn"
     }
@@ -22,5 +26,15 @@ impl SlashCommand for RewindCommand {
 
     fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
         CommandResult::Action(Action::RewindShowPicker)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn undo_alias_is_registered() {
+        assert_eq!(RewindCommand.aliases(), &["undo"]);
     }
 }
