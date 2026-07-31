@@ -163,7 +163,7 @@
         "commit": "51200321eb7b862a29ffceaba8b19db1934a9b38"
       },
       "latest_fetched": {
-        "commit": "4c43465133428898aa84f0bfc02c306ed65fb66a"
+        "commit": "2c005abb0765bfe3ef42a23fe88d5b806184fa83"
       }
     },
     {
@@ -175,7 +175,7 @@
         "commit": "0317531906d3f3bb01cf33c16319870cfde9170c"
       },
       "latest_fetched": {
-        "commit": "7534d23551f665e65080809975b4ca5c7d63807b"
+        "commit": "e4bd9757a3a5dc7461d286000a19e9bd7df57c40"
       }
     },
     {
@@ -187,7 +187,7 @@
         "commit": "3af4d5d39897855bdcc74f23e690024a5dc05573"
       },
       "latest_fetched": {
-        "commit": "6e386420825bd44ae648c63e7c8cba12fcec9401"
+        "commit": "dd04f397b1d02f2272b092555669dfba1f01bc85"
       }
     },
     {
@@ -223,7 +223,7 @@
         "commit": "b5efba7abcaf4041f81ec520097a61e6546e8c50"
       },
       "latest_fetched": {
-        "commit": "c497af60e6cd20aab05e590f98a28fb15dd3491d"
+        "commit": "bfa00807c975fdc5b84dda32d47b16b09e8d42c1"
       }
     },
     {
@@ -283,7 +283,7 @@
         "commit": "cc8da27cec92029a6435bfee4a703a719290234e"
       },
       "latest_fetched": {
-        "commit": "cc8da27cec92029a6435bfee4a703a719290234e"
+        "commit": "8ef86077e70ac27d45ddddaf49e409824ccdf668"
       }
     },
     {
