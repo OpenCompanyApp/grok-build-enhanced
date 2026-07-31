@@ -3460,6 +3460,30 @@
       ]
     },
     {
+      "id": "provider-reference-refresh-2026-07-31",
+      "description": "Exhaustive 2026-07-31 Grok, Codex, OpenCode, Kimi, and CodexBar immutable-source audit, carried obligations, compatibility adaptations, and unchanged-reference attestation.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode",
+        "kimi-code",
+        "codexbar"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-07-31.md",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-07-31.md",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "thread-resource-exhaustion-hardening",
       "description": "Provider-neutral worker reduction and fallible optional thread creation so macOS EAGAIN disables background conveniences instead of aborting Grok.",
       "source_ids": [
