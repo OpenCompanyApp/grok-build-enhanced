@@ -22,7 +22,7 @@ use super::token_output::{expiry_after_seconds, parse_provider_token_output};
 #[serde(default)]
 pub struct AuthProviderConfig {
     /// Command that prints a bearer token on stdout, bare or as JSON
-    /// `{access_token, expires_in}`. Without `args` it runs via `sh -c`.
+    /// `{access_token, expires_in}`. Without `args` it runs via the platform shell.
     pub command: String,
     /// Arguments for `command`. When present (even empty), the command runs
     /// directly with no shell; `command` is a program name on `PATH`, or a path.
@@ -34,6 +34,8 @@ pub struct AuthProviderConfig {
     /// A turn waits up to this long on a mint, so keep helpers fast and
     /// non-interactive.
     pub timeout_secs: Option<u64>,
+    /// Working directory for the command; a leading `~` expands to home.
+    pub cwd: Option<String>,
 }
 
 impl std::fmt::Debug for AuthProviderConfig {
@@ -45,6 +47,7 @@ impl std::fmt::Debug for AuthProviderConfig {
             .field("argument_count", &self.args.as_ref().map(Vec::len))
             .field("token_ttl_secs", &self.token_ttl_secs)
             .field("timeout_secs", &self.timeout_secs)
+            .field("cwd_configured", &self.cwd.is_some())
             .finish()
     }
 }
@@ -266,14 +269,17 @@ const PROVIDER_STDERR_CAP_BYTES: u64 = 64 << 10; // 64 KiB
 /// new `AuthProviderConfig` field is a compile error until it is classified as
 /// token-shaping (add it here) or an execution knob like `timeout_secs`
 /// (editing it never invalidates).
-fn token_identity(config: &AuthProviderConfig) -> (&str, Option<&[String]>, Option<u64>) {
+fn token_identity(
+    config: &AuthProviderConfig,
+) -> (&str, Option<&[String]>, Option<u64>, Option<&str>) {
     let AuthProviderConfig {
         command,
         args,
         token_ttl_secs,
         timeout_secs: _,
+        cwd,
     } = config;
-    (command, args.as_deref(), *token_ttl_secs)
+    (command, args.as_deref(), *token_ttl_secs, cwd.as_deref())
 }
 
 fn minted_token_is_stale(minted: &MintedProviderToken, config: &AuthProviderConfig) -> bool {
@@ -445,20 +451,27 @@ async fn mint_provider_token(
         "auth provider: running helper command"
     );
 
+    let cwd = config
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+        .map(crate::claude_import::expand_home);
+
     let mut cmd = match config.args {
         Some(ref args) => {
             // Direct exec: the program name is a PATH lookup, so trim stray
             // whitespace that would otherwise fail to resolve.
-            let mut cmd = tokio::process::Command::new(config.command.trim());
+            let program = resolve_program(config.command.trim(), cwd.as_deref());
+            let mut cmd = tokio::process::Command::new(program);
             cmd.args(args);
             cmd
         }
-        None => {
-            let mut cmd = tokio::process::Command::new("sh");
-            cmd.args(["-c", &config.command]);
-            cmd
-        }
+        None => crate::util::subprocess::shell_c(&config.command),
     };
+    if let Some(ref dir) = cwd {
+        cmd.current_dir(dir);
+    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         // Drain stderr privately; inheriting corrupts the TUI and surfacing it
@@ -498,6 +511,20 @@ async fn mint_provider_token(
         expires_at,
         minted_with: config.clone(),
     })
+}
+
+fn resolve_program(command: &str, cwd: Option<&std::path::Path>) -> std::path::PathBuf {
+    let path = std::path::Path::new(command);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    if path.components().count() > 1
+        && let Some(dir) = cwd
+        && dir.is_absolute()
+    {
+        return dir.join(path);
+    }
+    std::path::PathBuf::from(command)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -686,6 +713,7 @@ pub(crate) fn test_counting_provider(name: &str, dir: &std::path::Path) -> AuthP
             args: None,
             token_ttl_secs: Some(3600),
             timeout_secs: None,
+            cwd: None,
         },
     )
 }

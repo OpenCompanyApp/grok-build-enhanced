@@ -275,7 +275,7 @@ pub fn merge(
                 hostname: r.hostname,
                 source: source.to_string(),
                 model_id: r.model_id,
-                num_messages: r.last_turn_number.max(0) as usize,
+                num_messages: local.num_messages.max(r.last_turn_number.max(0) as usize),
                 last_active_at: merged_last_active,
                 branch: local.branch,
                 repo_name: local.repo_name,
@@ -446,6 +446,30 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].summary, "remote title");
         assert_eq!(merged[0].source, "both");
+    }
+
+    #[test]
+    fn stale_remote_turn_counter_does_not_demote_local_sessions_to_empty() {
+        let local = vec![
+            make_summary("s1", "first real session", "2026-03-01T00:00:00Z"),
+            make_summary("s2", "second real session", "2026-03-01T01:00:00Z"),
+        ];
+        let remote = vec![
+            SessionRecord {
+                last_turn_number: 0,
+                ..make_remote("s1", "first real session", "2026-03-01T00:00:00Z")
+            },
+            SessionRecord {
+                last_turn_number: 0,
+                ..make_remote("s2", "second real session", "2026-03-01T01:00:00Z")
+            },
+        ];
+        let merged = merge(remote, local, None, &[], 20);
+        assert_eq!(merged.len(), 2, "both real sessions must survive the merge");
+        assert!(
+            merged.iter().all(|row| row.num_messages == 10),
+            "local message counts must win over stale remote zeroes"
+        );
     }
 
     #[test]

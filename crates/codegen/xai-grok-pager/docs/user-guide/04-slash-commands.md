@@ -43,7 +43,7 @@ Branch the current session into a new agent, keeping history up to this point.
 
 ### `/rewind`
 
-Roll the conversation back to an earlier turn and discard everything after it.
+Roll the conversation back to an earlier turn and discard everything after it. Alias: `/undo`.
 
 ### `/edit-prompt`
 

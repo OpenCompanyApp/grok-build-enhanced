@@ -215,9 +215,8 @@ async fn run_external_auth_provider(
         "auth: running external auth provider"
     );
 
-    let mut cmd = tokio::process::Command::new("sh");
-    cmd.args(["-c", command])
-        .stdin(std::process::Stdio::null())
+    let mut cmd = crate::util::subprocess::shell_c(command);
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true);
 

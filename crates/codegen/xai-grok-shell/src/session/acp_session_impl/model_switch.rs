@@ -1070,12 +1070,16 @@ impl SessionActor {
             // selected-model image-input support remains an input/read concern.
             // Reuse the binder-owned provider so sampler and tools cannot
             // attest different credential records.
-            let config =
-                (image_gen_enabled || image_edit_enabled).then(|| ImageGenConfig::OpenAiCodex {
+            let free_plan = crate::auth::codex::current_plan_is_exact_free(
+                sampling_config.credential_binding.as_ref(),
+            );
+            let config = (!free_plan && (image_gen_enabled || image_edit_enabled)).then(|| {
+                ImageGenConfig::OpenAiCodex {
                     base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
                     image_gen_enabled,
                     image_edit_enabled,
-                });
+                }
+            });
             refresh_image_gen_resource(&bridge, config, api_key_provider, None).await;
             refresh_video_gen_resource(
                 &bridge,

@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn api_429_classified_as_rate_limited_and_extracts_retry_after() {
+    fn api_429_retry_veto_is_classified_as_fatal_api() {
         let err = SamplingError::Api {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: "slow down".into(),
@@ -319,11 +319,11 @@ mod tests {
             should_retry: Some(false),
         };
         let info = SamplingErrorInfo::from(&err);
-        assert_eq!(info.kind, SamplingErrorKind::RateLimited);
+        assert_eq!(info.kind, SamplingErrorKind::Api);
         assert_eq!(info.status_code, Some(429));
         assert_eq!(info.retry_after_secs, Some(15));
         assert_eq!(info.should_retry, Some(false));
-        assert!(info.is_retryable, "429 should be retryable");
+        assert!(!info.is_retryable, "provider veto must make quota fatal");
     }
 
     #[test]

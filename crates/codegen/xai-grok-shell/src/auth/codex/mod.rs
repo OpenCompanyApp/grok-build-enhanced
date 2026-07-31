@@ -55,3 +55,24 @@ pub const OPENAI_CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const OPENAI_CODEX_ORIGINATOR: &str = "grok_build_codex";
 pub const OPENAI_CODEX_SCOPES: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
+
+/// Confirm the exact ChatGPT Free plan for the current provider record.
+/// Unknown, unreadable, switched, or regressed credential state fails open;
+/// normal request authentication still fails closed independently.
+pub(crate) fn current_plan_is_exact_free(
+    expected: Option<&xai_grok_sampling_types::CredentialBinding>,
+) -> bool {
+    let Ok(manager) = CodexAuthManager::new(&crate::util::grok_home::grok_home()) else {
+        return false;
+    };
+    let Ok(credentials) = manager.current_verified() else {
+        return false;
+    };
+    let actual = credentials.credential_binding();
+    if let Some(expected) = expected
+        && (!actual.same_record(expected) || actual.generation < expected.generation)
+    {
+        return false;
+    }
+    credentials::is_exact_free_plan(credentials.plan_type.as_deref())
+}

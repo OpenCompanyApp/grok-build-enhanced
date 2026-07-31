@@ -244,6 +244,36 @@ impl SessionActor {
             self.persist_plan_mode_state();
         }
     }
+    /// Inject authenticated Codex catalog guidance when the active
+    /// provider/model/mode changes. Grok's native plan reminders remain the
+    /// safety and plan-file source of truth; absent or rejected catalog data
+    /// therefore falls back to the existing Grok behavior unchanged.
+    pub(super) async fn inject_codex_catalog_collaboration_message(&self, prompt_mode: PromptMode) {
+        let sampling = self.chat_state_handle.get_sampling_config().await;
+        let (model, plan, message) = match sampling {
+            Some(config)
+                if config.provider.is_openai_codex() && !matches!(prompt_mode, PromptMode::Ask) =>
+            {
+                let plan = matches!(prompt_mode, PromptMode::Plan);
+                let message = self.models_manager.codex_collaboration_message(
+                    config.provider,
+                    &config.model,
+                    plan,
+                );
+                (Some(config.model), plan, message)
+            }
+            _ => (None, false, None),
+        };
+        let transition =
+            self.plan_mode
+                .lock()
+                .transition_catalog_collaboration(model.as_deref(), plan, message);
+        let Some(message) = transition else {
+            return;
+        };
+        let fragment = format!("<collaboration_mode>{message}</collaboration_mode>");
+        self.push_system_reminder_with_tag(&fragment, self.reminder_wrapper_tag());
+    }
     /// Activate plan mode for a turn that is already running.
     ///
     /// Mid-turn counterpart of `inject_plan_mode_reminders` case 1: the user

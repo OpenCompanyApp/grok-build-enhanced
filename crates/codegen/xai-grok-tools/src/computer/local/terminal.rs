@@ -436,6 +436,7 @@ impl ProcessState {
             explicitly_killed: self.explicitly_killed,
             kind: self.kind,
             owner_session_id: self.owner_session_id.clone(),
+            is_backgrounded: self.bg_status.is_backgrounded(),
         }
     }
 }
@@ -1453,6 +1454,7 @@ impl LocalTerminalActor {
                     block_waited: p.block_waited,
                     explicitly_killed: p.explicitly_killed,
                     owner_session_id: p.owner_session_id.clone(),
+                    is_backgrounded: true,
                 };
                 self.completed_task_snapshots.insert(id.clone(), snapshot);
             }

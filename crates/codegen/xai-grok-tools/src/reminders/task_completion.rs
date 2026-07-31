@@ -858,6 +858,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            is_backgrounded: false,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(msg.contains("abc-123"));
@@ -884,6 +885,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            is_backgrounded: false,
         };
         let msg = format_monitor_completion(&task, Some("get_command_or_subagent_output"));
         assert!(
@@ -916,6 +918,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            is_backgrounded: false,
         };
         let msg = format_monitor_completion(&task, None);
         assert!(
@@ -943,6 +946,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            is_backgrounded: false,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(msg.contains("cargo test"));
@@ -967,6 +971,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            is_backgrounded: false,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(msg.contains("exit code: unknown"));
@@ -994,6 +999,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            is_backgrounded: false,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(
@@ -1032,6 +1038,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            is_backgrounded: false,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(
@@ -1069,6 +1076,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            is_backgrounded: false,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(msg.contains("exit code: 0"));
@@ -1229,6 +1237,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            is_backgrounded: false,
         }
     }
     fn make_running(id: &str) -> TaskSnapshot {
@@ -1249,6 +1258,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            is_backgrounded: false,
         }
     }
     fn make_bg_started(id: &str) -> crate::types::output::BackgroundTaskStarted {

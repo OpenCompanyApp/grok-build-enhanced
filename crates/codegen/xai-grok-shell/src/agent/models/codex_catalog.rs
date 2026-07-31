@@ -19,6 +19,7 @@ use crate::agent::config::{self, ModelEntry};
 /// identity, ETag, generation, and retry lifecycle.
 pub(super) struct CodexCatalogController {
     models: RwLock<IndexMap<String, ModelEntry>>,
+    collaboration_messages: RwLock<IndexMap<String, crate::remote::CodexCollaborationModeMessages>>,
     has_catalog: RwLock<bool>,
     identity: RwLock<Option<CodexCatalogIdentity>>,
     needs_revalidation: AtomicBool,
@@ -94,6 +95,8 @@ impl CodexCatalogRefreshOutcome {
 /// the parent manager.
 pub(super) struct CodexPrefetchResult {
     pub(super) models: IndexMap<String, ModelEntry>,
+    pub(super) collaboration_messages:
+        IndexMap<String, crate::remote::CodexCollaborationModeMessages>,
     pub(super) etag: Option<String>,
     pub(super) identity: CodexCatalogIdentity,
     pub(super) authoritative: bool,
@@ -104,6 +107,7 @@ impl CodexCatalogController {
     pub(super) fn new(models: IndexMap<String, ModelEntry>, remote_fetch_enabled: bool) -> Self {
         Self {
             models: RwLock::new(models),
+            collaboration_messages: RwLock::new(IndexMap::new()),
             has_catalog: RwLock::new(false),
             identity: RwLock::new(None),
             needs_revalidation: AtomicBool::new(false),
@@ -137,11 +141,26 @@ impl CodexCatalogController {
         identity: Option<CodexCatalogIdentity>,
         needs_revalidation: bool,
         has_catalog: bool,
+        collaboration_messages: IndexMap<String, crate::remote::CodexCollaborationModeMessages>,
     ) {
         *self.has_catalog.write() = has_catalog;
         *self.etag.write() = etag;
         *self.identity.write() = identity;
+        *self.collaboration_messages.write() = collaboration_messages;
         self.set_needs_revalidation(needs_revalidation);
+    }
+
+    pub(super) fn collaboration_message(&self, model: &str, plan: bool) -> Option<String> {
+        self.collaboration_messages
+            .read()
+            .get(model)
+            .and_then(|messages| {
+                if plan {
+                    messages.plan.clone()
+                } else {
+                    messages.default.clone()
+                }
+            })
     }
 
     /// Invalidate in-flight Codex work for an accepted config transition and
@@ -431,10 +450,11 @@ impl CodexCatalogController {
         identity: CodexCatalogIdentity,
         authoritative: bool,
     ) -> usize {
-        let mapped = Self::map_catalog(catalog);
+        let (mapped, collaboration_messages) = Self::map_catalog_with_messages(catalog);
         let count = mapped.len();
         let first_catalog = !self.has_catalog();
         *self.models.write() = mapped;
+        *self.collaboration_messages.write() = collaboration_messages;
         *self.etag.write() = etag;
         *self.identity.write() = Some(identity);
         *self.has_catalog.write() = true;
@@ -485,6 +505,7 @@ impl CodexCatalogController {
         let catalog_write = owner.inner.catalog_write_gate.lock();
         let has_state = self.has_catalog()
             || !self.models.read().is_empty()
+            || !self.collaboration_messages.read().is_empty()
             || self.etag.read().is_some()
             || self.identity.read().is_some();
         if !has_state || (self.identity.read().as_ref() == current && current.is_some()) {
@@ -492,6 +513,7 @@ impl CodexCatalogController {
         }
 
         self.models.write().clear();
+        self.collaboration_messages.write().clear();
         *self.etag.write() = None;
         *self.identity.write() = None;
         *self.has_catalog.write() = false;
@@ -746,8 +768,10 @@ impl CodexCatalogController {
                         return None;
                     }
                     let identity = CodexCatalogIdentity::from_credentials(&locked_credentials);
+                    let (models, collaboration_messages) = Self::map_catalog_with_messages(catalog);
                     Some(CodexPrefetchResult {
-                        models: Self::map_catalog(catalog),
+                        models,
+                        collaboration_messages,
                         etag,
                         identity,
                         authoritative,
@@ -764,10 +788,22 @@ impl CodexCatalogController {
     pub(super) fn map_catalog(
         catalog: crate::remote::CodexModelCatalog,
     ) -> IndexMap<String, ModelEntry> {
-        catalog
+        Self::map_catalog_with_messages(catalog).0
+    }
+
+    fn map_catalog_with_messages(
+        catalog: crate::remote::CodexModelCatalog,
+    ) -> (
+        IndexMap<String, ModelEntry>,
+        IndexMap<String, crate::remote::CodexCollaborationModeMessages>,
+    ) {
+        let mut collaboration_messages = IndexMap::new();
+        let models = catalog
             .models
             .into_iter()
             .filter_map(|model| {
+                let catalog_collaboration_messages = model.collaboration_mode_messages();
+                let model_slug = model.slug.clone();
                 let context_window = model
                     .context_window
                     .or(model.max_context_window)
@@ -841,6 +877,9 @@ impl CodexCatalogController {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_ascii_lowercase);
                 let supports_image_input = model.accepts_images();
+                if let Some(messages) = catalog_collaboration_messages {
+                    collaboration_messages.insert(model_slug, messages);
+                }
                 Some((
                     id.clone(),
                     ModelEntry {
@@ -903,7 +942,8 @@ impl CodexCatalogController {
                     },
                 ))
             })
-            .collect()
+            .collect();
+        (models, collaboration_messages)
     }
 }
 

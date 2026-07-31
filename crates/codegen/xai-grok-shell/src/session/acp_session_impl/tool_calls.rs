@@ -7,6 +7,10 @@
 //! the parent module's private helpers.
 use super::*;
 use futures::StreamExt;
+use xai_grok_tools::implementations::grok_build::image_gen::{
+    CODEX_IMAGE_TURN_CONTEXT_FIELD, CodexImageTurnContext,
+};
+use xai_grok_tools::implementations::grok_build::{IMAGE_EDIT_TOOL_NAME, IMAGE_GEN_TOOL_NAME};
 use xai_grok_tools::implementations::web_search::{
     CODEX_WEB_SEARCH_CONTEXT_FIELD, CodexWebSearchContext, CodexWebSearchMessage,
     CodexWebSearchTurnMetadata,
@@ -27,6 +31,14 @@ const CODEX_SEARCH_ONE_USER_BYTES: usize = 16 * 1024;
 const CODEX_SEARCH_TWO_USER_BYTES: usize = 14 * 1024;
 const CODEX_SEARCH_ASSISTANT_BYTES: usize = 4 * 1024;
 const CODEX_SEARCH_ELISION_MARKER: &str = "\n\n[... middle truncated for web search ...]\n\n";
+
+fn is_image_turn_tool(
+    tool_kind: Option<xai_grok_tools::types::tool::ToolKind>,
+    tool_name: &str,
+) -> bool {
+    tool_kind == Some(xai_grok_tools::types::tool::ToolKind::ImageGen)
+        && matches!(tool_name, IMAGE_GEN_TOOL_NAME | IMAGE_EDIT_TOOL_NAME)
+}
 
 /// Project tool input onto the representation permitted to leave the dispatch
 /// boundary through ACP updates or hooks. WebFetch still receives the original
@@ -547,6 +559,16 @@ fn resume_action_for(outcome: PlanApprovalOutcome, feedback: Option<String>) -> 
     }
 }
 impl SessionActor {
+    fn active_codex_turn_id(&self) -> String {
+        let session_id = self.session_id_string();
+        self.current_prompt_id
+            .lock()
+            .ok()
+            .and_then(|prompt_id| prompt_id.clone())
+            .filter(|prompt_id| !prompt_id.trim().is_empty())
+            .unwrap_or_else(|| format!("{session_id}:turn:{}", self.current_turn_number.get()))
+    }
+
     /// Merge the canonical `x.ai/tool` identity envelope into a tool-call
     /// event's `_meta`, resolving the tool from the live toolset by wire name.
     pub(super) fn stamp_tool_meta(
@@ -1229,6 +1251,11 @@ impl SessionActor {
             // permissions, UI updates, and pre-tool hooks observe the call.
             arguments.remove(CODEX_WEB_SEARCH_CONTEXT_FIELD);
         }
+        if is_image_turn_tool(tool_kind, &call.function.name)
+            && let serde_json::Value::Object(arguments) = &mut raw_input
+        {
+            arguments.remove(CODEX_IMAGE_TURN_CONTEXT_FIELD);
+        }
         let external_input = external_tool_input(tool_kind, &raw_input);
         let external_arguments = (tool_kind
             == Some(xai_grok_tools::types::tool::ToolKind::WebFetch))
@@ -1724,6 +1751,25 @@ impl SessionActor {
             // dispatch copy is the final trust boundary before bridge.call().
             arguments.remove(CODEX_WEB_SEARCH_CONTEXT_FIELD);
         }
+        if is_image_turn_tool(tool_kind, &call.function.name)
+            && let serde_json::Value::Object(arguments) = &mut dispatch_args
+        {
+            arguments.remove(CODEX_IMAGE_TURN_CONTEXT_FIELD);
+        }
+        if is_image_turn_tool(tool_kind, &call.function.name)
+            && let Some(sampling_config) = self.chat_state_handle.get_sampling_config().await
+            && sampling_config.provider.is_openai_codex()
+            && let serde_json::Value::Object(arguments) = &mut dispatch_args
+        {
+            let context = CodexImageTurnContext {
+                turn_id: self.active_codex_turn_id(),
+            };
+            arguments.insert(
+                CODEX_IMAGE_TURN_CONTEXT_FIELD.to_owned(),
+                serde_json::to_value(context)
+                    .expect("Codex image turn context is JSON-serializable"),
+            );
+        }
         if tool_kind == Some(xai_grok_tools::types::tool::ToolKind::WebSearch)
             && let Some(sampling_config) = self.chat_state_handle.get_sampling_config().await
             && sampling_config.provider.is_openai_codex()
@@ -1744,15 +1790,7 @@ impl SessionActor {
             .unwrap_or(0);
             if let serde_json::Value::Object(arguments) = &mut dispatch_args {
                 let session_id = self.session_id_string();
-                let turn_id = self
-                    .current_prompt_id
-                    .lock()
-                    .ok()
-                    .and_then(|prompt_id| prompt_id.clone())
-                    .filter(|prompt_id| !prompt_id.trim().is_empty())
-                    .unwrap_or_else(|| {
-                        format!("{session_id}:turn:{}", self.current_turn_number.get())
-                    });
+                let turn_id = self.active_codex_turn_id();
                 let context = CodexWebSearchContext {
                     input,
                     turn_metadata: CodexWebSearchTurnMetadata {
@@ -3202,6 +3240,21 @@ mod execute_tool_call_parts_tests {
     fn keeps_command_when_cd_not_redundant() {
         let (title, ..) = execute_tool_call_parts("cd /other && ls", None, Path::new("/proj"));
         assert_eq!(title, "Execute `cd /other && ls`");
+    }
+}
+
+#[cfg(test)]
+mod image_turn_context_tests {
+    use super::is_image_turn_tool;
+    use xai_grok_tools::types::tool::ToolKind;
+
+    #[test]
+    fn image_turn_context_is_limited_to_exact_image_tools() {
+        assert!(is_image_turn_tool(Some(ToolKind::ImageGen), "image_gen"));
+        assert!(is_image_turn_tool(Some(ToolKind::ImageGen), "image_edit"));
+        assert!(!is_image_turn_tool(Some(ToolKind::ImageGen), "video_gen"));
+        assert!(!is_image_turn_tool(Some(ToolKind::WebSearch), "image_gen"));
+        assert!(!is_image_turn_tool(None, "image_edit"));
     }
 }
 #[cfg(test)]

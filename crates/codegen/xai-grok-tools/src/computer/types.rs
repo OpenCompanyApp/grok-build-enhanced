@@ -235,6 +235,10 @@ pub struct TaskSnapshot {
     /// the parent's or sibling's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_session_id: Option<String>,
+    /// True after explicit, user, or automatic backgrounding; false for a
+    /// pure foreground run.
+    #[serde(default)]
+    pub is_backgrounded: bool,
 }
 
 impl TaskSnapshot {
@@ -253,6 +257,10 @@ impl TaskSnapshot {
     /// backing work).
     pub fn is_outstanding(&self) -> bool {
         !self.completed
+    }
+
+    pub fn is_outstanding_background(&self) -> bool {
+        !self.completed && self.is_backgrounded
     }
 }
 
@@ -379,6 +387,34 @@ impl Computer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outstanding_background_requires_running_and_backgrounded() {
+        let mut snapshot = TaskSnapshot {
+            task_id: "task-1".into(),
+            command: "sleep 1".into(),
+            display_command: None,
+            cwd: "/tmp".into(),
+            start_time: std::time::SystemTime::UNIX_EPOCH,
+            end_time: None,
+            output: String::new(),
+            output_file: PathBuf::from("/tmp/task-1.log"),
+            truncated: false,
+            exit_code: None,
+            signal: None,
+            completed: false,
+            kind: TaskKind::Bash,
+            block_waited: false,
+            explicitly_killed: false,
+            owner_session_id: None,
+            is_backgrounded: false,
+        };
+        assert!(!snapshot.is_outstanding_background());
+        snapshot.is_backgrounded = true;
+        assert!(snapshot.is_outstanding_background());
+        snapshot.completed = true;
+        assert!(!snapshot.is_outstanding_background());
+    }
 
     #[test]
     fn io_error_kind_preserved_through_from() {

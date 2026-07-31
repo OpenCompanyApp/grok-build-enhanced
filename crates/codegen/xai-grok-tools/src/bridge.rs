@@ -832,6 +832,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: owner.map(|s| s.to_string()),
+            is_backgrounded: false,
         }
     }
 

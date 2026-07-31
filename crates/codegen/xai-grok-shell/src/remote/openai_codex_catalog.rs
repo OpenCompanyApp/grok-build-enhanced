@@ -256,11 +256,22 @@ impl CodexCatalogClient {
         if cached.etag.as_deref() != Some(confirmed_etag) {
             return Err(CodexCatalogError::CacheUnavailable);
         }
+        let binding = auth.credential_binding();
+        let age_ms = now_unix_ms().saturating_sub(cached.fetched_at_unix_ms);
+        let half_ttl_ms = self
+            .config
+            .cache_ttl
+            .as_millis()
+            .saturating_div(2)
+            .min(u128::from(u64::MAX)) as u64;
+        if cached.credential_generation == binding.generation && age_ms <= half_ttl_ms {
+            return Ok(binding.clone());
+        }
         cached.fetched_at_unix_ms = now_unix_ms();
-        cached.credential_generation = auth.credential_binding().generation;
+        cached.credential_generation = binding.generation;
         self.write_cache(&scope, &cached)
             .map_err(|_| CodexCatalogError::CacheUnavailable)?;
-        Ok(auth.credential_binding().clone())
+        Ok(binding.clone())
     }
 
     fn load_cached_with_auth(
@@ -644,6 +655,46 @@ impl CodexCatalogModel {
             .iter()
             .any(|modality| modality == "image")
     }
+
+    /// Provider-authored collaboration-mode guidance from the authenticated
+    /// catalog. Preserve an explicit empty string, but reject malformed,
+    /// control-bearing, or oversized values so remote metadata cannot create
+    /// an unbounded per-turn prompt fragment.
+    pub fn collaboration_mode_messages(&self) -> Option<CodexCollaborationModeMessages> {
+        const MAX_MESSAGE_BYTES: usize = 16 * 1024;
+
+        fn message(value: Option<&Value>) -> Option<String> {
+            let value = value?;
+            if value.is_null() {
+                return None;
+            }
+            let text = value.as_str()?;
+            if text.len() > MAX_MESSAGE_BYTES
+                || text
+                    .chars()
+                    .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+            {
+                return None;
+            }
+            Some(text.to_owned())
+        }
+
+        let modes = self
+            .model_messages
+            .as_ref()?
+            .get("collaboration_modes")?
+            .as_object()?;
+        Some(CodexCollaborationModeMessages {
+            default: message(modes.get("default")),
+            plan: message(modes.get("plan")),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CodexCollaborationModeMessages {
+    pub default: Option<String>,
+    pub plan: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -1304,6 +1355,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recent_matching_etag_skips_rewrite_for_same_generation() {
+        let response = MockReply {
+            status: StatusCode::OK,
+            body: rich_body("recent-model"),
+            etag: Some("\"catalog-v2\""),
+        };
+        let (base_url, _) = spawn_server(vec![response]).await;
+        let cache = tempfile::tempdir().unwrap();
+        let client = client(cache.path(), base_url).unwrap();
+        let auth = auth("token", "account", "credential", false);
+        client.fetch(&auth).await.unwrap();
+        let path = client.cache_scope(&auth).path;
+        let before = std::fs::read(&path).unwrap();
+
+        client.renew_cached(&auth, "\"catalog-v2\"").await.unwrap();
+
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn recent_matching_etag_rebinds_new_credential_generation() {
+        let response = MockReply {
+            status: StatusCode::OK,
+            body: rich_body("rebound-model"),
+            etag: Some("\"catalog-v2\""),
+        };
+        let (base_url, _) = spawn_server(vec![response]).await;
+        let cache = tempfile::tempdir().unwrap();
+        let client = client(cache.path(), base_url).unwrap();
+        let first = auth_at_generation("token-a", "account", "credential", 1, false);
+        client.fetch(&first).await.unwrap();
+        let rotated = auth_at_generation("token-b", "account", "credential", 2, false);
+
+        client
+            .renew_cached(&rotated, "\"catalog-v2\"")
+            .await
+            .unwrap();
+
+        let cached = client.load_cached(&rotated).await.unwrap();
+        assert_eq!(cached.catalog.models[0].slug, "rebound-model");
+        assert_eq!(cached.credential_binding.generation, 2);
+    }
+
+    #[tokio::test]
     async fn stale_cache_etag_can_be_revalidated_but_not_used_as_fallback() {
         let first = MockReply {
             status: StatusCode::OK,
@@ -1794,5 +1889,43 @@ mod tests {
         client.fetch(&auth).await.unwrap();
         client.fetch(&auth).await.unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn collaboration_mode_messages_preserve_missing_and_empty_but_bound_values() {
+        let model = CodexCatalogModel {
+            slug: "gpt-codex".into(),
+            model_messages: Some(serde_json::json!({
+                "collaboration_modes": {
+                    "default": "",
+                    "plan": "catalog plan guidance"
+                }
+            })),
+            ..Default::default()
+        };
+        assert_eq!(
+            model.collaboration_mode_messages(),
+            Some(CodexCollaborationModeMessages {
+                default: Some(String::new()),
+                plan: Some("catalog plan guidance".into()),
+            })
+        );
+
+        let oversized = CodexCatalogModel {
+            model_messages: Some(serde_json::json!({
+                "collaboration_modes": {
+                    "default": "x".repeat(16 * 1024 + 1),
+                    "plan": "catalog plan guidance"
+                }
+            })),
+            ..model
+        };
+        assert_eq!(
+            oversized.collaboration_mode_messages(),
+            Some(CodexCollaborationModeMessages {
+                default: None,
+                plan: Some("catalog plan guidance".into()),
+            })
+        );
     }
 }

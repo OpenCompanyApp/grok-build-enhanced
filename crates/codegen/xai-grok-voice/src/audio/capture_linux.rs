@@ -65,6 +65,9 @@ impl Recorder {
         let rate = rate.to_string();
         match self {
             Recorder::PwRecord => vec![
+                // Older PipeWire releases otherwise wrap stdout in a
+                // libsndfile container; the capture reader expects raw PCM16.
+                "--raw".into(),
                 "--rate".into(),
                 rate,
                 "--channels".into(),
@@ -455,6 +458,7 @@ mod tests {
         assert!(parec.contains(&"--channels=1".to_string()));
 
         let pw = Recorder::PwRecord.args(48_000);
+        assert!(pw.contains(&"--raw".to_string()));
         let r = pw.iter().position(|a| a == "--rate").unwrap();
         assert_eq!(pw[r + 1], "48000");
         let f = pw.iter().position(|a| a == "--format").unwrap();

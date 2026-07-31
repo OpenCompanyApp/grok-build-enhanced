@@ -185,7 +185,9 @@ fn handle_info(agent: &MvpAgent) -> ExtResult {
         .load()
         .as_ref()
         .map(|m| m.0.to_string());
-    let auth = agent.auth_manager.current();
+    // Profile/team metadata remains useful while an OIDC access token is
+    // expired; token validity is enforced separately by wire credential paths.
+    let auth = agent.auth_manager.current_or_expired();
     let raw_asset_id = auth.as_ref().and_then(|a| a.profile_image_asset_id.clone());
 
     // Return a grok-asset:// URL that the Electron renderer resolves at

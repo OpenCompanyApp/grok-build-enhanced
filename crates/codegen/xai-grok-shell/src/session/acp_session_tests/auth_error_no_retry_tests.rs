@@ -1394,6 +1394,7 @@ async fn reconstruct_full_config_marks_a_cached_helper_key_as_rotating() {
                     args: None,
                     token_ttl_secs: Some(3600),
                     timeout_secs: None,
+                    cwd: None,
                 },
             );
             let token = provider
@@ -1434,6 +1435,7 @@ async fn reconstruct_full_config_keeps_rotating_source_for_a_short_lived_token()
                     args: None,
                     token_ttl_secs: Some(1),
                     timeout_secs: None,
+                    cwd: None,
                 },
             );
             let token = provider
@@ -1730,6 +1732,7 @@ async fn failed_pre_turn_custom_provider_clears_stale_key_and_aborts() {
                     args: None,
                     token_ttl_secs: None,
                     timeout_secs: None,
+                    cwd: None,
                 },
             );
             let (actor, _rx) = make_actor_with_auth_and_credentials(
@@ -1769,6 +1772,7 @@ async fn pre_turn_custom_provider_rejects_a_changed_endpoint() {
                     args: None,
                     token_ttl_secs: Some(3600),
                     timeout_secs: None,
+                    cwd: None,
                 },
             );
             let (actor, _rx) = make_actor_with_auth_and_credentials(

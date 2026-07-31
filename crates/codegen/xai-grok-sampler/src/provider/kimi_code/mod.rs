@@ -523,6 +523,44 @@ pub(crate) fn validate_body_size<T: Serialize>(body: &T) -> Result<()> {
     Ok(())
 }
 
+fn quota_exhausted_payload(value: Option<&serde_json::Value>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    let classification = ["/error/type", "/error/code", "/type", "/code"]
+        .iter()
+        .filter_map(|pointer| value.pointer(pointer).and_then(serde_json::Value::as_str))
+        .any(|field| {
+            matches!(
+                field.to_ascii_lowercase().as_str(),
+                "exceeded_current_quota_error" | "insufficient_quota" | "quota_exhausted"
+            )
+        });
+    if classification {
+        return true;
+    }
+    value
+        .pointer("/error/message")
+        .or_else(|| value.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|message| {
+            let message = message.to_ascii_lowercase();
+            [
+                "usage limit",
+                "quota exhausted",
+                "billing cycle",
+                "monthly limit",
+                "five-hour limit",
+                "5-hour limit",
+                "insufficient balance",
+                "please recharge",
+                "exceeded current quota",
+            ]
+            .iter()
+            .any(|needle| message.contains(needle))
+        })
+}
+
 pub(crate) fn should_retry(
     status: reqwest::StatusCode,
     body: &[u8],
@@ -544,6 +582,9 @@ pub(crate) fn should_retry(
         };
     }
     let value = serde_json::from_slice::<serde_json::Value>(body).ok();
+    if quota_exhausted_payload(value.as_ref()) {
+        return Some(false);
+    }
     let message = value
         .as_ref()
         .and_then(|value| {
@@ -555,18 +596,6 @@ pub(crate) fn should_retry(
         .unwrap_or_default()
         .to_ascii_lowercase();
     if [
-        "usage limit",
-        "quota exhausted",
-        "billing cycle",
-        "monthly limit",
-        "five-hour limit",
-        "5-hour limit",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
-    {
-        Some(false)
-    } else if [
         "engine is currently overloaded",
         "too many requests",
         "concurrency limit",
@@ -586,6 +615,10 @@ pub(crate) fn messages_stream_error(error_type: &str, message: &str) -> Sampling
 
 pub(crate) fn response_message(status: reqwest::StatusCode, body: &[u8]) -> String {
     let value = serde_json::from_slice::<serde_json::Value>(body).ok();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS && quota_exhausted_payload(value.as_ref()) {
+        return "Kimi Code usage quota is exhausted; check the Kimi Code Console for reset details"
+            .to_owned();
+    }
     let message = value
         .as_ref()
         .and_then(|value| {
@@ -641,6 +674,8 @@ pub(crate) fn canonical_error_message(message: &str) -> String {
         || lower.contains("monthly limit")
         || lower.contains("five-hour limit")
         || lower.contains("5-hour limit")
+        || lower.contains("insufficient balance")
+        || lower.contains("recharge")
     {
         "Kimi Code usage quota is exhausted; check the Kimi Code Console for reset details"
             .to_owned()
@@ -1202,6 +1237,38 @@ mod tests {
             should_retry(reqwest::StatusCode::TOO_MANY_REQUESTS, &body, None),
             Some(false)
         );
+    }
+
+    #[test]
+    fn structured_quota_exhaustion_is_fatal_and_redacted() {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "error": {
+                "type": "exceeded_current_quota_error",
+                "message": "private billing detail"
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            should_retry(reqwest::StatusCode::TOO_MANY_REQUESTS, &body, Some(true)),
+            Some(false)
+        );
+        let message = response_message(reqwest::StatusCode::TOO_MANY_REQUESTS, &body);
+        assert!(message.contains("usage quota is exhausted"));
+        assert!(!message.contains("private"));
+    }
+
+    #[test]
+    fn balance_and_recharge_quota_wording_is_fatal() {
+        for message in ["Insufficient balance", "Please recharge your account"] {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "error": {"message": message}
+            }))
+            .unwrap();
+            assert_eq!(
+                should_retry(reqwest::StatusCode::TOO_MANY_REQUESTS, &body, None),
+                Some(false)
+            );
+        }
     }
 
     #[test]

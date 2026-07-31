@@ -696,4 +696,37 @@ mod tests {
 
         assert!(models.is_empty());
     }
+
+    #[test]
+    fn failed_catalog_replacement_preserves_prior_complete_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let credentials = KimiCodeCredentials::new("sentinel-kimi-key").unwrap();
+        let original = KimiCodeModel {
+            id: "stable-model".to_owned(),
+            context_length: 262_144,
+            supports_reasoning: true,
+            supports_image_in: false,
+            supports_video_in: false,
+            supports_tool_use: true,
+            supports_thinking_type: None,
+            think_efforts: None,
+            display_name: Some("Stable".to_owned()),
+            protocol: Some("kimi".to_owned()),
+        };
+        save_cache(
+            directory.path(),
+            &credentials,
+            std::slice::from_ref(&original),
+        )
+        .unwrap();
+
+        let mut oversized = original;
+        oversized.id = "replacement".to_owned();
+        oversized.display_name = Some("x".repeat(MAX_CATALOG_BYTES));
+        assert!(save_cache(directory.path(), &credentials, &[oversized]).is_err());
+
+        let cached = load_cached_model_entries_for(directory.path(), &credentials.credential_id);
+        assert!(cached.contains_key("kimi-code/stable-model"));
+        assert!(!cached.contains_key("kimi-code/replacement"));
+    }
 }

@@ -79,6 +79,7 @@ impl TrackedTask {
             explicitly_killed: self.explicitly_killed,
             kind: xai_grok_tools::computer::types::TaskKind::Bash,
             owner_session_id: None,
+            is_backgrounded: true,
         }
     }
 }
@@ -445,6 +446,7 @@ impl TerminalBackend for AcpTerminalAdapter {
                     block_waited: false,
                     explicitly_killed: false,
                     owner_session_id: None,
+                    is_backgrounded: true,
                 })
             }
             (None, Some(tracked)) if tracked.completed => Some(tracked.to_snapshot(

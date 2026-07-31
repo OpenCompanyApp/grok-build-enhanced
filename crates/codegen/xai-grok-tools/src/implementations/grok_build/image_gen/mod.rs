@@ -53,6 +53,24 @@ const MAX_IMAGE_RESPONSE_BODY_BYTES: usize = 48 * 1024 * 1024;
 const MAX_GENERATED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_GENERATED_IMAGE_PIXELS: u64 = 40_000_000;
 const MAX_GENERATED_IMAGE_DIMENSION: u32 = 8192;
+pub const CODEX_IMAGE_TURN_CONTEXT_FIELD: &str = "_grok_codex_image_turn";
+const X_CODEX_IMAGE_TURN_ID_HEADER: &str = "x-codex-image-turn-id";
+const MAX_CODEX_IMAGE_TURN_ID_BYTES: usize = 256;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CodexImageTurnContext {
+    pub turn_id: String,
+}
+
+impl std::fmt::Debug for CodexImageTurnContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CodexImageTurnContext")
+            .field("turn_id_configured", &!self.turn_id.is_empty())
+            .finish()
+    }
+}
 
 pub use xai_grok_tools_api::slash_commands::{
     IMAGE_GEN_TOOL_NAME, IMAGINE_COMMAND_NAME, imagine_instruction, imagine_usage_message,
@@ -354,10 +372,31 @@ impl ImageGenClient {
         Ok(request.header(AUTHORIZATION, value))
     }
 
+    fn codex_image_turn_header(
+        &self,
+        context: Option<&CodexImageTurnContext>,
+    ) -> Result<Option<HeaderValue>, xai_tool_runtime::ToolError> {
+        if self.backend != ImageGenBackend::OpenAiCodex {
+            return Ok(None);
+        }
+        let turn_id = context
+            .map(|context| context.turn_id.as_str())
+            .filter(|turn_id| {
+                !turn_id.trim().is_empty()
+                    && turn_id.len() <= MAX_CODEX_IMAGE_TURN_ID_BYTES
+                    && !turn_id.chars().any(char::is_control)
+            })
+            .ok_or_else(codex_image_turn_error)?;
+        let mut header = HeaderValue::from_str(turn_id).map_err(|_| codex_image_turn_error())?;
+        header.set_sensitive(true);
+        Ok(Some(header))
+    }
+
     async fn send_json_once(
         &self,
         url: &str,
         payload: &serde_json::Value,
+        codex_turn_header: Option<&HeaderValue>,
     ) -> Result<(reqwest::Response, Option<RequestCredentialSnapshot>), xai_tool_runtime::ToolError>
     {
         let request = self.http(url).await?.post(url).json(payload);
@@ -372,9 +411,14 @@ impl ImageGenClient {
                     .await
                     .map_err(codex_image_auth_error)?;
                 let credential_snapshot = Some(auth.credential_snapshot().clone());
-                (auth.apply(request), credential_snapshot)
+                let header = codex_turn_header.ok_or_else(codex_image_turn_error)?;
+                (
+                    auth.apply(request.header(X_CODEX_IMAGE_TURN_ID_HEADER, header.clone())),
+                    credential_snapshot,
+                )
             }
             ImageGenBackend::XaiImagine => {
+                debug_assert!(codex_turn_header.is_none());
                 let auth = self.current_request_auth().await?;
                 let credential_snapshot = auth.credential_snapshot().cloned();
                 (
@@ -397,6 +441,7 @@ impl ImageGenClient {
         &self,
         path: &str,
         payload: &serde_json::Value,
+        codex_turn: Option<&CodexImageTurnContext>,
     ) -> Result<reqwest::Response, xai_tool_runtime::ToolError> {
         if self.backend == ImageGenBackend::OpenAiCodex
             && !matches!(
@@ -410,7 +455,10 @@ impl ImageGenClient {
         }
         let base = self.base_url.trim_end_matches('/');
         let url = format!("{base}/{}", path.trim_start_matches('/'));
-        let (mut response, rejected_credential) = self.send_json_once(&url, payload).await?;
+        let codex_turn_header = self.codex_image_turn_header(codex_turn)?;
+        let (mut response, rejected_credential) = self
+            .send_json_once(&url, payload, codex_turn_header.as_ref())
+            .await?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             // Attribution intentionally receives no credential material.
             if self.backend == ImageGenBackend::XaiImagine {
@@ -425,7 +473,10 @@ impl ImageGenClient {
                 None => false,
             };
             if recovered {
-                response = self.send_json_once(&url, payload).await?.0;
+                response = self
+                    .send_json_once(&url, payload, codex_turn_header.as_ref())
+                    .await?
+                    .0;
             }
         }
         Ok(response)
@@ -463,6 +514,7 @@ impl ImageGenClient {
         &self,
         prompt: &str,
         aspect_ratio: &str,
+        codex_turn: Option<&CodexImageTurnContext>,
     ) -> Result<Vec<u8>, xai_tool_runtime::ToolError> {
         let payload = match self.backend {
             ImageGenBackend::XaiImagine => serde_json::json!({
@@ -482,7 +534,9 @@ impl ImageGenClient {
             }),
         };
 
-        let response = self.post_json("images/generations", &payload).await?;
+        let response = self
+            .post_json("images/generations", &payload, codex_turn)
+            .await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -519,6 +573,12 @@ impl ImageGenClient {
         validate_generated_image(&decoded)?;
         Ok(decoded)
     }
+}
+
+fn codex_image_turn_error() -> xai_tool_runtime::ToolError {
+    xai_tool_runtime::ToolError::invalid_arguments(
+        "Codex image request is missing valid turn correlation metadata.",
+    )
 }
 
 /// Map Grok's aspect-ratio vocabulary to exact `gpt-image-2` canvases.
@@ -891,6 +951,14 @@ pub struct ImageGenInput {
         description = "Aspect ratio of the generated image, decide it based on the user's request. Defaults to 'auto'. 1:1 for square (icons, profiles), 16:9 for wide (landscapes, cinematic), 9:16 for tall (phone wallpapers, stories), 3:2 for horizontal photos, 2:3 for vertical (portraits, posters)."
     )]
     pub aspect_ratio: String,
+
+    #[serde(
+        default,
+        rename = "_grok_codex_image_turn",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(skip)]
+    pub codex_turn_context: Option<CodexImageTurnContext>,
 }
 
 fn default_aspect_ratio() -> String {
@@ -986,7 +1054,13 @@ impl xai_tool_runtime::Tool for ImageGenTool {
             return Ok(ToolOutput::Text(TIER_RESTRICTED_UPSELL.into()));
         }
 
-        let image_bytes = client.generate(&input.prompt, &input.aspect_ratio).await?;
+        let image_bytes = client
+            .generate(
+                &input.prompt,
+                &input.aspect_ratio,
+                input.codex_turn_context.as_ref(),
+            )
+            .await?;
 
         let session_folder = {
             let res = resources.lock().await;
@@ -1018,6 +1092,74 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    fn codex_client() -> ImageGenClient {
+        ImageGenClient::new(
+            &ImageGenConfig::OpenAiCodex {
+                base_url: OPENAI_CODEX_BASE_URL.to_owned(),
+                image_gen_enabled: true,
+                image_edit_enabled: true,
+            },
+            Some(Arc::new(CodexTestAuth)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn codex_image_turn_header_is_bounded_sensitive_and_redacted() {
+        let client = codex_client();
+        let valid = CodexImageTurnContext {
+            turn_id: "sentinel-turn-id".to_owned(),
+        };
+        let header = client
+            .codex_image_turn_header(Some(&valid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(header.to_str().unwrap(), "sentinel-turn-id");
+        assert!(header.is_sensitive());
+        assert!(!format!("{valid:?}").contains("sentinel-turn-id"));
+
+        for invalid in [
+            "".to_owned(),
+            "   ".to_owned(),
+            "x".repeat(MAX_CODEX_IMAGE_TURN_ID_BYTES + 1),
+            "bad\nturn".to_owned(),
+        ] {
+            let error = client
+                .codex_image_turn_header(Some(&CodexImageTurnContext { turn_id: invalid }))
+                .expect_err("invalid turn metadata must fail closed");
+            assert!(error.to_string().contains("turn correlation metadata"));
+        }
+        assert!(client.codex_image_turn_header(None).is_err());
+    }
+
+    #[test]
+    fn xai_image_backend_ignores_forged_codex_turn_context() {
+        let config = ImageGenConfig::Enabled {
+            api_key: "test-key".to_owned(),
+            base_url: "https://api.x.ai/v1".to_owned(),
+            extra_headers: indexmap::IndexMap::new(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+            model_override: None,
+            tier_restricted: false,
+        };
+        let client = ImageGenClient::new(&config, None).unwrap();
+        assert!(
+            client
+                .codex_image_turn_header(Some(&CodexImageTurnContext {
+                    turn_id: "forged".to_owned(),
+                }))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn image_gen_schema_hides_codex_turn_context() {
+        let schema = serde_json::to_value(schemars::schema_for!(ImageGenInput)).unwrap();
+        assert!(!schema.to_string().contains(CODEX_IMAGE_TURN_CONTEXT_FIELD));
+    }
 
     struct CodexTestAuth;
 
@@ -1466,6 +1608,7 @@ mod tests {
             .and(header("authorization", "Bearer test-access"))
             .and(header("chatgpt-account-id", "test-account"))
             .and(header("x-openai-fedramp", "true"))
+            .and(header("x-codex-image-turn-id", "turn-image-gen"))
             .and(header("originator", "grok_build_codex"))
             .and(header(
                 "version",
@@ -1495,7 +1638,13 @@ mod tests {
         };
         let provider: SharedApiKeyProvider = Arc::new(CodexTestAuth);
         let client = ImageGenClient::new(&config, Some(provider)).unwrap();
-        let result = client.generate("a lighthouse", "16:9").await.unwrap();
+        let turn = CodexImageTurnContext {
+            turn_id: "turn-image-gen".to_owned(),
+        };
+        let result = client
+            .generate("a lighthouse", "16:9", Some(&turn))
+            .await
+            .unwrap();
         assert!(!result.is_empty());
 
         let requests = server.received_requests().await.unwrap();
@@ -1520,7 +1669,13 @@ mod tests {
         let provider: SharedApiKeyProvider = Arc::new(ZeroGenerationCodexTestAuth);
         let error = ImageGenClient::new(&config, Some(provider))
             .unwrap()
-            .generate("a lighthouse", "auto")
+            .generate(
+                "a lighthouse",
+                "auto",
+                Some(&CodexImageTurnContext {
+                    turn_id: "turn-zero-generation".to_owned(),
+                }),
+            )
             .await
             .expect_err("generation-zero credentials must fail before dispatch");
 
@@ -1585,6 +1740,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/images/generations"))
             .and(header("authorization", "Bearer generation-seven"))
+            .and(header("x-codex-image-turn-id", "turn-stable-retry"))
             .respond_with(ResponseTemplate::new(401))
             .mount(&server)
             .await;
@@ -1597,6 +1753,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/images/generations"))
             .and(header("authorization", "Bearer generation-eight"))
+            .and(header("x-codex-image-turn-id", "turn-stable-retry"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [{"b64_json": encoded}]
             })))
@@ -1618,7 +1775,13 @@ mod tests {
                 .unwrap();
         assert!(
             !client
-                .generate("a lighthouse", "auto")
+                .generate(
+                    "a lighthouse",
+                    "auto",
+                    Some(&CodexImageTurnContext {
+                        turn_id: "turn-stable-retry".to_owned(),
+                    }),
+                )
                 .await
                 .unwrap()
                 .is_empty()
@@ -1652,7 +1815,13 @@ mod tests {
         let provider: SharedApiKeyProvider = Arc::new(CodexTestAuth);
         let error = ImageGenClient::new(&config, Some(provider))
             .unwrap()
-            .generate("a lighthouse", "auto")
+            .generate(
+                "a lighthouse",
+                "auto",
+                Some(&CodexImageTurnContext {
+                    turn_id: "turn-terminal-401".to_owned(),
+                }),
+            )
             .await
             .expect_err("401 must surface");
         let details = error.details.expect("structured failure details");
@@ -1741,7 +1910,7 @@ mod tests {
         };
         let response = ImageGenClient::new(&config, None)
             .unwrap()
-            .post_json("images/generations", &serde_json::json!({}))
+            .post_json("images/generations", &serde_json::json!({}), None)
             .await
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
@@ -1759,6 +1928,7 @@ mod tests {
             ImageGenInput {
                 prompt: "a test image".into(),
                 aspect_ratio: "auto".into(),
+                codex_turn_context: None,
             },
         )
         .await;
@@ -1795,6 +1965,7 @@ mod tests {
             ImageGenInput {
                 prompt: "a cat".into(),
                 aspect_ratio: "auto".into(),
+                codex_turn_context: None,
             },
         )
         .await

@@ -36,10 +36,10 @@ pub use conversations_client::{
 pub use openai_codex_catalog::{
     CodexCachedCatalog, CodexCatalogAuthError, CodexCatalogAuthProvider, CodexCatalogAuthSnapshot,
     CodexCatalogCacheStatus, CodexCatalogClient, CodexCatalogClientConfig, CodexCatalogError,
-    CodexCatalogFetch, CodexCatalogFetchSource, CodexCatalogModel, CodexModelAvailabilityNux,
-    CodexModelCatalog, CodexModelServiceTier, CodexModelUpgrade, CodexReasoningEffortPreset,
-    CodexTruncationPolicy, OPENAI_CODEX_BASE_URL, OPENAI_CODEX_CATALOG_TIMEOUT,
-    OPENAI_CODEX_MODEL_NAMESPACE, OPENAI_CODEX_PROVIDER_ID,
+    CodexCatalogFetch, CodexCatalogFetchSource, CodexCatalogModel, CodexCollaborationModeMessages,
+    CodexModelAvailabilityNux, CodexModelCatalog, CodexModelServiceTier, CodexModelUpgrade,
+    CodexReasoningEffortPreset, CodexTruncationPolicy, OPENAI_CODEX_BASE_URL,
+    OPENAI_CODEX_CATALOG_TIMEOUT, OPENAI_CODEX_MODEL_NAMESPACE, OPENAI_CODEX_PROVIDER_ID,
 };
 pub use pull::{PullResult, pull_session_to_local};
 pub use sync::RemoteSync;
