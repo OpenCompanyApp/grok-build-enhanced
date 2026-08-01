@@ -64,12 +64,16 @@ class CheckManifestTests(unittest.TestCase):
         self.assertIn("silently removed", result.stdout)
 
     def test_parity_obligations_reject_evidence_free_closure(self) -> None:
-        document = self.obligation_document()
-        document["obligations"][0]["state"] = "closed"
-        self.write_obligation_document(document)
-        result = self.fixture.run_checker()
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("is evidence-free but marked closed", result.stdout)
+        original = self.obligation_document()
+        for state in ("closed", "offline-qualified"):
+            with self.subTest(state=state):
+                document = copy.deepcopy(original)
+                document["obligations"][0]["state"] = state
+                document["obligations"][0]["closure_evidence"] = []
+                self.write_obligation_document(document)
+                result = self.fixture.run_checker()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"is evidence-free but marked {state}", result.stdout)
 
     def successive_acknowledgement_rig(
         self,

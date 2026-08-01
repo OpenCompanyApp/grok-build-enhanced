@@ -160,7 +160,7 @@
       "remote": "https://github.com/openai/codex.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "51200321eb7b862a29ffceaba8b19db1934a9b38"
+        "commit": "2c005abb0765bfe3ef42a23fe88d5b806184fa83"
       },
       "latest_fetched": {
         "commit": "2c005abb0765bfe3ef42a23fe88d5b806184fa83"
@@ -172,7 +172,7 @@
       "remote": "https://github.com/anomalyco/opencode.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "0317531906d3f3bb01cf33c16319870cfde9170c"
+        "commit": "e4bd9757a3a5dc7461d286000a19e9bd7df57c40"
       },
       "latest_fetched": {
         "commit": "e4bd9757a3a5dc7461d286000a19e9bd7df57c40"
@@ -184,7 +184,7 @@
       "remote": "https://github.com/xai-org/grok-build.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "3af4d5d39897855bdcc74f23e690024a5dc05573"
+        "commit": "dd04f397b1d02f2272b092555669dfba1f01bc85"
       },
       "latest_fetched": {
         "commit": "dd04f397b1d02f2272b092555669dfba1f01bc85"
@@ -220,7 +220,7 @@
       "remote": "https://github.com/MoonshotAI/kimi-code.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "b5efba7abcaf4041f81ec520097a61e6546e8c50"
+        "commit": "bfa00807c975fdc5b84dda32d47b16b09e8d42c1"
       },
       "latest_fetched": {
         "commit": "bfa00807c975fdc5b84dda32d47b16b09e8d42c1"
@@ -342,6 +342,22 @@
         "evidence": {
           "path": "docs/upstream-refresh-2026-07-21-r3.md",
           "sha256": "196129c46aab5b71a3c60ade6c4693f19640a709d7cbfecff76a5b3922624521"
+        }
+      },
+      {
+        "source_id": "grok-build-upstream",
+        "commit": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+        "tree": "c5c7bdcda32a828efa112883dcd5279ce78714ec",
+        "reviewed_from": {
+          "commit": "3af4d5d39897855bdcc74f23e690024a5dc05573",
+          "tree": "e595174931be9bfb490aacf149e2c9cc0ca0ebba"
+        },
+        "target_parents": [
+          "500129c714ad1b10e6095481f4a8387a2ec52649"
+        ],
+        "evidence": {
+          "path": "docs/upstream-refresh-2026-07-31.md",
+          "sha256": "a7bbe2f5d97cd4bc9100f2b986a76b40d84369ede63ff1c44c63db3864b672fd"
         }
       }
     ]
@@ -1043,164 +1059,9 @@
       ]
     },
     {
-      "id": "zai-coding-plan-provider-auth-catalog",
-      "description": "Provider-scoped global Z.AI Coding Plan API-key storage, bounded login input, logout isolation, authenticated catalog discovery, credential-bound caching, ACP auth, and request authentication.",
+      "id": "zai-research-reference",
+      "description": "Research-only Z.AI interoperability notes and source provenance; no runtime provider, credentials, commands, tools, or product claims.",
       "source_ids": [
-        "grok-build-upstream",
-        "zai-sdk-python",
-        "zai-coding-plugins"
-      ],
-      "paths": [
-        "crates/codegen/xai-grok-pager-bin/src/main.rs",
-        "crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md",
-        "crates/codegen/xai-grok-pager/src/app/cli.rs",
-        "crates/codegen/xai-grok-shell/src/agent/auth_method.rs",
-        "crates/codegen/xai-grok-shell/src/agent/config.rs",
-        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
-        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs",
-        "crates/codegen/xai-grok-shell/src/auth/mod.rs",
-        "crates/codegen/xai-grok-shell/src/auth/model.rs",
-        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/**"
-      ],
-      "integration_paths": [
-        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/mod.rs",
-        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/request_auth.rs",
-        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/catalog.rs"
-      ],
-      "legal_paths": [
-        "LICENSE",
-        "THIRD-PARTY-NOTICES",
-        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
-      ]
-    },
-    {
-      "id": "zai-coding-plan-provider-runtime",
-      "description": "First-class Z.AI Coding Plan identity, canonical Chat Completions transport, exact preserved reasoning, streamed function calls, and provider-bound session, compaction, subagent, headless, model-switch, and ACP routing.",
-      "source_ids": [
-        "grok-build-upstream",
-        "opencode",
-        "zai-sdk-python",
-        "zai-coding-plugins",
-        "glm-5"
-      ],
-      "paths": [
-        "crates/codegen/xai-grok-sampler/Cargo.toml",
-        "crates/codegen/xai-grok-sampler/src/client.rs",
-        "crates/codegen/xai-grok-sampler/src/config.rs",
-        "crates/codegen/xai-grok-sampler/src/provider/mod.rs",
-        "crates/codegen/xai-grok-sampler/src/provider/zai_coding_plan/**",
-        "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
-        "crates/codegen/xai-grok-sampling-types/src/lib.rs",
-        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
-        "crates/codegen/xai-grok-sampling-types/src/types.rs",
-        "crates/codegen/xai-grok-sampling-types/src/zai_coding_plan.rs",
-        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
-        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs",
-        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs",
-        "crates/codegen/xai-grok-shell/src/agent/subagent/handle_request.rs",
-        "crates/codegen/xai-grok-shell/src/agent/subagent/tests/rest.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/prompt_build.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/auth_error_no_retry_tests.rs",
-        "crates/codegen/xai-grok-shell/src/session/compaction.rs",
-        "crates/codegen/xai-grok-shell/src/session/helpers/session_compact.rs",
-        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/mod.rs"
-      ],
-      "integration_paths": [
-        "crates/codegen/xai-grok-sampler/src/provider/zai_coding_plan/mod.rs",
-        "crates/codegen/xai-grok-sampling-types/src/zai_coding_plan.rs",
-        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
-        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
-        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs"
-      ],
-      "legal_paths": [
-        "LICENSE",
-        "THIRD-PARTY-NOTICES",
-        "crates/codegen/xai-grok-sampler/THIRD_PARTY_NOTICES.md",
-        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
-      ]
-    },
-    {
-      "id": "zai-coding-plan-web-vision-tools",
-      "description": "Dynamically authenticated Search, Reader, and Zread MCP adapters, SSRF-screened local fetch fallback, and opt-in exact-pinned Vision MCP attachment and media tooling.",
-      "source_ids": [
-        "grok-build-upstream",
-        "zai-sdk-python",
-        "zai-coding-plugins"
-      ],
-      "paths": [
-        "crates/codegen/xai-grok-agent/src/builder.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/prompt_build.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
-        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn.rs",
-        "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md",
-        "crates/codegen/xai-grok-tools/src/implementations/grok_build/**/*zai*.rs",
-        "crates/codegen/xai-grok-tools/src/implementations/grok_build/mod.rs",
-        "crates/codegen/xai-grok-tools/src/implementations/mod.rs",
-        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/zai_coding_plan.rs",
-        "crates/codegen/xai-grok-tools/src/implementations/web_search/types.rs",
-        "crates/codegen/xai-grok-tools/src/implementations/zai_mcp.rs",
-        "crates/codegen/xai-grok-tools/src/registry/types.rs",
-        "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs"
-      ],
-      "integration_paths": [
-        "crates/codegen/xai-grok-tools/src/implementations/zai_mcp.rs",
-        "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/hosted_zai.rs",
-        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/zai_coding_plan.rs",
-        "crates/codegen/xai-grok-tools/src/registry/types.rs"
-      ],
-      "legal_paths": [
-        "LICENSE",
-        "THIRD-PARTY-NOTICES",
-        "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md"
-      ]
-    },
-    {
-      "id": "zai-coding-plan-usage-ux",
-      "description": "Provider-bound Z.AI plan usage retrieval, drift-tolerant five-hour, weekly, monthly MCP, reset, model, and tool projections, TUI usage summaries, high-usage polling, and management routing.",
-      "source_ids": [
-        "grok-build-upstream",
-        "codexbar",
-        "zai-usage-helper"
-      ],
-      "paths": [
-        "crates/codegen/xai-grok-pager/src/acp/model_state.rs",
-        "crates/codegen/xai-grok-pager/src/app/actions.rs",
-        "crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs",
-        "crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs",
-        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/billing.rs",
-        "crates/codegen/xai-grok-pager/src/app/effects/mod.rs",
-        "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
-        "crates/codegen/xai-grok-pager/src/slash/commands/usage.rs",
-        "crates/codegen/xai-grok-pager/src/views/credit_bar.rs",
-        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/usage.rs",
-        "crates/codegen/xai-grok-shell/src/extensions/billing.rs"
-      ],
-      "integration_paths": [
-        "crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs",
-        "crates/codegen/xai-grok-pager/src/slash/commands/usage.rs",
-        "crates/codegen/xai-grok-pager/src/views/credit_bar.rs",
-        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/usage.rs",
-        "crates/codegen/xai-grok-shell/src/extensions/billing.rs"
-      ],
-      "legal_paths": [
-        "LICENSE",
-        "THIRD-PARTY-NOTICES",
-        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
-      ]
-    },
-    {
-      "id": "zai-coding-plan-provider-reference",
-      "description": "Implemented experimental Z.AI Coding Plan provider contract, capability boundaries, source provenance, security policy, deterministic qualification, and remaining live gates.",
-      "source_ids": [
-        "grok-build-upstream",
-        "opencode",
         "zai-sdk-python",
         "zai-coding-plugins",
         "glm-5",
@@ -1216,6 +1077,87 @@
       ],
       "legal_paths": [
         "LICENSE"
+      ]
+    },
+    {
+      "id": "zai-runtime-removal",
+      "description": "Removes the historical Z.AI runtime experiment and its CLI, credentials, model, usage, and hosted-tool surfaces while retaining research-only provenance and backward-auditable path ownership.",
+      "source_ids": [
+        "grok-build-upstream",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper"
+      ],
+      "paths": [
+        "docs/providers/README.md",
+        "docs/providers/zai-glm-coding-plan-integration-research.md",
+        "crates/codegen/xai-grok-agent/src/builder.rs",
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md",
+        "crates/codegen/xai-grok-pager/src/acp/model_state.rs",
+        "crates/codegen/xai-grok-pager/src/app/actions.rs",
+        "crates/codegen/xai-grok-pager/src/app/cli.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/billing.rs",
+        "crates/codegen/xai-grok-pager/src/app/effects/mod.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/usage.rs",
+        "crates/codegen/xai-grok-pager/src/views/credit_bar.rs",
+        "crates/codegen/xai-grok-sampler/Cargo.toml",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/config.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/mod.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/zai_coding_plan/**",
+        "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
+        "crates/codegen/xai-grok-sampling-types/src/lib.rs",
+        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
+        "crates/codegen/xai-grok-sampling-types/src/types.rs",
+        "crates/codegen/xai-grok-sampling-types/src/zai_coding_plan.rs",
+        "crates/codegen/xai-grok-shell/src/agent/auth_method.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/handle_request.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/tests/rest.rs",
+        "crates/codegen/xai-grok-shell/src/auth/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/model.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/**",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/usage.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/billing.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/prompt_build.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/auth_error_no_retry_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/compaction.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/session_compact.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/mod.rs",
+        "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/**/*zai*.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/zai_coding_plan.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/types.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/zai_mcp.rs",
+        "crates/codegen/xai-grok-tools/src/registry/types.rs",
+        "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs"
+      ],
+      "integration_paths": [
+        "docs/providers/README.md",
+        "docs/providers/zai-glm-coding-plan-integration-research.md"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-sampler/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md"
       ]
     },
     {
@@ -2181,7 +2123,6 @@
         "crates/codegen/xai-grok-shell/src/auth/kimi_code/catalog.rs",
         "crates/codegen/xai-grok-shell/src/auth/mod.rs",
         "crates/codegen/xai-grok-shell/src/auth/token_output.rs",
-        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/catalog.rs",
         "crates/codegen/xai-grok-shell/src/config/tests.rs",
         "crates/codegen/xai-grok-shell/src/inspect/mod.rs",
         "crates/codegen/xai-grok-shell/src/sampling/error.rs",
@@ -2407,7 +2348,6 @@
         "UPSTREAM_VERSIONS.md",
         "docs/providers/kimi-code-integration-research.md",
         "docs/providers/openai-codex-subscription-provider-reference.md",
-        "docs/providers/zai-glm-coding-plan-integration-research.md",
         "docs/upstream-refresh-2026-07-21.md",
         "fork/manifest.json"
       ],
@@ -2435,7 +2375,6 @@
         "UPSTREAM_VERSIONS.md",
         "docs/providers/kimi-code-integration-research.md",
         "docs/providers/openai-codex-subscription-provider-reference.md",
-        "docs/providers/zai-glm-coding-plan-integration-research.md",
         "docs/upstream-refresh-2026-07-21-r2.md",
         "fork/manifest.json"
       ],
@@ -2443,7 +2382,6 @@
         "UPSTREAM_VERSIONS.md",
         "docs/providers/kimi-code-integration-research.md",
         "docs/providers/openai-codex-subscription-provider-reference.md",
-        "docs/providers/zai-glm-coding-plan-integration-research.md",
         "docs/upstream-refresh-2026-07-21-r2.md",
         "fork/manifest.json"
       ],
@@ -3651,7 +3589,6 @@
         "crates/codegen/xai-grok-provider-http/tests/extra_ca_oversized_env.rs",
         "crates/codegen/xai-grok-provider-http/tests/extra_ca_valid_env.rs",
         "crates/codegen/xai-grok-sampler/src/provider/kimi_code/mod.rs",
-        "crates/codegen/xai-grok-sampler/src/provider/zai_coding_plan/mod.rs",
         "crates/codegen/xai-grok-sampler/src/shared_http.rs",
         "crates/codegen/xai-grok-shell/src/agent/subscription_check.rs",
         "crates/codegen/xai-grok-shell/src/auth/attribution.rs",
@@ -3683,7 +3620,6 @@
         "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_fetch/http.rs",
         "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/kimi_code.rs",
         "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/responses.rs",
-        "crates/codegen/xai-grok-tools/src/implementations/zai_mcp.rs",
         "crates/codegen/xai-system-power/src/lib.rs",
         "crates/codegen/xai-system-power/src/linux.rs",
         "crates/codegen/xai-system-power/src/macos.rs",
