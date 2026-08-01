@@ -26,7 +26,7 @@ Exact outcome count: **91 open `adopt`**, **7 closed `already equivalent`**, **1
 | `GB-A572-011` | Carry `toolOverrides` through wire types, session configuration, registry, and availability decisions. | Sampling types, tools API, shell session config, and tool registry. | **adopt — open** |
 | `GB-A572-012` | Make a `Bash(git:*)` permission rule match every command in a chained shell command by prefix. | Workspace permission policy, shell access, sandbox paths, and tests. | **adopt — open** |
 | `GB-A572-013` | Split prompt-trigger telemetry by trigger type and record classifier provenance. | Telemetry events and workspace auto-mode observability. | **adopt — open** |
-| `GB-A572-014` | Give managed connector and MCP operations the upstream 60-second timeout while preserving bounded cancellation. | MCP servers and managed-MCP session support. | **adopt — open** |
+| `GB-A572-014` | Give managed connector and MCP operations the upstream 75-second timeout while preserving bounded cancellation. | MCP servers and managed-MCP session support. | **adopt — open** |
 | `GB-A572-015` | Let trusted recorded user approvals authorize a repeated equivalent action. | Workspace auto mode and pager ACP permission handling. | **adopt — open** |
 | `GB-A572-016` | Select and execute Doctor fixes from the TUI. | Pager diagnostics, Doctor dispatch, and early-dispatch tests. | **adopt — open** |
 | `GB-A572-017` | Fall back to an ordinary permission prompt when the auto classifier times out or fails in transport. | Workspace auto-mode resolution and pager permission handling. | **adopt — open** |

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import sys
 import unittest
@@ -27,6 +28,48 @@ class CheckManifestTests(unittest.TestCase):
         self.assertIn("ERROR schema:", result.stdout)
         self.assertIn(expected_fragment, result.stdout)
         self.assertEqual(result.stderr, "")
+
+    def obligation_document(self) -> dict[str, object]:
+        return json.loads(
+            self.fixture.path("fork/parity/obligations.json").read_text(encoding="utf-8")
+        )
+
+    def write_obligation_document(self, document: dict[str, object]) -> None:
+        self.fixture.write_repo_file(
+            "fork/parity/obligations.json",
+            json.dumps(document, indent=2, sort_keys=True) + "\n",
+        )
+
+    def test_parity_obligations_reject_missing_ledger(self) -> None:
+        self.fixture.remove_repo_path("fork/parity/obligations.json")
+        result = self.fixture.run_checker()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ERROR parity-obligations:", result.stdout)
+        self.assertIn("does not exist in the checkout", result.stdout)
+
+    def test_parity_obligations_reject_duplicate_or_removed_ids(self) -> None:
+        original = self.obligation_document()
+        duplicate = copy.deepcopy(original)
+        duplicate["obligations"].append(copy.deepcopy(duplicate["obligations"][0]))
+        self.write_obligation_document(duplicate)
+        result = self.fixture.run_checker()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("contains duplicate ID", result.stdout)
+
+        removed = copy.deepcopy(original)
+        removed["obligations"] = removed["obligations"][1:]
+        self.write_obligation_document(removed)
+        result = self.fixture.run_checker()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("silently removed", result.stdout)
+
+    def test_parity_obligations_reject_evidence_free_closure(self) -> None:
+        document = self.obligation_document()
+        document["obligations"][0]["state"] = "closed"
+        self.write_obligation_document(document)
+        result = self.fixture.run_checker()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("is evidence-free but marked closed", result.stdout)
 
     def successive_acknowledgement_rig(
         self,

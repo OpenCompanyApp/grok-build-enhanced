@@ -1,0 +1,1807 @@
+{
+  "campaign": "2026-07-31-upstream-parity",
+  "frozen_sources": {
+    "grok-build-upstream": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+    "kimi-code": "bfa00807c975fdc5b84dda32d47b16b09e8d42c1",
+    "openai-codex": "2c005abb0765bfe3ef42a23fe88d5b806184fa83",
+    "opencode": "e4bd9757a3a5dc7461d286000a19e9bd7df57c40"
+  },
+  "obligations": [
+    {
+      "acceptance_criteria": "An auth change replaces the Codex catalog immediately and leaves xAI state unchanged.",
+      "classification": "already equivalent",
+      "closure_evidence": [],
+      "id": "CDX-CATALOG-001",
+      "impact": "New entitlement visibility is not proven end-to-end.",
+      "intended_tests": [
+        "Hermetic entitlement replacement and xAI-negative catalog test"
+      ],
+      "owner": "Codex catalog",
+      "source_id": "openai-codex",
+      "source_revision": "2c005abb0765bfe3ef42a23fe88d5b806184fa83",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Tool call and output survive persistence, resume, compaction, and the next request without previous_response_id.",
+      "classification": "already equivalent",
+      "closure_evidence": [],
+      "id": "CDX-HISTORY-001",
+      "impact": "Full-history independence from client item IDs is not proven across compaction.",
+      "intended_tests": [
+        "Hermetic JSONL persist/resume/compact full-history test"
+      ],
+      "owner": "Codex session runtime",
+      "source_id": "openai-codex",
+      "source_revision": "2c005abb0765bfe3ef42a23fe88d5b806184fa83",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Synthetic Codex credentials reach only the selected hosted-image route, remain sensitive, and never appear in diagnostics or cross-provider traffic.",
+      "classification": "already equivalent",
+      "closure_evidence": [],
+      "id": "CDX-HOSTED-IMAGE-001",
+      "impact": "Hosted-image credential and route isolation lacks offline end-to-end proof.",
+      "intended_tests": [
+        "Hermetic hosted-image route, header-sensitivity, and xAI-negative test"
+      ],
+      "owner": "Codex hosted image adapter",
+      "source_id": "openai-codex",
+      "source_revision": "2c005abb0765bfe3ef42a23fe88d5b806184fa83",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Refresh, revoke, normal Responses, and hosted-tool requests traverse selected routes without generic fallback or diagnostic leakage.",
+      "classification": "already equivalent",
+      "closure_evidence": [],
+      "id": "CDX-PROXY-001",
+      "impact": "Route equivalence lacks end-to-end proof.",
+      "intended_tests": [
+        "Hermetic exact-route refresh, revoke, Responses, and hosted-tool proxy test"
+      ],
+      "owner": "Codex adapter",
+      "source_id": "openai-codex",
+      "source_revision": "2c005abb0765bfe3ef42a23fe88d5b806184fa83",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "A 429 delay and redaction plus 401 prompt-cache stability pass through the complete request actor.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "CDX-RETRY-001",
+      "impact": "Ordinary-turn retry and prompt-cache proof is incomplete.",
+      "intended_tests": [
+        "Hermetic 401 replay and 429 bounded-delay request-actor test"
+      ],
+      "owner": "Codex sampler",
+      "source_id": "openai-codex",
+      "source_revision": "2c005abb0765bfe3ef42a23fe88d5b806184fa83",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port state, refresh, and UI contracts.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-001",
+      "impact": "Let users enable and disable configured MCP servers without deleting their definitions.",
+      "intended_tests": [
+        "GB-0731-001: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port clipboard feedback and terminal fallbacks.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-002",
+      "impact": "Copy a rendered plan from the plan approval surface.",
+      "intended_tests": [
+        "GB-0731-002: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reconcile tier mapping and negative provider cases.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-003",
+      "impact": "Recognize SuperGrok Plus consistently in subscription and capability presentation.",
+      "intended_tests": [
+        "GB-0731-003: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port ordered gateway replay and termination tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-005",
+      "impact": "Preserve terminal-gateway output and completion boundaries.",
+      "intended_tests": [
+        "GB-0731-005: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Add tolerant parse and partial-success tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-006",
+      "impact": "Surface malformed MCP configuration without losing healthy servers.",
+      "intended_tests": [
+        "GB-0731-006: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port once-only success/cancel/error coverage.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-007",
+      "impact": "Dispatch SessionEnd hooks in headless lifecycle paths.",
+      "intended_tests": [
+        "GB-0731-007: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port UI state and PTY coverage.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-008",
+      "impact": "Keep paste chips and question input coherent across editing and submission.",
+      "intended_tests": [
+        "GB-0731-008: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reconcile task/log display and snapshots.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-009",
+      "impact": "Render duration and log-output status consistently.",
+      "intended_tests": [
+        "GB-0731-009: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reconcile true-noop/stationarity turn-end text.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-011",
+      "impact": "Explain loop-stop outcomes without misleading prompts.",
+      "intended_tests": [
+        "GB-0731-011: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port warning identity/lifecycle tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-012",
+      "impact": "Suppress duplicate or inapplicable startup warnings.",
+      "intended_tests": [
+        "GB-0731-012: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port parent-death teardown and cross-session negatives.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-015",
+      "impact": "Clean up child work when the owning parent process dies.",
+      "intended_tests": [
+        "GB-0731-015: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port minimal-mode snapshots and PTYs.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-016",
+      "impact": "Keep plan/reasoning chrome correct in minimal mode.",
+      "intended_tests": [
+        "GB-0731-016: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Add writer lock and sibling login/refresh/logout races per provider.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-017",
+      "impact": "Serialize auth-store mutation across processes.",
+      "intended_tests": [
+        "GB-0731-017: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port capability detection and PTYs.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-018",
+      "impact": "Preserve compatible behavior in legacy Alacritty terminals.",
+      "intended_tests": [
+        "GB-0731-018: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reconcile cold-start verification and stale-state tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-019",
+      "impact": "Avoid showing a paywall before subscription state is authoritative.",
+      "intended_tests": [
+        "GB-0731-019: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port staged initialization and delayed-service PTYs.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-020",
+      "impact": "Keep the UI responsive during cold initialization.",
+      "intended_tests": [
+        "GB-0731-020: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port streaming/bounded copy and large-history tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-021",
+      "impact": "Bound memory while forking large session histories.",
+      "intended_tests": [
+        "GB-0731-021: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reconcile remaining worker pools and EAGAIN tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-022",
+      "impact": "Bound worker creation under resource pressure.",
+      "intended_tests": [
+        "GB-0731-022: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port confirmation, persistence, and current-session guards.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-023",
+      "impact": "Provide /delete for the intended session/history surface.",
+      "intended_tests": [
+        "GB-0731-023: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port normalization and malformed-history tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-025",
+      "impact": "Preserve Responses tool-result integrity when duplicate results arrive.",
+      "intended_tests": [
+        "GB-0731-025: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port cookie lifecycle and redirect bounds.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-026",
+      "impact": "Avoid preview authentication cookie redirect loops.",
+      "intended_tests": [
+        "GB-0731-026: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port nudge sequencing and telemetry tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-027",
+      "impact": "Emit the intended stationarity nudge before terminal loop handling.",
+      "intended_tests": [
+        "GB-0731-027: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port replay/resume/scrollback coverage.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-029",
+      "impact": "Persist and render cancellation markers coherently.",
+      "intended_tests": [
+        "GB-0731-029: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reconcile server config, lifecycle, and diagnostics.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-030",
+      "impact": "Discover and manage LSP servers, including Roslyn behavior.",
+      "intended_tests": [
+        "GB-0731-030: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Add end-to-end normal/401/history cache-key proofs.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-031",
+      "impact": "Keep prompt cache keys stable across equivalent turns.",
+      "intended_tests": [
+        "GB-0731-031: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port stream parser and headless contracts.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-032",
+      "impact": "Preserve full streaming-JSON output and boundaries.",
+      "intended_tests": [
+        "GB-0731-032: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reconcile mode transitions and command updates.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-034",
+      "impact": "Advertise slash commands appropriate to the active session mode.",
+      "intended_tests": [
+        "GB-0731-034: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Add clock-jump and provider-isolation tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-035",
+      "impact": "Refresh or relogin correctly after machine sleep.",
+      "intended_tests": [
+        "GB-0731-035: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port confirmation and cancellation paths.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-036",
+      "impact": "Warn before draft/history operations that would discard work.",
+      "intended_tests": [
+        "GB-0731-036: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reconcile settings persistence and rollback.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-037",
+      "impact": "Commit settings enum changes consistently.",
+      "intended_tests": [
+        "GB-0731-037: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port navigation/state tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-038",
+      "impact": "Close settings correctly after deep-link navigation.",
+      "intended_tests": [
+        "GB-0731-038: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reconcile trusted scopes and protected-source rules.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-039",
+      "impact": "Load supported hooks declared in TOML.",
+      "intended_tests": [
+        "GB-0731-039: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port local export generation; external publication still requires explicit authorization.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-040",
+      "impact": "Export the supported session artifact to GitHub.",
+      "intended_tests": [
+        "GB-0731-040: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reconcile settings/auth projection without changing telemetry policy.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-041",
+      "impact": "Project coding-data lock state accurately.",
+      "intended_tests": [
+        "GB-0731-041: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port bounded detection and schema tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-042",
+      "impact": "Include terminal-version metadata in ordinary telemetry.",
+      "intended_tests": [
+        "GB-0731-042: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port cancel/disconnect/approval race tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-043",
+      "impact": "Keep the exit-plan approval barrier ordered with the active turn.",
+      "intended_tests": [
+        "GB-0731-043: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port scoped TLS roots without weakening provider routing.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-044",
+      "impact": "Honor configured extra certificate authorities.",
+      "intended_tests": [
+        "GB-0731-044: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Port ownership, refresh, and trust-boundary tests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-0731-045",
+      "impact": "Discover and refresh remote managed skills.",
+      "intended_tests": [
+        "GB-0731-045: frozen upstream and local regression coverage"
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Put /ready in a failed state after hub-connect failure for the configured dwell instead of reporting generic disconnection.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-001",
+      "impact": "Put /ready in a failed state after hub-connect failure for the configured dwell instead of reporting generic disconnection.",
+      "intended_tests": [
+        "GB-69F0-001: Workspace diagnostic server, workspace server, discovery, hub, and errors."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Record and replay ACP terminal output in order, including exit and termination boundaries.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-003",
+      "impact": "Record and replay ACP terminal output in order, including exit and termination boundaries.",
+      "intended_tests": [
+        "GB-69F0-003: Shell terminal recorder, watcher, adapter, ACP lifecycle, and pager rendering."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Make default /resume select native Grok sessions and hint when matching external sessions are hidden.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-005",
+      "impact": "Make default /resume select native Grok sessions and hint when matching external sessions are hidden.",
+      "intended_tests": [
+        "GB-69F0-005: Pager session picker and load; shell unified session list and docs."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Resolve --resume by session title as well as ID or path.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-006",
+      "impact": "Resolve --resume by session title as well as ID or path.",
+      "intended_tests": [
+        "GB-69F0-006: Pager session-title resolver, CLI, startup, and tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reject oversized app-builder deployment archives with an explicit reason.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-007",
+      "impact": "Reject oversized app-builder deployment archives with an explicit reason.",
+      "intended_tests": [
+        "GB-69F0-007: Workspace deploy RPC, computer-hub SDK, and deploy tool."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Render slash-command tag labels consistently from settings-driven data.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-008",
+      "impact": "Render slash-command tag labels consistently from settings-driven data.",
+      "intended_tests": [
+        "GB-69F0-008: Config resolution and pager slash matcher, dropdown, and settings."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Detect and fix supported tmux problems through Doctor.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-009",
+      "impact": "Detect and fix supported tmux problems through Doctor.",
+      "intended_tests": [
+        "GB-69F0-009: Pager diagnostics, render tmux probe, fixes, and tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Preserve explicit URL, query, environment headers, auth source, subprocess policy, and credential isolation for custom gateways across rebuilds.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-010",
+      "impact": "Preserve explicit URL, query, environment headers, auth source, subprocess policy, and credential isolation for custom gateways across rebuilds.",
+      "intended_tests": [
+        "GB-69F0-010: Chat state, sampler client and config, shell model providers, and shell-env policy."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Launch an opt-in persisted onboarding tour through /tutorial without blocking experienced users.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-011",
+      "impact": "Launch an opt-in persisted onboarding tour through /tutorial without blocking experienced users.",
+      "intended_tests": [
+        "GB-69F0-011: Tutorial docs, command, views, and welcome state."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Enforce soft and required CLI version policies at runtime startup with appropriate warning or failure guidance.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-012",
+      "impact": "Enforce soft and required CLI version policies at runtime startup with appropriate warning or failure guidance.",
+      "intended_tests": [
+        "GB-69F0-012: Shell version config, update policy, startup, and PTYs."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Keep privacy-banner environment overrides authoritative after live settings refresh.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-013",
+      "impact": "Keep privacy-banner environment overrides authoritative after live settings refresh.",
+      "intended_tests": [
+        "GB-69F0-013: Telemetry config, agent settings, and pager privacy dispatch."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Let remote settings override the image-edit model independently of image generation and other providers.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-014",
+      "impact": "Let remote settings override the image-edit model independently of image generation and other providers.",
+      "intended_tests": [
+        "GB-69F0-014: Config types, agent config, image edit, and settings tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Keep orphan reconciliation fail-closed when no team identity is available.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-017",
+      "impact": "Keep orphan reconciliation fail-closed when no team identity is available.",
+      "intended_tests": [
+        "GB-69F0-017: Shell subagent coordinator and orphan tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Disable Ctrl+Space and F8 voice activation through a setting without disabling unrelated input.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-018",
+      "impact": "Disable Ctrl+Space and F8 voice activation through a setting without disabling unrelated input.",
+      "intended_tests": [
+        "GB-69F0-018: Voice config and pager input, settings, and voice tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Reject invalid or unsafe marketplace Git URLs before fetching.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-020",
+      "impact": "Reject invalid or unsafe marketplace Git URLs before fetching.",
+      "intended_tests": [
+        "GB-69F0-020: Plugin marketplace validation and pager and shell marketplace paths."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Remove stale parameter names and removed tool names from generated and user tool documentation.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-021",
+      "impact": "Remove stale parameter names and removed tool names from generated and user tool documentation.",
+      "intended_tests": [
+        "GB-69F0-021: Tool schemas, templates, taxonomy, normalization, and pager docs."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "After /fork, move dashboard attachment only when the parent session was attached.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-022",
+      "impact": "After /fork, move dashboard attachment only when the parent session was attached.",
+      "intended_tests": [
+        "GB-69F0-022: Pager fork dispatch, dashboard state, and tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Project Grok Computer media-generation results as file-path chunks instead of opaque text-only output.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-023",
+      "impact": "Project Grok Computer media-generation results as file-path chunks instead of opaque text-only output.",
+      "intended_tests": [
+        "GB-69F0-023: Computer tool types, image and video tools, resources, and upload paths."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Clear a killed web background task from the tray while preserving its description for status and history.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-024",
+      "impact": "Clear a killed web background task from the tray while preserving its description for status and history.",
+      "intended_tests": [
+        "GB-69F0-024: Task backend, coordinator, output, and dashboard task views."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Keep the non-blocking privacy upsell visible until the user explicitly acts on it.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-025",
+      "impact": "Keep the non-blocking privacy upsell visible until the user explicitly acts on it.",
+      "intended_tests": [
+        "GB-69F0-025: Pager privacy banner and agent-view notice state."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Deliver typed tool callbacks and results to tools-server clients.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-026",
+      "impact": "Deliver typed tool callbacks and results to tools-server clients.",
+      "intended_tests": [
+        "GB-69F0-026: Tools API wire and bridge; shell ACP tool dispatch."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Discover persistent global hook sources consistently and protect them from symlink, hard-link, and path-retargeting writes.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-69F0-027",
+      "impact": "Discover persistent global hook sources consistently and protect them from symlink, hard-link, and path-retargeting writes.",
+      "intended_tests": [
+        "GB-69F0-027: Global-hook config, hook discovery, sandbox denies, and shell hooks."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Refresh tool-search results immediately when the managed MCP catalog is fetched again.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-001",
+      "impact": "Refresh tool-search results immediately when the managed MCP catalog is fetched again.",
+      "intended_tests": [
+        "GB-6E38-001: Shell managed MCP restart, pager ACP MCP, and tool search registry."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Prevent duplicate leader processes and avoid hanging on a stale leader or lock during startup.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-002",
+      "impact": "Prevent duplicate leader processes and avoid hanging on a stale leader or lock during startup.",
+      "intended_tests": [
+        "GB-6E38-002: Shell leader client, lock, protocol, server, pager leader flow, and PTYs."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Explain marketplaces, plugins, and organization controls in user documentation.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-003",
+      "impact": "Explain marketplaces, plugins, and organization controls in user documentation.",
+      "intended_tests": [
+        "GB-6E38-003: MCP, plugin, and marketplace user guides."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Carry the originating session ID on direct-to-API image-generation requests.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-004",
+      "impact": "Carry the originating session ID on direct-to-API image-generation requests.",
+      "intended_tests": [
+        "GB-6E38-004: Image-generation tool, shell tool context, turn, and upload."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Document auto-mode blocked behavior and fallback semantics accurately.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-005",
+      "impact": "Document auto-mode blocked behavior and fallback semantics accurately.",
+      "intended_tests": [
+        "GB-6E38-005: Permission, safety, sandbox docs, and auto-mode PTYs."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Evaluate recent authenticated user intent in auto mode without letting AGENTS text or tool arguments forge intent.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-006",
+      "impact": "Evaluate recent authenticated user intent in auto mode without letting AGENTS text or tool arguments forge intent.",
+      "intended_tests": [
+        "GB-6E38-006: Workspace auto mode, shell prompt context, and permission tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Expose archive-too-large, taken-down, limit, and in-progress app deployment reasons.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-007",
+      "impact": "Expose archive-too-large, taken-down, limit, and in-progress app deployment reasons.",
+      "intended_tests": [
+        "GB-6E38-007: Workspace deployment RPC, computer-hub SDK, and callbacks."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Make shell-client auth refresh fail closed so rejected refresh cannot silently continue or fall through to another credential source.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-008",
+      "impact": "Make shell-client auth refresh fail closed so rejected refresh cannot silently continue or fall through to another credential source.",
+      "intended_tests": [
+        "GB-6E38-008: Shell auth manager, credential provider, errors, and contract tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Give turn hooks a chat-supplied, per-session monotonically ordered turn index.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-009",
+      "impact": "Give turn hooks a chat-supplied, per-session monotonically ordered turn index.",
+      "intended_tests": [
+        "GB-6E38-009: Tool-protocol turn hook and shell hook and turn dispatch."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Render Bash mode\u2019s ! prefix, color, placeholder, and concise mode label in minimal mode.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-010",
+      "impact": "Render Bash mode\u2019s ! prefix, color, placeholder, and concise mode label in minimal mode.",
+      "intended_tests": [
+        "GB-6E38-010: Minimal pager live, overlay, panel, API, and PTYs."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Emit distinct metrics and provenance for true-noop and stationarity loop stops.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-011",
+      "impact": "Emit distinct metrics and provenance for true-noop and stationarity loop stops.",
+      "intended_tests": [
+        "GB-6E38-011: Circuit breaker, shell run loop, and telemetry."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Include the current interim transcript exactly once when submitting during voice transcription.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-012",
+      "impact": "Include the current interim transcript exactly once when submitting during voice transcription.",
+      "intended_tests": [
+        "GB-6E38-012: Pager voice handle, prompt dispatch, and voice pipeline."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Silently end a turn after repeated true-noop thrash without fabricating an error or reminder.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-013",
+      "impact": "Silently end a turn after repeated true-noop thrash without fabricating an error or reminder.",
+      "intended_tests": [
+        "GB-6E38-013: Circuit breaker, shell turn end, and doom-loop tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Use a quiet short toast for confirmed clipboard delivery while identifying recovery for unverified OSC 52 or file fallback.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-014",
+      "impact": "Use a quiet short toast for confirmed clipboard delivery while identifying recovery for unverified OSC 52 or file fallback.",
+      "intended_tests": [
+        "GB-6E38-014: Pager-render clipboard, copy docs, and clipboard PTYs."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Fork a rewound session at the selected target prompt rather than a different historical prompt.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-015",
+      "impact": "Fork a rewound session at the selected target prompt rather than a different historical prompt.",
+      "intended_tests": [
+        "GB-6E38-015: Pager rewind and fork; shell rewind tests; workspace checkpoints."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Make the idle \u201cstill running\u201d cue clickable and open the Tasks pane.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-016",
+      "impact": "Make the idle \u201cstill running\u201d cue clickable and open the Tasks pane.",
+      "intended_tests": [
+        "GB-6E38-016: Turn status, tasks pane, mouse dispatch, and dashboard."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Let plugin subagents inherit the parent session\u2019s connected MCP servers without allowing privileged MCP, hooks, or modes declarations.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-018",
+      "impact": "Let plugin subagents inherit the parent session\u2019s connected MCP servers without allowing privileged MCP, hooks, or modes declarations.",
+      "intended_tests": [
+        "GB-6E38-018: Shell subagent request, spawn, coordinator, tests, and docs."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Emit the no-op end-turn reminder only when system reminders are enabled.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-019",
+      "impact": "Emit the no-op end-turn reminder only when system reminders are enabled.",
+      "intended_tests": [
+        "GB-6E38-019: Shell reminders, turn end, and reminder-policy tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Emit credential-safe lifecycle telemetry for custom-gateway bridge create, replace, shutdown, and failure.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-020",
+      "impact": "Emit credential-safe lifecycle telemetry for custom-gateway bridge create, replace, shutdown, and failure.",
+      "intended_tests": [
+        "GB-6E38-020: Shell model providers, agent rebuild, sampler state, and telemetry."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Keep finalized voice text editable while voice capture and transcription remain open.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-021",
+      "impact": "Keep finalized voice text editable while voice capture and transcription remain open.",
+      "intended_tests": [
+        "GB-6E38-021: Pager voice handle, prompt dispatch, and voice pipeline."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Move token-carrier metadata to turn-commit events and carry per-turn origin context through replay and commit.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-022",
+      "impact": "Move token-carrier metadata to turn-commit events and carry per-turn origin context through replay and commit.",
+      "intended_tests": [
+        "GB-6E38-022: Chat state, shell ACP turn updates, and tool-protocol hooks."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Raise workflow scratch quotas to 10 MiB per file and 64 MiB total and allow failed runs to resume.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-023",
+      "impact": "Raise workflow scratch quotas to 10 MiB per file and 64 MiB total and allow failed runs to resume.",
+      "intended_tests": [
+        "GB-6E38-023: Workflow host service, manager, tracker, engine, and journal."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Auto-advance workflow phases, show live agent status, and remove the obsolete budget meter.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-6E38-024",
+      "impact": "Auto-advance workflow phases, show live agent status, and remove the obsolete budget meter.",
+      "intended_tests": [
+        "GB-6E38-024: Pager workflow overlay, shell workflow ingest, tracker, and engine."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Present a non-blocking coding-data-sharing upsell without blocking ordinary agent use.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-001",
+      "impact": "Present a non-blocking coding-data-sharing upsell without blocking ordinary agent use.",
+      "intended_tests": [
+        "GB-A572-001: Pager privacy banner and agent notices; telemetry paths."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Consolidate actionable startup and environment remediation in Doctor.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-002",
+      "impact": "Consolidate actionable startup and environment remediation in Doctor.",
+      "intended_tests": [
+        "GB-A572-002: Pager diagnostics, Doctor command, and startup paths."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "In auto mode, evaluate fail-closed gate requests through the classifier instead of rejecting without a normal decision path.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-003",
+      "impact": "In auto mode, evaluate fail-closed gate requests through the classifier instead of rejecting without a normal decision path.",
+      "intended_tests": [
+        "GB-A572-003: Workspace permission auto-mode, preflight, manager, and resolution paths."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Coalesce concurrent marketplace-list fetches.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-004",
+      "impact": "Coalesce concurrent marketplace-list fetches.",
+      "intended_tests": [
+        "GB-A572-004: Shell marketplace and plugin-marketplace Git paths."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Remove a marketplace source by configured name, not only URL or path identity.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-005",
+      "impact": "Remove a marketplace source by configured name, not only URL or path identity.",
+      "intended_tests": [
+        "GB-A572-005: Pager plugin command, extensions modal, and shell marketplace paths."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Time out hung Git marketplace sources, keep refresh non-blocking, and let the modal recover.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-006",
+      "impact": "Time out hung Git marketplace sources, keep refresh non-blocking, and let the modal recover.",
+      "intended_tests": [
+        "GB-A572-006: Plugin-marketplace Git implementation and modal integration."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Carry a typed error_kind on failed workspace RPCs.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-007",
+      "impact": "Carry a typed error_kind on failed workspace RPCs.",
+      "intended_tests": [
+        "GB-A572-007: Workspace client, types, errors, hub, handle, server, and operations."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Generate date-rollover reminders only for date-bearing templates.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-010",
+      "impact": "Generate date-rollover reminders only for date-bearing templates.",
+      "intended_tests": [
+        "GB-A572-010: Session reminder policy and tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Carry toolOverrides through wire types, session configuration, registry, and availability decisions.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-011",
+      "impact": "Carry toolOverrides through wire types, session configuration, registry, and availability decisions.",
+      "intended_tests": [
+        "GB-A572-011: Sampling types, tools API, shell session config, and tool registry."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Make a Bash(git:*) permission rule match every command in a chained shell command by prefix.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-012",
+      "impact": "Make a Bash(git:*) permission rule match every command in a chained shell command by prefix.",
+      "intended_tests": [
+        "GB-A572-012: Workspace permission policy, shell access, sandbox paths, and tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Split prompt-trigger telemetry by trigger type and record classifier provenance.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-013",
+      "impact": "Split prompt-trigger telemetry by trigger type and record classifier provenance.",
+      "intended_tests": [
+        "GB-A572-013: Telemetry events and workspace auto-mode observability."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Let trusted recorded user approvals authorize a repeated equivalent action.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-015",
+      "impact": "Let trusted recorded user approvals authorize a repeated equivalent action.",
+      "intended_tests": [
+        "GB-A572-015: Workspace auto mode and pager ACP permission handling."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Select and execute Doctor fixes from the TUI.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-016",
+      "impact": "Select and execute Doctor fixes from the TUI.",
+      "intended_tests": [
+        "GB-A572-016: Pager diagnostics, Doctor dispatch, and early-dispatch tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Fall back to an ordinary permission prompt when the auto classifier times out or fails in transport.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-017",
+      "impact": "Fall back to an ordinary permission prompt when the auto classifier times out or fails in transport.",
+      "intended_tests": [
+        "GB-A572-017: Workspace auto-mode resolution and pager permission handling."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Accept both workspace-teleport disable spellings and persist the canonical spelling.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-021",
+      "impact": "Accept both workspace-teleport disable spellings and persist the canonical spelling.",
+      "intended_tests": [
+        "GB-A572-021: Config load, resolve, persistence, settings, and teleport tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Journal one-shot scheduler occurrences durably so they do not repeat after restart.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-022",
+      "impact": "Journal one-shot scheduler occurrences durably so they do not repeat after restart.",
+      "intended_tests": [
+        "GB-A572-022: Scheduler occurrence journal, actor, types, and tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Terminate a turn after 16 consecutive identical tool calls and reset the count when arguments change.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-023",
+      "impact": "Terminate a turn after 16 consecutive identical tool calls and reset the count when arguments change.",
+      "intended_tests": [
+        "GB-A572-023: Shell run loop, doom-loop tests, and circuit breaker."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Copy checkpoint files and lineage when forking a compacted session so later rewind remains valid.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-024",
+      "impact": "Copy checkpoint files and lineage when forking a compacted session so later rewind remains valid.",
+      "intended_tests": [
+        "GB-A572-024: Pager fork and rewind, shell rewind storage, and workspace checkpoints."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Automatically focus a permission question that arrives while the user is in scrollback.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-025",
+      "impact": "Automatically focus a permission question that arrives while the user is in scrollback.",
+      "intended_tests": [
+        "GB-A572-025: Pager ACP permission focus and PTY paths."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Let one Esc cancel a running turn except when fullscreen Vim scrollback or an active overlay consumes Esc.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-026",
+      "impact": "Let one Esc cancel a running turn except when fullscreen Vim scrollback or an active overlay consumes Esc.",
+      "intended_tests": [
+        "GB-A572-026: Pager input dispatch, shell cancellation, and Esc PTYs."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Run macOS voice capture in a temporary helper process while preserving diagnostics, cancellation, permissions, and silence handling.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-028",
+      "impact": "Run macOS voice capture in a temporary helper process while preserving diagnostics, cancellation, permissions, and silence handling.",
+      "intended_tests": [
+        "GB-A572-028: Voice capture subprocess, pipe, protocol, and pager voice paths."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Show active authentication mode and its management route in /session-info without revealing secrets.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-029",
+      "impact": "Show active authentication mode and its management route in /session-info without revealing secrets.",
+      "intended_tests": [
+        "GB-A572-029: Shell session-info, auth model, and pager presentation."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Remove dashboard hover and click dead zones between rows.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-031",
+      "impact": "Remove dashboard hover and click dead zones between rows.",
+      "intended_tests": [
+        "GB-A572-031: Dashboard row, render, peek, state, and dispatch tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Point actionable startup warnings to /doctor.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-032",
+      "impact": "Point actionable startup warnings to /doctor.",
+      "intended_tests": [
+        "GB-A572-032: Pager startup, diagnostics formatting, and Doctor tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Document and configure [feedback.user] author identity.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-033",
+      "impact": "Document and configure [feedback.user] author identity.",
+      "intended_tests": [
+        "GB-A572-033: Pager configuration docs and shell feedback configuration."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Recover interrupted or mirrored session relocations during startup.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-036",
+      "impact": "Recover interrupted or mirrored session relocations during startup.",
+      "intended_tests": [
+        "GB-A572-036: Shell relocation storage, session startup, and pager lifecycle."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Resolve the remote privacy-notice rollout flag correctly.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-037",
+      "impact": "Resolve the remote privacy-notice rollout flag correctly.",
+      "intended_tests": [
+        "GB-A572-037: Config types, agent settings, telemetry config, and privacy banner."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Avoid a computer-hub harness reference cycle that prevents idle connection eviction.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-038",
+      "impact": "Avoid a computer-hub harness reference cycle that prevents idle connection eviction.",
+      "intended_tests": [
+        "GB-A572-038: Computer-hub connection, borrow, demux, and harness."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Honor imported Claude project permissions only after trusting the project folder.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-040",
+      "impact": "Honor imported Claude project permissions only after trusting the project folder.",
+      "intended_tests": [
+        "GB-A572-040: Workspace Claude settings and folder trust; shell import flow."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Echo the originating response.create.event_id in ACP response.created.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-041",
+      "impact": "Echo the originating response.create.event_id in ACP response.created.",
+      "intended_tests": [
+        "GB-A572-041: Pager ACP tracker and notification; shell ACP updates and tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "End startup with an actionable toast instead of hanging when session creation fails from a full disk.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-042",
+      "impact": "End startup with an actionable toast instead of hanging when session creation fails from a full disk.",
+      "intended_tests": [
+        "GB-A572-042: Pager session startup and shell persistence and storage."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Use a durable session-relocation transaction with interruption recovery.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-045",
+      "impact": "Use a durable session-relocation transaction with interruption recovery.",
+      "intended_tests": [
+        "GB-A572-045: Shell relocation state machine and persistence integration."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Surface and recover authentication failure during model-switch compaction.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-047",
+      "impact": "Surface and recover authentication failure during model-switch compaction.",
+      "intended_tests": [
+        "GB-A572-047: Shell compaction and auth; pager model selection and auth tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Persist scheduler expiration and deletion state across restart.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-048",
+      "impact": "Persist scheduler expiration and deletion state across restart.",
+      "intended_tests": [
+        "GB-A572-048: Scheduler actor, journal, types, and tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Require explicit confirmation before removing MCP servers, plugins, hooks, or other extension items.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-049",
+      "impact": "Require explicit confirmation before removing MCP servers, plugins, hooks, or other extension items.",
+      "intended_tests": [
+        "GB-A572-049: Extensions modal and shell extension handlers."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "On expired auth during auto-compaction, log in, retry compaction, then submit the original prompt exactly once.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-050",
+      "impact": "On expired auth during auto-compaction, log in, retry compaction, then submit the original prompt exactly once.",
+      "intended_tests": [
+        "GB-A572-050: Pager auth and session events; shell session compaction."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Preserve hosted tools in recap requests while backend search is active.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "GB-A572-051",
+      "impact": "Preserve hosted tools in recap requests while backend search is active.",
+      "intended_tests": [
+        "GB-A572-051: Shell recap and tool-config tests."
+      ],
+      "owner": "Grok parity campaign",
+      "source_id": "grok-build-upstream",
+      "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Add provider-neutral typed video content, credential-bound Kimi upload and ms:// projection, safe persistence/resume, explicit failures, and cross-provider rejection.",
+      "blocker": "The shared sampling/content/session schema does not represent prompt-attached video.",
+      "classification": "temporarily deferred",
+      "closure_evidence": [],
+      "deadline": "2026-08-01",
+      "id": "KIMI-VIDEO-001",
+      "impact": "Kimi sessions cannot send a local video attachment through the provider file API.",
+      "intended_tests": [
+        "Schema round trip, upload bound, Kimi projection, resume/re-upload, ACP unsupported-content, and cross-provider negative tests"
+      ],
+      "owner": "Enhanced Kimi provider-adapter maintainers",
+      "source_id": "kimi-code",
+      "source_revision": "bfa00807c975fdc5b84dda32d47b16b09e8d42c1",
+      "state": "open",
+      "target": "July 31 upstream-parity closure campaign"
+    },
+    {
+      "acceptance_criteria": "The shared post-auth model-visibility test replaces only the matching provider catalog and credential generation.",
+      "classification": "already equivalent",
+      "closure_evidence": [],
+      "id": "OC-AUTH-001",
+      "impact": "OAuth catalog refetch isolation lacks offline proof.",
+      "intended_tests": [
+        "Hermetic OAuth/auth-change catalog isolation test"
+      ],
+      "owner": "Codex catalog",
+      "source_id": "opencode",
+      "source_revision": "e4bd9757a3a5dc7461d286000a19e9bd7df57c40",
+      "state": "open"
+    },
+    {
+      "acceptance_criteria": "Accept bounded bare-string reasoning and valid provider-defined string fields, discard invalid siblings, and replay only under the same provider, model, and credential generation.",
+      "classification": "adopt",
+      "closure_evidence": [],
+      "id": "OC-E4BD-INTERLEAVED",
+      "impact": "Provider-defined interleaved reasoning strings are not accepted safely.",
+      "intended_tests": [
+        "Interleaved reasoning field grammar, bounds, and credential-binding tests"
+      ],
+      "owner": "Provider interoperability",
+      "source_id": "opencode",
+      "source_revision": "e4bd9757a3a5dc7461d286000a19e9bd7df57c40",
+      "state": "open"
+    }
+  ],
+  "schema_version": 1
+}

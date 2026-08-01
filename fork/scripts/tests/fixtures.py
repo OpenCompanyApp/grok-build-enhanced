@@ -24,11 +24,13 @@ SERIES_FORMAT = "git-linear-history-v1"
 DELTA_FORMAT = "git-tree-delta-v1"
 COVERAGE_HISTORY_FORMAT = "git-first-parent-with-audited-upstream-merges-v1"
 ACKNOWLEDGEMENT_TRAILER = "Fork-Upstream-Acknowledgement"
+OBLIGATIONS_SOURCE = SCRIPTS_DIR.parent / "parity" / "obligations.json"
 KNOWN_CHECKS = [
     "patch-stack-objects",
     "patch-stack-history",
     "coverage-candidate",
     "upstream-revisions",
+    "parity-obligations",
     "feature-paths",
     "downstream-coverage",
 ]
@@ -58,7 +60,17 @@ class ForkFixture:
         self.git("config", "user.email", "fixture@example.invalid")
         self.write_repo_file("LICENSE", "fixture license\n")
         self.write_repo_file("src/integration.txt", "baseline\n")
-        self.git("add", "--", "LICENSE", "src/integration.txt")
+        self.write_repo_file(
+            "fork/parity/obligations.json",
+            OBLIGATIONS_SOURCE.read_text(encoding="utf-8"),
+        )
+        self.git(
+            "add",
+            "--",
+            "LICENSE",
+            "src/integration.txt",
+            "fork/parity/obligations.json",
+        )
         self.git("commit", "--quiet", "-m", "fixture baseline")
         self.baseline = self.git_text("rev-parse", "HEAD")
         self.baseline_tree = self.git_text("rev-parse", "HEAD^{tree}")

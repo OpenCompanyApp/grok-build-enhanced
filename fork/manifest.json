@@ -304,6 +304,7 @@
     "patch-stack-history",
     "coverage-candidate",
     "upstream-revisions",
+    "parity-obligations",
     "feature-paths",
     "downstream-coverage"
   ],
@@ -3489,7 +3490,8 @@
         "crates/codegen/xai-grok-tools/src/implementations/task_output/tool.rs",
         "crates/codegen/xai-grok-workspace/src/hub.rs",
         "docs/upstream-refresh-2026-07-31.md",
-        "fork/manifest.json"
+        "fork/manifest.json",
+        "fork/parity/obligations.json"
       ],
       "integration_paths": [
         "UPSTREAM_VERSIONS.md",
@@ -3511,7 +3513,8 @@
         "crates/codegen/xai-grok-tools/src/implementations/task_output/tool.rs",
         "crates/codegen/xai-grok-workspace/src/hub.rs",
         "docs/upstream-refresh-2026-07-31.md",
-        "fork/manifest.json"
+        "fork/manifest.json",
+        "fork/parity/obligations.json"
       ],
       "legal_paths": [
         "LICENSE"
