@@ -439,6 +439,7 @@ pub(crate) async fn spawn_session_actor(
         let mut permission_config =
             xai_grok_workspace::permission::resolution::resolve_permission_config_with_fallback(
                 tool_context.cwd.as_path(),
+                crate::agent::folder_trust::project_scope_allowed(tool_context.cwd.as_path()),
             )
             .await;
         let yolo_pin = xai_grok_workspace::permission::resolution::yolo_disabled_by_policy();

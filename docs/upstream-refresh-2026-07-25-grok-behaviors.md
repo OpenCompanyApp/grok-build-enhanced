@@ -8,7 +8,7 @@ The three immutable source commits are:
 - `69f0ba880aa98f55e3ac1dcc570e2f332f825fe2` — IDs `GB-69F0-*`; and
 - `6e386420825bd44ae648c63e7c8cba12fcec9401` — IDs `GB-6E38-*`.
 
-Exact outcome count: **91 open `adopt`**, **7 closed `already equivalent`**, **1 closed `not applicable`**, **0 Grok temporary deferrals**, and **0 unclassified observable behaviors**. Open adoption is not a claim of parity and blocks advancing the reviewed Grok pin or creating an acknowledgement marker.
+Exact outcome count: **83 open `adopt`**, **8 closed `adopt`**, **7 closed `already equivalent`**, **1 closed `not applicable`**, **0 Grok temporary deferrals**, and **0 unclassified observable behaviors**. Open adoption is not a claim of parity and blocks advancing the reviewed Grok pin or creating an acknowledgement marker.
 
 ## Behaviors introduced by `a5727c5960…`
 
@@ -16,7 +16,7 @@ Exact outcome count: **91 open `adopt`**, **7 closed `already equivalent`**, **1
 | --- | --- | --- | --- |
 | `GB-A572-001` | Present a non-blocking coding-data-sharing upsell without blocking ordinary agent use. | Pager privacy banner and agent notices; telemetry paths. | **adopt — open** |
 | `GB-A572-002` | Consolidate actionable startup and environment remediation in Doctor. | Pager diagnostics, Doctor command, and startup paths. | **adopt — open** |
-| `GB-A572-003` | In auto mode, evaluate fail-closed gate requests through the classifier instead of rejecting without a normal decision path. | Workspace permission auto-mode, preflight, manager, and resolution paths. | **adopt — open** |
+| `GB-A572-003` | In auto mode, evaluate fail-closed gate requests through the classifier instead of rejecting without a normal decision path. | Workspace permission auto-mode, preflight, manager, and resolution paths. | **adopt — closed** (`permission::manager::tests::auto_classifier_boundaries::fail_closed_gate_ask_defers_and_classifier_allow_runs`) |
 | `GB-A572-004` | Coalesce concurrent marketplace-list fetches. | Shell marketplace and plugin-marketplace Git paths. | **adopt — open** |
 | `GB-A572-005` | Remove a marketplace source by configured name, not only URL or path identity. | Pager plugin command, extensions modal, and shell marketplace paths. | **adopt — open** |
 | `GB-A572-006` | Time out hung Git marketplace sources, keep refresh non-blocking, and let the modal recover. | Plugin-marketplace Git implementation and modal integration. | **adopt — open** |
@@ -24,19 +24,19 @@ Exact outcome count: **91 open `adopt`**, **7 closed `already equivalent`**, **1
 | `GB-A572-009` | Report the real process exit code in completed background-shell notifications and final output. | Grok Build Bash implementation and notification output. | **already equivalent — closed (`E1`)** |
 | `GB-A572-010` | Generate date-rollover reminders only for date-bearing templates. | Session reminder policy and tests. | **adopt — open** |
 | `GB-A572-011` | Carry `toolOverrides` through wire types, session configuration, registry, and availability decisions. | Sampling types, tools API, shell session config, and tool registry. | **adopt — open** |
-| `GB-A572-012` | Make a `Bash(git:*)` permission rule match every command in a chained shell command by prefix. | Workspace permission policy, shell access, sandbox paths, and tests. | **adopt — open** |
+| `GB-A572-012` | Make a `Bash(git:*)` permission rule match every command in a chained shell command by prefix. | Workspace permission policy, shell access, sandbox paths, and tests. | **adopt — closed** (`configured_bash_git_allow_does_not_grant_chained_non_allowed_commands`) |
 | `GB-A572-013` | Split prompt-trigger telemetry by trigger type and record classifier provenance. | Telemetry events and workspace auto-mode observability. | **adopt — open** |
 | `GB-A572-014` | Give managed connector and MCP operations the upstream 75-second timeout while preserving bounded cancellation. | MCP servers and managed-MCP session support. | **adopt — open** |
-| `GB-A572-015` | Let trusted recorded user approvals authorize a repeated equivalent action. | Workspace auto mode and pager ACP permission handling. | **adopt — open** |
+| `GB-A572-015` | Let trusted recorded user approvals authorize a repeated equivalent action. | Workspace auto mode and pager ACP permission handling. | **adopt — closed** (`pre_decision_remember_gate_lets_grant_satisfy_ask_floor`) |
 | `GB-A572-016` | Select and execute Doctor fixes from the TUI. | Pager diagnostics, Doctor dispatch, and early-dispatch tests. | **adopt — open** |
-| `GB-A572-017` | Fall back to an ordinary permission prompt when the auto classifier times out or fails in transport. | Workspace auto-mode resolution and pager permission handling. | **adopt — open** |
+| `GB-A572-017` | Fall back to an ordinary permission prompt when the auto classifier times out or fails in transport. | Workspace auto-mode resolution and pager permission handling. | **adopt — closed** (`auto_classifier_transport_failure_reports_transport_error_source`; `auto_classifier_timeout_preserves_total_denial_limit`) |
 | `GB-A572-018` | Drain completion events owned by the active session plus legacy unowned events while retaining foreign-session events. | Task-completion reminder buffer and shell turn loop. | **already equivalent — closed (`E2`)** |
 | `GB-A572-020` | Identify storage and API requests as `client_identifier=grok-agent-sdk`. | File-utils storage client and shell credential construction. | **adopt — open** |
 | `GB-A572-021` | Accept both workspace-teleport disable spellings and persist the canonical spelling. | Config load, resolve, persistence, settings, and teleport tests. | **adopt — open** |
 | `GB-A572-022` | Journal one-shot scheduler occurrences durably so they do not repeat after restart. | Scheduler occurrence journal, actor, types, and tests. | **adopt — open** |
 | `GB-A572-023` | Terminate a turn after 16 consecutive identical tool calls and reset the count when arguments change. | Shell run loop, doom-loop tests, and circuit breaker. | **adopt — open** |
 | `GB-A572-024` | Copy checkpoint files and lineage when forking a compacted session so later rewind remains valid. | Pager fork and rewind, shell rewind storage, and workspace checkpoints. | **adopt — open** |
-| `GB-A572-025` | Automatically focus a permission question that arrives while the user is in scrollback. | Pager ACP permission focus and PTY paths. | **adopt — open** |
+| `GB-A572-025` | Automatically focus a permission question that arrives while the user is in scrollback. | Pager ACP permission focus and PTY paths. | **adopt — closed** (`enqueue_while_scrollback_steals_focus_to_prompt`; `enqueue_while_scrollback_then_select_restores_scrollback`; `second_enqueue_does_not_resteal_if_user_returned_to_scrollback`) |
 | `GB-A572-026` | Let one Esc cancel a running turn except when fullscreen Vim scrollback or an active overlay consumes Esc. | Pager input dispatch, shell cancellation, and Esc PTYs. | **adopt — open** |
 | `GB-A572-027` | Accurately list Ctrl or Cmd+Z undo and redo bindings in keyboard help. | Shortcut-help view, docs, and undo-tip PTYs. | **adopt — open** |
 | `GB-A572-027C` | Restore text, cursor, and elements through bounded core input undo and redo checkpoints. | `xai-ratatui-textarea` implementation and demo. | **already equivalent — closed (`E5`)** |
@@ -52,7 +52,7 @@ Exact outcome count: **91 open `adopt`**, **7 closed `already equivalent`**, **1
 | `GB-A572-037` | Resolve the remote privacy-notice rollout flag correctly. | Config types, agent settings, telemetry config, and privacy banner. | **adopt — open** |
 | `GB-A572-038` | Avoid a computer-hub harness reference cycle that prevents idle connection eviction. | Computer-hub connection, borrow, demux, and harness. | **adopt — open** |
 | `GB-A572-039` | Insert a newline for Shift+Enter and Alt+Enter while editing a queued prompt. | Pager queue input and queue PTYs. | **already equivalent — closed (`E3`)** |
-| `GB-A572-040` | Honor imported Claude project permissions only after trusting the project folder. | Workspace Claude settings and folder trust; shell import flow. | **adopt — open** |
+| `GB-A572-040` | Honor imported Claude project permissions only after trusting the project folder. | Workspace Claude settings and folder trust; shell import flow. | **adopt — closed** (`untrusted_project_claude_permissions_are_not_honored`; `untrusted_project_config_toml_permissions_are_not_honored`) |
 | `GB-A572-041` | Echo the originating `response.create.event_id` in ACP `response.created`. | Pager ACP tracker and notification; shell ACP updates and tests. | **adopt — open** |
 | `GB-A572-042` | End startup with an actionable toast instead of hanging when session creation fails from a full disk. | Pager session startup and shell persistence and storage. | **adopt — open** |
 | `GB-A572-044` | Enable dynamic workflows by default unless explicitly disabled. | Shell agent config, workflow ACP, views, docs, and tests. | **adopt — open** |
@@ -105,8 +105,8 @@ Four `a572…` raw changes are support rather than separate observable behaviors
 | `GB-6E38-002` | Prevent duplicate leader processes and avoid hanging on a stale leader or lock during startup. | Shell leader client, lock, protocol, server, pager leader flow, and PTYs. | **adopt — open** |
 | `GB-6E38-003` | Explain marketplaces, plugins, and organization controls in user documentation. | MCP, plugin, and marketplace user guides. | **adopt — open** |
 | `GB-6E38-004` | Carry the originating session ID on direct-to-API image-generation requests. | Image-generation tool, shell tool context, turn, and upload. | **adopt — open** |
-| `GB-6E38-005` | Document auto-mode blocked behavior and fallback semantics accurately. | Permission, safety, sandbox docs, and auto-mode PTYs. | **adopt — open** |
-| `GB-6E38-006` | Evaluate recent authenticated user intent in auto mode without letting AGENTS text or tool arguments forge intent. | Workspace auto mode, shell prompt context, and permission tests. | **adopt — open** |
+| `GB-6E38-005` | Document auto-mode blocked behavior and fallback semantics accurately. | Permission, safety, sandbox docs, and auto-mode PTYs. | **adopt — closed** (`side_query_error_is_unavailable_and_unparseable_falls_back_to_heuristic`; permission guide raw-path evidence) |
+| `GB-6E38-006` | Evaluate recent authenticated user intent in auto mode without letting AGENTS text or tool arguments forge intent. | Workspace auto mode, shell prompt context, and permission tests. | **adopt — closed** (`untrusted_transcript_cannot_forge_request_or_permission_decision`; `proposed_action_and_project_instructions_cannot_forge_decision_message`) |
 | `GB-6E38-007` | Expose archive-too-large, taken-down, limit, and in-progress app deployment reasons. | Workspace deployment RPC, computer-hub SDK, and callbacks. | **adopt — open** |
 | `GB-6E38-008` | Make shell-client auth refresh fail closed so rejected refresh cannot silently continue or fall through to another credential source. | Shell auth manager, credential provider, errors, and contract tests. | **adopt — open** |
 | `GB-6E38-009` | Give turn hooks a chat-supplied, per-session monotonically ordered turn index. | Tool-protocol turn hook and shell hook and turn dispatch. | **adopt — open** |

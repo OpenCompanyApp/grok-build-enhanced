@@ -117,11 +117,11 @@ release rule.
 | `GB-0731-040` | Export the supported session artifact to GitHub. | adopt / open | Port local export generation; external publication still requires explicit authorization. |
 | `GB-0731-041` | Project coding-data lock state accurately. | adopt / open | Reconcile settings/auth projection without changing telemetry policy. |
 | `GB-0731-042` | Include terminal-version metadata in ordinary telemetry. | adopt / open | Port bounded detection and schema tests. |
-| `GB-0731-043` | Keep the exit-plan approval barrier ordered with the active turn. | adopt / open | Port cancel/disconnect/approval race tests. |
+| `GB-0731-043` | Keep the exit-plan approval barrier ordered with the active turn. | adopt / closed | Mixed write/exit order and permission-cancel race tests pass. |
 | `GB-0731-044` | Honor configured extra certificate authorities. | adopt / open | Port scoped TLS roots without weakening provider routing. |
 | `GB-0731-045` | Discover and refresh remote managed skills. | adopt / open | Port ownership, refresh, and trust-boundary tests. |
 
-Atomic Grok summary: **120 open adopt**, **15 closed adopt**, **8 closed
+Atomic Grok summary: **111 open adopt**, **24 closed adopt**, **8 closed
 already-equivalent**, **1 closed not-applicable**, **0 temporary deferrals**, and
 **0 unclassified**, across 144 rows.
 

@@ -97,6 +97,7 @@ impl AgentView {
             unexpected_replay_drops: 0,
             replayed_terminal_prompts: HashSet::new(),
             active_pane: ActivePane::Prompt,
+            permission_stashed_pane: None,
             prompt_mode: PromptMode::Normal,
             prompt_input_mode: PromptInputMode::Normal,
             multiline_mode: false,

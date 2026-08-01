@@ -589,7 +589,9 @@ impl WorkspaceRpcHandler {
             }
             <LoadPermissionsReq as WorkspaceRpc>::METHOD => {
                 let cwd = self.workspace.root_cwd()?;
-                Ok(crate::discovery::load_permissions(&cwd).await)
+                // Hub/cloud discovery is outside the local interactive folder-trust
+                // prompt, so it explicitly opts into the project permission tier.
+                Ok(crate::discovery::load_permissions(&cwd, true).await)
             }
             <LoadEnvrcReq as WorkspaceRpc>::METHOD => {
                 let cwd = self.workspace.root_cwd()?;

@@ -789,6 +789,9 @@ pub struct AgentView {
     /// Reset at the start of every load so it never leaks across loads.
     pub(crate) replayed_terminal_prompts: HashSet<String>,
     pub active_pane: AgentPane,
+    /// Scrollback pane temporarily displaced by a permission prompt. Restored
+    /// after the prompt resolves; automatic transitions never imply approval.
+    pub permission_stashed_pane: Option<AgentPane>,
     /// Current mode of the prompt widget (normal vs editing a queued prompt).
     pub prompt_mode: PromptMode,
     /// Current special prompt input mode (Normal/Bash/Feedback/Remember).

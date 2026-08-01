@@ -3521,6 +3521,71 @@
       ]
     },
     {
+      "id": "upstream-july31-permission-trust-boundaries",
+      "description": "Frozen July 31 Grok permission, classifier fallback, chained-shell, project-trust, permission-focus, and ordered plan-exit behavior reconciled with Enhanced's canonical-path hardening.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/permissions.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/permissions.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/plan_mode.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/session.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/permissions.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_auto_mode.rs",
+        "crates/codegen/xai-grok-shell/src/agent/folder_trust.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/folder_trust_prompt.rs",
+        "crates/codegen/xai-grok-shell/src/claude_import.rs",
+        "crates/codegen/xai-grok-shell/src/inspect/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/plan_exit_batch_barrier_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/managed_mcp.rs",
+        "crates/codegen/xai-grok-shell/src/session/plan_mode.rs",
+        "crates/codegen/xai-grok-workspace/src/discovery.rs",
+        "crates/codegen/xai-grok-workspace/src/folder_trust.rs",
+        "crates/codegen/xai-grok-workspace/src/hub_server.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/auto_mode.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/claude_settings.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/gate_preflight.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/hub_permission.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/mod.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/policy.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/prompter.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/resolution.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/shell_access.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/types.rs",
+        "docs/upstream-refresh-2026-07-25-grok-behaviors.md",
+        "docs/upstream-refresh-2026-07-31.md",
+        "fork/manifest.json",
+        "fork/parity/obligations.json"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/permissions.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/permissions.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs",
+        "crates/codegen/xai-grok-shell/src/session/plan_mode.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/policy.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/resolution.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/shell_access.rs",
+        "docs/upstream-refresh-2026-07-25-grok-behaviors.md",
+        "docs/upstream-refresh-2026-07-31.md",
+        "fork/manifest.json",
+        "fork/parity/obligations.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "thread-resource-exhaustion-hardening",
       "description": "Provider-neutral worker reduction and fallible optional thread creation so macOS EAGAIN disables background conveniences instead of aborting Grok.",
       "source_ids": [

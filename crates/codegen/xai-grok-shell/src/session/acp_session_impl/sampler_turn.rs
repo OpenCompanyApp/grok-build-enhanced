@@ -739,7 +739,9 @@ impl SessionActor {
             crate::util::config::auto_mode_classifier_defaults(&auto_cfg, effective_supports_re);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
             Vec<xai_grok_workspace::permission::ClassifierMessage>,
-            tokio::sync::oneshot::Sender<Result<String, String>>,
+            tokio::sync::oneshot::Sender<
+                Result<String, xai_grok_workspace::permission::ClassifierFailure>,
+            >,
         )>();
         let session = Arc::clone(self);
         tokio::task::spawn_local(async move {
@@ -752,7 +754,11 @@ impl SessionActor {
                             let client = session
                                 .prepare_chat_completion(false)
                                 .await
-                                .map_err(|e| e.to_string())?;
+                                .map_err(|e| {
+                                    xai_grok_workspace::permission::ClassifierFailure::TransportError(
+                                        e.to_string(),
+                                    )
+                                })?;
                             let model = session
                                 .chat_state_handle
                                 .get_sampling_config()
@@ -761,7 +767,13 @@ impl SessionActor {
                                 .unwrap_or_default();
                             (client, model)
                         }
-                        Err(error) => return Err(error.clone()),
+                        Err(error) => {
+                            return Err(
+                                xai_grok_workspace::permission::ClassifierFailure::TransportError(
+                                    error.clone(),
+                                ),
+                            );
+                        }
                     };
                     let session_id = session.session_info.id.to_string();
                     let items = messages
@@ -797,8 +809,14 @@ impl SessionActor {
                     let response =
                         tokio::time::timeout(std::time::Duration::from_millis(TIMEOUT_MS), fut)
                             .await
-                            .map_err(|_| "permission auto classifier timed out".to_string())?
-                            .map_err(|e| e.to_string())?;
+                            .map_err(|_| {
+                                xai_grok_workspace::permission::ClassifierFailure::Timeout
+                            })?
+                            .map_err(|e| {
+                                xai_grok_workspace::permission::ClassifierFailure::TransportError(
+                                    e.to_string(),
+                                )
+                            })?;
                     Ok(response.assistant_text())
                 }
                 .await;

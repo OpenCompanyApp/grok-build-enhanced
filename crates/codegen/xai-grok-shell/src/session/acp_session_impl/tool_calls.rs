@@ -434,6 +434,31 @@ pub(super) fn should_intercept_exit_plan_approval(
     }
     true
 }
+/// Whether this parsed tool call exits file-backed plan mode.
+pub(super) fn is_file_backed_exit_plan_input(tool_input: &ToolInput) -> bool {
+    matches!(tool_input, ToolInput::ExitPlanMode(_))
+}
+
+/// Whether a registered tool kind exits file-backed plan mode.
+pub(super) fn is_file_backed_exit_plan_kind(
+    kind: Option<xai_grok_tools::types::tool::ToolKind>,
+) -> bool {
+    matches!(kind, Some(xai_grok_tools::types::tool::ToolKind::ExitPlan))
+}
+
+/// Split exit-plan calls into a tail batch. This makes the approval snapshot a
+/// barrier after every sibling edit regardless of the model's call ordering.
+fn split_exit_plan_tail(
+    calls: Vec<crate::sampling::types::ToolCallResponse>,
+    kind_of: impl Fn(&str) -> Option<xai_grok_tools::types::tool::ToolKind>,
+) -> (
+    Vec<crate::sampling::types::ToolCallResponse>,
+    Vec<crate::sampling::types::ToolCallResponse>,
+) {
+    calls
+        .into_iter()
+        .partition(|call| !is_file_backed_exit_plan_kind(kind_of(&call.function.name)))
+}
 /// Verdict for a tool call evaluated against the plan-mode edit gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PlanEditGate {
@@ -604,6 +629,52 @@ impl SessionActor {
         }
         let mut final_result: Option<ToolLoop> = None;
         let mut deferred_followups: Vec<ConversationItem> = Vec::new();
+        if tool_calls.len() > 1 {
+            let kind_of = |name: &str| self.agent.borrow().tool_bridge().tool_kind(name);
+            let (body, tail) = split_exit_plan_tail(tool_calls, kind_of);
+            if !body.is_empty() {
+                self.execute_tool_calls_batch(body, &mut deferred_followups, &mut final_result)
+                    .await?;
+            }
+            if !tail.is_empty() {
+                self.execute_tool_calls_batch(tail, &mut deferred_followups, &mut final_result)
+                    .await?;
+            }
+        } else {
+            self.execute_tool_calls_batch(tool_calls, &mut deferred_followups, &mut final_result)
+                .await?;
+        }
+        {
+            let _span = if !deferred_followups.is_empty() {
+                Some(
+                    tracing::info_span!(
+                        "tools.deferred_followups",
+                        count = deferred_followups.len()
+                    )
+                    .entered(),
+                )
+            } else {
+                None
+            };
+            for chat in deferred_followups {
+                self.chat_state_handle.push_user_message(chat);
+            }
+        }
+        self.drain_pending_interjections().await;
+        self.flush_pending_skill_reminders().await;
+        if let Some(final_result) = final_result {
+            return Ok(final_result);
+        }
+        Ok(ToolLoop::Continue)
+    }
+
+    /// Prepare, dispatch, and finish one ordered tool-call batch.
+    async fn execute_tool_calls_batch(
+        &self,
+        tool_calls: Vec<crate::sampling::types::ToolCallResponse>,
+        deferred_followups: &mut Vec<ConversationItem>,
+        final_result: &mut Option<ToolLoop>,
+    ) -> Result<(), acp::Error> {
         let mut approved: Vec<PreparedToolCall> = Vec::new();
         let bridge = self.agent.borrow().tool_bridge().clone();
         let codex_web_search_call_count = tool_calls
@@ -616,7 +687,7 @@ impl SessionActor {
         let mut codex_web_search_call_index = 0usize;
         for call in tool_calls.into_iter() {
             if final_result.is_some() {
-                let message = match &final_result {
+                let message = match &*final_result {
                     Some(ToolLoop::PermissionReject { .. }) => {
                         format!(
                             "Tool execution cancelled due to earlier permission rejection for tool `{}`",
@@ -664,7 +735,7 @@ impl SessionActor {
                 share
             });
             match self
-                .prepare_tool_call(call, &mut deferred_followups, codex_search_share)
+                .prepare_tool_call(call, deferred_followups, codex_search_share)
                 .await?
             {
                 Ok(prepared) => approved.push(prepared),
@@ -706,7 +777,7 @@ impl SessionActor {
                             | ToolLoop::FollowupMessage(_)
                     ) && final_result.is_none()
                     {
-                        final_result = Some(tool_loop);
+                        *final_result = Some(tool_loop);
                     }
                 }
             }
@@ -1077,34 +1148,13 @@ impl SessionActor {
                 | ToolLoop::Cancelled
                 | ToolLoop::FollowupMessage(_) => {
                     if final_result.is_none() {
-                        final_result = Some(tool_loop);
+                        *final_result = Some(tool_loop);
                     }
                 }
                 _ => {}
             }
         }
-        {
-            let _span = if !deferred_followups.is_empty() {
-                Some(
-                    tracing::info_span!(
-                        "tools.deferred_followups",
-                        count = deferred_followups.len()
-                    )
-                    .entered(),
-                )
-            } else {
-                None
-            };
-            for chat in deferred_followups {
-                self.chat_state_handle.push_user_message(chat);
-            }
-        }
-        self.drain_pending_interjections().await;
-        self.flush_pending_skill_reminders().await;
-        if let Some(final_result) = final_result {
-            return Ok(final_result);
-        }
-        Ok(ToolLoop::Continue)
+        Ok(())
     }
     /// Phase 1: pre-flight (MCP, args, hooks, permission, ExitPlanMode).
     pub(crate) async fn prepare_tool_call(

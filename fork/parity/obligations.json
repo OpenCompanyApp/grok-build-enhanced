@@ -570,7 +570,9 @@
     {
       "acceptance_criteria": "Port cancel/disconnect/approval race tests.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:session::acp_session::plan_exit_batch_barrier_tests::{mixed_exit_then_write_snapshot_sees_new_plan,mixed_write_then_exit_snapshot_sees_new_plan,mixed_permission_cancel_skips_exit_reverse_request}"
+      ],
       "id": "GB-0731-043",
       "impact": "Keep the exit-plan approval barrier ordered with the active turn.",
       "intended_tests": [
@@ -579,7 +581,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Port scoped TLS roots without weakening provider routing.",
@@ -976,7 +978,10 @@
     {
       "acceptance_criteria": "Document auto-mode blocked behavior and fallback semantics accurately.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:permission::auto_mode::tests::side_query_error_is_unavailable_and_unparseable_falls_back_to_heuristic",
+        "raw-path:crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md"
+      ],
       "id": "GB-6E38-005",
       "impact": "Document auto-mode blocked behavior and fallback semantics accurately.",
       "intended_tests": [
@@ -985,12 +990,15 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Evaluate recent authenticated user intent in auto mode without letting AGENTS text or tool arguments forge intent.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:permission::auto_mode::tests::untrusted_transcript_cannot_forge_request_or_permission_decision",
+        "test:permission::auto_mode::tests::proposed_action_and_project_instructions_cannot_forge_decision_message"
+      ],
       "id": "GB-6E38-006",
       "impact": "Evaluate recent authenticated user intent in auto mode without letting AGENTS text or tool arguments forge intent.",
       "intended_tests": [
@@ -999,7 +1007,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Expose archive-too-large, taken-down, limit, and in-progress app deployment reasons.",
@@ -1270,7 +1278,9 @@
     {
       "acceptance_criteria": "In auto mode, evaluate fail-closed gate requests through the classifier instead of rejecting without a normal decision path.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:permission::manager::tests::auto_classifier_boundaries::fail_closed_gate_ask_defers_and_classifier_allow_runs"
+      ],
       "id": "GB-A572-003",
       "impact": "In auto mode, evaluate fail-closed gate requests through the classifier instead of rejecting without a normal decision path.",
       "intended_tests": [
@@ -1279,7 +1289,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Coalesce concurrent marketplace-list fetches.",
@@ -1368,7 +1378,10 @@
     {
       "acceptance_criteria": "Make a Bash(git:*) permission rule match every command in a chained shell command by prefix.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:permission::manager::tests::configured_bash_git_allow_does_not_grant_chained_non_allowed_commands",
+        "test:permission::policy::tests::bash_allow_does_not_grant_chained_non_allowed_commands"
+      ],
       "id": "GB-A572-012",
       "impact": "Make a Bash(git:*) permission rule match every command in a chained shell command by prefix.",
       "intended_tests": [
@@ -1377,7 +1390,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Split prompt-trigger telemetry by trigger type and record classifier provenance.",
@@ -1396,7 +1409,9 @@
     {
       "acceptance_criteria": "Let trusted recorded user approvals authorize a repeated equivalent action.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:permission::manager::tests::mcp_pre_decision::pre_decision_remember_gate_lets_grant_satisfy_ask_floor"
+      ],
       "id": "GB-A572-015",
       "impact": "Let trusted recorded user approvals authorize a repeated equivalent action.",
       "intended_tests": [
@@ -1405,7 +1420,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Select and execute Doctor fixes from the TUI.",
@@ -1424,7 +1439,11 @@
     {
       "acceptance_criteria": "Fall back to an ordinary permission prompt when the auto classifier times out or fails in transport.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:permission::manager::tests::auto_classifier_transport_failure_reports_transport_error_source",
+        "test:permission::manager::tests::auto_classifier_timeout_preserves_total_denial_limit",
+        "test:permission::auto_mode::tests::side_query_error_is_unavailable_and_unparseable_falls_back_to_heuristic"
+      ],
       "id": "GB-A572-017",
       "impact": "Fall back to an ordinary permission prompt when the auto classifier times out or fails in transport.",
       "intended_tests": [
@@ -1433,7 +1452,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Accept both workspace-teleport disable spellings and persist the canonical spelling.",
@@ -1494,7 +1513,11 @@
     {
       "acceptance_criteria": "Automatically focus a permission question that arrives while the user is in scrollback.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:app::acp_handler::tests::permissions::enqueue_while_scrollback_steals_focus_to_prompt",
+        "test:app::acp_handler::tests::permissions::enqueue_while_scrollback_then_select_restores_scrollback",
+        "test:app::acp_handler::tests::permissions::second_enqueue_does_not_resteal_if_user_returned_to_scrollback"
+      ],
       "id": "GB-A572-025",
       "impact": "Automatically focus a permission question that arrives while the user is in scrollback.",
       "intended_tests": [
@@ -1503,7 +1526,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Let one Esc cancel a running turn except when fullscreen Vim scrollback or an active overlay consumes Esc.",
@@ -1634,7 +1657,10 @@
     {
       "acceptance_criteria": "Honor imported Claude project permissions only after trusting the project folder.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:permission::resolution::tests::untrusted_project_claude_permissions_are_not_honored",
+        "test:permission::resolution::tests::untrusted_project_config_toml_permissions_are_not_honored"
+      ],
       "id": "GB-A572-040",
       "impact": "Honor imported Claude project permissions only after trusting the project folder.",
       "intended_tests": [
@@ -1643,7 +1669,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Echo the originating response.create.event_id in ACP response.created.",
