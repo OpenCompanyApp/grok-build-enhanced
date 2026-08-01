@@ -205,7 +205,7 @@ exhaustive recursive tree delta from reviewed tree
 `c5c7bdcda32a828efa112883dcd5279ce78714ec`. `GB-0731-RAW` binds adopted
 paths to the closed behavior inventory and its named regression evidence;
 `GB-A572-030` retains the standing fork-owned-release exception for official
-xAI npm packaging.
+xAI npm packaging. The authenticated source ID is `grok-build-upstream`.
 
 | Row | Raw path | Outcome | Evidence |
 | ---: | --- | --- | --- |
