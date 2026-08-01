@@ -289,7 +289,7 @@ impl EndpointsConfig {
     }
     /// Layer the `[endpoints]` table from `config` over the env/default base.
     /// No field is derived from another — defaulting is done by the resolvers.
-    pub(crate) fn from_config_value(config: &toml::Value) -> Self {
+    pub fn from_config_value(config: &toml::Value) -> Self {
         let default = Self::default();
         let external_otel_master_switch = default.external_otel_master_switch;
         let mut base = match toml::Value::try_from(default) {
@@ -664,7 +664,7 @@ pub struct RuntimeResolutionContext<'a> {
 /// environment so it can't inherit the keys Grok uses for its own first-party
 /// requests. Keep in sync with every first-party credential env read across the
 /// crate: `auth::manager` (`GROK_AUTH`/`GROK_AUTH_PATH`), `auth_method`
-/// (`XAI_API_KEY`/legacy), Kimi/Z.AI provider binders, and the
+/// (`XAI_API_KEY`/legacy), the Kimi provider binder, and the
 /// credential-bearing `env_string(...)` reads in `EndpointsConfig::default`.
 /// The `provider_helper_env_scrubs_first_party_credentials`
 /// test pins this against an independent audited literal, so any change here must
@@ -673,7 +673,6 @@ pub(crate) const FIRST_PARTY_CREDENTIAL_ENV_VARS: &[&str] = &[
     crate::agent::auth_method::XAI_API_KEY_ENV_VAR,
     crate::agent::auth_method::LEGACY_XAI_API_KEY_ENV_VAR,
     xai_grok_sampling_types::KIMI_CODE_API_KEY_ENV,
-    xai_grok_sampling_types::ZAI_CODING_PLAN_API_KEY_ENV,
     "GROK_AUTH",
     "GROK_AUTH_PATH",
     "GROK_DEPLOYMENT_KEY",
@@ -1014,6 +1013,12 @@ pub struct CliConfig {
     /// for enforcement (semver-max across layers; managed floors can't be lowered).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimum_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_minimum_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_maximum_version: Option<String>,
     /// Group sessions by repo in the picker and CLI listings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_picker_grouped: Option<bool>,
@@ -1528,6 +1533,9 @@ pub struct Config {
     /// Not remotely gated.
     #[serde(skip)]
     pub subagents_enabled: bool,
+    /// Resolved max subagent nesting depth.
+    #[serde(skip)]
+    pub subagents_max_depth: u32,
     /// Per-subagent model ID overrides from `[subagents.models]` in config.toml.
     /// Keys are agent names, values are model IDs. Set alongside `subagents_enabled`
     /// from `SubagentsConfig::resolve()`.
@@ -1849,6 +1857,7 @@ impl Default for Config {
             cli_agents: Vec::new(),
             cli_agent_overrides: CliAgentOverrides::default(),
             subagents_enabled: true,
+            subagents_max_depth: crate::config::SubagentsConfig::DEFAULT_MAX_DEPTH,
             subagent_model_overrides: std::collections::HashMap::new(),
             subagent_toggle: std::collections::HashMap::new(),
             subagent_roles: std::collections::HashMap::new(),
@@ -2146,6 +2155,13 @@ impl Config {
         self.subagent_toggle = sa.toggle;
         self.subagent_roles = sa.roles;
         self.subagent_personas = sa.personas;
+        let env = std::env::var(crate::config::SubagentsConfig::ENV_MAX_DEPTH).ok();
+        let remote = self
+            .remote_settings
+            .as_ref()
+            .and_then(|r| r.subagents_max_depth);
+        self.subagents_max_depth =
+            crate::config::SubagentsConfig::resolve_max_depth(env.as_deref(), sa.max_depth, remote);
     }
     /// Resolve all `#[serde(skip)]` runtime fields that have resolver functions.
     ///
@@ -2169,6 +2185,15 @@ impl Config {
         self.session_summary_model_override = ctx.cli_session_summary_model.map(|s| s.to_owned());
         let cli_flag = ctx.cli_subagents.unwrap_or(false);
         self.resolve_subagents(cli_flag, ctx.raw_config);
+        let env = std::env::var(crate::config::SubagentsConfig::ENV_MAX_DEPTH).ok();
+        let toml_max = ctx
+            .raw_config
+            .get("subagents")
+            .and_then(|s| s.get("max_depth"))
+            .and_then(|v| v.as_integer());
+        let remote = ctx.remote_settings.and_then(|r| r.subagents_max_depth);
+        self.subagents_max_depth =
+            crate::config::SubagentsConfig::resolve_max_depth(env.as_deref(), toml_max, remote);
         let tools = crate::config::ToolsConfig::resolve(ctx.raw_config);
         self.respect_gitignore = match self.requirements.respect_gitignore.pinned() {
             Some(pinned) => pinned,
@@ -2581,6 +2606,32 @@ impl Config {
         }
         BoolFlag::env("GROK_IMAGE_EDIT").default(true).resolve()
     }
+    /// Video generation tools. Remote denylisting is authoritative below a
+    /// managed requirement pin.
+    pub(crate) fn resolve_video_gen(&self) -> Resolved<bool> {
+        use xai_grok_tools::implementations::grok_build::{
+            IMAGE_TO_VIDEO_TOOL_NAME, REFERENCE_TO_VIDEO_TOOL_NAME,
+        };
+        if let Some(pinned) = self.requirements.video_gen.pinned() {
+            return Resolved::new(pinned, ConfigSource::Requirement);
+        }
+        if self.remote_settings.as_ref().is_some_and(|s| {
+            s.imagine_tool_disabled(IMAGE_TO_VIDEO_TOOL_NAME)
+                || s.imagine_tool_disabled(REFERENCE_TO_VIDEO_TOOL_NAME)
+                || s.imagine_tool_disabled("video_gen")
+        }) {
+            return Resolved::new(false, ConfigSource::Remote);
+        }
+        BoolFlag::env("GROK_VIDEO_GEN")
+            .config(self.features.video_gen)
+            .feature_flag(
+                self.remote_settings
+                    .as_ref()
+                    .and_then(|s| s.video_gen_enabled),
+            )
+            .default(true)
+            .resolve()
+    }
     /// Optional Imagine model override for `image_gen`. When set (non-empty),
     /// `image_gen` calls this model slug instead of the default quality model.
     /// Precedence: env `GROK_IMAGE_GEN_MODEL_OVERRIDE` > `[features]
@@ -2594,6 +2645,17 @@ impl Config {
             self.remote_settings
                 .as_ref()
                 .and_then(|s| s.image_gen_model_override.as_deref()),
+        )
+        .map(|r| r.value)
+    }
+    pub(crate) fn resolve_image_edit_model_override(&self) -> Option<String> {
+        resolve_string_flag(
+            None,
+            "GROK_IMAGE_EDIT_MODEL_OVERRIDE",
+            self.features.image_edit_model_override.as_deref(),
+            self.remote_settings
+                .as_ref()
+                .and_then(|s| s.image_edit_model_override.as_deref()),
         )
         .map(|r| r.value)
     }
@@ -2880,6 +2942,15 @@ impl Config {
             .default(true)
             .resolve()
             .value
+    }
+    pub(crate) fn resolve_compaction_tool_choice(
+        &self,
+    ) -> crate::util::config::CompactionToolChoice {
+        crate::util::config::resolve_compaction_tool_choice_from(
+            env_string(crate::util::config::ENV_COMPACTION_TOOL_CHOICE).as_deref(),
+            self.features.compaction_tool_choice.as_deref(),
+            None,
+        )
     }
     /// Precedence: env `GROK_COMPACTION_DETAIL`, then config
     /// `features.compaction_detail`, then remote settings
@@ -3465,17 +3536,6 @@ pub fn resolve_model_list(
         tracing::debug!(count = kimi_models.len(), "loaded Kimi Code model catalog");
         resolved.extend(kimi_models);
     }
-    // Z.AI Coding Plan catalog entries are likewise bound to the opaque ID of
-    // the currently stored global-plan credential. Unknown models remain
-    // visible but unselectable until their capabilities are qualified.
-    let zai_models = crate::auth::zai_coding_plan::load_cached_model_entries();
-    if !zai_models.is_empty() {
-        tracing::debug!(
-            count = zai_models.len(),
-            "loaded Z.AI Coding Plan model catalog"
-        );
-        resolved.extend(zai_models);
-    }
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
         let base = resolved.shift_remove(key);
@@ -3946,6 +4006,10 @@ pub struct ConfigModelOverride {
     pub api_backend: Option<ApiBackend>,
     #[serde(default)]
     pub extra_headers: IndexMap<String, String>,
+    #[serde(default)]
+    pub query_params: IndexMap<String, String>,
+    #[serde(default)]
+    pub env_http_headers: IndexMap<String, String>,
     pub context_window: Option<u64>,
     /// Per-model auto-compact threshold override (0-100) from `[model.<id>]`.
     /// Read directly by `resolve_auto_compact_threshold_percent`; intentionally
@@ -4027,6 +4091,12 @@ impl ConfigModelOverride {
         }
         if !self.extra_headers.is_empty() {
             entry.info.extra_headers = self.extra_headers.clone();
+        }
+        if !self.query_params.is_empty() {
+            entry.info.query_params = self.query_params.clone();
+        }
+        if !self.env_http_headers.is_empty() {
+            entry.info.env_http_headers = self.env_http_headers.clone();
         }
         if let Some(cw) = self.context_window.and_then(NonZeroU64::new) {
             entry.info.context_window = cw;
@@ -4130,6 +4200,10 @@ pub struct ModelInfo {
     pub api_backend: ApiBackend,
     pub auth_scheme: AuthScheme,
     pub extra_headers: IndexMap<String, String>,
+    #[serde(default)]
+    pub query_params: IndexMap<String, String>,
+    #[serde(default)]
+    pub env_http_headers: IndexMap<String, String>,
     pub context_window: NonZeroU64,
     /// Opaque provider catalog compatibility fingerprint. This is compared
     /// only within the owning provider and is never interpreted or sent on wire.
@@ -4227,6 +4301,8 @@ impl ModelInfo {
             api_backend: ApiBackend::default(),
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
+            query_params: IndexMap::new(),
+            env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
             comp_hash: None,
             auto_compact_threshold_percent: None,
@@ -4271,6 +4347,8 @@ impl ModelInfo {
             api_backend: entry.api_backend.clone(),
             auth_scheme: entry.auth_scheme.unwrap_or_default(),
             extra_headers: entry.extra_headers.clone(),
+            query_params: IndexMap::new(),
+            env_http_headers: IndexMap::new(),
             context_window: entry.context_window,
             comp_hash: None,
             auto_compact_threshold_percent: entry.auto_compact_threshold_percent,
@@ -4576,6 +4654,9 @@ pub struct AutoModeConfig {
     /// session model. Resolved via `resolve_aux_model_sampling_config`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classifier_model: Option<String>,
+    /// Classifier side-query duration in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classify_timeout_ms: Option<u64>,
     /// Classifier reasoning effort. Applies on BOTH the routed-model path and the
     /// inherited session-model path; `None` ⇒ the wire fn's built-in default
     /// (`low` if the effective model supports reasoning effort, else unset).
@@ -4639,6 +4720,9 @@ pub struct Features {
     /// compaction. `None` = defer to remote settings / env / default (`false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub two_pass_compaction: Option<bool>,
+    /// Image generation tool. `None` defers to environment/remote/default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_gen: Option<bool>,
     /// Video generation tool. `None` = defer to remote settings / env / default (false).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_gen: Option<bool>,
@@ -4646,6 +4730,8 @@ pub struct Features {
     /// (`image_gen_model_override`) / env / default (`grok-imagine-image-quality`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_gen_model_override: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_edit_model_override: Option<String>,
     /// Write file tool. `None` = defer to remote settings / env / default (true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_file: Option<bool>,
@@ -4674,6 +4760,8 @@ pub struct Features {
     /// Feed the summarizer the verbatim conversation instead of the lossy rewrite; `None` = defer to env/remote settings/default (true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_verbatim_input: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_tool_choice: Option<String>,
     /// Snapshot a completed subagent's isolated worktree into a durable git ref
     /// and delete its directory (resume rehydrates from the ref). This is the
     /// per-deployment rollout lever (set in managed_config.toml `[features]`).
@@ -4813,18 +4901,6 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
             base_url: xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned(),
             auth_type: xai_chat_state::AuthType::ApiKey,
             auth_scheme: info.auth_scheme,
-        };
-    }
-    if info.provider == ProviderId::ZaiCodingPlan {
-        // The global Coding Plan key is dynamically attached by its own
-        // provider binder and cannot fall through to Open Platform, BigModel,
-        // xAI, Codex, Kimi, or generic custom credentials.
-        return ResolvedCredentials {
-            provider: ProviderId::ZaiCodingPlan,
-            api_key: None,
-            base_url: xai_grok_sampling_types::ZAI_CODING_PLAN_BASE_URL.to_owned(),
-            auth_type: xai_chat_state::AuthType::ApiKey,
-            auth_scheme: AuthScheme::Bearer,
         };
     }
     if info.provider == ProviderId::Custom {
@@ -5150,7 +5226,7 @@ pub fn resolve_aux_model_sampling_config(
         );
         if matches!(
             entry.info.provider,
-            ProviderId::OpenAiCodex | ProviderId::KimiCode | ProviderId::ZaiCodingPlan
+            ProviderId::OpenAiCodex | ProviderId::KimiCode
         ) {
             // Return provider/model routing only. The fallible session binder
             // attests the restored record and attaches sampler + tool auth at
@@ -5191,6 +5267,8 @@ pub fn resolve_aux_model_sampling_config(
                 api_backend: ApiBackend::Responses,
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
+                query_params: IndexMap::new(),
+                env_http_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(200_000).unwrap(),
                 comp_hash: None,
                 auto_compact_threshold_percent: None,
@@ -5350,9 +5428,6 @@ pub fn sampling_config_for_model(
             xai_grok_sampling_types::CredentialSourceId::OpenAiCodexSubscription
         }
         ProviderId::KimiCode => xai_grok_sampling_types::CredentialSourceId::KimiCodeApiKey,
-        ProviderId::ZaiCodingPlan => {
-            xai_grok_sampling_types::CredentialSourceId::ZaiCodingPlanApiKey
-        }
         ProviderId::Custom if model.effective_auth_provider().is_some() => {
             xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider
         }
@@ -5388,6 +5463,8 @@ pub fn sampling_config_for_model(
         api_backend,
         auth_scheme: resolved_auth_scheme,
         extra_headers,
+        query_params: info.query_params.clone(),
+        env_http_headers: info.env_http_headers.clone(),
         comp_hash: info.comp_hash.clone(),
         context_window: info.context_window.get(),
         client_version,
@@ -5488,6 +5565,8 @@ fn resolve_hidden_default_web_search_sampling_config(
             api_backend: ApiBackend::Responses,
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
+            query_params: IndexMap::new(),
+            env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
             comp_hash: None,
             auto_compact_threshold_percent: None,
@@ -6902,6 +6981,8 @@ reasoning_effort = "low"
                 api_backend: ApiBackend::default(),
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
+                query_params: IndexMap::new(),
+                env_http_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(200_000).unwrap(),
                 comp_hash: None,
                 auto_compact_threshold_percent: None,
@@ -12506,6 +12587,8 @@ default = "grok-4.5"
                 api_backend,
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
+                query_params: IndexMap::new(),
+                env_http_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(context_window).unwrap(),
                 comp_hash: None,
                 use_concise: false,

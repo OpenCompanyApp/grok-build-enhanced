@@ -13,7 +13,6 @@ pub mod config;
 pub mod domain;
 pub mod error;
 mod hosted_kimi;
-mod hosted_zai;
 mod http;
 pub(crate) mod overflow;
 mod ssrf;
@@ -168,7 +167,7 @@ impl xai_tool_runtime::Tool for WebFetchTool {
     ) -> xai_tool_types::ToolDescription {
         xai_tool_types::ToolDescription::new(
             "web_fetch",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 

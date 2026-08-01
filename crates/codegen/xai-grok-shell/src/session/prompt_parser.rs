@@ -353,6 +353,31 @@ fn render_open_files(paths: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unsupported_content_block_returns_typed_error() {
+        let prompt = vec![acp::ContentBlock::Audio(acp::AudioContent::new(
+            "synthetic-audio",
+            "audio/wav",
+        ))];
+        let session_info = crate::session::info::Info {
+            id: acp::SessionId::new("00000000-0000-0000-0000-000000000001"),
+            cwd: "/tmp".to_string(),
+        };
+
+        let error = parse_prompt(&prompt, PathBuf::from("/tmp"), &session_info, false, false)
+            .await
+            .expect_err("ACP content without a compatible prompt representation must fail");
+
+        assert_eq!(error.code, acp::ErrorCode::InvalidParams);
+        assert!(
+            error
+                .data
+                .as_ref()
+                .is_some_and(|data| data.to_string().contains("unsupported content block"))
+        );
+    }
+
     /// Assemble a `render_message` result into a flat string for test assertions.
     fn assemble(parts: (String, String), is_cursor: bool) -> String {
         let (context, query) = parts;
@@ -427,10 +452,11 @@ mod tests {
     }
     #[test]
     fn test_parse_editor_meta_focused_with_cursor() {
-        let link = make_link(Some(serde_json::json!(
-            { "source" : "editor", "fileState" : "focused", "cursor" : { "line" :
-            10, "column" : 3 } }
-        )));
+        let link = make_link(Some(serde_json::json!({
+            "source": "editor",
+            "fileState": "focused",
+            "cursor": { "line": 10, "column": 3 }
+        })));
         let meta = parse_editor_meta(&link).expect("should parse");
         assert!(matches!(
             meta.file_state,
@@ -444,24 +470,27 @@ mod tests {
     }
     #[test]
     fn test_parse_editor_meta_focused_without_cursor_fails() {
-        let link = make_link(Some(
-            serde_json::json!({ "source" : "editor", "fileState" : "focused" }),
-        ));
+        let link = make_link(Some(serde_json::json!({
+            "source": "editor",
+            "fileState": "focused"
+        })));
         assert!(parse_editor_meta(&link).is_none());
     }
     #[test]
     fn test_parse_editor_meta_open() {
-        let link = make_link(Some(
-            serde_json::json!({ "source" : "editor", "fileState" : "open" }),
-        ));
+        let link = make_link(Some(serde_json::json!({
+            "source": "editor",
+            "fileState": "open"
+        })));
         let meta = parse_editor_meta(&link).expect("should parse");
         assert!(matches!(meta.file_state, FileState::Open));
     }
     #[test]
     fn test_parse_editor_meta_non_editor_source_returns_none() {
-        let link = make_link(Some(serde_json::json!(
-            { "source" : "something_else", "fileState" : "focused" }
-        )));
+        let link = make_link(Some(serde_json::json!({
+            "source": "something_else",
+            "fileState": "focused"
+        })));
         assert!(parse_editor_meta(&link).is_none());
     }
     #[test]
@@ -471,9 +500,10 @@ mod tests {
     }
     #[test]
     fn test_parse_editor_meta_unknown_file_state_returns_none() {
-        let link = make_link(Some(
-            serde_json::json!({ "source" : "editor", "fileState" : "minimized" }),
-        ));
+        let link = make_link(Some(serde_json::json!({
+            "source": "editor",
+            "fileState": "minimized"
+        })));
         assert!(parse_editor_meta(&link).is_none());
     }
     #[test]

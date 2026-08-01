@@ -36,6 +36,12 @@ pub const STARTUP_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from
 pub const STARTUP_AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// Ceiling on one startup token-refresh round trip.
 pub const STARTUP_AUTH_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Outer bound on one settings reapply task.
+pub const SETTINGS_REAPPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Bounded background settings-fetch attempt count.
+pub const SETTINGS_FETCH_MAX_ATTEMPTS: u32 = 3;
+/// Lower bound for a leader connection across bounded cold startup.
+pub const MIN_CLIENT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Startup span timer, local to this crate.
 ///

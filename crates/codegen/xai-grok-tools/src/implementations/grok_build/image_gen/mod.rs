@@ -95,6 +95,8 @@ pub struct ImageGenClient {
     /// [`XAI_IMAGINE_MODEL`]). `image_edit` uses its own model and is
     /// unaffected.
     model: String,
+    /// Imagine edit model, independently overridable from generation.
+    edit_model: String,
     backend: ImageGenBackend,
     /// Static fallback exists only for the legacy xAI backend. Codex auth is
     /// always resolved dynamically so an access token is never treated as a
@@ -124,40 +126,53 @@ impl ImageGenClient {
         config: &ImageGenConfig,
         api_key_provider: Option<SharedApiKeyProvider>,
     ) -> Result<Self, xai_tool_runtime::ToolError> {
-        let (base_url, model, backend, fallback_api_key, extra_headers, tier_restricted) =
-            match config {
-                ImageGenConfig::Enabled {
-                    api_key,
-                    base_url,
-                    extra_headers,
-                    model_override,
-                    tier_restricted,
-                    ..
-                } => (
-                    validate_xai_image_base_url(base_url)?,
-                    model_override
-                        .clone()
-                        .filter(|m| !m.trim().is_empty())
-                        .unwrap_or_else(|| XAI_IMAGINE_MODEL.to_owned()),
-                    ImageGenBackend::XaiImagine,
-                    Some(api_key.clone()),
-                    extra_headers.clone(),
-                    *tier_restricted,
-                ),
-                ImageGenConfig::OpenAiCodex { base_url, .. } => (
-                    validate_codex_base_url(base_url)?,
-                    OPENAI_CODEX_IMAGE_MODEL.to_owned(),
-                    ImageGenBackend::OpenAiCodex,
-                    None,
-                    indexmap::IndexMap::new(),
-                    false,
-                ),
-                ImageGenConfig::Disabled | ImageGenConfig::Unavailable { .. } => {
-                    return Err(xai_tool_runtime::ToolError::invalid_arguments(
-                        "Cannot create ImageGenClient without provider credentials",
-                    ));
-                }
-            };
+        let (
+            base_url,
+            model,
+            edit_model,
+            backend,
+            fallback_api_key,
+            extra_headers,
+            tier_restricted,
+        ) = match config {
+            ImageGenConfig::Enabled {
+                api_key,
+                base_url,
+                extra_headers,
+                model_override,
+                edit_model_override,
+                tier_restricted,
+                ..
+            } => (
+                validate_xai_image_base_url(base_url)?,
+                model_override
+                    .clone()
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or_else(|| XAI_IMAGINE_MODEL.to_owned()),
+                edit_model_override
+                    .clone()
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or_else(|| super::image_edit::XAI_IMAGINE_EDIT_MODEL.to_owned()),
+                ImageGenBackend::XaiImagine,
+                Some(api_key.clone()),
+                extra_headers.clone(),
+                *tier_restricted,
+            ),
+            ImageGenConfig::OpenAiCodex { base_url, .. } => (
+                validate_codex_base_url(base_url)?,
+                OPENAI_CODEX_IMAGE_MODEL.to_owned(),
+                OPENAI_CODEX_IMAGE_MODEL.to_owned(),
+                ImageGenBackend::OpenAiCodex,
+                None,
+                indexmap::IndexMap::new(),
+                false,
+            ),
+            ImageGenConfig::Disabled | ImageGenConfig::Unavailable { .. } => {
+                return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                    "Cannot create ImageGenClient without provider credentials",
+                ));
+            }
+        };
 
         if backend == ImageGenBackend::OpenAiCodex {
             let provider = api_key_provider.as_ref().ok_or_else(|| {
@@ -258,6 +273,7 @@ impl ImageGenClient {
             codex_http,
             base_url,
             model,
+            edit_model,
             backend,
             fallback_api_key,
             writer: super::storage::SessionFileWriter::new(DEFAULT_IMAGE_DIR, "jpg"),
@@ -317,6 +333,10 @@ impl ImageGenClient {
 
     pub(crate) fn backend(&self) -> ImageGenBackend {
         self.backend
+    }
+
+    pub(crate) fn edit_model(&self) -> &str {
+        &self.edit_model
     }
 
     async fn current_request_auth(&self) -> Result<RequestAuth, xai_tool_runtime::ToolError> {
@@ -729,6 +749,8 @@ fn validate_codex_base_url(base_url: &str) -> Result<String, xai_tool_runtime::T
 }
 
 /// `Enabled` means credentials are present; each tool has its own gate.
+pub const SESSION_ID_HEADER: &str = "x-grok-session-id";
+
 #[derive(Clone, Default)]
 pub enum ImageGenConfig {
     #[default]
@@ -752,6 +774,8 @@ pub enum ImageGenConfig {
         /// ([`XAI_IMAGINE_MODEL`]). Driven by the remote
         /// `image_gen_model_override` config flag. `image_edit` is unaffected.
         model_override: Option<String>,
+        /// Optional independent model override for `image_edit`.
+        edit_model_override: Option<String>,
         /// `true` when the user is on a tier the Imagine server zero-limits
         /// (free / X Basic). The tools stay advertised to the model, but
         /// `image_gen` / `image_edit` short-circuit at call time with the
@@ -782,6 +806,16 @@ impl ImageGenConfig {
     /// Credentials present — required to construct any of the clients.
     pub fn has_credentials(&self) -> bool {
         matches!(self, Self::Enabled { .. } | Self::OpenAiCodex { .. })
+    }
+
+    /// Stamp the session identity onto xAI Imagine headers without replacing
+    /// an explicitly supplied value. Other provider variants are untouched.
+    pub fn stamp_session_id_header(&mut self, session_id: &str) {
+        if let Self::Enabled { extra_headers, .. } = self {
+            extra_headers
+                .entry(SESSION_ID_HEADER.to_string())
+                .or_insert_with(|| session_id.to_string());
+        }
     }
 
     pub fn image_gen_enabled(&self) -> bool {
@@ -823,6 +857,17 @@ impl ImageGenConfig {
             Self::Enabled { model_override, .. } => {
                 model_override.as_deref().filter(|m| !m.trim().is_empty())
             }
+            Self::Disabled | Self::Unavailable { .. } | Self::OpenAiCodex { .. } => None,
+        }
+    }
+    pub fn edit_model_override(&self) -> Option<&str> {
+        match self {
+            Self::Enabled {
+                edit_model_override,
+                ..
+            } => edit_model_override
+                .as_deref()
+                .filter(|model| !model.trim().is_empty()),
             Self::Disabled | Self::Unavailable { .. } | Self::OpenAiCodex { .. } => None,
         }
     }
@@ -1142,6 +1187,7 @@ mod tests {
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: None,
+            edit_model_override: None,
             tier_restricted: false,
         };
         let client = ImageGenClient::new(&config, None).unwrap();
@@ -1344,6 +1390,7 @@ mod tests {
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: None,
+            edit_model_override: None,
             tier_restricted: false,
         };
         assert_eq!(format!("{config:?}"), "ImageGenConfig { .. }");
@@ -1358,6 +1405,7 @@ mod tests {
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: None,
+            edit_model_override: None,
             tier_restricted: false,
         };
         let client = ImageGenClient::new(&config, None).unwrap();
@@ -1430,6 +1478,7 @@ mod tests {
             image_gen_enabled: false,
             image_edit_enabled: true,
             model_override: Some("grok-imagine-image".into()),
+            edit_model_override: None,
             tier_restricted: false,
         };
         assert!(cfg.has_credentials());
@@ -1457,6 +1506,7 @@ mod tests {
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: model_override.map(String::from),
+            edit_model_override: None,
             tier_restricted: false,
         };
         // No override → default quality model.
@@ -1496,6 +1546,7 @@ mod tests {
                 image_gen_enabled: true,
                 image_edit_enabled: true,
                 model_override: None,
+                edit_model_override: None,
                 tier_restricted: false,
             };
             let error = ImageGenClient::new(&config, None)
@@ -1527,6 +1578,7 @@ mod tests {
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: None,
+            edit_model_override: None,
             tier_restricted: false,
         };
         let error = ImageGenClient::new(&config, None)
@@ -1906,6 +1958,7 @@ mod tests {
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: None,
+            edit_model_override: None,
             tier_restricted: false,
         };
         let response = ImageGenClient::new(&config, None)
@@ -1954,6 +2007,7 @@ mod tests {
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: None,
+            edit_model_override: None,
             tier_restricted: true,
         };
         let mut resources = crate::types::resources::Resources::new();

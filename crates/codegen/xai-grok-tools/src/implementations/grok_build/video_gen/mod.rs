@@ -713,6 +713,22 @@ impl VideoGenConfig {
         matches!(self, Self::Enabled { .. })
     }
 
+    /// Stamp the session identity onto the retained xAI recipe without
+    /// replacing an explicitly supplied value.
+    pub fn stamp_session_id_header(&mut self, session_id: &str) {
+        match self {
+            Self::Enabled { extra_headers, .. } => {
+                extra_headers
+                    .entry(super::image_gen::SESSION_ID_HEADER.to_string())
+                    .or_insert_with(|| session_id.to_string());
+            }
+            Self::Unavailable {
+                xai_fallback: Some(fallback),
+            } => fallback.stamp_session_id_header(session_id),
+            Self::Unavailable { xai_fallback: None } | Self::Disabled => {}
+        }
+    }
+
     pub fn xai_fallback(&self) -> Option<&VideoGenConfig> {
         match self {
             Self::Enabled { .. } => Some(self),

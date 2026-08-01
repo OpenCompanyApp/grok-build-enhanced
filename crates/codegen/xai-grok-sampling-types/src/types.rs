@@ -196,12 +196,22 @@ pub struct ImageUrl {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct VideoUrl {
+    pub url: String,
+    /// Local-only upload metadata; omitted from provider JSON.
+    #[serde(default, skip_serializing)]
+    pub mime_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type")]
 pub enum ChatContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image_url")]
     ImageUrl { image_url: ImageUrl },
+    #[serde(rename = "video_url")]
+    VideoUrl { video_url: VideoUrl },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -322,6 +332,7 @@ impl ChatRequestMessage {
             .filter_map(|block| match block {
                 ChatContentBlock::Text { text } => Some(text.clone()),
                 ChatContentBlock::ImageUrl { .. } => None,
+                ChatContentBlock::VideoUrl { .. } => None,
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -1075,6 +1086,13 @@ pub struct SamplingConfig {
     /// Extra headers to send with requests (e.g., for BYOK scenarios).
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     pub extra_headers: indexmap::IndexMap<String, String>,
+    /// Query parameters folded into every request URL (percent-encoded).
+    #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
+    pub query_params: indexmap::IndexMap<String, String>,
+    /// Header name to environment variable; only the mapping persists, not the
+    /// resolved secret.
+    #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
+    pub env_http_headers: indexmap::IndexMap<String, String>,
     /// Opaque provider catalog compatibility fingerprint. Persisted for
     /// pre-turn compatibility compaction but never sent on wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]

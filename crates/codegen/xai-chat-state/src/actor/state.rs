@@ -45,15 +45,15 @@ pub fn estimate_item_tokens(item: &ConversationItem) -> u64 {
         ConversationItem::System(s) => xai_token_estimation::estimate_tokens(&s.content),
         ConversationItem::User(u) => {
             let mut bytes: usize = 0;
-            let mut images: u64 = 0;
+            let mut attachments: u64 = 0;
             for p in &u.content {
                 match p {
                     ContentPart::Text { text } => bytes += text.len(),
-                    ContentPart::Image { .. } => images += 1,
+                    ContentPart::Image { .. } | ContentPart::Video { .. } => attachments += 1,
                 }
             }
             (bytes as u64) / xai_token_estimation::BYTES_PER_TOKEN
-                + xai_token_estimation::estimate_image_tokens(images)
+                + xai_token_estimation::estimate_image_tokens(attachments)
         }
         ConversationItem::Assistant(a) => {
             let bytes = a.content.len()

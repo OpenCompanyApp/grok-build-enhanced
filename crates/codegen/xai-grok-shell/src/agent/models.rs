@@ -747,6 +747,13 @@ impl ModelsManager {
         }
     }
 
+    /// Apply configuration and unconditionally re-resolve the default model.
+    pub fn apply_config_reselecting_default(&self, new_config: config::Config) {
+        self.apply_config(new_config.clone());
+        self.reselect_default_model(&new_config);
+        self.notify_models_updated();
+    }
+
     // ── Accessors ───────────────────────────────────────────────────
 
     pub fn models(&self) -> IndexMap<String, ModelEntry> {
@@ -1608,6 +1615,19 @@ impl ModelsManager {
 
             mgr.inner.retry_in_flight.store(false, Ordering::Release);
         });
+    }
+
+    /// One-shot background xAI catalog refresh after readiness. A fresh real
+    /// catalog makes this a no-op; otherwise the bounded recovery worker owns
+    /// retries and client notification.
+    pub fn spawn_background_refresh(&self) {
+        if *self.inner.has_xai_catalog.read() {
+            tracing::debug!(
+                "skipping startup background model refresh: fresh cache already loaded"
+            );
+            return;
+        }
+        self.start_xai_catalog_recovery();
     }
 
     /// Recover a missing credential-scoped xAI startup catalog without
@@ -2527,6 +2547,7 @@ pub(crate) fn prefetch_models_and_settings_blocking(
                 auth,
                 endpoints.alpha_test_key.as_deref(),
             )
+            .into_option()
         }
         _ => None,
     };
@@ -3483,7 +3504,6 @@ mod tests {
         for (id, provider) in [
             ("codex", ProviderId::OpenAiCodex),
             ("kimi", ProviderId::KimiCode),
-            ("zai", ProviderId::ZaiCodingPlan),
             ("custom", ProviderId::Custom),
         ] {
             // Even a non-xAI entry pointed at the canonical xAI route remains
@@ -3508,14 +3528,7 @@ mod tests {
             Some("xai-model-key")
         );
         assert!(catalog.credential_for("xai-proxy").is_some());
-        for id in [
-            "xai-untrusted-route",
-            "codex",
-            "kimi",
-            "zai",
-            "custom",
-            "unknown",
-        ] {
+        for id in ["xai-untrusted-route", "codex", "kimi", "custom", "unknown"] {
             assert!(
                 catalog.credential_for(id).is_none(),
                 "unexpected speech credential route for {id}"

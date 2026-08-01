@@ -33,7 +33,7 @@ use crate::util::image_validate::{
 use base64::Engine as _;
 use image::{ImageFormat, ImageReader};
 
-const XAI_IMAGINE_MODEL: &str = "grok-imagine-image-quality";
+pub(crate) const XAI_IMAGINE_EDIT_MODEL: &str = "grok-imagine-image-quality";
 
 /// Size/dimension limits for reference images sent to the Imagine API.
 /// Tighter than the vision path; the backend returns 400 when exceeded.
@@ -519,12 +519,15 @@ impl xai_tool_runtime::Tool for ImageEditTool {
         }
         tracing::info!(count = data_urls.len(), "resolved image references");
 
-        let payload = build_edit_payload(
+        let mut payload = build_edit_payload(
             client.backend(),
             &input.prompt,
             &data_urls,
             &input.aspect_ratio,
         );
+        if client.backend() == ImageGenBackend::XaiImagine {
+            payload["model"] = serde_json::Value::String(client.edit_model().to_owned());
+        }
         // `serde_json::Value` owns its image URL strings; release the source
         // vector before reqwest serializes another copy of the request body.
         drop(data_urls);
@@ -592,7 +595,7 @@ fn build_edit_payload(
     match backend {
         ImageGenBackend::XaiImagine => {
             let mut payload = serde_json::json!({
-                "model": XAI_IMAGINE_MODEL,
+                "model": XAI_IMAGINE_EDIT_MODEL,
                 "prompt": prompt,
                 "n": 1,
                 "resolution": "1k",

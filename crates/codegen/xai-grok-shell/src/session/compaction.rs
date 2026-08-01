@@ -828,11 +828,6 @@ impl SessionActor {
                 {
                     "Kimi Code authentication failed. Run `grok login --provider kimi-code`, then /compact."
                 }
-                SuppressReason::Auth
-                    if provider.is_some_and(|provider| provider.is_zai_coding_plan()) =>
-                {
-                    "Z.AI Coding Plan authentication failed. Run `grok login --provider zai-coding-plan`, then /compact."
-                }
                 SuppressReason::Auth => {
                     "authentication failed. Re-authenticate, then run /compact."
                 }
@@ -2558,6 +2553,8 @@ mod inline_auto_compact_flow_tests {
                 top_p: None,
                 api_backend: Default::default(),
                 extra_headers: Default::default(),
+                query_params: Default::default(),
+                env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(context_window)
                     .expect("test context_window must be non-zero"),
                 reasoning_effort: None,
@@ -2582,6 +2579,7 @@ mod inline_auto_compact_flow_tests {
             model_auth_memo: std::cell::RefCell::new(None),
             attribution_callback: None,
             auth_manager: None,
+            is_chat_kind: false,
             state,
             notifications: NotificationSender {
                 gateway: GatewaySender::new(gateway_tx),
@@ -2603,6 +2601,8 @@ mod inline_auto_compact_flow_tests {
             )),
             telemetry_enabled: false,
             supports_backend_search: std::cell::Cell::new(false),
+            tool_overrides: std::cell::RefCell::new(None),
+            resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
             compactions_remaining: std::cell::Cell::new(None),
             compaction_at_tokens: std::cell::Cell::new(None),
             doom_loop_recovery: None,
@@ -2621,6 +2621,7 @@ mod inline_auto_compact_flow_tests {
                 previous_model: std::cell::Cell::new(None),
                 compaction_mode: xai_chat_state::CompactionMode::Transcript,
                 verbatim_input: true,
+                tool_choice: Default::default(),
                 prefire: crate::session::compaction_config::PrefireState::default(),
                 prefix_released: std::sync::atomic::AtomicBool::new(false),
             },
@@ -2725,6 +2726,7 @@ mod inline_auto_compact_flow_tests {
             deferred_prefix: TaskSlot::new(),
             extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
             last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
+            prefix_carries_fallback_date: std::cell::Cell::new(false),
             last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
             last_api_request_at: std::sync::atomic::AtomicI64::new(0),
             hook_registry: std::cell::RefCell::new(None),

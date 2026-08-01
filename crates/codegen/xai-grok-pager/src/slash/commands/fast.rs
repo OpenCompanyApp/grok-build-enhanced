@@ -97,6 +97,7 @@ mod tests {
             bundle_state: &BUNDLE_STATE,
             screen_mode: crate::app::ScreenMode::Fullscreen,
             billing_surface_visible: false,
+            usage_command_visible: true,
             pager_state: PagerLocalSnapshot::default(),
         };
         FastCommand.run(&mut ctx, args)
@@ -153,6 +154,7 @@ mod tests {
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
             billing_surface_visible: false,
+            usage_command_visible: true,
             workflows_available: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };

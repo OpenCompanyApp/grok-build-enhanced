@@ -67,6 +67,7 @@ impl AgentView {
             cwd,
             has_session_announcements: slash_controller.has_session_announcements(),
             billing_surface_visible: slash_controller.billing_surface_visible(),
+            usage_command_visible: slash_controller.usage_command_visible(),
             workflows_available: slash_controller.workflows_available(),
             screen_mode: slash_controller.screen_mode(),
         };
@@ -573,6 +574,7 @@ impl AgentView {
             filter_label: None,
             filter_key_hint: None,
             filter_active: false,
+            header_note: None,
             action_keys: &[],
             disable_search: false,
             compact_bottom_bar: false,
@@ -709,7 +711,7 @@ impl AgentView {
                 let filtered = crate::views::modal::filter_palette_entries(
                     state.query(),
                     self.sharing_enabled,
-                    self.prompt.slash_controller.screen_mode(),
+                    &self.prompt.slash_controller,
                 );
                 let non_sel: Vec<bool> = filtered
                     .iter()
@@ -732,6 +734,7 @@ impl AgentView {
                     filter_label: None,
                     filter_key_hint: None,
                     filter_active: false,
+                    header_note: None,
                     action_keys: &[],
                     disable_search: false,
                     compact_bottom_bar: false,
@@ -930,7 +933,7 @@ impl AgentView {
                             *entries = crate::views::modal::filter_palette_entries(
                                 state.query(),
                                 sharing_enabled,
-                                self.prompt.slash_controller.screen_mode(),
+                                &self.prompt.slash_controller,
                             );
                             state.selected = state.selected.min(entries.len().saturating_sub(1));
                         }
@@ -989,8 +992,8 @@ impl AgentView {
                     _ => false,
                 };
 
-                // Chat-mode picker lists conversations only: the Local/Remote
-                // source filter and local-disk delete are dead weight there.
+                // Chat-mode picker lists conversations only: the source
+                // filter and local-disk delete are dead weight there.
                 let chat_mode = self.app_chat_mode;
                 let config = PickerConfig {
                     title: Some("Resume session"),
@@ -1007,6 +1010,7 @@ impl AgentView {
                     filter_label: (!chat_mode).then(|| source_filter.label()),
                     filter_key_hint: (!chat_mode).then_some("f"),
                     filter_active: !chat_mode && source_filter.is_active(),
+                    header_note: None,
                     action_keys: if chat_mode || focused_is_foreign {
                         &[]
                     } else {
@@ -1324,6 +1328,7 @@ impl AgentView {
                 filter_label: None,
                 filter_key_hint: None,
                 filter_active: false,
+                header_note: None,
                 action_keys: &[],
                 disable_search: false,
                 compact_bottom_bar: false,
@@ -1712,7 +1717,7 @@ impl AgentView {
                 let filtered = modal::filter_palette_entries(
                     state.query(),
                     self.sharing_enabled,
-                    self.prompt.slash_controller.screen_mode(),
+                    &self.prompt.slash_controller,
                 );
                 let non_sel: Vec<bool> = filtered
                     .iter()
@@ -2107,7 +2112,16 @@ impl AgentView {
                         non_sel_flags.push(false);
                     }
 
-                    let entries_area = Rect {
+                    let hidden_hint = if chat_mode {
+                        None
+                    } else {
+                        crate::views::session_picker::hidden_external_hint(
+                            entries.as_deref(),
+                            *source_filter,
+                        )
+                    };
+
+                    let mut entries_area = Rect {
                         x: content_area.x,
                         y: entries_start_y,
                         width: content_area.width,
@@ -2115,6 +2129,22 @@ impl AgentView {
                             .height
                             .saturating_sub(entries_start_y.saturating_sub(content_area.y)),
                     };
+                    // Pinned above the list so it stays visible regardless of scroll.
+                    if let Some(hint) = hidden_hint.as_deref()
+                        && entries_area.height > 0
+                    {
+                        buf.set_stringn(
+                            entries_area.x + 1,
+                            entries_area.y,
+                            hint,
+                            entries_area.width.saturating_sub(1) as usize,
+                            ratatui::style::Style::default()
+                                .fg(theme.gray_dim)
+                                .bg(theme.bg_base),
+                        );
+                        entries_area.y += 1;
+                        entries_area.height -= 1;
+                    }
                     let content_hit = picker::render_picker_content_with_scrollbar_x(
                         buf,
                         entries_area,
@@ -2124,7 +2154,13 @@ impl AgentView {
                         &non_sel_flags,
                         &[],
                         Some(theme.bg_base),
-                        entries.is_none() && (*loading || lanes.foreign_loading),
+                        crate::views::session_picker::loading_spinner_active(
+                            entries.as_deref(),
+                            *source_filter,
+                            *loading,
+                            lanes,
+                        ),
+                        self.scrollback.tick_count(),
                         mca.inner_x + mca.inner_width - 1,
                     );
                     state.hit_areas = Some(picker::PickerHitAreas {
@@ -2524,7 +2560,7 @@ mod session_picker_delete_tests {
         };
         assert_eq!(
             filter,
-            crate::views::session_picker::SourceFilter::All,
+            crate::views::session_picker::SourceFilter::Grok,
             "f must not cycle the hidden source filter under chat mode"
         );
     }
@@ -2553,6 +2589,11 @@ mod session_picker_delete_tests {
         let mut foreign = entry("codex-session");
         foreign.source = "codex".into();
         open_picker(&mut agent, vec![foreign]);
+        // Pin All: the refusals only fire when the foreign row is focusable.
+        if let Some(ActiveModal::SessionPicker { source_filter, .. }) = agent.active_modal.as_mut()
+        {
+            *source_filter = crate::views::session_picker::SourceFilter::All;
+        }
 
         let delete = agent.handle_palette_or_arg_input(&key('d'));
         assert!(matches!(delete, InputOutcome::Changed));
@@ -2724,7 +2765,7 @@ mod command_palette_vim_input_tests {
         agent.active_modal = Some(ActiveModal::CommandPalette {
             entries: crate::views::modal::default_palette_entries(
                 agent.sharing_enabled,
-                agent.prompt.slash_controller.screen_mode(),
+                &agent.prompt.slash_controller,
             ),
             state: PickerState::input_active(),
             window: crate::views::modal_window::ModalWindowState::new(),
@@ -2756,7 +2797,7 @@ mod command_palette_vim_input_tests {
         agent.active_modal = Some(ActiveModal::CommandPalette {
             entries: crate::views::modal::default_palette_entries(
                 agent.sharing_enabled,
-                crate::app::ScreenMode::Minimal,
+                &agent.prompt.slash_controller,
             ),
             state: {
                 let mut state = PickerState::input_active();
@@ -2815,7 +2856,7 @@ mod command_palette_vim_input_tests {
         agent.active_modal = Some(ActiveModal::CommandPalette {
             entries: crate::views::modal::default_palette_entries(
                 agent.sharing_enabled,
-                crate::app::ScreenMode::Minimal,
+                &agent.prompt.slash_controller,
             ),
             state: {
                 let mut state = PickerState::input_active();

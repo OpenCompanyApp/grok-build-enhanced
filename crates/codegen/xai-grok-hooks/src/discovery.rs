@@ -65,36 +65,37 @@ impl HookRegistry {
         }
     }
 
-    /// Remove all hook specs whose name starts with the given prefix.
+    /// Flatten the registry into a spec list in [`HookEventName::ALL`] order, so
+    /// rebuilding from the result is stable regardless of `HashMap` iteration.
+    pub fn into_specs(self) -> Vec<HookSpec> {
+        let mut hooks = self.hooks;
+        let mut out = Vec::new();
+        for event in HookEventName::ALL {
+            if let Some(specs) = hooks.remove(event) {
+                out.extend(specs);
+            }
+        }
+        // Defensive: `ALL` covers every variant, but keep leftovers in a stable order.
+        if !hooks.is_empty() {
+            let mut leftover: Vec<(HookEventName, Vec<HookSpec>)> = hooks.into_iter().collect();
+            // Typed order, not `Display` (which collapses SubagentStop/SubagentEnd).
+            leftover.sort_by_key(|(event, _)| *event);
+            for (_, specs) in leftover {
+                out.extend(specs);
+            }
+        }
+        out
+    }
+
     pub fn remove_by_prefix(&mut self, prefix: &str) {
         for specs in self.hooks.values_mut() {
             specs.retain(|s| !s.name.starts_with(prefix));
         }
     }
 
-    /// All event types in canonical display order.
-    const ALL_EVENTS: &[HookEventName] = &[
-        HookEventName::SessionStart,
-        HookEventName::UserPromptSubmit,
-        HookEventName::PreToolUse,
-        HookEventName::PostToolUse,
-        HookEventName::PostToolUseFailure,
-        HookEventName::PermissionDenied,
-        HookEventName::Stop,
-        HookEventName::StopFailure,
-        HookEventName::Notification,
-        HookEventName::SubagentStart,
-        HookEventName::SubagentStop,
-        HookEventName::SubagentEnd,
-        HookEventName::PreCompact,
-        HookEventName::PostCompact,
-        HookEventName::SessionEnd,
-    ];
-
-    /// Returns all hooks as a flat list, ordered by event type then position.
     pub fn all_hooks(&self) -> Vec<&HookSpec> {
         let mut all = Vec::new();
-        for event in Self::ALL_EVENTS {
+        for event in HookEventName::ALL {
             all.extend(self.hooks_for(*event));
         }
         all
@@ -136,8 +137,7 @@ impl HookRegistry {
 /// A hook source: either a single settings file or a directory of hook files.
 #[derive(Debug, Clone)]
 pub enum HookSource<'a> {
-    /// A single JSON settings file (e.g. `~/.claude/settings.json`).
-    /// The `hooks` key is extracted; other keys are ignored.
+    /// A JSON settings file; only its `hooks` key is used.
     SettingsFile(&'a Path),
     /// A directory of `*.json` hook files (e.g. `~/.grok/hooks/`).
     Directory(&'a Path),
@@ -155,6 +155,35 @@ pub fn load_hooks_from_sources(
     global_sources: &[HookSource<'_>],
     project_sources: &[HookSource<'_>],
 ) -> (HookRegistry, Vec<HookError>) {
+    let (specs, errors) = collect_specs_from_sources(global_sources, project_sources);
+    let registry = registry_from_specs_deduped(specs);
+    tracing::info!(
+        total_hooks = registry.len(),
+        session_start = registry.hooks_for(HookEventName::SessionStart).len(),
+        pre_tool = registry.hooks_for(HookEventName::PreToolUse).len(),
+        post_tool = registry.hooks_for(HookEventName::PostToolUse).len(),
+        session_end = registry.hooks_for(HookEventName::SessionEnd).len(),
+        stop = registry.hooks_for(HookEventName::Stop).len(),
+        notification = registry.hooks_for(HookEventName::Notification).len(),
+        user_prompt_submit = registry.hooks_for(HookEventName::UserPromptSubmit).len(),
+        subagent_start = registry.hooks_for(HookEventName::SubagentStart).len(),
+        subagent_stop = registry.hooks_for(HookEventName::SubagentStop).len()
+            + registry.hooks_for(HookEventName::SubagentEnd).len(),
+        "hooks: discovery complete"
+    );
+
+    (registry, errors)
+}
+
+/// Load hook specs from global and project sources WITHOUT deduplicating, so a
+/// caller can combine them with specs from other origins (e.g. config layers) and
+/// run a single dedup pass. Global specs are prefixed `global/` and project specs
+/// `project/`; global specs precede project specs so a later first-wins dedup
+/// keeps the global copy of an identical duplicate.
+pub fn collect_specs_from_sources(
+    global_sources: &[HookSource<'_>],
+    project_sources: &[HookSource<'_>],
+) -> (Vec<HookSpec>, Vec<HookError>) {
     tracing::debug!(
         global_sources = global_sources.len(),
         project_sources = project_sources.len(),
@@ -168,7 +197,7 @@ pub fn load_hooks_from_sources(
     for source in global_sources {
         let (mut specs, errors) = load_from_source(source);
         for spec in &mut specs {
-            spec.name = format!("global/{}", spec.name);
+            spec.name = format!("{}{}", crate::config::GLOBAL_HOOK_PREFIX, spec.name);
         }
         tracing::debug!(
             source = ?source,
@@ -183,7 +212,7 @@ pub fn load_hooks_from_sources(
     for source in project_sources {
         let (mut specs, errors) = load_from_source(source);
         for spec in &mut specs {
-            spec.name = format!("project/{}", spec.name);
+            spec.name = format!("{}{}", crate::config::PROJECT_HOOK_PREFIX, spec.name);
         }
         tracing::debug!(
             source = ?source,
@@ -194,20 +223,18 @@ pub fn load_hooks_from_sources(
         all_errors.extend(errors);
     }
 
-    // Index by event type, deduplicating by hook content (command/url) +
-    // matcher across all sources. This prevents the same hook from executing
-    // multiple times when it's defined in multiple sources (e.g., ~/.grok/hooks/ +
-    // ~/.claude/settings.json + ~/.cursor/hooks.json), while still allowing
-    // hooks that share a command/URL but have different matchers (e.g. tool-scoped
-    // hooks) to all run.
-    //
-    // Deduplication key: (event, command_raw, url_raw, configured_matcher).
-    // Hooks with identical content + matcher are deduplicated regardless of
-    // source. Global hooks take precedence because they're loaded first.
+    (all_specs, all_errors)
+}
+
+/// Build a registry from specs, deduping on (canonical event, command_raw,
+/// url_raw, configured_matcher) so a hook from several origins runs once; earlier
+/// specs win, so callers place higher-authority first. `timeout_ms`/`extra_env`
+/// are intentionally excluded from the key.
+pub fn registry_from_specs_deduped(specs: Vec<HookSpec>) -> HookRegistry {
     let mut hooks: HashMap<HookEventName, Vec<HookSpec>> = HashMap::new();
     let mut seen_content: std::collections::HashSet<(HookEventName, String, String, String)> =
         std::collections::HashSet::new();
-    for spec in all_specs {
+    for spec in specs {
         let key = (
             spec.event,
             spec.command_raw.clone().unwrap_or_default(),
@@ -225,24 +252,7 @@ pub fn load_hooks_from_sources(
             );
         }
     }
-
-    let registry = HookRegistry { hooks };
-    tracing::info!(
-        total_hooks = registry.len(),
-        session_start = registry.hooks_for(HookEventName::SessionStart).len(),
-        pre_tool = registry.hooks_for(HookEventName::PreToolUse).len(),
-        post_tool = registry.hooks_for(HookEventName::PostToolUse).len(),
-        session_end = registry.hooks_for(HookEventName::SessionEnd).len(),
-        stop = registry.hooks_for(HookEventName::Stop).len(),
-        notification = registry.hooks_for(HookEventName::Notification).len(),
-        user_prompt_submit = registry.hooks_for(HookEventName::UserPromptSubmit).len(),
-        subagent_start = registry.hooks_for(HookEventName::SubagentStart).len(),
-        subagent_stop = registry.hooks_for(HookEventName::SubagentStop).len()
-            + registry.hooks_for(HookEventName::SubagentEnd).len(),
-        "hooks: discovery complete"
-    );
-
-    (registry, all_errors)
+    HookRegistry { hooks }
 }
 
 /// Convenience wrapper: load hooks from a single global directory and optional
@@ -301,6 +311,8 @@ fn load_hooks_from_directory(dir: &Path) -> (Vec<HookSpec>, Vec<HookError>) {
     let mut specs = Vec::new();
     let mut errors = Vec::new();
 
+    // Best-effort listing: a bad dirent is recorded and skipped so sibling
+    // hooks still load. (Sandbox fail-closed listing lives in xai_grok_config.)
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
@@ -316,8 +328,7 @@ fn load_hooks_from_directory(dir: &Path) -> (Vec<HookSpec>, Vec<HookError>) {
         }
     };
 
-    // Collect and sort file paths lexicographically.
-    let mut json_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut json_files = Vec::new();
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
@@ -329,9 +340,11 @@ fn load_hooks_from_directory(dir: &Path) -> (Vec<HookSpec>, Vec<HookError>) {
                 continue;
             }
         };
-
         let path = entry.path();
-        if !is_valid_hook_file(&path) {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !xai_grok_config::is_direct_hook_json_name(name) || !path.is_file() {
             continue;
         }
         json_files.push(path);
@@ -363,28 +376,12 @@ fn load_hooks_from_directory(dir: &Path) -> (Vec<HookSpec>, Vec<HookError>) {
 }
 
 /// Check whether a path is a valid hook file (*.json, not hidden/temp).
+#[cfg(test)]
 fn is_valid_hook_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-
-    // Must have .json extension.
-    if path.extension().and_then(|e| e.to_str()) != Some("json") {
-        return false;
-    }
-
-    // Skip hidden files (dotfiles).
-    if name.starts_with('.') {
-        return false;
-    }
-
-    // Skip editor temp files.
-    if name.ends_with('~') || name.ends_with(".swp") || name.ends_with(".swo") {
-        return false;
-    }
-
-    // Must be a file, not a directory.
-    path.is_file()
+    xai_grok_config::is_direct_hook_json_name(name) && path.is_file()
 }
 
 #[cfg(test)]
@@ -410,6 +407,28 @@ mod tests {
             }
         })
         .to_string()
+    }
+
+    /// Drift guard: gate events must match the `blockingEvents` the agent
+    /// advertises (extensions/hooks.rs). A new gate event fails here.
+    #[test]
+    fn gate_events_are_the_known_set() {
+        use crate::event::GateKind;
+        // Canonicalize first to dedup alias spellings into one set entry
+        // (`traits()` itself already canonicalizes, so it's safe on aliases).
+        let gates: std::collections::HashSet<_> = HookEventName::ALL
+            .iter()
+            .map(|e| e.canonical())
+            .filter(|e| e.traits().gate != GateKind::Observe)
+            .collect();
+        let expected: std::collections::HashSet<_> = [
+            HookEventName::PreToolUse,
+            HookEventName::Stop,
+            HookEventName::SubagentStop,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(gates, expected, "gate events changed");
     }
 
     #[test]
@@ -913,5 +932,73 @@ mod tests {
             load_hooks_from_sources(&[HookSource::SettingsFile(&claude_settings)], &[]);
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert_eq!(registry.len(), 1);
+    }
+
+    /// Wire/serde-shaped spec: compiled matcher cleared, pattern still set.
+    fn recompile_test_spec(
+        name: &str,
+        configured_matcher: Option<&str>,
+    ) -> crate::config::HookSpec {
+        use std::path::PathBuf;
+        crate::config::HookSpec {
+            name: name.into(),
+            event: HookEventName::PreToolUse,
+            handler_type: crate::config::HandlerType::Command,
+            configured_matcher: configured_matcher.map(str::to_owned),
+            matcher: None,
+            enabled: true,
+            command: Some(PathBuf::from("hook.sh")),
+            command_raw: Some("hook.sh".into()),
+            url: None,
+            url_raw: None,
+            timeout_ms: 5_000,
+            source_dir: PathBuf::from("/tmp"),
+            extra_env: Default::default(),
+            layer: crate::config::HookProvenance::File,
+        }
+    }
+
+    #[test]
+    fn recompile_matchers_leaves_intentional_match_all() {
+        let mut registry = HookRegistry::default();
+        registry.append_specs(vec![recompile_test_spec("all", None)]);
+        registry.recompile_matchers();
+
+        assert!(
+            registry.hooks_for(HookEventName::PreToolUse)[0]
+                .matcher
+                .is_none(),
+            "no configured pattern must stay match-all (matcher None)"
+        );
+    }
+
+    #[test]
+    fn recompile_matchers_isolates_invalid_sibling() {
+        let mut registry = HookRegistry::default();
+        registry.append_specs(vec![
+            recompile_test_spec("ok", Some("Bash")),
+            recompile_test_spec("broken", Some("[invalid")),
+        ]);
+        registry.recompile_matchers();
+
+        let hooks = registry.hooks_for(HookEventName::PreToolUse);
+        assert_eq!(hooks.len(), 2);
+        let by_name: std::collections::HashMap<_, _> =
+            hooks.iter().map(|h| (h.name.as_str(), h)).collect();
+
+        let ok = by_name["ok"]
+            .matcher
+            .as_ref()
+            .expect("valid sibling must recompile");
+        assert!(ok.is_match("run_terminal_command"));
+        assert!(!ok.is_match("read_file"));
+
+        let broken = by_name["broken"]
+            .matcher
+            .as_ref()
+            .expect("invalid sibling must become never-match");
+        assert!(!broken.is_match("run_terminal_command"));
+        assert!(!broken.is_match("Bash"));
+        assert!(!broken.is_match("read_file"));
     }
 }

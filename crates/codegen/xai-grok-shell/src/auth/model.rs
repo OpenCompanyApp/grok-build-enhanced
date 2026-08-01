@@ -259,7 +259,6 @@ enum AuthRecord {
     Grok(GrokAuth),
     OpenAiCodex(super::codex::CodexCredentials),
     KimiCode(super::kimi_code::KimiCodeCredentials),
-    ZaiCodingPlan(super::zai_coding_plan::ZaiCodingPlanCredentials),
     Unknown(serde_json::Value),
 }
 
@@ -273,12 +272,7 @@ impl AuthStore {
     pub(crate) fn insert(&mut self, scope: String, auth: GrokAuth) -> Option<GrokAuth> {
         match self.records.insert(scope, AuthRecord::Grok(auth)) {
             Some(AuthRecord::Grok(previous)) => Some(previous),
-            Some(
-                AuthRecord::OpenAiCodex(_)
-                | AuthRecord::KimiCode(_)
-                | AuthRecord::ZaiCodingPlan(_)
-                | AuthRecord::Unknown(_),
-            )
+            Some(AuthRecord::OpenAiCodex(_) | AuthRecord::KimiCode(_) | AuthRecord::Unknown(_))
             | None => None,
         }
     }
@@ -292,13 +286,9 @@ impl AuthStore {
             AuthRecord::OpenAiCodex(credentials),
         ) {
             Some(AuthRecord::OpenAiCodex(previous)) => Some(previous),
-            Some(
-                AuthRecord::Grok(_)
-                | AuthRecord::KimiCode(_)
-                | AuthRecord::ZaiCodingPlan(_)
-                | AuthRecord::Unknown(_),
-            )
-            | None => None,
+            Some(AuthRecord::Grok(_) | AuthRecord::KimiCode(_) | AuthRecord::Unknown(_)) | None => {
+                None
+            }
         }
     }
 
@@ -311,31 +301,7 @@ impl AuthStore {
             AuthRecord::KimiCode(credentials),
         ) {
             Some(AuthRecord::KimiCode(previous)) => Some(previous),
-            Some(
-                AuthRecord::Grok(_)
-                | AuthRecord::OpenAiCodex(_)
-                | AuthRecord::ZaiCodingPlan(_)
-                | AuthRecord::Unknown(_),
-            )
-            | None => None,
-        }
-    }
-
-    pub(crate) fn insert_zai_coding_plan(
-        &mut self,
-        credentials: super::zai_coding_plan::ZaiCodingPlanCredentials,
-    ) -> Option<super::zai_coding_plan::ZaiCodingPlanCredentials> {
-        match self.records.insert(
-            super::zai_coding_plan::ZAI_CODING_PLAN_AUTH_SCOPE.to_string(),
-            AuthRecord::ZaiCodingPlan(credentials),
-        ) {
-            Some(AuthRecord::ZaiCodingPlan(previous)) => Some(previous),
-            Some(
-                AuthRecord::Grok(_)
-                | AuthRecord::OpenAiCodex(_)
-                | AuthRecord::KimiCode(_)
-                | AuthRecord::Unknown(_),
-            )
+            Some(AuthRecord::Grok(_) | AuthRecord::OpenAiCodex(_) | AuthRecord::Unknown(_))
             | None => None,
         }
     }
@@ -345,12 +311,7 @@ impl AuthStore {
     pub(crate) fn get(&self, scope: impl AsRef<str>) -> Option<&GrokAuth> {
         match self.records.get(scope.as_ref()) {
             Some(AuthRecord::Grok(auth)) => Some(auth),
-            Some(
-                AuthRecord::OpenAiCodex(_)
-                | AuthRecord::KimiCode(_)
-                | AuthRecord::ZaiCodingPlan(_)
-                | AuthRecord::Unknown(_),
-            )
+            Some(AuthRecord::OpenAiCodex(_) | AuthRecord::KimiCode(_) | AuthRecord::Unknown(_))
             | None => None,
         }
     }
@@ -358,12 +319,7 @@ impl AuthStore {
     pub(crate) fn get_mut(&mut self, scope: impl AsRef<str>) -> Option<&mut GrokAuth> {
         match self.records.get_mut(scope.as_ref()) {
             Some(AuthRecord::Grok(auth)) => Some(auth),
-            Some(
-                AuthRecord::OpenAiCodex(_)
-                | AuthRecord::KimiCode(_)
-                | AuthRecord::ZaiCodingPlan(_)
-                | AuthRecord::Unknown(_),
-            )
+            Some(AuthRecord::OpenAiCodex(_) | AuthRecord::KimiCode(_) | AuthRecord::Unknown(_))
             | None => None,
         }
     }
@@ -371,43 +327,16 @@ impl AuthStore {
     pub(crate) fn get_codex(&self) -> Option<&super::codex::CodexCredentials> {
         match self.records.get(super::codex::OPENAI_CODEX_SCOPE) {
             Some(AuthRecord::OpenAiCodex(credentials)) => Some(credentials),
-            Some(
-                AuthRecord::Grok(_)
-                | AuthRecord::KimiCode(_)
-                | AuthRecord::ZaiCodingPlan(_)
-                | AuthRecord::Unknown(_),
-            )
-            | None => None,
+            Some(AuthRecord::Grok(_) | AuthRecord::KimiCode(_) | AuthRecord::Unknown(_)) | None => {
+                None
+            }
         }
     }
 
     pub(crate) fn get_kimi_code(&self) -> Option<&super::kimi_code::KimiCodeCredentials> {
         match self.records.get(super::kimi_code::KIMI_CODE_AUTH_SCOPE) {
             Some(AuthRecord::KimiCode(credentials)) => Some(credentials),
-            Some(
-                AuthRecord::Grok(_)
-                | AuthRecord::OpenAiCodex(_)
-                | AuthRecord::ZaiCodingPlan(_)
-                | AuthRecord::Unknown(_),
-            )
-            | None => None,
-        }
-    }
-
-    pub(crate) fn get_zai_coding_plan(
-        &self,
-    ) -> Option<&super::zai_coding_plan::ZaiCodingPlanCredentials> {
-        match self
-            .records
-            .get(super::zai_coding_plan::ZAI_CODING_PLAN_AUTH_SCOPE)
-        {
-            Some(AuthRecord::ZaiCodingPlan(credentials)) => Some(credentials),
-            Some(
-                AuthRecord::Grok(_)
-                | AuthRecord::OpenAiCodex(_)
-                | AuthRecord::KimiCode(_)
-                | AuthRecord::Unknown(_),
-            )
+            Some(AuthRecord::Grok(_) | AuthRecord::OpenAiCodex(_) | AuthRecord::Unknown(_))
             | None => None,
         }
     }
@@ -417,12 +346,7 @@ impl AuthStore {
     pub(crate) fn remove(&mut self, scope: impl AsRef<str>) -> Option<GrokAuth> {
         match self.records.remove(scope.as_ref()) {
             Some(AuthRecord::Grok(auth)) => Some(auth),
-            Some(
-                AuthRecord::OpenAiCodex(_)
-                | AuthRecord::KimiCode(_)
-                | AuthRecord::ZaiCodingPlan(_)
-                | AuthRecord::Unknown(_),
-            )
+            Some(AuthRecord::OpenAiCodex(_) | AuthRecord::KimiCode(_) | AuthRecord::Unknown(_))
             | None => None,
         }
     }
@@ -430,13 +354,9 @@ impl AuthStore {
     pub(crate) fn remove_codex(&mut self) -> Option<super::codex::CodexCredentials> {
         match self.records.remove(super::codex::OPENAI_CODEX_SCOPE) {
             Some(AuthRecord::OpenAiCodex(credentials)) => Some(credentials),
-            Some(
-                AuthRecord::Grok(_)
-                | AuthRecord::KimiCode(_)
-                | AuthRecord::ZaiCodingPlan(_)
-                | AuthRecord::Unknown(_),
-            )
-            | None => None,
+            Some(AuthRecord::Grok(_) | AuthRecord::KimiCode(_) | AuthRecord::Unknown(_)) | None => {
+                None
+            }
         }
     }
 
@@ -447,13 +367,6 @@ impl AuthStore {
     pub(crate) fn remove_kimi_code_record(&mut self) -> bool {
         self.records
             .remove(super::kimi_code::KIMI_CODE_AUTH_SCOPE)
-            .is_some()
-    }
-
-    /// Remove the Z.AI Coding Plan scope even when its payload is malformed.
-    pub(crate) fn remove_zai_coding_plan_record(&mut self) -> bool {
-        self.records
-            .remove(super::zai_coding_plan::ZAI_CODING_PLAN_AUTH_SCOPE)
             .is_some()
     }
 
@@ -470,10 +383,7 @@ impl AuthStore {
     pub(crate) fn values(&self) -> impl Iterator<Item = &GrokAuth> {
         self.records.values().filter_map(|record| match record {
             AuthRecord::Grok(auth) => Some(auth),
-            AuthRecord::OpenAiCodex(_)
-            | AuthRecord::KimiCode(_)
-            | AuthRecord::ZaiCodingPlan(_)
-            | AuthRecord::Unknown(_) => None,
+            AuthRecord::OpenAiCodex(_) | AuthRecord::KimiCode(_) | AuthRecord::Unknown(_) => None,
         })
     }
 
@@ -499,9 +409,6 @@ impl Serialize for AuthStore {
                     map.serialize_entry(scope, credentials)?;
                 }
                 AuthRecord::KimiCode(credentials) => {
-                    map.serialize_entry(scope, credentials)?;
-                }
-                AuthRecord::ZaiCodingPlan(credentials) => {
                     map.serialize_entry(scope, credentials)?;
                 }
                 AuthRecord::Unknown(value) => map.serialize_entry(scope, value)?,
@@ -535,16 +442,6 @@ impl<'de> Deserialize<'de> for AuthStore {
                             credentials.validate_persisted().is_ok()
                         })
                         .map(AuthRecord::KimiCode)
-                        .unwrap_or(AuthRecord::Unknown(value))
-                } else if scope == super::zai_coding_plan::ZAI_CODING_PLAN_AUTH_SCOPE {
-                    serde_json::from_value(value.clone())
-                        .ok()
-                        .filter(
-                            |credentials: &super::zai_coding_plan::ZaiCodingPlanCredentials| {
-                                credentials.validate_persisted().is_ok()
-                            },
-                        )
-                        .map(AuthRecord::ZaiCodingPlan)
                         .unwrap_or(AuthRecord::Unknown(value))
                 } else {
                     serde_json::from_value(value.clone())

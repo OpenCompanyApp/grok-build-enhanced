@@ -324,7 +324,7 @@ impl ConfigReloader {
         }
     }
 
-    fn reload_auth(&mut self) -> anyhow::Result<()> {
+    pub(crate) fn reload_auth(&mut self) -> anyhow::Result<()> {
         let store = match read_auth_json(&self.auth_path) {
             Ok(store) => store,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

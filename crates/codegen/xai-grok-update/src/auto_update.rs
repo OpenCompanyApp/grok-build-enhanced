@@ -122,43 +122,52 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
     };
 
     match get_latest_version(inst, update_config).await {
-        Ok(latest_version) => {
-            let mut error = None;
-            // --check reports upgrades only; a rolled-back pointer isn't a "new version" to advertise here (auto-update converges separately).
-            let allow_downgrade = false;
-            let update_available =
-                match needs_update(&current_version, &latest_version, &channel, allow_downgrade) {
+        Ok(latest) => match plan_for(&config::VersionPolicy::resolve(), latest) {
+            UpdatePlan::Install { target } => {
+                let mut error = None;
+                let update_available = match needs_update(
+                    &current_version,
+                    &target,
+                    &channel,
+                    false,
+                ) {
                     Some(value) => value,
                     None => {
-                        // Distinguish parse failure from unsupported channel for clearer diagnostics.
                         let parse_ok = semver::Version::parse(&current_version).is_ok()
-                            && semver::Version::parse(&latest_version).is_ok();
+                            && semver::Version::parse(&target).is_ok();
                         error = Some(if parse_ok {
                             format!(
-                                "Unsupported release channel '{}' (current={}, latest={}). \
-                             Supported channels: stable, alpha, enterprise.",
-                                channel, current_version, latest_version
+                                "Unsupported release channel '{channel}' (current={current_version}, latest={target}). \
+                                 Supported channels: stable, alpha, enterprise."
                             )
                         } else {
                             format!(
-                                "Failed to parse versions (current={}, latest={})",
-                                current_version, latest_version
+                                "Failed to parse versions (current={current_version}, latest={target})"
                             )
                         });
                         false
                     }
                 };
-
-            UpdateStatus {
+                UpdateStatus {
+                    current_version,
+                    latest_version: Some(target),
+                    update_available,
+                    installer,
+                    channel,
+                    auto_update,
+                    error,
+                }
+            }
+            UpdatePlan::Skip { latest } | UpdatePlan::Unavailable { latest } => UpdateStatus {
                 current_version,
-                latest_version: Some(latest_version),
-                update_available,
+                latest_version: Some(latest),
+                update_available: false,
                 installer,
                 channel,
                 auto_update,
-                error,
-            }
-        }
+                error: None,
+            },
+        },
         Err(err) => UpdateStatus {
             current_version,
             latest_version: None,
@@ -171,6 +180,35 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
     }
 }
 
+enum UpdatePlan {
+    Skip { latest: String },
+    Unavailable { latest: String },
+    Install { target: String },
+}
+
+fn plan_for(policy: &config::VersionPolicy, latest: String) -> UpdatePlan {
+    let Some(target) = policy.resolve_target(&latest) else {
+        return UpdatePlan::Skip { latest };
+    };
+    if matches!(
+        (semver::Version::parse(&target), semver::Version::parse(&latest)),
+        (Ok(target), Ok(latest)) if target > latest
+    ) {
+        UpdatePlan::Unavailable { latest }
+    } else {
+        UpdatePlan::Install { target }
+    }
+}
+
+async fn fetch_update_plan(
+    installer: &str,
+    update_config: &UpdateConfig,
+    policy: &config::VersionPolicy,
+) -> Result<UpdatePlan> {
+    let latest = fetch_latest_version(installer, update_config).await?;
+    Ok(plan_for(policy, latest))
+}
+
 /// Installer + version the leader/background path should converge to: an
 /// upgrade OR an authoritative-installer rollback. `None` means stay put. Gates
 /// on the installer (via `installer_allows_downgrade`) so npm is never
@@ -181,15 +219,21 @@ pub async fn auto_update_target(update_config: &UpdateConfig) -> Option<(&'stati
         return None;
     }
     let current = get_installed_grok_version();
-    let latest = fetch_latest_version(installer, update_config).await.ok()?;
+    let policy = config::VersionPolicy::resolve();
+    let UpdatePlan::Install { target, .. } = fetch_update_plan(installer, update_config, &policy)
+        .await
+        .ok()?
+    else {
+        return None;
+    };
     needs_update(
         &current,
-        &latest,
+        &target,
         &update_config.channel,
         installer_allows_downgrade(installer),
     )
     .unwrap_or(false)
-    .then_some((installer, latest))
+    .then_some((installer, target))
 }
 
 /// Outcome of [`ensure_latest_on_disk`].
@@ -231,21 +275,27 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
     if is_homebrew_installer(installer) {
         return Ok(outcome);
     }
+    heal_managed_install(installer).await;
     let allow_downgrade = installer_allows_downgrade(installer);
-    let latest = fetch_latest_version(installer, update_config).await?;
+    let policy = config::VersionPolicy::resolve();
+    let UpdatePlan::Install { target, .. } =
+        fetch_update_plan(installer, update_config, &policy).await?
+    else {
+        return Ok(outcome);
+    };
 
     let effective_current =
         disk_version_for_installer(installer).unwrap_or_else(get_installed_grok_version);
     if needs_update(
         &effective_current,
-        &latest,
+        &target,
         &update_config.channel,
         allow_downgrade,
     )
     .unwrap_or(false)
     {
-        run_install_script(installer, Some(&latest), update_config).await?;
-        outcome.installed = Some(latest.clone());
+        run_install_script(installer, Some(&target), update_config).await?;
+        outcome.installed = Some(target.clone());
     }
 
     // Relaunch when the running binary differs from what's on disk in the
@@ -460,6 +510,7 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     if is_homebrew_installer(installer) {
         return BackgroundUpdateCheck::none();
     }
+    heal_managed_install(installer).await;
 
     if is_version_cache_fresh().await {
         return BackgroundUpdateCheck::none();
@@ -471,22 +522,25 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     }
 
     let current_version = get_installed_grok_version();
-    let latest_version = match fetch_latest_version(installer, update_config).await {
-        Ok(v) => v,
-        Err(_) => return BackgroundUpdateCheck::none(),
+    let policy = config::VersionPolicy::resolve();
+    let target_version = match fetch_update_plan(installer, update_config, &policy).await {
+        Ok(UpdatePlan::Install { target, .. }) => target,
+        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => {
+            return BackgroundUpdateCheck::none();
+        }
     };
 
     let allow_downgrade = installer_allows_downgrade(installer);
     if !needs_update(
         &current_version,
-        &latest_version,
+        &target_version,
         &update_config.channel,
         allow_downgrade,
     )
     .unwrap_or(false)
     {
         let stable_ptr = try_fetch_stable_pointer().await;
-        write_version_cache(&latest_version, stable_ptr.as_deref()).await;
+        write_version_cache(&target_version, stable_ptr.as_deref()).await;
         return BackgroundUpdateCheck::none();
     }
 
@@ -499,7 +553,7 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     let disk_needs_download = match disk_version_for_installer(installer) {
         Some(disk) => needs_update(
             &disk,
-            &latest_version,
+            &target_version,
             &update_config.channel,
             allow_downgrade,
         )
@@ -519,14 +573,16 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
         }
     } else {
         tracing::info!(
-            latest_version = %latest_version,
+            target_version = %target_version,
             "Background update: target already on disk, skipping download"
         );
         None
     };
 
     BackgroundUpdateCheck {
-        update: Some(UpdateAvailable { latest_version }),
+        update: Some(UpdateAvailable {
+            latest_version: target_version,
+        }),
         download,
     }
 }
@@ -542,6 +598,8 @@ pub async fn run_update_if_available(
         // Homebrew owns its Caskroom or Cellar and performs upgrades explicitly through brew.
         return Ok(false);
     }
+    let inst = installer.expect("installer was checked above");
+    heal_managed_install(inst).await;
 
     if is_version_cache_fresh().await {
         return Ok(false);
@@ -569,14 +627,10 @@ pub async fn run_update_if_available(
     }
 
     let current_version = get_installed_grok_version();
-    // installer is guaranteed Some by the guard at the top of this function.
-    let inst = installer.unwrap();
-    // Fetch without writing version.json — we only cache after confirming the
-    // update is not needed or after a successful blocking install. This prevents
-    // a failed background download from suppressing retries for the TTL window.
-    let latest_version = match fetch_latest_version(inst, update_config).await {
-        Ok(v) => v,
-        Err(_) => return Ok(false),
+    let policy = config::VersionPolicy::resolve();
+    let latest_version = match fetch_update_plan(inst, update_config, &policy).await {
+        Ok(UpdatePlan::Install { target, .. }) => target,
+        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => return Ok(false),
     };
     if !needs_update(
         &current_version,
@@ -1994,6 +2048,99 @@ async fn cleanup_old_downloads(dir: &std::path::Path, bin_prefix: &str, current_
     }
 }
 
+fn installer_manages_bin_entrypoints(installer: &str) -> bool {
+    matches!(installer, "internal" | "gh-release")
+}
+
+#[cfg_attr(not(any(unix, windows)), allow(clippy::unused_async))]
+async fn heal_managed_install(installer: &str) {
+    if !installer_manages_bin_entrypoints(installer) {
+        return;
+    }
+    #[cfg(any(unix, windows))]
+    {
+        let bin_dir = grok_home().join("bin");
+        #[cfg(unix)]
+        reconcile_agent_to_grok(&bin_dir).await;
+        #[cfg(windows)]
+        reconcile_agent_exe_to_grok(&bin_dir).await;
+    }
+}
+
+#[cfg(unix)]
+async fn reconcile_agent_to_grok(bin_dir: &std::path::Path) {
+    let grok_link = bin_dir.join("grok");
+    let agent_link = bin_dir.join("agent");
+    let Ok(grok_target) = tokio::fs::read_link(&grok_link).await else {
+        return;
+    };
+    if tokio::fs::metadata(&grok_link).await.is_err() {
+        return;
+    }
+    if let Ok(agent_target) = tokio::fs::read_link(&agent_link).await
+        && agent_target == grok_target
+    {
+        return;
+    }
+    match atomic_symlink_swap(&grok_target, &agent_link).await {
+        Ok(()) => tracing::info!(
+            grok_target = %grok_target.display(),
+            "reconciled agent bin symlink to grok target"
+        ),
+        Err(error) => tracing::warn!("failed to reconcile agent bin symlink: {error:#}"),
+    }
+}
+
+#[cfg(windows)]
+async fn reconcile_agent_exe_to_grok(bin_dir: &std::path::Path) {
+    let grok_exe = bin_dir.join("grok.exe");
+    let agent_exe = bin_dir.join("agent.exe");
+    if tokio::fs::metadata(&grok_exe).await.is_err() {
+        return;
+    }
+    match agent_exe_differs(&grok_exe, &agent_exe).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            tracing::debug!("agent.exe reconcile: compare failed: {error:#}");
+            return;
+        }
+    }
+    match windows_replace_exe(&grok_exe, &agent_exe).await {
+        Ok(()) => tracing::info!("reconciled agent.exe to grok.exe"),
+        Err(error) => tracing::warn!("failed to reconcile agent.exe to grok.exe: {error:#}"),
+    }
+}
+
+#[cfg(windows)]
+async fn agent_exe_differs(
+    grok: &std::path::Path,
+    agent: &std::path::Path,
+) -> std::io::Result<bool> {
+    use tokio::io::{AsyncReadExt, BufReader};
+    let grok_len = tokio::fs::metadata(grok).await?.len();
+    match tokio::fs::metadata(agent).await {
+        Ok(metadata) if metadata.len() != grok_len => return Ok(true),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error),
+    }
+    let mut grok_reader = BufReader::new(tokio::fs::File::open(grok).await?);
+    let mut agent_reader = BufReader::new(tokio::fs::File::open(agent).await?);
+    let mut grok_buffer = [0u8; 64 * 1024];
+    let mut agent_buffer = [0u8; 64 * 1024];
+    loop {
+        let read = grok_reader.read(&mut grok_buffer).await?;
+        if read == 0 {
+            return Ok(false);
+        }
+        agent_reader.read_exact(&mut agent_buffer[..read]).await?;
+        if grok_buffer[..read] != agent_buffer[..read] {
+            return Ok(true);
+        }
+    }
+}
+
 /// Download a public fork release asset directly over HTTPS. The release
 /// metadata check happens first, so this never falls through to an official
 /// installer, npm package, artifact bucket, or a similarly named asset.
@@ -2360,10 +2507,11 @@ pub async fn run_update(
     if is_homebrew_installer(installer) {
         return run_homebrew_update(installer, force, pinned_version, update_config).await;
     }
+    let policy = config::VersionPolicy::resolve();
 
     // When --version is given, skip the latest-version check and install directly
     if let Some(version) = pinned_version {
-        if let Err(e) = crate::minimum_version::check_install_target(version) {
+        if let Err(e) = crate::version_policy::check_install_target(&policy, version) {
             anyhow::bail!("{e}");
         }
         eprintln!(
@@ -2395,10 +2543,28 @@ pub async fn run_update(
     let latest_version = fetch_latest_version(installer, update_config).await?;
     pb.finish_and_clear();
 
-    let install_target = match crate::minimum_version::apply_floor(&latest_version) {
-        Ok(t) => t,
-        Err(e) => anyhow::bail!("{e}"),
+    let Some(install_target) = policy.resolve_target(&latest_version) else {
+        let stable_ptr = try_fetch_stable_pointer().await;
+        write_version_cache(&latest_version, stable_ptr.as_deref()).await;
+        eprintln!(
+            "The latest release ({latest_version}) is not an allowed update; \
+             keeping the current version ({current_version})."
+        );
+        refresh_deployment_config().await;
+        return Ok(None);
     };
+    if matches!(
+        (
+            semver::Version::parse(&install_target),
+            semver::Version::parse(&latest_version)
+        ),
+        (Ok(target), Ok(latest)) if target > latest
+    ) {
+        anyhow::bail!(
+            "The required minimum version ({install_target}) is newer than the latest \
+             available release ({latest_version}). Contact your administrator."
+        );
+    }
     if install_target != latest_version {
         eprintln!(
             "Latest available is {} but the configured minimum is higher; \

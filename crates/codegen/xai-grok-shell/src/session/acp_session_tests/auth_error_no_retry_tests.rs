@@ -358,13 +358,15 @@ async fn managed_xai_refresh_failure_is_returned_without_credential_fallback() {
                     .await
                     .api_key
                     .as_deref(),
-                Some("initial-test-key"),
-                "failed managed refresh must not adopt a generic/config credential"
+                None,
+                "hard-expired managed refresh must clear the dead bearer without adopting a generic/config credential"
             );
         })
         .await;
 }
 
+/// Hard-expired + failed refresh: do not fall through to JWT/config.toml;
+/// strip the chat-state seed so default headers cannot carry a dead AT.
 #[tokio::test(flavor = "current_thread")]
 async fn concurrent_managed_xai_refresh_waiters_observe_one_consistent_failure() {
     let local = tokio::task::LocalSet::new();
@@ -403,7 +405,8 @@ async fn concurrent_managed_xai_refresh_waiters_observe_one_consistent_failure()
                     .await
                     .api_key
                     .as_deref(),
-                Some("initial-test-key")
+                None,
+                "hard-expired pre-flight failure must strip the chat-state seed"
             );
         })
         .await;
@@ -450,6 +453,71 @@ async fn xai_label_on_custom_origin_never_consults_managed_xai_auth() {
         .await;
 }
 
+/// Soft-expired (early-invalidation buffer) + transient fail: retain the seed
+/// so a still-accepted wire AT can continue until 401 recovery.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial(attribution_emit_count)]
+async fn pre_flight_soft_expired_transient_fail_retains_seed() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let call_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> = Arc::new({
+                struct AlwaysFail(Arc<std::sync::atomic::AtomicU32>);
+                #[async_trait::async_trait]
+                impl crate::auth::refresh::TokenRefresher for AlwaysFail {
+                    async fn refresh(
+                        &self,
+                        _: crate::auth::refresh::RefreshReason,
+                    ) -> crate::auth::refresh::RefreshOutcome {
+                        self.0.fetch_add(1, Ordering::SeqCst);
+                        crate::auth::refresh::RefreshOutcome::transient("refresh failed")
+                    }
+                }
+                AlwaysFail(call_count.clone())
+            });
+            let dir = tempfile::tempdir().expect("tempdir");
+            let am = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+            // Inside the early-invalidation buffer but still hard-valid.
+            am.hot_swap(GrokAuth {
+                key: "buffered-test-key".into(),
+                auth_mode: AuthMode::Oidc,
+                refresh_token: Some("rt".into()),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+                ..GrokAuth::test_default()
+            });
+            am.set_refresher(refresher);
+            let (actor, _rx) = make_actor_with_auth_and_credentials(
+                Some(am.clone()),
+                xai_chat_state::AuthType::SessionToken,
+                "buffered-test-key".to_string(),
+            )
+            .await;
+
+            let _ = actor.refresh_token_if_expired().await;
+
+            assert!(
+                call_count.load(Ordering::SeqCst) >= 1,
+                "soft-expired pre-flight must still attempt refresh"
+            );
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .as_deref(),
+                Some("buffered-test-key"),
+                "buffer-window soft-expired + transient fail must retain seed"
+            );
+            assert!(
+                am.has_usable_token(),
+                "token inside hard-expiry buffer remains usable"
+            );
+        })
+        .await;
+}
+
 /// Proactive refresh keeps the cache hot so `refresh_token_if_expired`
 /// (per-turn pre-flight) is a cache hit — the refresher fires once
 /// (proactive), then the per-turn call sees the fresh token without
@@ -486,8 +554,12 @@ async fn proactive_refresh_makes_per_turn_refresh_a_cache_hit() {
             let cancel = tokio_util::sync::CancellationToken::new();
             am.start_proactive_refresh(cancel.clone());
 
-            // Wait for proactive task to fire.
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // Wait for the proactive task to fire; its first pass runs after
+            // PROACTIVE_MIN_SLEEP, so the window must exceed the floor.
+            tokio::time::sleep(
+                crate::auth::manager::PROACTIVE_MIN_SLEEP + std::time::Duration::from_millis(1000),
+            )
+            .await;
             assert!(
                 call_count.load(Ordering::SeqCst) >= 1,
                 "proactive task must have fired"
@@ -864,81 +936,6 @@ async fn kimi_401_surfaces_provider_scoped_reauthentication_details() {
             assert!(message.contains("Auth:      kimi_code"), "{message}");
             assert!(
                 message.contains("grok login --provider kimi-code"),
-                "{message}"
-            );
-            assert!(!message.contains("openai-codex"), "{message}");
-            assert!(!message.contains("Auth:      WebLogin"), "{message}");
-        })
-        .await;
-}
-
-/// A terminal Z.AI Coding Plan 401 must never invoke the global xAI token
-/// refresher, even when an xAI account is logged in simultaneously.
-#[tokio::test(flavor = "current_thread")]
-async fn zai_401_does_not_run_xai_auth_recovery() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let xai_refresh_called = Arc::new(AtomicBool::new(false));
-            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
-                Arc::new(AlwaysSucceedRefresher {
-                    called: xai_refresh_called.clone(),
-                });
-            let (_dir, am) = auth_manager_with_refresher(refresher);
-            let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
-            let mut sampling = actor
-                .chat_state_handle
-                .get_sampling_config()
-                .await
-                .expect("test actor sampling config");
-            sampling.provider = xai_grok_sampling_types::ProviderId::ZaiCodingPlan;
-            sampling.model = "glm-5.2".to_owned();
-            sampling.base_url = xai_grok_sampling_types::ZAI_CODING_PLAN_BASE_URL.to_owned();
-            actor.chat_state_handle.update_sampling_config(sampling);
-
-            let result = actor.handle_sampling_failure(auth_error()).await;
-
-            assert!(result.is_err(), "Z.AI 401 must remain terminal");
-            assert!(
-                !xai_refresh_called.load(Ordering::SeqCst),
-                "Z.AI 401 must never call the xAI refresher"
-            );
-        })
-        .await;
-}
-
-/// Z.AI authentication failures must identify only the Coding Plan provider
-/// and its own login command.
-#[tokio::test(flavor = "current_thread")]
-async fn zai_401_surfaces_provider_scoped_reauthentication_details() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (actor, _rx) = make_actor_with_auth_manager(None).await;
-            let mut sampling = actor
-                .chat_state_handle
-                .get_sampling_config()
-                .await
-                .expect("test actor sampling config");
-            sampling.provider = xai_grok_sampling_types::ProviderId::ZaiCodingPlan;
-            sampling.model = "glm-5.2".to_owned();
-            sampling.base_url = xai_grok_sampling_types::ZAI_CODING_PLAN_BASE_URL.to_owned();
-            actor.chat_state_handle.update_sampling_config(sampling);
-
-            let error = match actor.handle_sampling_failure(auth_error()).await {
-                Err(error) => error,
-                Ok(_) => panic!("Z.AI 401 must be terminal"),
-            };
-            let details = error.data.expect("error details");
-            let message = details
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| details.as_str())
-                .expect("user-facing message");
-
-            assert!(message.contains("Auth:      zai_coding_plan"), "{message}");
-            assert!(
-                message.contains("grok login --provider zai-coding-plan"),
                 "{message}"
             );
             assert!(!message.contains("openai-codex"), "{message}");
@@ -1568,6 +1565,8 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 api_backend: crate::sampling::ApiBackend::ChatCompletions,
                 auth_scheme: Default::default(),
                 extra_headers: Default::default(),
+                query_params: Default::default(),
+                env_http_headers: Default::default(),
                 context_window: 256_000,
                 client_version: None,
                 force_http1: false,

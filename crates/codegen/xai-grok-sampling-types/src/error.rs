@@ -513,18 +513,43 @@ fn sanitize_provider_error_text(raw: &str) -> String {
     output
 }
 
-pub fn parse_error_bytes(bytes: &[u8]) -> String {
+fn structured_error_message(bytes: &[u8]) -> Option<String> {
     if let Some((error_type, message)) = std::str::from_utf8(bytes).ok().and_then(try_parse_error) {
         let message = sanitize_provider_error_text(&message);
         if error_type == "unknown" || error_type == "server_error" {
-            return message;
+            return Some(message);
         }
-        return sanitize_provider_error_text(&format!(
+        return Some(sanitize_provider_error_text(&format!(
             "{}: {message}",
             sanitize_provider_error_text(&error_type)
-        ));
+        )));
     }
-    sanitize_provider_error_text(&String::from_utf8_lossy(bytes))
+    None
+}
+
+/// Parse only a structured provider error envelope. Arbitrary HTML or text
+/// bodies are never reflected into diagnostics or terminal output.
+pub fn parse_error_bytes(bytes: &[u8]) -> String {
+    structured_error_message(bytes).unwrap_or_else(|| "upstream error".to_owned())
+}
+
+pub fn status_user_message(status: StatusCode) -> String {
+    match status.as_u16() {
+        code @ 502..=504 => {
+            format!("Grok is temporarily unavailable. Please try again in a moment. (HTTP {code}).")
+        }
+        code @ 520..=524 => format!(
+            "Connection to Grok timed out or was interrupted. Please try again. (HTTP {code})."
+        ),
+        code if status.is_server_error() => {
+            format!("Something went wrong on the server (HTTP {code}).")
+        }
+        code => format!("Request failed (HTTP {code})."),
+    }
+}
+
+pub fn user_facing_api_error_message(status: StatusCode, bytes: &[u8]) -> String {
+    structured_error_message(bytes).unwrap_or_else(|| status_user_message(status))
 }
 
 pub fn try_parse_stream_error(data: &str) -> Option<SamplingError> {
@@ -779,7 +804,7 @@ mod tests {
     fn html_provider_error_body_is_not_reflected() {
         let body = b"<!doctype html><html><body><script>synthetic-marker</script></body></html>";
         let message = parse_error_bytes(body);
-        assert_eq!(message, HTML_PROVIDER_ERROR);
+        assert_eq!(message, "upstream error");
         assert!(!message.contains("synthetic-marker"));
         assert!(!message.contains('<'));
     }

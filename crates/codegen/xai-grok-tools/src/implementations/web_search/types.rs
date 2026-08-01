@@ -231,9 +231,6 @@ pub enum WebSearchConfig {
     /// Authentication is resolved per request from the Kimi-scoped provider;
     /// no API key is serialized into this configuration.
     KimiCode { base_url: String },
-    /// Z.AI Coding Plan Search MCP through its canonical global Streamable
-    /// HTTP endpoint. Authentication is dynamically resolved per MCP request.
-    ZaiCodingPlan { endpoint: String },
 }
 
 impl std::fmt::Debug for WebSearchConfig {
@@ -266,12 +263,8 @@ impl WebSearchConfig {
         matches!(self, Self::KimiCode { .. })
     }
 
-    pub fn is_zai_coding_plan(&self) -> bool {
-        matches!(self, Self::ZaiCodingPlan { .. })
-    }
-
     pub fn uses_provider_scoped_web(&self) -> bool {
-        self.is_codex_subscription() || self.is_kimi_code() || self.is_zai_coding_plan()
+        self.is_codex_subscription() || self.is_kimi_code()
     }
 
     /// Return a copy safe for returning to clients.
@@ -312,9 +305,6 @@ impl WebSearchConfig {
             },
             Self::KimiCode { base_url } => Self::KimiCode {
                 base_url: sanitize_redacted_base_url(base_url),
-            },
-            Self::ZaiCodingPlan { endpoint } => Self::ZaiCodingPlan {
-                endpoint: sanitize_redacted_base_url(endpoint),
             },
         }
     }

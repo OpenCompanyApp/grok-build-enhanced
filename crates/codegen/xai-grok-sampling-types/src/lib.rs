@@ -14,8 +14,8 @@ pub mod messages;
 pub mod openai_codex;
 pub mod provider;
 pub mod serde_helpers;
+pub mod tool_overrides;
 pub mod types;
-pub mod zai_coding_plan;
 
 pub use self::conversation::*;
 pub use self::doom_loop::{
@@ -24,7 +24,7 @@ pub use self::doom_loop::{
 };
 pub use self::error::{
     EmptyReason, EmptyResponseContext, ResponseModelMetadata, Result, SamplingError,
-    is_context_length_error,
+    is_context_length_error, status_user_message, user_facing_api_error_message,
 };
 pub use self::kimi_code::{
     KIMI_CODE_ANTHROPIC_BETA, KIMI_CODE_ANTHROPIC_VERSION, KIMI_CODE_API_KEY_ENV,
@@ -44,8 +44,11 @@ pub use self::provider::{
     CredentialBinding, CredentialSourceId, ProviderId, XAI_API_BASE_URL,
     XAI_CLI_CHAT_PROXY_BASE_URL, is_trusted_xai_inference_url,
 };
+pub use self::tool_overrides::{
+    ClearableField, SearchDateBound, SearchDateBoundError, ToolOverrides, ToolOverridesUpdate,
+    WebSearchOptions, XSearchOptions,
+};
 pub use self::types::*;
-pub use self::zai_coding_plan::*;
 
 // Re-export async-openai crate Responses API types under `rs` namespace
 pub use async_openai::types::responses as rs;

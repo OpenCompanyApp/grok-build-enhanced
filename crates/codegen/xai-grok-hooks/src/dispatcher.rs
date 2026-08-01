@@ -577,6 +577,7 @@ mod tests {
         RunContext {
             session_id: "test-session",
             workspace_root: "/tmp",
+            process_scope: None,
         }
     }
 
@@ -602,6 +603,7 @@ mod tests {
             timeout_ms: 5000,
             source_dir: PathBuf::from("/tmp"),
             extra_env: HashMap::new(),
+            layer: crate::config::HookProvenance::File,
         }
     }
 

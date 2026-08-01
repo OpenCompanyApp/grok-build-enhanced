@@ -748,6 +748,7 @@ pub(crate) fn stream_responses_tracked<'a>(
             total_tokens: u.total_tokens,
             reasoning_tokens: u.output_tokens_details.reasoning_tokens,
             cached_prompt_tokens: u.input_tokens_details.cached_tokens,
+            cache_creation_prompt_tokens: 0,
         });
 
         let cost_usd_ticks = response
@@ -824,6 +825,9 @@ pub(crate) fn stream_responses_tracked<'a>(
             message_chunks_emitted: message_chunk_count,
             doom_loop_signals,
             stop_message: None, // not reported on the Responses API
+            message_id: None,   // no provider message id on the Responses API
+            raw_stop_reason: None,
+            stop_sequence: None,
             provider_end_turn,
         };
 

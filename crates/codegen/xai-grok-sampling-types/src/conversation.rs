@@ -13,11 +13,13 @@ use serde::{Deserialize, Serialize};
 pub use xai_grok_tools::types::output::{ExternalContentMetadata, ExternalContentSource};
 
 use crate::rs;
+use crate::tool_overrides::drop_empty;
 use crate::types::{
     ChatCompletionRequest, ChatContentBlock, ChatRequestMessage, ChatResponseMessage, FinishReason,
     ImageUrl, MessageContent, Role, ToolCallRequest, ToolChoice, ToolDefinition, TraceContext,
-    Usage,
+    Usage, VideoUrl,
 };
+use crate::{ToolOverrides, WebSearchOptions, XSearchOptions};
 
 // ============================================================================
 // Core Conversation Types
@@ -413,6 +415,9 @@ pub enum ContentPart {
     Text { text: Arc<str> },
     /// Image content (URL or base64 data URI)
     Image { url: Arc<str> },
+    /// Local video input. Only the path and validated MIME type are durable;
+    /// provider upload identifiers are request-local and must never persist.
+    Video { path: Arc<str>, mime_type: Arc<str> },
 }
 
 // ============================================================================
@@ -529,17 +534,10 @@ pub struct ToolSpec {
 /// A tool that the backend executes server-side during inference.
 /// The client sends these as native Responses API tool types (not Function).
 /// The backend's agentic sampler handles execution and streams results back.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostedTool {
-    /// Web search executed server-side by the backend's agentic sampler.
-    WebSearch {
-        /// Optional domain allowlist for search results.
-        allowed_domains: Option<Vec<String>>,
-    },
-    /// X (Twitter) search executed server-side by the backend's agentic sampler.
-    /// This is xAI-specific — not part of the OpenAI Responses API, so it's
-    /// injected as raw JSON into the request body by the sampler client.
-    XSearch,
+    WebSearch { options: Option<WebSearchOptions> },
+    XSearch { options: Option<XSearchOptions> },
 }
 
 impl HostedTool {
@@ -547,9 +545,40 @@ impl HostedTool {
     pub fn wire_name(&self) -> &'static str {
         match self {
             HostedTool::WebSearch { .. } => "web_search",
-            HostedTool::XSearch => "x_search",
+            HostedTool::XSearch { .. } => "x_search",
         }
     }
+}
+
+/// Apply definition-level hosted-tool overrides and return the exact normalized echo.
+pub fn apply_tool_overrides(
+    tools: &mut [HostedTool],
+    overrides: Option<&ToolOverrides>,
+) -> ToolOverrides {
+    let mut applied = ToolOverrides::default();
+    for tool in tools.iter_mut() {
+        match tool {
+            HostedTool::XSearch { options } => {
+                if let Some(value) = drop_empty(
+                    overrides.and_then(|o| o.x_search.clone()),
+                    XSearchOptions::is_empty,
+                ) {
+                    *options = Some(value);
+                }
+                applied.x_search = drop_empty(options.clone(), XSearchOptions::is_empty);
+            }
+            HostedTool::WebSearch { options } => {
+                if let Some(value) = drop_empty(
+                    overrides.and_then(|o| o.web_search.clone()),
+                    WebSearchOptions::is_empty,
+                ) {
+                    *options = Some(value);
+                }
+                applied.web_search = drop_empty(options.clone(), WebSearchOptions::is_empty);
+            }
+        }
+    }
+    applied
 }
 
 impl From<ToolDefinition> for ToolSpec {
@@ -626,6 +655,23 @@ pub struct ConversationRequest {
 }
 
 impl ConversationRequest {
+    /// Whether this durable prompt contains a local video input. Provider
+    /// adapters use this before constructing any network request so an
+    /// unsupported backend cannot silently discard or forward the content.
+    pub fn has_video_inputs(&self) -> bool {
+        self.items.iter().any(|item| match item {
+            ConversationItem::User(user) => user
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Video { .. })),
+            ConversationItem::ToolResult(result) => result
+                .images
+                .iter()
+                .any(|part| matches!(part, ContentPart::Video { .. })),
+            _ => false,
+        })
+    }
+
     /// Clone the authoritative prompt for Responses serialization, applying
     /// request-local image capability policy only to that clone.
     ///
@@ -802,6 +848,9 @@ pub struct TokenUsage {
     ///   into `prompt_tokens` instead.
     #[serde(default)]
     pub cached_prompt_tokens: u32,
+    /// Prompt tokens written to a provider cache during this call.
+    #[serde(default)]
+    pub cache_creation_prompt_tokens: u32,
 }
 
 impl TokenUsage {
@@ -828,6 +877,7 @@ impl From<Usage> for TokenUsage {
                 .as_ref()
                 .map_or(0, |d| d.reasoning_tokens),
             cached_prompt_tokens,
+            cache_creation_prompt_tokens: 0,
         }
     }
 }
@@ -846,6 +896,12 @@ pub struct ConversationResponse {
     /// item is always an `Assistant` item (possibly with empty content if
     /// the model only emitted reasoning or tool calls).
     pub items: Vec<ConversationItem>,
+    /// Provider response/message identifier when the wire exposes one.
+    pub message_id: Option<String>,
+    /// Verbatim provider stop reason before backend-neutral normalization.
+    pub raw_stop_reason: Option<String>,
+    /// Provider-matched stop sequence, if any.
+    pub stop_sequence: Option<String>,
     /// Why the model stopped generating
     pub stop_reason: Option<StopReason>,
     /// Token usage statistics
@@ -1411,7 +1467,7 @@ impl ConversationItem {
                 .iter()
                 .filter_map(|p| match p {
                     ContentPart::Text { text } => Some(text.as_ref()),
-                    ContentPart::Image { .. } => None,
+                    ContentPart::Image { .. } | ContentPart::Video { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -1846,6 +1902,10 @@ impl From<ChatRequestMessage> for ConversationItem {
                         ChatContentBlock::ImageUrl { image_url } => ContentPart::Image {
                             url: Arc::<str>::from(image_url.url),
                         },
+                        ChatContentBlock::VideoUrl { video_url } => ContentPart::Video {
+                            path: Arc::<str>::from(video_url.url),
+                            mime_type: Arc::<str>::from(video_url.mime_type),
+                        },
                     })
                     .collect();
                 ConversationItem::User(UserItem {
@@ -2015,7 +2075,7 @@ fn chat_assistant_has_sendable_content(message: &ChatRequestMessage) -> bool {
         MessageContent::Text(text) => !text.trim().is_empty(),
         MessageContent::Blocks(blocks) => blocks.iter().any(|block| match block {
             ChatContentBlock::Text { text } => !text.trim().is_empty(),
-            ChatContentBlock::ImageUrl { .. } => true,
+            ChatContentBlock::ImageUrl { .. } | ChatContentBlock::VideoUrl { .. } => true,
         }),
     };
     content_is_sendable
@@ -2030,13 +2090,13 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
         ConversationItem::System(s) => ChatRequestMessage::system(s.content.as_ref()),
         ConversationItem::User(u) => {
             let external_content = u.external_content;
-            let has_images = u
+            let has_attachments = u
                 .content
                 .iter()
-                .any(|p| matches!(p, ContentPart::Image { .. }));
+                .any(|p| matches!(p, ContentPart::Image { .. } | ContentPart::Video { .. }));
             // if the user message does not contain images, prefer to collapse the content into a single text block
             // this is aligned with the legacy behavior before introducing the blocks support
-            let content = if !has_images {
+            let content = if !has_attachments {
                 let text = u
                     .content
                     .iter()
@@ -2051,7 +2111,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
                 let blocks: Vec<ChatContentBlock> = u
                     .content
                     .into_iter()
-                    .filter(|part| include_user_wire_part(has_images, part))
+                    .filter(|part| include_user_wire_part(has_attachments, part))
                     .map(|part| match part {
                         ContentPart::Text { text } => ChatContentBlock::Text {
                             text: wrap_external_content(text, external_content.as_ref()),
@@ -2059,6 +2119,12 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
                         ContentPart::Image { url } => ChatContentBlock::ImageUrl {
                             image_url: ImageUrl {
                                 url: url.as_ref().to_owned(),
+                            },
+                        },
+                        ContentPart::Video { path, mime_type } => ChatContentBlock::VideoUrl {
+                            video_url: VideoUrl {
+                                url: path.as_ref().to_owned(),
+                                mime_type: mime_type.as_ref().to_owned(),
                             },
                         },
                     })
@@ -2701,12 +2767,12 @@ fn content_parts_to_easy_input_content(
     parts: &[ContentPart],
     external_content: Option<&ExternalContentMetadata>,
 ) -> rs::EasyInputContent {
-    let has_images = parts
+    let has_attachments = parts
         .iter()
-        .any(|part| matches!(part, ContentPart::Image { .. }));
+        .any(|part| matches!(part, ContentPart::Image { .. } | ContentPart::Video { .. }));
     let wire_parts: Vec<&ContentPart> = parts
         .iter()
-        .filter(|part| include_user_wire_part(has_images, part))
+        .filter(|part| include_user_wire_part(has_attachments, part))
         .collect();
 
     if wire_parts.len() == 1
@@ -2725,6 +2791,9 @@ fn content_parts_to_easy_input_content(
                 image_url: Some(url.as_ref().to_owned()),
                 file_id: None,
                 detail: rs::ImageDetail::default(),
+            }),
+            ContentPart::Video { .. } => rs::InputContent::InputText(rs::InputTextContent {
+                text: "[unsupported video input]".to_owned(),
             }),
         })
         .collect();
@@ -2768,9 +2837,10 @@ fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
 
     for hosted in &req.hosted_tools {
         match hosted {
-            HostedTool::WebSearch { allowed_domains } => {
-                let filters = allowed_domains
+            HostedTool::WebSearch { options } => {
+                let filters = options
                     .as_ref()
+                    .and_then(|options| options.allowed_domains.as_ref())
                     .map(|domains| rs::WebSearchToolFilters {
                         allowed_domains: Some(domains.clone()),
                     });
@@ -2781,7 +2851,7 @@ fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
             }
             // XSearch is xAI-specific — not in async_openai's rs::Tool enum.
             // Injected as raw JSON by the sampler client after serialization.
-            HostedTool::XSearch => {}
+            HostedTool::XSearch { .. } => {}
         }
     }
 
@@ -2800,8 +2870,11 @@ pub fn extra_raw_tools(hosted_tools: &[HostedTool]) -> Vec<serde_json::Value> {
             // WebSearch is handled natively via rs::Tool::WebSearch in
             // build_responses_tools() — no raw JSON injection needed.
             HostedTool::WebSearch { .. } => {}
-            HostedTool::XSearch => {
-                raw.push(serde_json::json!({"type": "x_search"}));
+            HostedTool::XSearch { options } => {
+                raw.push(match options {
+                    Some(options) => options.to_tool_entry(),
+                    None => XSearchOptions::default().to_tool_entry(),
+                });
             }
         }
     }
@@ -3381,12 +3454,12 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     // Chat and Responses projections, attachment-only prompts omit synthetic
     // blank text while the source UserItem remains unchanged.
     let content_parts_to_anthropic_blocks = |parts: &[ContentPart]| -> Vec<ContentBlock> {
-        let has_images = parts
+        let has_attachments = parts
             .iter()
-            .any(|part| matches!(part, ContentPart::Image { .. }));
+            .any(|part| matches!(part, ContentPart::Image { .. } | ContentPart::Video { .. }));
         parts
             .iter()
-            .filter(|part| include_user_wire_part(has_images, part))
+            .filter(|part| include_user_wire_part(has_attachments, part))
             .map(|part| match part {
                 ContentPart::Text { text } => ContentBlock::Text {
                     text: text.as_ref().to_owned(),
@@ -3408,6 +3481,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                                     media_type,
                                     data: data.to_string(),
                                 },
+                                cache_control: None,
                             }
                         } else {
                             // Malformed data URI, treat as text
@@ -3421,6 +3495,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                             source: ImageSource::Url {
                                 url: url.as_ref().to_owned(),
                             },
+                            cache_control: None,
                         }
                     } else {
                         // Unknown format, treat as text
@@ -3430,6 +3505,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                         }
                     }
                 }
+                ContentPart::Video { .. } => ContentBlock::Text {
+                    text: "[unsupported video input]".to_owned(),
+                    cache_control: None,
+                },
             })
             .collect()
     };
@@ -3519,6 +3598,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                         id: sanitize_tool_call_id(&tc.id),
                         name: tc.name.clone(),
                         input,
+                        cache_control: None,
                     });
                 }
             }
@@ -3549,7 +3629,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                                     url: url.as_ref().to_owned(),
                                 }
                             };
-                            blocks.push(ContentBlock::Image { source });
+                            blocks.push(ContentBlock::Image {
+                                source,
+                                cache_control: None,
+                            });
                         }
                     }
                     ToolResultContent::Blocks(blocks)
@@ -3708,7 +3791,9 @@ impl From<crate::messages::MessagesResponse> for ConversationItem {
                     }
                     content.push_str(&text);
                 }
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     tool_calls.push(ToolCall {
                         id: Arc::<str>::from(id),
                         name,
@@ -3860,6 +3945,24 @@ mod compaction_item_bridge_tests {
 mod tests {
     use super::*;
     use assert_matches::assert_matches;
+
+    #[test]
+    fn video_content_round_trip_persists_only_local_identity() {
+        let part = ContentPart::Video {
+            path: Arc::<str>::from("/workspace/clip.mp4"),
+            mime_type: Arc::<str>::from("video/mp4"),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        assert!(json.contains("/workspace/clip.mp4"));
+        assert!(json.contains("video/mp4"));
+        assert!(!json.contains("ms://"));
+        let restored: ContentPart = serde_json::from_str(&json).unwrap();
+        assert_matches!(
+            restored,
+            ContentPart::Video { path, mime_type }
+                if path.as_ref() == "/workspace/clip.mp4" && mime_type.as_ref() == "video/mp4"
+        );
+    }
 
     #[test]
     fn provider_transition_strips_only_provider_bound_response_items() {
@@ -4048,9 +4151,7 @@ mod tests {
                     parameters: serde_json::json!({"type": "object"}),
                 },
             ]);
-        req.hosted_tools = vec![HostedTool::WebSearch {
-            allowed_domains: None,
-        }];
+        req.hosted_tools = vec![HostedTool::WebSearch { options: None }];
 
         let responses_req: rs::CreateResponse = (&req).into();
         let tools = responses_req.tools.expect("tools should be set");
@@ -4085,7 +4186,7 @@ mod tests {
                 description: None,
                 parameters: serde_json::json!({"type": "object"}),
             }]);
-        req.hosted_tools = vec![HostedTool::XSearch];
+        req.hosted_tools = vec![HostedTool::XSearch { options: None }];
 
         let responses_req: rs::CreateResponse = (&req).into();
         let tools = responses_req.tools.unwrap_or_default();
@@ -4249,7 +4350,7 @@ mod tests {
             panic!("attachment-bearing Messages prompt must use content blocks");
         };
         assert_eq!(blocks.len(), 1);
-        assert_matches!(&blocks[0], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Url { url } }
+        assert_matches!(&blocks[0], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Url { url }, .. }
             if url == "https://example.com/attachment.png");
     }
 
@@ -7316,6 +7417,9 @@ mod tests {
         // Empty assistant message
         let response = ConversationResponse {
             items: vec![ConversationItem::assistant("")],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: None,
             usage: None,
             cost_usd_ticks: None,
@@ -7329,6 +7433,9 @@ mod tests {
         // Assistant with content
         let response = ConversationResponse {
             items: vec![ConversationItem::assistant("Hello")],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: None,
             usage: None,
             cost_usd_ticks: None,
@@ -7346,6 +7453,9 @@ mod tests {
                 name: "test".to_string(),
                 arguments: "{}".into(),
             }])],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: None,
             usage: None,
             cost_usd_ticks: None,
@@ -7370,6 +7480,9 @@ mod tests {
                 reasoning_effort: None,
                 external_content: None,
             })],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: Some(StopReason::Stop),
             usage: None,
             cost_usd_ticks: None,
@@ -7393,6 +7506,9 @@ mod tests {
                 reasoning_effort: None,
                 external_content: None,
             })],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: Some(StopReason::Stop),
             usage: None,
             cost_usd_ticks: None,
@@ -7420,6 +7536,9 @@ mod tests {
                 reasoning_effort: None,
                 external_content: None,
             })],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: Some(StopReason::ToolCalls),
             usage: None,
             cost_usd_ticks: None,
@@ -7449,6 +7568,9 @@ mod tests {
                     arguments: "{}".into(),
                 },
             ])],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: Some(StopReason::ToolCalls),
             usage: None,
             cost_usd_ticks: None,
@@ -7470,6 +7592,9 @@ mod tests {
         // AgentMessageChunk events were streamed.
         let response = ConversationResponse {
             items: vec![ConversationItem::assistant("All features implemented.")],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: Some(StopReason::Stop),
             usage: None,
             cost_usd_ticks: None,
@@ -7490,6 +7615,9 @@ mod tests {
         // events, so no fallback is needed.
         let response = ConversationResponse {
             items: vec![ConversationItem::assistant("Hello")],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: Some(StopReason::Stop),
             usage: None,
             cost_usd_ticks: None,
@@ -7506,6 +7634,9 @@ mod tests {
         // Truly empty response (no content, no chunks): no fallback.
         let response = ConversationResponse {
             items: vec![ConversationItem::assistant("")],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: None,
             usage: None,
             cost_usd_ticks: None,
@@ -7526,6 +7657,9 @@ mod tests {
         // content.  The fallback MUST fire in this case.
         let response = ConversationResponse {
             items: vec![ConversationItem::assistant("Summary after reasoning.")],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: Some(StopReason::Stop),
             usage: None,
             cost_usd_ticks: None,
@@ -7549,6 +7683,9 @@ mod tests {
                 name: "read_file".to_string(),
                 arguments: "{}".into(),
             }])],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: Some(StopReason::ToolCalls),
             usage: None,
             cost_usd_ticks: None,
@@ -8643,7 +8780,7 @@ mod tests {
             matches!(&inner[0], crate::messages::ContentBlock::Text { text, .. } if text == "Read image file: photo.png")
         );
         assert!(
-            matches!(&inner[1], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Base64 { media_type, data } } if media_type == "image/png" && data == "iVBOR")
+            matches!(&inner[1], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Base64 { media_type, data }, .. } if media_type == "image/png" && data == "iVBOR")
         );
     }
 
@@ -9078,6 +9215,9 @@ mod tests {
     fn make_response(message: ConversationItem) -> ConversationResponse {
         ConversationResponse {
             items: vec![message],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: Some(StopReason::Stop),
             usage: None,
             cost_usd_ticks: None,
@@ -9140,6 +9280,9 @@ mod tests {
                     external_content: None,
                 }),
             ],
+            message_id: None,
+            raw_stop_reason: None,
+            stop_sequence: None,
             stop_reason: Some(StopReason::Stop),
             usage: None,
             cost_usd_ticks: None,

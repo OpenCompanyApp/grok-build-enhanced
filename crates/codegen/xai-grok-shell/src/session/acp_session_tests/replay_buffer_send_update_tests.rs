@@ -81,6 +81,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         model_auth_memo: std::cell::RefCell::new(None),
         attribution_callback: None,
         auth_manager: None,
+        is_chat_kind: false,
         state,
         notifications: NotificationSender {
             gateway,
@@ -103,6 +104,8 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         )),
         telemetry_enabled: false,
         supports_backend_search: std::cell::Cell::new(false),
+        tool_overrides: std::cell::RefCell::new(None),
+        resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
         compactions_remaining: std::cell::Cell::new(None),
         compaction_at_tokens: std::cell::Cell::new(None),
         doom_loop_recovery: None,
@@ -121,6 +124,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
             previous_model: std::cell::Cell::new(None),
             compaction_mode: xai_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
+            tool_choice: Default::default(),
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
         },
@@ -224,6 +228,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         deferred_prefix: TaskSlot::new(),
         extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
+        prefix_carries_fallback_date: std::cell::Cell::new(false),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
         hook_registry: std::cell::RefCell::new(None),
@@ -446,7 +451,8 @@ async fn available_commands_update_is_forwarded_but_not_persisted() {
                 tokio::task::yield_now().await;
             }
             assert_eq!(
-                sent.lock(). await .len(), 2,
+                sent.lock().await.len(),
+                2,
                 "both updates must be forwarded to the live client (command palette must stay current)",
             );
             let mut persisted = vec![];
@@ -458,7 +464,8 @@ async fn available_commands_update_is_forwarded_but_not_persisted() {
                 }
             }
             assert_eq!(
-                persisted.len(), 1,
+                persisted.len(),
+                1,
                 "exactly one update must be persisted; available_commands_update must be skipped",
             );
             assert!(
@@ -656,6 +663,7 @@ async fn completed_event_clears_slot_keeps_prior_uncommitted_segments() {
                 .handle_sampling_event(SamplingEvent::Completed {
                     request_id: req,
                     response: Box::new(ConversationResponse {
+                        provider_end_turn: None,
                         items: vec![ConversationItem::assistant("Answer".to_string())],
                         usage: None,
                         stop_reason: None,
@@ -663,7 +671,9 @@ async fn completed_event_clears_slot_keeps_prior_uncommitted_segments() {
                         message_chunks_emitted: 0,
                         doom_loop_signals: Vec::new(),
                         stop_message: None,
-                        provider_end_turn: None,
+                        message_id: None,
+                        raw_stop_reason: None,
+                        stop_sequence: None,
                     }),
                     metrics: InferenceLatencyStats::default(),
                 })
@@ -732,6 +742,7 @@ async fn completed_event_releases_stream_drain_barrier() {
                 .handle_sampling_event(SamplingEvent::Completed {
                     request_id: req,
                     response: Box::new(ConversationResponse {
+                        provider_end_turn: None,
                         items: vec![ConversationItem::assistant("blocks".to_string())],
                         usage: None,
                         stop_reason: None,
@@ -739,7 +750,9 @@ async fn completed_event_releases_stream_drain_barrier() {
                         message_chunks_emitted: 1,
                         doom_loop_signals: Vec::new(),
                         stop_message: None,
-                        provider_end_turn: None,
+                        message_id: None,
+                        raw_stop_reason: None,
+                        stop_sequence: None,
                     }),
                     metrics: InferenceLatencyStats::default(),
                 })
@@ -862,6 +875,7 @@ async fn observe_only_confident_completion_stays_warn_only() {
                 })
                 .await;
             let response = xai_grok_sampling_types::ConversationResponse {
+                provider_end_turn: None,
                 items: vec![xai_grok_sampling_types::ConversationItem::assistant(
                     "answer kept as-is",
                 )],
@@ -873,7 +887,9 @@ async fn observe_only_confident_completion_stays_warn_only() {
                     "tail_repetition:8@thinking",
                 )],
                 stop_message: None,
-                provider_end_turn: None,
+                message_id: None,
+                raw_stop_reason: None,
+                stop_sequence: None,
             };
             actor
                 .handle_sampling_event(SamplingEvent::Completed {
@@ -963,6 +979,7 @@ async fn doom_loop_recovery_stamps_capture_segments_and_counters() {
                 })
                 .await;
             let response = xai_grok_sampling_types::ConversationResponse {
+                provider_end_turn: None,
                 items: vec![xai_grok_sampling_types::ConversationItem::assistant(
                     "still looping answer",
                 )],
@@ -974,7 +991,9 @@ async fn doom_loop_recovery_stamps_capture_segments_and_counters() {
                     "tail_repetition:4@thinking",
                 )],
                 stop_message: None,
-                provider_end_turn: None,
+                message_id: None,
+                raw_stop_reason: None,
+                stop_sequence: None,
             };
             actor
                 .handle_sampling_event(SamplingEvent::Completed {

@@ -62,9 +62,7 @@ impl HttpClient {
             builder = builder.resolve_to_addrs(&target.host, &target.addrs);
         }
 
-        // Route all traffic through the egress proxy when configured. A
-        // configured proxy is an explicit trusted egress boundary; direct
-        // connections use the pinned resolver above.
+        // Route all traffic through the egress proxy when configured.
         if let Some(ref endpoint) = params.proxy_endpoint {
             let proxy =
                 reqwest::Proxy::all(endpoint).map_err(|_| WebFetchError::ProxyConfigError)?;

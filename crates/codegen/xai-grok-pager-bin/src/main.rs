@@ -44,7 +44,7 @@ use xai_grok_shell::leader::{
 use xai_grok_shell::leader::{
     ControlPayload, LeaderClient, LeaderEnvUrls, connect_or_spawn, socket_path_for_ws_url,
 };
-use xai_grok_update::{UpdateConfig, auto_update, enforce_minimum_version_or_exit};
+use xai_grok_update::{UpdateConfig, auto_update, enforce_version_policy_or_exit};
 /// Apply headless args to an existing config, only overriding values that are
 /// explicitly set. This allows environment defaults to be preserved when
 /// specific args are not provided.
@@ -524,6 +524,7 @@ async fn workspace_start(
         &raw_config,
         remote_settings.as_ref(),
         true,
+        xai_grok_sandbox::requested_confinement_profile(),
     );
     if !use_leader {
         anyhow::bail!(
@@ -1117,6 +1118,7 @@ async fn run_agent_command(
         &raw_config,
         remote_settings.as_ref(),
         leader_eligible,
+        xai_grok_sandbox::requested_confinement_profile(),
     );
     tracing::info!(use_leader, ?policy_disable_reason, "leader mode resolved");
     let managed_install = is_managed_install(
@@ -1856,7 +1858,7 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                          Use `grok-pager agent {flag}` instead."
                     );
                 }
-                enforce_minimum_version_or_exit(&update_config).await;
+                enforce_version_policy_or_exit();
                 return run_agent_command(
                     agent_args,
                     args.permission_mode_flag.clone(),
@@ -1909,11 +1911,6 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                     }
                     AuthProviderArg::KimiCode => {
                         xai_grok_shell::auth::kimi_code::run_kimi_code_cli_models()
-                            .await
-                            .map_err(anyhow::Error::from)
-                    }
-                    AuthProviderArg::ZaiCodingPlan => {
-                        xai_grok_shell::auth::zai_coding_plan::run_zai_coding_plan_cli_models()
                             .await
                             .map_err(anyhow::Error::from)
                     }
@@ -2024,15 +2021,6 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                         }
                         xai_grok_shell::auth::kimi_code::run_kimi_code_cli_login().await?;
                     }
-                    AuthProviderArg::ZaiCodingPlan => {
-                        if oauth || device_auth || devbox {
-                            return Err(anyhow::anyhow!(
-                                "Z.AI Coding Plan uses an API key; OAuth/device/devbox login flags are not supported"
-                            ));
-                        }
-                        xai_grok_shell::auth::zai_coding_plan::run_zai_coding_plan_cli_login()
-                            .await?;
-                    }
                 }
                 println!();
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
@@ -2062,10 +2050,6 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                     AuthProviderArg::KimiCode => {
                         xai_grok_shell::auth::kimi_code::run_kimi_code_cli_logout().await?;
                     }
-                    AuthProviderArg::ZaiCodingPlan => {
-                        xai_grok_shell::auth::zai_coding_plan::run_zai_coding_plan_cli_logout()
-                            .await?;
-                    }
                 }
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
@@ -2090,7 +2074,7 @@ async fn async_main(args: PagerArgs) -> Result<()> {
     if let Some(prompt) = headless_prompt {
         init_tracing_simple(HEADLESS_ENTRYPOINT);
         let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-        enforce_minimum_version_or_exit(&update_config).await;
+        enforce_version_policy_or_exit();
         let launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
             args.yolo,
             args.permission_mode_flag.as_deref(),
@@ -2115,10 +2099,12 @@ async fn async_main(args: PagerArgs) -> Result<()> {
             xai_grok_pager::headless::HeadlessOptions {
                 session_id: args.session_id.clone(),
                 resume: args.resume_session.or(args.load_session),
+                resume_title_pinned: args.resume_target_pinned,
                 cwd: args.cwd,
                 yolo: launch_yolo.yolo,
                 trust: args.trust,
                 output_format: args.output_format,
+                include_partial_messages: args.include_partial_messages,
                 json_schema,
                 model: args.model,
                 rules: args.rules,
@@ -2148,7 +2134,7 @@ async fn async_main(args: PagerArgs) -> Result<()> {
         )
         .await;
     }
-    enforce_minimum_version_or_exit(&update_config).await;
+    enforce_version_policy_or_exit();
     let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
     let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =

@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{
     ApiBackend, CompactionAtTokens, CompactionsRemaining, CredentialBinding, CredentialSourceId,
     DoomLoopRecoveryPolicy, KIMI_CODE_BASE_URL, OPENAI_CODEX_BASE_URL, ProviderId, ReasoningEffort,
-    ZAI_CODING_PLAN_BASE_URL,
 };
 
 use crate::attribution::SharedAttributionCallback;
@@ -73,6 +72,13 @@ pub struct SamplerConfig {
     /// the URL to derive headers; callers (the session) inject proxy auth
     /// and other access headers here before constructing the config.
     pub extra_headers: IndexMap<String, String>,
+    /// Query parameters folded into every request URL (percent-encoded).
+    #[serde(default)]
+    pub query_params: IndexMap<String, String>,
+    /// Header name to environment variable, resolved into request headers at
+    /// client build and never persisted.
+    #[serde(default)]
+    pub env_http_headers: IndexMap<String, String>,
     /// Opaque provider catalog compatibility fingerprint. It is session
     /// metadata only and is never serialized into an inference request.
     #[serde(default)]
@@ -185,6 +191,8 @@ impl Default for SamplerConfig {
             api_backend: ApiBackend::default(),
             auth_scheme: AuthScheme::default(),
             extra_headers: IndexMap::new(),
+            query_params: IndexMap::new(),
+            env_http_headers: IndexMap::new(),
             comp_hash: None,
             context_window: 0,
             force_http1: false,
@@ -245,21 +253,6 @@ impl SamplerConfig {
             model: model.into(),
             api_backend,
             auth_scheme,
-            ..Self::default()
-        }
-    }
-
-    /// Build the provider-safe baseline for a global personal Z.AI Coding
-    /// Plan model. Authentication must be attached through `request_auth`.
-    pub fn zai_coding_plan(model: impl Into<String>) -> Self {
-        Self {
-            provider: ProviderId::ZaiCodingPlan,
-            credential_source: CredentialSourceId::ZaiCodingPlanApiKey,
-            credential_binding: Some(CredentialBinding::zai_coding_plan(None)),
-            base_url: ZAI_CODING_PLAN_BASE_URL.to_string(),
-            model: model.into(),
-            api_backend: ApiBackend::ChatCompletions,
-            auth_scheme: AuthScheme::Bearer,
             ..Self::default()
         }
     }

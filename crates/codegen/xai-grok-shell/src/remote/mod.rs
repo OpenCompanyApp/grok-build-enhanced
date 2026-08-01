@@ -8,6 +8,7 @@ pub mod openai_codex_catalog;
 pub mod pull;
 #[cfg(test)]
 mod pull_smoke_test;
+pub mod skills_client;
 pub mod sync;
 pub mod workspaces_client;
 
@@ -25,7 +26,7 @@ pub use chat_models_client::{
     ChatModelsClient, ChatModelsError, ListModesResponse, Mode, ModeAvailability,
 };
 pub use client::{
-    BackendClient, BackendError, FetchModelsResult, FetchedBundle, fetch_bundle,
+    BackendClient, BackendError, FetchModelsResult, FetchedBundle, SettingsFetch, fetch_bundle,
     fetch_login_device_flow, fetch_settings_blocking, fetch_subagent_bundle, share_url,
 };
 pub(crate) use client::{DEFAULT_CONTEXT_WINDOW, fetch_models_blocking, models_list_url};
@@ -42,5 +43,9 @@ pub use openai_codex_catalog::{
     OPENAI_CODEX_CATALOG_TIMEOUT, OPENAI_CODEX_MODEL_NAMESPACE, OPENAI_CODEX_PROVIDER_ID,
 };
 pub use pull::{PullResult, pull_session_to_local};
+pub use skills_client::{
+    BundledSkill, CHAT_PRODUCT_META_KEY, CHAT_PRODUCT_META_VALUE, ListBundledSkillsResponse,
+    ListUserSkillsResponse, ProductSkillsCatalog, SkillsClient, SkillsError, UserSkill,
+};
 pub use sync::RemoteSync;
 pub use workspaces_client::{ListWorkspacesPage, Workspace, WorkspacesClient, WsError, WsQuery};

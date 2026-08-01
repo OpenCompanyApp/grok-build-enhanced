@@ -32,7 +32,7 @@ fn test_actor_with_syncs(
     relay_sync: Option<crate::relay::RelaySync>,
 ) -> ActorGuard {
     let (tx, rx) = mpsc::unbounded_channel();
-    let summary_tx = tx.clone();
+    let summary_tx = tx.downgrade();
     let sampling_client = OaiCompatClient::new(xai_grok_sampler::SamplerConfig::default()).unwrap();
     let task = tokio::spawn(
         SessionPersistence {
@@ -41,6 +41,8 @@ fn test_actor_with_syncs(
             pending_notifications: std::collections::VecDeque::new(),
             rx,
             remote_sync,
+            // Resumed-style actor for these tests; upgrade backfill is fresh-only.
+            created_fresh: false,
             relay_sync,
             summary: crate::session::summary::SummaryGenerator::new(
                 crate::session::summary::SummaryConfig {
@@ -85,6 +87,35 @@ fn thought_update(info: &Info, text: &str) -> SessionUpdate {
             acp::TextContent::new(text),
         ))),
     )))
+}
+
+#[tokio::test]
+async fn writeback_backfill_is_fresh_only_and_acp_only() {
+    let info = Info {
+        id: acp::SessionId::new("wb-backfill"),
+        cwd: "/test".into(),
+    };
+
+    let (sync, mut observed) = RemoteSync::test_observer();
+    let updates = vec![neutral_update(&info, "a"), neutral_update(&info, "b")];
+    let n = backfill_updates_to_sync(true, updates, &sync);
+    assert_eq!(n, 2, "a fresh session backfills its full local ACP history");
+    for _ in 0..2 {
+        tokio::time::timeout(std::time::Duration::from_secs(1), observed.recv())
+            .await
+            .expect("backfilled notification not observed within 1s")
+            .expect("observer channel closed unexpectedly");
+    }
+
+    let (sync, mut observed) = RemoteSync::test_observer();
+    let updates = vec![neutral_update(&info, "old")];
+    assert_eq!(backfill_updates_to_sync(false, updates, &sync), 0);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), observed.recv())
+            .await
+            .is_err(),
+        "resumed session must not re-send any prior history",
+    );
 }
 
 fn break_summary_writes(dir: &std::path::Path) {

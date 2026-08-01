@@ -1458,9 +1458,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.19.0"
+version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46c5e41b57b8bba42a04676d81cb89e9ee8e859a1a66f80a5a72e1cb76b34d43"
+checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "bytecount"
@@ -5473,6 +5473,15 @@ dependencies = [
 
 [[package]]
 name = "itertools"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
@@ -7867,6 +7876,18 @@ dependencies = [
  "procfs",
  "protobuf",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "prometheus-parse"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "811031bea65e5a401fb2e1f37d802cca6601e204ac463809a3189352d13b78a5"
+dependencies = [
+ "chrono",
+ "itertools 0.12.1",
+ "once_cell",
+ "regex",
 ]
 
 [[package]]
@@ -12047,6 +12068,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "wildmatch"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d654e41fe05169e03e27b97e0c23716535da037c1652a31fd99c6b2fad84059"
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12877,6 +12904,7 @@ name = "xai-circuit-breaker"
 version = "0.1.0"
 dependencies = [
  "log",
+ "tonic",
 ]
 
 [[package]]
@@ -12970,6 +12998,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "prometheus",
+ "prometheus-parse",
  "prost",
  "reqwest 0.12.24",
  "schemars 1.0.4",
@@ -13237,6 +13266,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
  "tracing",
  "url",
  "xai-grok-config",
@@ -13632,13 +13662,13 @@ dependencies = [
  "dirs 5.0.1",
  "dunce",
  "fs2",
- "git2",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "toml",
  "tracing",
+ "wait-timeout",
  "xai-grok-agent",
  "xai-grok-config",
  "xai-hooks-plugins-types",
@@ -13693,8 +13723,10 @@ version = "0.1.0"
 dependencies = [
  "assert_matches",
  "async-openai",
+ "chrono",
  "indexmap",
  "reqwest 0.12.24",
+ "schemars 1.0.4",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -13720,8 +13752,11 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
  "toml",
  "tracing",
+ "url",
  "xai-grok-config",
 ]
 
@@ -13811,6 +13846,7 @@ dependencies = [
  "obfstr",
  "parking_lot",
  "portable-pty",
+ "pretty_assertions",
  "process-wrap",
  "prod-mc-cli-chat-proxy-types",
  "prost",
@@ -13958,12 +13994,15 @@ dependencies = [
 name = "xai-grok-subagent-resolution"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "toml",
  "tracing",
+ "xai-grok-agent",
  "xai-grok-sampling-types",
  "xai-grok-tools",
  "xai-tool-types",
@@ -14031,6 +14070,7 @@ dependencies = [
  "clap",
  "futures-util",
  "libc",
+ "portable-pty",
  "reqwest 0.12.24",
  "serde",
  "serde_json",
@@ -14040,7 +14080,9 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "url",
  "xai-acp-lib",
+ "xai-tty-utils",
 ]
 
 [[package]]
@@ -14101,6 +14143,7 @@ dependencies = [
  "url",
  "uuid",
  "which",
+ "wildmatch",
  "windows 0.61.3",
  "wiremock",
  "xai-computer-hub-core",
@@ -14184,6 +14227,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "xai-tty-utils",
 ]
 
 [[package]]

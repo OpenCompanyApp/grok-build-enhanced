@@ -817,6 +817,7 @@ mod tests {
             timeout_ms: 1000,
             source_dir: std::env::temp_dir(),
             extra_env,
+            layer: crate::config::HookProvenance::File,
         };
 
         let envelope = HookEventEnvelope {
@@ -840,6 +841,7 @@ mod tests {
         let ctx = crate::runner::RunContext {
             session_id: "test",
             workspace_root: "/tmp",
+            process_scope: None,
         };
         let (result, _, info) = run_http_hook(&spec, &envelope, &ctx, GateKind::Tool).await;
 
@@ -908,6 +910,7 @@ mod tests {
             timeout_ms: 500,
             source_dir: std::env::temp_dir(),
             extra_env,
+            layer: crate::config::HookProvenance::File,
         };
         let envelope = HookEventEnvelope {
             hook_event_name: HookEventName::PreToolUse,
@@ -930,6 +933,7 @@ mod tests {
         let ctx = crate::runner::RunContext {
             session_id: "test",
             workspace_root: "/tmp",
+            process_scope: None,
         };
 
         let (result, _, info) = run_http_hook(&spec, &envelope, &ctx, GateKind::Tool).await;

@@ -90,74 +90,74 @@ impl Daemon {
         let (tx, rx) = channel::<Msg>();
 
         let out = shared.clone();
+        let worker = move || {
+            let mut pattern = MultiPattern::new(1);
+            let mut matcher = Matcher::new(Config::DEFAULT);
+            let mut items: Vec<(String, Utf32String)> = Vec::new();
+            let mut generation: usize = 0;
+            let mut prev_q = String::new();
+
+            while let Ok(msg) = rx.recv() {
+                let msg = drain_to_latest(msg, &rx);
+
+                match msg {
+                    Msg::SetItemsAndQuery(new, query) => {
+                        items = build_items(new);
+                        prev_q.clear();
+                        generation += 1;
+                        let trimmed = query.trim().to_string();
+                        publish_matches(
+                            &items,
+                            &trimmed,
+                            &mut pattern,
+                            &mut matcher,
+                            &out,
+                            generation,
+                        );
+                        prev_q = trimmed;
+                    }
+                    Msg::SetQuery(query) => {
+                        generation += 1;
+                        let trimmed = query.trim().to_string();
+
+                        if trimmed.is_empty() {
+                            publish_matches(
+                                &items,
+                                "",
+                                &mut pattern,
+                                &mut matcher,
+                                &out,
+                                generation,
+                            );
+                            prev_q.clear();
+                        } else {
+                            let append = !prev_q.is_empty()
+                                && trimmed.as_bytes().starts_with(prev_q.as_bytes())
+                                && !trimmed.ends_with('\\')
+                                && !trimmed
+                                    .as_bytes()
+                                    .last()
+                                    .is_some_and(|b| b.is_ascii_whitespace());
+                            publish_query_matches(
+                                &items,
+                                &trimmed,
+                                append,
+                                &mut pattern,
+                                &mut matcher,
+                                &out,
+                                generation,
+                            );
+                            prev_q = trimmed;
+                        }
+                    }
+                    Msg::Stop => break,
+                }
+            }
+        };
         let handle = retain_history_thread(
             thread::Builder::new()
                 .name("grok-history-search".to_owned())
-                .spawn(move || {
-                    let mut pattern = MultiPattern::new(1);
-                    let mut matcher = Matcher::new(Config::DEFAULT);
-                    let mut items: Vec<(String, Utf32String)> = Vec::new();
-                    let mut generation: usize = 0;
-                    let mut prev_q = String::new();
-
-                    while let Ok(msg) = rx.recv() {
-                        // Drain to latest — skip intermediate queries.
-                        let msg = drain_to_latest(msg, &rx);
-
-                        match msg {
-                            Msg::SetItemsAndQuery(new, query) => {
-                                items = build_items(new);
-                                prev_q.clear();
-                                generation += 1;
-                                let trimmed = query.trim().to_string();
-                                publish_matches(
-                                    &items,
-                                    &trimmed,
-                                    &mut pattern,
-                                    &mut matcher,
-                                    &out,
-                                    generation,
-                                );
-                                prev_q = trimmed;
-                            }
-                            Msg::SetQuery(query) => {
-                                generation += 1;
-                                let trimmed = query.trim().to_string();
-
-                                if trimmed.is_empty() {
-                                    publish_matches(
-                                        &items,
-                                        "",
-                                        &mut pattern,
-                                        &mut matcher,
-                                        &out,
-                                        generation,
-                                    );
-                                    prev_q.clear();
-                                } else {
-                                    let append = !prev_q.is_empty()
-                                        && trimmed.as_bytes().starts_with(prev_q.as_bytes())
-                                        && !trimmed.ends_with('\\')
-                                        && !trimmed
-                                            .as_bytes()
-                                            .last()
-                                            .is_some_and(|b| b.is_ascii_whitespace());
-                                    publish_query_matches(
-                                        &items,
-                                        &trimmed,
-                                        append,
-                                        &mut pattern,
-                                        &mut matcher,
-                                        &out,
-                                        generation,
-                                    );
-                                    prev_q = trimmed;
-                                }
-                            }
-                            Msg::Stop => break,
-                        }
-                    }
-                }),
+                .spawn(worker),
         )?;
 
         Some(Self {
@@ -398,6 +398,9 @@ impl HistorySearchState {
     }
 
     fn activate_inner(&mut self, history: &[HistoryEntry], current_text: &str, browse: bool) {
+        if !self.is_available() {
+            return;
+        }
         self.active = true;
         self.browse = browse;
         self.saved_text = current_text.to_string();
@@ -415,6 +418,12 @@ impl HistorySearchState {
         self.snapshot = snapshot.unwrap_or_default();
         self.last_gen = self.snapshot.generation;
         self.selected = self.snapshot.items.len().saturating_sub(1);
+    }
+
+    /// False when the matcher thread never started, so the overlay cannot open
+    /// and callers must leave the composer alone.
+    pub fn is_available(&mut self) -> bool {
+        self.ensure_daemon().is_some()
     }
 
     /// True while the overlay is in browse mode (see [`Self::activate_browse`]).

@@ -7,6 +7,7 @@ edition.workspace = true
 [features]
 default = []
 unstable = []
+test-support = []
 default-bazel = [
     ]
 
@@ -185,6 +186,7 @@ windows = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 filetime = { workspace = true }
+pretty_assertions = { workspace = true }
 tower = { workspace = true }
 tempfile = { workspace = true }
 xai-grok-memory = { workspace = true, features = ["test-support"] }

@@ -15,6 +15,7 @@ fn xai_image_gen_config_with_rotated_key(
         image_gen_enabled,
         image_edit_enabled,
         model_override,
+        edit_model_override,
         tier_restricted,
     } = configured
     else {
@@ -28,6 +29,7 @@ fn xai_image_gen_config_with_rotated_key(
         image_gen_enabled: *image_gen_enabled,
         image_edit_enabled: *image_edit_enabled,
         model_override: model_override.clone(),
+        edit_model_override: edit_model_override.clone(),
         tier_restricted: *tier_restricted,
     })
 }
@@ -257,8 +259,7 @@ async fn refresh_provider_memory_resource(
     params.embed_api_key = sampling_config.api_key.clone();
     match sampling_config.provider {
         xai_grok_sampling_types::ProviderId::OpenAiCodex
-        | xai_grok_sampling_types::ProviderId::KimiCode
-        | xai_grok_sampling_types::ProviderId::ZaiCodingPlan => {
+        | xai_grok_sampling_types::ProviderId::KimiCode => {
             // Provider-owned subscription auth is not a general xAI
             // credential, and these scoped backends expose no supported
             // embeddings route.
@@ -332,12 +333,6 @@ fn web_search_config_for_provider(
             base_url: xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned(),
         };
     }
-    if sampling_config.provider.is_zai_coding_plan() {
-        return WebSearchConfig::ZaiCodingPlan {
-            endpoint: xai_grok_sampling_types::ZAI_CODING_PLAN_SEARCH_MCP_URL.to_owned(),
-        };
-    }
-
     // Preserve a dedicated provider-owned web-search model when returning to
     // the provider that originally supplied it. Crossing to a different
     // provider must instead use the new provider's explicit sampling route;
@@ -391,9 +386,7 @@ fn web_fetch_params_for_provider(
         return None;
     }
     configured
-        .params_for_codex_subscription(
-            provider.is_openai_codex() || provider.is_kimi_code() || provider.is_zai_coding_plan(),
-        )
+        .params_for_codex_subscription(provider.is_openai_codex() || provider.is_kimi_code())
         .cloned()
 }
 
@@ -456,156 +449,6 @@ async fn ensure_web_fetch_tool_definition(
     Ok(())
 }
 
-fn remove_zread_tool_definitions(bridge: &crate::tools::bridge::ToolBridge) {
-    use xai_grok_tools::implementations::grok_build::{
-        ZREAD_GET_REPO_STRUCTURE_TOOL_NAME, ZREAD_READ_FILE_TOOL_NAME, ZREAD_SEARCH_DOC_TOOL_NAME,
-    };
-
-    for name in [
-        ZREAD_SEARCH_DOC_TOOL_NAME,
-        ZREAD_GET_REPO_STRUCTURE_TOOL_NAME,
-        ZREAD_READ_FILE_TOOL_NAME,
-    ] {
-        bridge.unregister_tool_by_name(name);
-    }
-}
-
-async fn ensure_zread_tool_definitions(
-    bridge: &crate::tools::bridge::ToolBridge,
-) -> Result<(), xai_tool_runtime::ToolError> {
-    use xai_grok_tools::implementations::grok_build::{
-        ZREAD_GET_REPO_STRUCTURE_TOOL_NAME, ZREAD_READ_FILE_TOOL_NAME, ZREAD_SEARCH_DOC_TOOL_NAME,
-        ZreadGetRepoStructureTool, ZreadReadFileTool, ZreadSearchDocTool,
-    };
-
-    let added_search = if bridge.tool_kind(ZREAD_SEARCH_DOC_TOOL_NAME).is_none() {
-        bridge
-            .register_mcp_tools(
-                ZREAD_SEARCH_DOC_TOOL_NAME.to_owned(),
-                ZreadSearchDocTool,
-                None,
-            )
-            .await?;
-        true
-    } else {
-        false
-    };
-    let added_structure = if bridge
-        .tool_kind(ZREAD_GET_REPO_STRUCTURE_TOOL_NAME)
-        .is_none()
-    {
-        if let Err(error) = bridge
-            .register_mcp_tools(
-                ZREAD_GET_REPO_STRUCTURE_TOOL_NAME.to_owned(),
-                ZreadGetRepoStructureTool,
-                None,
-            )
-            .await
-        {
-            if added_search {
-                bridge.unregister_tool_by_name(ZREAD_SEARCH_DOC_TOOL_NAME);
-            }
-            return Err(error);
-        }
-        true
-    } else {
-        false
-    };
-    if bridge.tool_kind(ZREAD_READ_FILE_TOOL_NAME).is_none()
-        && let Err(error) = bridge
-            .register_mcp_tools(
-                ZREAD_READ_FILE_TOOL_NAME.to_owned(),
-                ZreadReadFileTool,
-                None,
-            )
-            .await
-    {
-        if added_search {
-            bridge.unregister_tool_by_name(ZREAD_SEARCH_DOC_TOOL_NAME);
-        }
-        if added_structure {
-            bridge.unregister_tool_by_name(ZREAD_GET_REPO_STRUCTURE_TOOL_NAME);
-        }
-        return Err(error);
-    }
-    Ok(())
-}
-
-fn remove_zai_vision_tool_definitions(bridge: &crate::tools::bridge::ToolBridge) {
-    use xai_grok_tools::implementations::grok_build::{
-        ZAI_VISION_ANALYZE_DATA_TOOL_NAME, ZAI_VISION_ANALYZE_IMAGE_TOOL_NAME,
-        ZAI_VISION_ANALYZE_VIDEO_TOOL_NAME, ZAI_VISION_DIAGNOSE_ERROR_TOOL_NAME,
-        ZAI_VISION_DOCTOR_TOOL_NAME, ZAI_VISION_EXTRACT_TEXT_TOOL_NAME,
-        ZAI_VISION_UI_DIFF_TOOL_NAME, ZAI_VISION_UI_TO_ARTIFACT_TOOL_NAME,
-        ZAI_VISION_UNDERSTAND_DIAGRAM_TOOL_NAME,
-    };
-
-    for name in [
-        ZAI_VISION_DOCTOR_TOOL_NAME,
-        ZAI_VISION_UI_TO_ARTIFACT_TOOL_NAME,
-        ZAI_VISION_EXTRACT_TEXT_TOOL_NAME,
-        ZAI_VISION_DIAGNOSE_ERROR_TOOL_NAME,
-        ZAI_VISION_UNDERSTAND_DIAGRAM_TOOL_NAME,
-        ZAI_VISION_ANALYZE_DATA_TOOL_NAME,
-        ZAI_VISION_UI_DIFF_TOOL_NAME,
-        ZAI_VISION_ANALYZE_IMAGE_TOOL_NAME,
-        ZAI_VISION_ANALYZE_VIDEO_TOOL_NAME,
-    ] {
-        bridge.unregister_tool_by_name(name);
-    }
-}
-
-async fn ensure_zai_vision_tool_definitions(
-    bridge: &crate::tools::bridge::ToolBridge,
-) -> Result<(), xai_tool_runtime::ToolError> {
-    use xai_grok_tools::implementations::grok_build::{
-        ZAI_VISION_ANALYZE_DATA_TOOL_NAME, ZAI_VISION_ANALYZE_IMAGE_TOOL_NAME,
-        ZAI_VISION_ANALYZE_VIDEO_TOOL_NAME, ZAI_VISION_DIAGNOSE_ERROR_TOOL_NAME,
-        ZAI_VISION_DOCTOR_TOOL_NAME, ZAI_VISION_EXTRACT_TEXT_TOOL_NAME,
-        ZAI_VISION_UI_DIFF_TOOL_NAME, ZAI_VISION_UI_TO_ARTIFACT_TOOL_NAME,
-        ZAI_VISION_UNDERSTAND_DIAGRAM_TOOL_NAME, ZaiVisionAnalyzeDataTool,
-        ZaiVisionAnalyzeImageTool, ZaiVisionAnalyzeVideoTool, ZaiVisionDiagnoseErrorTool,
-        ZaiVisionDoctorTool, ZaiVisionExtractTextTool, ZaiVisionUiDiffTool,
-        ZaiVisionUiToArtifactTool, ZaiVisionUnderstandDiagramTool,
-    };
-
-    macro_rules! ensure {
-        ($name:expr, $tool:expr) => {
-            if bridge.tool_kind($name).is_none() {
-                bridge
-                    .register_mcp_tools($name.to_owned(), $tool, None)
-                    .await?;
-            }
-        };
-    }
-
-    ensure!(ZAI_VISION_DOCTOR_TOOL_NAME, ZaiVisionDoctorTool);
-    ensure!(
-        ZAI_VISION_UI_TO_ARTIFACT_TOOL_NAME,
-        ZaiVisionUiToArtifactTool
-    );
-    ensure!(ZAI_VISION_EXTRACT_TEXT_TOOL_NAME, ZaiVisionExtractTextTool);
-    ensure!(
-        ZAI_VISION_DIAGNOSE_ERROR_TOOL_NAME,
-        ZaiVisionDiagnoseErrorTool
-    );
-    ensure!(
-        ZAI_VISION_UNDERSTAND_DIAGRAM_TOOL_NAME,
-        ZaiVisionUnderstandDiagramTool
-    );
-    ensure!(ZAI_VISION_ANALYZE_DATA_TOOL_NAME, ZaiVisionAnalyzeDataTool);
-    ensure!(ZAI_VISION_UI_DIFF_TOOL_NAME, ZaiVisionUiDiffTool);
-    ensure!(
-        ZAI_VISION_ANALYZE_IMAGE_TOOL_NAME,
-        ZaiVisionAnalyzeImageTool
-    );
-    ensure!(
-        ZAI_VISION_ANALYZE_VIDEO_TOOL_NAME,
-        ZaiVisionAnalyzeVideoTool
-    );
-    Ok(())
-}
-
 impl SessionActor {
     pub(super) async fn handle_set_session_model(
         &self,
@@ -638,8 +481,7 @@ impl SessionActor {
         if let Some(previous) = previous_sampling_config.as_ref()
             && previous.provider == sampling_config.provider
             && (sampling_config.provider.is_openai_codex()
-                || sampling_config.provider.is_kimi_code()
-                || sampling_config.provider.is_zai_coding_plan())
+                || sampling_config.provider.is_kimi_code())
         {
             crate::session::provider::pin_provider_candidate_to_active_record(
                 &mut sampling_config,
@@ -672,9 +514,6 @@ impl SessionActor {
             }
             xai_grok_sampling_types::ProviderId::KimiCode => {
                 acp::ModelId::new(format!("kimi-code/{}", sampling_config.model))
-            }
-            xai_grok_sampling_types::ProviderId::ZaiCodingPlan => {
-                acp::ModelId::new(format!("zai-coding-plan/{}", sampling_config.model))
             }
             xai_grok_sampling_types::ProviderId::Xai
             | xai_grok_sampling_types::ProviderId::Custom => {
@@ -751,6 +590,8 @@ impl SessionActor {
                 top_p: sampling_config.top_p,
                 api_backend: sampling_config.api_backend.clone(),
                 extra_headers: sampling_config.extra_headers.clone(),
+                query_params: sampling_config.query_params.clone(),
+                env_http_headers: sampling_config.env_http_headers.clone(),
                 comp_hash: sampling_config.comp_hash.clone(),
                 context_window: new_context_window,
                 reasoning_effort: sampling_config.reasoning_effort,
@@ -820,8 +661,7 @@ impl SessionActor {
         }
         let agent_name = self.agent.borrow().definition().name.clone();
         let persisted_binding = (sampling_config.provider.is_openai_codex()
-            || sampling_config.provider.is_kimi_code()
-            || sampling_config.provider.is_zai_coding_plan())
+            || sampling_config.provider.is_kimi_code())
         .then(|| sampling_config.credential_binding.clone())
         .flatten();
         let _ = self
@@ -860,9 +700,7 @@ impl SessionActor {
             self.session_info.id.0.as_ref(),
             alpha_test_key,
         );
-        if (sampling_config.provider.is_openai_codex()
-            || sampling_config.provider.is_kimi_code()
-            || sampling_config.provider.is_zai_coding_plan())
+        if (sampling_config.provider.is_openai_codex() || sampling_config.provider.is_kimi_code())
             && api_key_provider.is_none()
         {
             tracing::warn!(
@@ -876,8 +714,7 @@ impl SessionActor {
         let hosted_web_search_enabled = web_search_config.allows_hosted_responses_tool();
         let backend_search_enabled = self.rebuild_spec.backend_search
             && !sampling_config.provider.is_openai_codex()
-            && !sampling_config.provider.is_kimi_code()
-            && !sampling_config.provider.is_zai_coding_plan();
+            && !sampling_config.provider.is_kimi_code();
         self.agent.borrow_mut().refresh_backend_search_config(
             backend_search_enabled,
             hosted_web_search_enabled,
@@ -921,79 +758,6 @@ impl SessionActor {
             bridge.remove_resource::<WebSearchClient>().await;
         }
 
-        use xai_grok_tools::implementations::grok_build::ZaiZreadClient;
-        if sampling_config.provider.is_zai_coding_plan() {
-            match api_key_provider
-                .clone()
-                .ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom(
-                        "zai_zread_authentication",
-                        "Z.AI Coding Plan authentication is required for Zread",
-                    )
-                })
-                .and_then(ZaiZreadClient::new)
-            {
-                Ok(client) => {
-                    bridge.update_resource(client).await;
-                    if let Err(error) = ensure_zread_tool_definitions(&bridge).await {
-                        tracing::warn!(
-                            %error,
-                            "failed to install Z.AI Coding Plan Zread tools after provider switch"
-                        );
-                        remove_zread_tool_definitions(&bridge);
-                        bridge.remove_resource::<ZaiZreadClient>().await;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        "failed to bind Z.AI Coding Plan Zread after provider switch"
-                    );
-                    remove_zread_tool_definitions(&bridge);
-                    bridge.remove_resource::<ZaiZreadClient>().await;
-                }
-            }
-        } else {
-            remove_zread_tool_definitions(&bridge);
-            bridge.remove_resource::<ZaiZreadClient>().await;
-        }
-
-        use xai_grok_tools::implementations::grok_build::{
-            ZaiVisionClient, zai_vision_mcp_enabled,
-        };
-        if sampling_config.provider.is_zai_coding_plan() && zai_vision_mcp_enabled() {
-            match api_key_provider
-                .clone()
-                .ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom(
-                        "zai_vision_authentication",
-                        "Z.AI Coding Plan authentication is required for Vision MCP",
-                    )
-                })
-                .and_then(ZaiVisionClient::new)
-            {
-                Ok(client) => {
-                    bridge.update_resource(client).await;
-                    if let Err(error) = ensure_zai_vision_tool_definitions(&bridge).await {
-                        tracing::warn!(
-                            %error,
-                            "failed to install Z.AI Vision MCP tools after provider switch"
-                        );
-                        remove_zai_vision_tool_definitions(&bridge);
-                        bridge.remove_resource::<ZaiVisionClient>().await;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "failed to bind Z.AI Vision MCP after provider switch");
-                    remove_zai_vision_tool_definitions(&bridge);
-                    bridge.remove_resource::<ZaiVisionClient>().await;
-                }
-            }
-        } else {
-            remove_zai_vision_tool_definitions(&bridge);
-            bridge.remove_resource::<ZaiVisionClient>().await;
-        }
-
         let fetch_params: Option<WebFetchParams> = web_fetch_params_for_provider(
             &self.rebuild_spec.web_fetch_config,
             &self.rebuild_spec.codex_web_search_settings,
@@ -1013,11 +777,6 @@ impl SessionActor {
                             .clone()
                             .ok_or(xai_grok_tools::implementations::grok_build::web_fetch::WebFetchError::HostedAuthentication)
                             .and_then(|provider| client.with_kimi_hosted_fetch(provider))
-                    } else if sampling_config.provider.is_zai_coding_plan() {
-                        api_key_provider
-                            .clone()
-                            .ok_or(xai_grok_tools::implementations::grok_build::web_fetch::WebFetchError::ZaiReaderAuthentication)
-                            .and_then(|provider| client.with_zai_coding_plan_reader(provider))
                     } else {
                         Ok(client)
                     };
@@ -1142,6 +901,11 @@ impl SessionActor {
                             .image_gen_config
                             .model_override()
                             .map(ToOwned::to_owned),
+                        edit_model_override: self
+                            .rebuild_spec
+                            .image_gen_config
+                            .edit_model_override()
+                            .map(ToOwned::to_owned),
                         tier_restricted: false,
                     }
                 }),
@@ -1228,6 +992,10 @@ impl SessionActor {
         }
         self.compaction.prefire.clear();
         *self.agent.borrow_mut() = new_agent;
+        // The definition seed is part of the effective tool-override value
+        // inherited by subagents. Republish it immediately after swapping the
+        // agent, including the seedless case which must clear stale state.
+        self.emit_resolved_tool_overrides();
         *self.active_agent_type.lock() = Some(new_agent_name.clone());
         self.queue_exit_reminder_on_approved_exit.store(
             self.is_cursor_harness(),
@@ -1448,31 +1216,6 @@ mod provider_media_switch_tests {
     }
 
     #[test]
-    fn zai_search_route_is_provider_owned_and_independent_of_codex_mode() {
-        let sampling = xai_grok_sampler::SamplerConfig::zai_coding_plan("glm-5.2");
-        let disabled_codex = CodexWebSearchSettings {
-            mode: CodexWebSearchMode::Disabled,
-            ..Default::default()
-        };
-
-        let config = web_search_config_for_provider(
-            &WebSearchConfig::Disabled,
-            &disabled_codex,
-            false,
-            None,
-            &sampling,
-            "session-public-id",
-            None,
-        );
-
-        assert!(matches!(
-            config,
-            WebSearchConfig::ZaiCodingPlan { ref endpoint }
-                if endpoint == xai_grok_sampling_types::ZAI_CODING_PLAN_SEARCH_MCP_URL
-        ));
-    }
-
-    #[test]
     fn unavailable_xai_search_does_not_block_later_codex_subscription_search() {
         let sampling = xai_grok_sampler::SamplerConfig::openai_codex("gpt-5.6-luna");
         let config = web_search_config_for_provider(
@@ -1595,7 +1338,7 @@ mod provider_media_switch_tests {
     }
 
     #[test]
-    fn implicit_fetch_remains_enabled_for_kimi_and_zai_when_codex_search_is_disabled() {
+    fn implicit_fetch_remains_enabled_for_kimi_when_codex_search_is_disabled() {
         let implicit = WebFetchConfig::CodexDefault {
             params: WebFetchParams::default(),
         };
@@ -1604,15 +1347,11 @@ mod provider_media_switch_tests {
             ..Default::default()
         };
 
-        for provider in [
-            xai_grok_sampling_types::ProviderId::KimiCode,
-            xai_grok_sampling_types::ProviderId::ZaiCodingPlan,
-        ] {
-            assert!(
-                web_fetch_params_for_provider(&implicit, &disabled_codex, provider).is_some(),
-                "provider-scoped Reader must remain available for {provider:?}"
-            );
-        }
+        let provider = xai_grok_sampling_types::ProviderId::KimiCode;
+        assert!(
+            web_fetch_params_for_provider(&implicit, &disabled_codex, provider).is_some(),
+            "provider-scoped Reader must remain available for {provider:?}"
+        );
     }
 
     #[test]
@@ -1765,6 +1504,7 @@ mod provider_media_switch_tests {
             image_gen_enabled: false,
             image_edit_enabled: true,
             model_override: Some("custom-imagine-model".to_owned()),
+            edit_model_override: Some("custom-edit-model".to_owned()),
             tier_restricted: true,
         };
 
@@ -1777,6 +1517,7 @@ mod provider_media_switch_tests {
             image_gen_enabled,
             image_edit_enabled,
             model_override,
+            edit_model_override,
             tier_restricted,
         } = rotated
         else {
@@ -1795,6 +1536,7 @@ mod provider_media_switch_tests {
         assert!(!image_gen_enabled);
         assert!(image_edit_enabled);
         assert_eq!(model_override.as_deref(), Some("custom-imagine-model"));
+        assert_eq!(edit_model_override.as_deref(), Some("custom-edit-model"));
         assert!(tier_restricted);
 
         let original = xai_image_gen_config_with_rotated_key(&configured, None).unwrap();
@@ -1813,6 +1555,7 @@ mod provider_media_switch_tests {
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: None,
+            edit_model_override: None,
             tier_restricted: false,
         }
     }

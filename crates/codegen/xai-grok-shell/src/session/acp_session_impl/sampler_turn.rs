@@ -2,6 +2,33 @@
 //! facts/gates and retry, sampler config reconstruction, sampling-failure
 //! recovery, and per-response usage recording.
 use super::*;
+
+fn prefer_non_empty<T>(
+    over: Option<T>,
+    seed: Option<T>,
+    is_empty: impl Fn(&T) -> bool,
+) -> Option<T> {
+    over.filter(|value| !is_empty(value))
+        .or_else(|| seed.filter(|value| !is_empty(value)))
+}
+
+fn resolve_configured_cutoff(
+    seed: Option<xai_grok_sampling_types::ToolOverrides>,
+    base: Option<&xai_grok_sampling_types::ToolOverrides>,
+) -> xai_grok_sampling_types::ToolOverrides {
+    use xai_grok_sampling_types::{ToolOverrides, WebSearchOptions, XSearchOptions};
+    let ToolOverrides {
+        x_search: seed_x,
+        web_search: seed_web,
+    } = seed.unwrap_or_default();
+    let (over_x, over_web) = base.map_or((None, None), |value| {
+        (value.x_search.clone(), value.web_search.clone())
+    });
+    ToolOverrides {
+        x_search: prefer_non_empty(over_x, seed_x, XSearchOptions::is_empty),
+        web_search: prefer_non_empty(over_web, seed_web, WebSearchOptions::is_empty),
+    }
+}
 /// Auth-failure detector for tool errors. Matches strictly on HTTP 401
 /// when the error carries a structured status code, mirroring
 /// `SamplingError::is_auth_error` in xai-grok-sampling-types: 403 is
@@ -163,13 +190,68 @@ impl SessionActor {
     /// (`prepare_tool_definitions_*`); this applies only the `web_search` drop
     /// under backend search and the `ToolSpec::from` mapping.
     pub(crate) fn turn_base_tool_specs(&self, defs: &[ToolDefinition]) -> Vec<ToolSpec> {
-        let use_backend_search =
-            self.agent.borrow().backend_search_enabled() && self.supports_backend_search.get();
+        let use_backend_search = self.backend_search_active();
         defs.iter()
             .filter(|td| !use_backend_search || td.function.name != "web_search")
             .cloned()
             .map(ToolSpec::from)
             .collect()
+    }
+    fn resolve_hosted(
+        &self,
+    ) -> (
+        Vec<xai_grok_sampling_types::HostedTool>,
+        xai_grok_sampling_types::ToolOverrides,
+    ) {
+        let mut tools = self.agent.borrow().hosted_tools().to_vec();
+        let applied = xai_grok_sampling_types::apply_tool_overrides(
+            &mut tools,
+            self.tool_overrides.borrow().as_ref(),
+        );
+        (tools, applied)
+    }
+    pub(crate) fn effective_hosted_tools(&self) -> Vec<xai_grok_sampling_types::HostedTool> {
+        self.resolve_hosted().0
+    }
+    pub(crate) fn hosted_tools_for_turn(&self) -> Vec<xai_grok_sampling_types::HostedTool> {
+        if self.backend_search_active() {
+            self.effective_hosted_tools()
+        } else {
+            Vec::new()
+        }
+    }
+    pub(crate) fn effective_tool_overrides(
+        &self,
+    ) -> Option<xai_grok_sampling_types::ToolOverrides> {
+        if !self.backend_search_active() {
+            return None;
+        }
+        let applied = self.resolve_hosted().1;
+        (!applied.is_empty()).then_some(applied)
+    }
+    pub(crate) fn backend_search_active(&self) -> bool {
+        self.agent.borrow().backend_search_enabled() && self.supports_backend_search.get()
+    }
+    pub(crate) fn set_tool_overrides(&self, overrides: xai_grok_sampling_types::ToolOverrides) {
+        *self.tool_overrides.borrow_mut() = Some(overrides);
+        self.emit_resolved_tool_overrides();
+    }
+    pub(crate) fn apply_tool_overrides_update(
+        &self,
+        update: Option<xai_grok_sampling_types::ToolOverridesUpdate>,
+    ) {
+        let Some(update) = update else { return };
+        {
+            let mut slot = self.tool_overrides.borrow_mut();
+            *slot = update.apply(slot.take());
+        }
+        self.emit_resolved_tool_overrides();
+    }
+    pub(crate) fn emit_resolved_tool_overrides(&self) {
+        let seed = self.agent.borrow().definition().tool_overrides.clone();
+        let effective = resolve_configured_cutoff(seed, self.tool_overrides.borrow().as_ref());
+        self.resolved_tool_overrides
+            .store((!effective.is_empty()).then(|| std::sync::Arc::new(effective)));
     }
     pub(super) async fn prepare_tool_definitions_inner(&self) -> Vec<ToolDefinition> {
         let bridge = self.agent.borrow().tool_bridge().clone();
@@ -421,6 +503,8 @@ impl SessionActor {
                 top_p: None,
                 api_backend: Default::default(),
                 extra_headers: Default::default(),
+                query_params: Default::default(),
+                env_http_headers: Default::default(),
                 comp_hash: None,
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
                 reasoning_effort: None,
@@ -437,8 +521,7 @@ impl SessionActor {
             is_xai && xai_grok_sampling_types::is_trusted_xai_inference_url(&cfg.base_url);
         let stored_credentials_match_provider = match cfg.provider {
             xai_grok_sampling_types::ProviderId::OpenAiCodex
-            | xai_grok_sampling_types::ProviderId::KimiCode
-            | xai_grok_sampling_types::ProviderId::ZaiCodingPlan => true,
+            | xai_grok_sampling_types::ProviderId::KimiCode => true,
             xai_grok_sampling_types::ProviderId::Custom => {
                 creds.provider == Some(xai_grok_sampling_types::ProviderId::Custom)
             }
@@ -572,9 +655,6 @@ impl SessionActor {
             xai_grok_sampling_types::ProviderId::KimiCode => {
                 xai_grok_sampling_types::CredentialSourceId::KimiCodeApiKey
             }
-            xai_grok_sampling_types::ProviderId::ZaiCodingPlan => {
-                xai_grok_sampling_types::CredentialSourceId::ZaiCodingPlanApiKey
-            }
             xai_grok_sampling_types::ProviderId::Custom if rotating_provider_owns_key => {
                 xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider
             }
@@ -605,8 +685,7 @@ impl SessionActor {
         };
         let request_api_key = match cfg.provider {
             xai_grok_sampling_types::ProviderId::OpenAiCodex
-            | xai_grok_sampling_types::ProviderId::KimiCode
-            | xai_grok_sampling_types::ProviderId::ZaiCodingPlan => None,
+            | xai_grok_sampling_types::ProviderId::KimiCode => None,
             xai_grok_sampling_types::ProviderId::Custom if custom_owns_key => creds.api_key.clone(),
             xai_grok_sampling_types::ProviderId::Custom => None,
             xai_grok_sampling_types::ProviderId::Xai
@@ -630,6 +709,8 @@ impl SessionActor {
             api_backend: cfg.api_backend,
             auth_scheme,
             extra_headers,
+            query_params: cfg.query_params.clone(),
+            env_http_headers: cfg.env_http_headers.clone(),
             comp_hash: cfg.comp_hash.clone(),
             context_window: cfg.context_window.get(),
             client_version: creds.client_version,
@@ -685,7 +766,7 @@ impl SessionActor {
         let bound_runtime = crate::session::provider::bind_provider_runtime(full_config, None)
             .await
             .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
-        if (is_codex || cfg.provider.is_kimi_code() || cfg.provider.is_zai_coding_plan())
+        if (is_codex || cfg.provider.is_kimi_code())
             && state_cfg.credential_binding != bound_runtime.sampler_config.credential_binding
         {
             state_cfg.credential_binding = bound_runtime.sampler_config.credential_binding.clone();
@@ -1323,9 +1404,8 @@ impl SessionActor {
                 crate::sampling::error::error_data_with_status(detailed_message, error.status_code),
             ));
         }
-        let first_party_provider_owned_auth = request_provider.is_openai_codex()
-            || request_provider.is_kimi_code()
-            || request_provider.is_zai_coding_plan();
+        let first_party_provider_owned_auth =
+            request_provider.is_openai_codex() || request_provider.is_kimi_code();
         let auth_provider = (request_provider == xai_grok_sampling_types::ProviderId::Custom
             && (matches!(error.kind, SamplingErrorKind::Auth) || error.status_code == Some(401)))
         .then(|| self.model_auth_provider(&failed_model_id, &failed_base_url))
@@ -1545,10 +1625,6 @@ impl SessionActor {
                     );
                 } else if request_provider.is_kimi_code() {
                     msg.push_str("\n\n  Re-authenticate: run `grok login --provider kimi-code`.");
-                } else if request_provider.is_zai_coding_plan() {
-                    msg.push_str(
-                        "\n\n  Re-authenticate: run `grok login --provider zai-coding-plan`.",
-                    );
                 }
             }
             msg
@@ -1683,8 +1759,8 @@ impl SessionActor {
         // Subscription-provider refresh belongs exclusively to the provider
         // binder, which runs after reconstructing the request config. Do not
         // evaluate the global xAI or generic static-key refresh paths for a
-        // Codex, Kimi, or Z.AI Coding Plan session.
-        if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_zai_coding_plan() {
+        // Codex or Kimi session.
+        if provider.is_openai_codex() || provider.is_kimi_code() {
             return Ok(());
         }
         if provider == xai_grok_sampling_types::ProviderId::Custom {
@@ -1736,9 +1812,23 @@ impl SessionActor {
                     );
                     return Ok(());
                 };
-                let key = am.get_valid_token().await.map_err(|_| {
-                    acp::Error::auth_required().data("managed xAI authentication refresh failed")
-                })?;
+                let key = match am.get_valid_token().await {
+                    Ok(key) => key,
+                    Err(_) => {
+                        // A token inside the early-invalidation window can
+                        // still be accepted on the wire, so retain it after a
+                        // transient refresh failure. Once no wire-valid token
+                        // remains, clear chat state before returning: neither
+                        // the sampler nor a concurrent waiter may send the
+                        // hard-expired bearer or fall through to another
+                        // credential source.
+                        if !am.has_usable_token() {
+                            self.set_chat_provider_key(None).await;
+                        }
+                        return Err(acp::Error::auth_required()
+                            .data("managed xAI authentication refresh failed"));
+                    }
+                };
                 let mut creds = self.chat_state_handle.get_credentials().await;
                 if creds.api_key.as_deref() != Some(&key)
                     || creds.provider != Some(xai_grok_sampling_types::ProviderId::Xai)

@@ -54,11 +54,15 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
             let app = axum::Router::new().route(
                 "/v1/models-v2",
                 get(|| async {
-                    axum::Json(serde_json::json!(
-                        { "data" : [{ "model" : "test-model", "name" : "Test Model",
-                        "context_window" : 300_000, "max_completion_tokens" : 16384,
-                        "base_url" : "http://localhost/v1" }] }
-                    ))
+                    axum::Json(serde_json::json!({
+                        "data": [{
+                            "model": "test-model",
+                            "name": "Test Model",
+                            "context_window": 300_000,
+                            "max_completion_tokens": 16384,
+                            "base_url": "http://localhost/v1"
+                        }]
+                    }))
                 }),
             );
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -108,6 +112,8 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     top_p: None,
                     api_backend: Default::default(),
                     extra_headers: Default::default(),
+                    query_params: Default::default(),
+                    env_http_headers: Default::default(),
                     context_window: std::num::NonZeroU64::new(200_000).unwrap(),
                     reasoning_effort: None,
                     comp_hash: None,
@@ -151,6 +157,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     std::mem::forget(dir);
                     Some(mgr)
                 },
+                is_chat_kind: false,
                 state,
                 notifications: NotificationSender {
                     gateway: GatewaySender::new(gateway_tx),
@@ -176,6 +183,8 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
+                tool_overrides: std::cell::RefCell::new(None),
+                resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
                 doom_loop_recovery: None,
@@ -194,6 +203,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     previous_model: std::cell::Cell::new(None),
                     compaction_mode: xai_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
+                    tool_choice: Default::default(),
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
                 },
@@ -296,6 +306,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 deferred_prefix: TaskSlot::new(),
                 extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
+                prefix_carries_fallback_date: std::cell::Cell::new(false),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
                 hook_registry: std::cell::RefCell::new(None),

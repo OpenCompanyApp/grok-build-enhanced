@@ -20,11 +20,31 @@ use crate::agent::config::{Config as AgentConfig, ModelEntry};
 use crate::agent::init::{bootstrap, exit_on_config_error};
 use crate::agent::models::{ModelFetchAuth, prefetch_models_blocking, spawn_optional_model_worker};
 use crate::agent::mvp_agent::MvpAgent;
-use crate::auth::{AuthManager, AuthMode, GrokAuth, run_auth_flow};
+use crate::auth::{AuthManager, AuthMode, GrokAuth, GrokComConfig, run_auth_flow};
 use crate::util::grok_home;
 use dirs;
 
 const MAX_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+
+/// Close the external-OTEL gate before telemetry initialization.
+pub fn suppress_otel() {
+    crate::agent::otel_gate::suppress();
+}
+
+/// Apply the startup external-OTEL gate after local authentication state and
+/// remote-settings policy are known.
+pub fn apply_otel_config(auth_manager: &AuthManager, grok_com_config: &GrokComConfig) {
+    suppress_otel();
+    let has_session = auth_manager.current().is_some() || auth_manager.read_disk_auth().is_some();
+    if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
+        has_session,
+        has_api_key_env: crate::agent::auth_method::has_xai_api_key_env(),
+        session_pending: crate::agent::otel_gate::is_session_pending(has_session, grok_com_config),
+        remote_fetch_enabled: crate::util::config::resolve_remote_fetch_enabled(),
+    }) {
+        crate::agent::otel_gate::open_at_startup();
+    }
+}
 
 use indexmap::IndexMap;
 

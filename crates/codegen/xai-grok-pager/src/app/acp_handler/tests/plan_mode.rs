@@ -121,7 +121,7 @@
             agent.active_modal = Some(crate::views::modal::ActiveModal::CommandPalette {
                 entries: crate::views::modal::default_palette_entries(
                     agent.sharing_enabled,
-                    crate::app::ScreenMode::Fullscreen,
+                    &agent.prompt.slash_controller,
                 ),
                 state: crate::views::picker::PickerState::input_active(),
                 window: crate::views::modal_window::ModalWindowState::new(),

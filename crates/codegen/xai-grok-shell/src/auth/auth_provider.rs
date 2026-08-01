@@ -453,7 +453,7 @@ async fn mint_provider_token(
         .as_deref()
         .map(str::trim)
         .filter(|cwd| !cwd.is_empty())
-        .map(crate::claude_import::expand_home);
+        .map(crate::util::expand_home);
 
     let mut cmd = match config.args {
         Some(ref args) => {

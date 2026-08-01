@@ -204,12 +204,10 @@ impl Agent {
         let mut hosted_tools = Vec::new();
         if backend_search_enabled {
             if hosted_web_search_enabled && self.definition.hosted_tool_allowed("web_search") {
-                hosted_tools.push(HostedTool::WebSearch {
-                    allowed_domains: None,
-                });
+                hosted_tools.push(HostedTool::WebSearch { options: None });
             }
             if !codex_subscription_search && self.definition.hosted_tool_allowed("x_search") {
-                hosted_tools.push(HostedTool::XSearch);
+                hosted_tools.push(HostedTool::XSearch { options: None });
             }
         }
         self.hosted_tools = hosted_tools;

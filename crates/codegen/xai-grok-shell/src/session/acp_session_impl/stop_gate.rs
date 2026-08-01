@@ -406,8 +406,9 @@ mod tests {
             kind,
             block_waited: false,
             explicitly_killed: false,
-            owner_session_id: owner.map(str::to_string),
-            is_backgrounded: true,
+            owner_session_id: owner.map(str::to_owned),
+            description: None,
+            is_backgrounded: false,
         }
     }
 

@@ -896,6 +896,8 @@ impl CodexCatalogController {
                             api_backend: xai_grok_sampling_types::ApiBackend::Responses,
                             auth_scheme: xai_grok_sampler::AuthScheme::Bearer,
                             extra_headers,
+                            query_params: indexmap::IndexMap::new(),
+                            env_http_headers: indexmap::IndexMap::new(),
                             context_window,
                             comp_hash: model.comp_hash,
                             auto_compact_threshold_percent,

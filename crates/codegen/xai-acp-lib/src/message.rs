@@ -632,3 +632,22 @@ mod agent {
         }
     }
 }
+
+#[cfg(test)]
+mod video_content_tests {
+    use agent_client_protocol as acp;
+
+    #[test]
+    fn acp_prompt_rejects_video_until_the_protocol_defines_it() {
+        let error = serde_json::from_value::<acp::PromptRequest>(serde_json::json!({
+            "sessionId": "session-fixture",
+            "prompt": [{
+                "type": "video",
+                "path": "/workspace/clip.mp4",
+                "mimeType": "video/mp4"
+            }]
+        }))
+        .expect_err("ACP 0.10 has no compatible video content block");
+        assert!(error.to_string().contains("video"));
+    }
+}

@@ -561,21 +561,6 @@ pub(crate) fn reset_marker_cache_for_test() {
     *MARKER_CACHE.write().expect("MARKER_CACHE poisoned") = None;
 }
 
-/// Expand a leading bare `~` or `~/` to the home directory. Other-user tilde
-/// forms are intentionally treated as literal config paths.
-pub fn expand_home(s: &str) -> std::path::PathBuf {
-    if let Some(stripped) = s.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(stripped);
-        }
-    } else if s == "~"
-        && let Some(home) = dirs::home_dir()
-    {
-        return home;
-    }
-    std::path::PathBuf::from(s)
-}
-
 /// Like [`is_claude_import_marked`], but logs a one-time `info!` line on the
 /// first true result per process so users can see the runtime cutoff is active.
 ///

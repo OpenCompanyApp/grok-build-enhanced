@@ -111,13 +111,6 @@ impl ModelState {
             .is_some_and(|model| model.starts_with("kimi-code/"))
     }
 
-    /// Whether the active model belongs to the isolated global Z.AI GLM
-    /// Coding Plan provider rather than Open Platform or a custom endpoint.
-    pub fn current_model_is_zai_coding_plan(&self) -> bool {
-        self.current_model_id_str()
-            .is_some_and(|model| model.starts_with("zai-coding-plan/"))
-    }
-
     fn service_tier_for(&self, model_id: &acp::ModelId) -> Option<String> {
         self.available
             .get(model_id)?

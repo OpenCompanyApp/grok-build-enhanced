@@ -94,6 +94,14 @@ pub struct CacheControl {
     pub r#type: String, // "ephemeral"
 }
 
+impl CacheControl {
+    pub fn ephemeral() -> Self {
+        Self {
+            r#type: "ephemeral".to_owned(),
+        }
+    }
+}
+
 /// Content blocks used in both requests and responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -105,11 +113,15 @@ pub enum ContentBlock {
     },
     Image {
         source: ImageSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolResult {
         tool_use_id: String,
@@ -129,9 +141,7 @@ pub enum ContentBlock {
     /// Anthropic-compatible providers may return encrypted reasoning without
     /// exposing its plaintext. It is normalized to a reasoning item by the
     /// stream layer and replayed through a signed `thinking` block.
-    RedactedThinking {
-        data: String,
-    },
+    RedactedThinking { data: String },
     /// Forward-compatible assistant block that this client does not interpret.
     /// Unknown blocks are ignored by the stream projection instead of aborting
     /// an otherwise valid response after content has already been emitted.
@@ -290,6 +300,9 @@ pub enum MessageStreamEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageDeltaBody {
     pub stop_reason: Option<StopReason>,
+    /// Exact sequence matched when `stop_reason` is `stop_sequence`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_sequence: Option<String>,
     /// Provider detail for the stop; on `refusal`, `explanation` carries the
     /// reason the request was blocked (e.g. an Anthropic ToS auto-refusal).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -489,6 +502,21 @@ mod tests {
                     details.explanation.as_deref(),
                     Some("This request was blocked.")
                 );
+            }
+            other => panic!("expected MessageDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn message_delta_captures_matched_stop_sequence() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"stop_sequence","stop_sequence":"END"},"usage":{"output_tokens":7}}"#,
+        )
+        .expect("stop_sequence message_delta must deserialize");
+        match event {
+            MessageStreamEvent::MessageDelta { delta, .. } => {
+                assert!(matches!(delta.stop_reason, Some(StopReason::StopSequence)));
+                assert_eq!(delta.stop_sequence.as_deref(), Some("END"));
             }
             other => panic!("expected MessageDelta, got {other:?}"),
         }

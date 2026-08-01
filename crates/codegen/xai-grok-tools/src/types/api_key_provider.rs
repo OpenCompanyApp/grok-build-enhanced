@@ -13,10 +13,6 @@ pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
 /// Canonical provider identity for Kimi Code-owned tool authentication.
 pub const KIMI_CODE_PROVIDER_ID: &str = "kimi_code";
 
-/// Canonical provider identity for global Z.AI Coding Plan-owned tool and MCP
-/// authentication. This must never be accepted by pay-go or China endpoints.
-pub const ZAI_CODING_PLAN_PROVIDER_ID: &str = "zai_coding_plan";
-
 /// Key in `ToolError::details` naming the provider that owns auth recovery
 /// for the failed request. Hosts must not route such an error through a
 /// different provider's credential manager.
@@ -470,100 +466,6 @@ pub(crate) fn validate_kimi_code_request_auth(
         return Err(KimiCodeRequestAuthError::InvalidAuthorization);
     }
     Ok(ValidatedKimiCodeRequestAuth { headers })
-}
-
-/// Fixed-shape failure for provider-owned Z.AI Coding Plan bearer auth.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ZaiCodingPlanRequestAuthError {
-    Unavailable,
-    ProviderMismatch,
-    MissingCredentialGeneration,
-    DuplicateAuthorization,
-    InvalidAuthorization,
-    UnsupportedHeader,
-    InvalidHeader,
-}
-
-impl std::fmt::Display for ZaiCodingPlanRequestAuthError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Z.AI Coding Plan provider authentication is unavailable")
-    }
-}
-
-impl std::error::Error for ZaiCodingPlanRequestAuthError {}
-
-#[derive(Clone)]
-pub(crate) struct ValidatedZaiCodingPlanRequestAuth {
-    headers: HeaderMap,
-}
-
-impl ValidatedZaiCodingPlanRequestAuth {
-    pub(crate) fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        request.headers(self.headers.clone())
-    }
-
-    /// Borrow only the validated bearer token for a provider-owned local
-    /// subprocess environment. The value remains private and must never be
-    /// logged, formatted, persisted, or copied into tool configuration.
-    pub(crate) fn bearer_token(&self) -> Result<&str, ZaiCodingPlanRequestAuthError> {
-        self.headers
-            .get("authorization")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .filter(|token| !token.trim().is_empty())
-            .ok_or(ZaiCodingPlanRequestAuthError::InvalidAuthorization)
-    }
-}
-
-impl std::fmt::Debug for ValidatedZaiCodingPlanRequestAuth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ValidatedZaiCodingPlanRequestAuth")
-            .finish_non_exhaustive()
-    }
-}
-
-pub(crate) async fn resolve_zai_coding_plan_request_auth(
-    provider: &SharedApiKeyProvider,
-) -> Result<ValidatedZaiCodingPlanRequestAuth, ZaiCodingPlanRequestAuthError> {
-    if provider.request_auth_provider_id() != Some(ZAI_CODING_PLAN_PROVIDER_ID) {
-        return Err(ZaiCodingPlanRequestAuthError::ProviderMismatch);
-    }
-    let auth = provider
-        .current_request_auth_async()
-        .await
-        .ok_or(ZaiCodingPlanRequestAuthError::Unavailable)?;
-    if auth.provider() != Some(ZAI_CODING_PLAN_PROVIDER_ID) {
-        return Err(ZaiCodingPlanRequestAuthError::ProviderMismatch);
-    }
-    auth.credential_snapshot()
-        .filter(|snapshot| !snapshot.opaque_id().trim().is_empty() && snapshot.generation() > 0)
-        .ok_or(ZaiCodingPlanRequestAuthError::MissingCredentialGeneration)?;
-
-    let mut headers = HeaderMap::new();
-    let mut has_authorization = false;
-    for (name, value) in auth.headers() {
-        if !name.eq_ignore_ascii_case("authorization") {
-            return Err(ZaiCodingPlanRequestAuthError::UnsupportedHeader);
-        }
-        if has_authorization {
-            return Err(ZaiCodingPlanRequestAuthError::DuplicateAuthorization);
-        }
-        if value
-            .strip_prefix("Bearer ")
-            .is_none_or(|token| token.trim().is_empty())
-        {
-            return Err(ZaiCodingPlanRequestAuthError::InvalidAuthorization);
-        }
-        let mut value = HeaderValue::from_str(value)
-            .map_err(|_| ZaiCodingPlanRequestAuthError::InvalidHeader)?;
-        value.set_sensitive(true);
-        headers.insert(HeaderName::from_static("authorization"), value);
-        has_authorization = true;
-    }
-    if !has_authorization {
-        return Err(ZaiCodingPlanRequestAuthError::InvalidAuthorization);
-    }
-    Ok(ValidatedZaiCodingPlanRequestAuth { headers })
 }
 
 #[cfg(test)]

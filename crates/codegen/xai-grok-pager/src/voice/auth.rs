@@ -144,7 +144,6 @@ mod tests {
                 ("xai", ProviderId::Xai, None),
                 ("codex", ProviderId::OpenAiCodex, Some("codex-key")),
                 ("kimi", ProviderId::KimiCode, Some("kimi-key")),
-                ("zai", ProviderId::ZaiCodingPlan, Some("zai-key")),
                 ("custom", ProviderId::Custom, Some("custom-key")),
             ]),
         );
@@ -153,7 +152,7 @@ mod tests {
             resolved(&auth, Some("xai")).await.as_deref(),
             Some("ambient-xai-key")
         );
-        for model in ["codex", "kimi", "zai", "custom", "unknown"] {
+        for model in ["codex", "kimi", "custom", "unknown"] {
             assert_eq!(resolved(&auth, Some(model)).await, None, "model={model}");
         }
     }

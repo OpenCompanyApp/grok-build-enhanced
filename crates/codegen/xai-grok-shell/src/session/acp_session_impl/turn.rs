@@ -423,12 +423,18 @@ impl SessionActor {
             }
             acc
         });
+        let loop_fire_mode = if self.rebuild_spec.scheduler_background_loops {
+            xai_grok_tools::implementations::grok_build::LoopFireMode::Detached
+        } else {
+            xai_grok_tools::implementations::grok_build::LoopFireMode::InSession
+        };
         let prompt_blocks = match slash_commands::resolve(
             prompt_blocks,
             &slash_skills,
             availability,
             skill_rewrite,
             &named_workflows,
+            loop_fire_mode,
         ) {
             Ok(blocks) => blocks,
             Err(SlashCommandOutcome::Builtin(action)) => {
@@ -790,22 +796,8 @@ impl SessionActor {
         self.drain_between_turn_completions().await;
         self.inject_workflow_status_reminder().await;
         let has_any_user_images = !user_images.is_empty() || !extra_images.is_empty();
-        let active_provider = self
-            .chat_state_handle
-            .get_sampling_config()
-            .await
-            .map(|config| config.provider);
-        let zai_coding_plan_images =
-            should_transcribe_zai_images(active_provider, user_images.len(), extra_images.len());
         let user_message = if !has_any_user_images {
             user_message
-        } else if zai_coding_plan_images {
-            let images = user_images
-                .iter()
-                .chain(extra_images.iter())
-                .cloned()
-                .collect::<Vec<_>>();
-            self.transcribe_user_images(user_message, &images).await?
         } else if self.is_cursor_harness() {
             self.transcribe_user_images(user_message, &user_images)
                 .await?
@@ -825,7 +817,7 @@ impl SessionActor {
                     .data(format!("failed to save user images to assets dir: {e}"))
             })?
         };
-        let attached_image_refs = if self.is_cursor_harness() || zai_coding_plan_images {
+        let attached_image_refs = if self.is_cursor_harness() {
             Vec::new()
         } else {
             crate::session::placeholder_images::attached_image_references(&user_images)
@@ -880,7 +872,7 @@ impl SessionActor {
                 }
             };
             user_chat.set_prompt_index(current_prompt_index);
-            if !self.is_cursor_harness() && !zai_coding_plan_images {
+            if !self.is_cursor_harness() {
                 for image in &user_images {
                     user_chat.add_image(pick_user_image_url(image));
                 }
@@ -1069,6 +1061,34 @@ impl SessionActor {
                     },
                 );
             }
+            Ok(TurnOutcome::StationarityEnded { .. }) => {
+                self.emit_turn_ended(
+                    crate::session::events::TurnOutcomeLabel::Completed,
+                    None,
+                    None,
+                );
+                self.send_after_turn_event(xai_tool_protocol::turn_hook::AfterTurnPayload {
+                    turn_number: current_prompt_index as u64,
+                    outcome: xai_tool_protocol::turn_hook::TurnHookOutcome::Completed,
+                    duration_ms: turn_duration_ms,
+                    tool_call_count: turn_tool_count,
+                    model_id: turn_model_id.clone(),
+                    written_repo_paths: Vec::new(),
+                    cancellation_category: Some("action_stationarity".to_string()),
+                    cancellation_context: None,
+                })
+                .await;
+                xai_grok_telemetry::session_ctx::log_event(
+                    xai_grok_telemetry::events::TurnCompleted {
+                        outcome: xai_grok_telemetry::events::Outcome::Completed,
+                        duration_ms: turn_duration_ms,
+                        tool_call_count: turn_tool_count,
+                        model_id: turn_model_id,
+                        cancellation_category: Some("action_stationarity".to_string()),
+                        error_category: None,
+                    },
+                );
+            }
             Ok(TurnOutcome::Cancelled { category, context }) => {
                 self.emit_turn_ended(
                     crate::session::events::TurnOutcomeLabel::Cancelled,
@@ -1198,7 +1218,7 @@ impl SessionActor {
             );
         }
         match &result {
-            Ok(TurnOutcome::Completed { .. }) => {
+            Ok(TurnOutcome::Completed { .. }) | Ok(TurnOutcome::StationarityEnded { .. }) => {
                 for contributor in self.extension_registry.turn_lifecycle_contributors() {
                     contributor
                         .on_turn_done(&xai_agent_lifecycle::TurnDoneInput)
@@ -1225,7 +1245,7 @@ impl SessionActor {
             result,
             Ok(TurnOutcome::Cancelled { .. }) | Ok(TurnOutcome::MaxTurnsReached { .. })
         ) {
-            self.cancel_running_turn_subagents();
+            self.cancel_running_turn_subagents(prompt_id);
         }
         self.flush_to_disk().await;
         self.file_state_tracker
@@ -1265,6 +1285,12 @@ impl SessionActor {
                         PromptCompletionKind::Completed,
                         structured_output,
                     ),
+                    TurnOutcome::StationarityEnded { snapshot, .. } => (
+                        acp::StopReason::EndTurn,
+                        *snapshot,
+                        PromptCompletionKind::StationarityEnded,
+                        None,
+                    ),
                     TurnOutcome::Cancelled { category, context } => {
                         let cancellation_ctx = context.and_then(|v| serde_json::from_value(v).ok());
                         (
@@ -1294,6 +1320,7 @@ impl SessionActor {
                     completion_kind,
                     structured_output,
                     usage,
+                    tool_overrides: None,
                 })
             }
             Err(e) => {
@@ -1447,6 +1474,7 @@ impl SessionActor {
         if tx
             .send(SubagentEvent::MarkUsageNotApplied(
                 SubagentMarkUsageNotAppliedRequest {
+                    parent_session_id: self.session_id_string(),
                     prompt_id: pid,
                     respond_to,
                 },
@@ -1469,7 +1497,7 @@ impl SessionActor {
         let Some(buffer) = &self.tool_context.monitor_event_buffer else {
             return;
         };
-        let mine = xai_grok_tools::implementations::grok_build::task::types::drain_owned(
+        let mine = xai_grok_tools::implementations::grok_build::monitor::types::drain_owned(
             buffer,
             Some(self.session_info.id.0.as_ref()),
         );
@@ -1513,7 +1541,11 @@ impl SessionActor {
     /// before this method and already transitioned the goal out of
     /// Active), both branches are skipped: neither streak moves and the
     /// existing pause cause is preserved.
-    pub(crate) async fn handle_turn_end(&self, turn_succeeded: bool) {
+    pub(crate) async fn handle_turn_end(
+        &self,
+        turn_succeeded: bool,
+        suppress_goal_continuation: bool,
+    ) {
         let goal_active_now = laziness_injection_active(
             self.goal_harness_enabled(),
             self.goal_tracker.lock().status(),
@@ -1521,7 +1553,9 @@ impl SessionActor {
         if turn_succeeded && goal_active_now {
             self.goal_continuation_streak
                 .store(0, std::sync::atomic::Ordering::Relaxed);
-            self.maybe_queue_goal_continuation().await;
+            if !suppress_goal_continuation {
+                self.maybe_queue_goal_continuation().await;
+            }
             return;
         }
         if !turn_succeeded && goal_active_now {
@@ -1879,6 +1913,25 @@ impl SessionActor {
             ));
         StructuredOutputStep::Complete(validated)
     }
+    /// Single shell tool call whose parsed command is `true` (via ToolBridge).
+    async fn is_run_true_step(
+        &self,
+        tool_calls: &[xai_grok_sampling_types::conversation::ToolCall],
+    ) -> bool {
+        let [tc] = tool_calls else {
+            return false;
+        };
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(tc.arguments.as_ref()) else {
+            return false;
+        };
+        let Ok(input) = self.tool_bridge_handle().try_parse(&tc.name, args).await else {
+            return false;
+        };
+        match input {
+            ToolInput::Bash(b) => command_is_true(&b.command),
+            _ => false,
+        }
+    }
     /// Shared turn-completion bookkeeping (plan cleanup, signals snapshot +
     /// persistence, BigQuery turn delta, feedback prompt). Runs identically for
     /// the native and StructuredOutput-tool completion paths. Returns the
@@ -2061,6 +2114,7 @@ impl SessionActor {
         let mut turn_tools_called: Vec<String> = Vec::new();
         let mut tool_turn_count: usize = 1;
         let mut loop_index: u32 = 0;
+        let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut todo_gate_fires: u32 = 0;
         let mut auth_retry_schedule = AuthRetrySchedule::new();
         let mut codex_auth_retry_attempted = false;
@@ -2097,6 +2151,77 @@ impl SessionActor {
         loop {
             self.emit_event(crate::session::events::Event::LoopStarted { loop_index });
             loop_index += 1;
+            if identical_tool_calls.run_len >= identical_tool_calls.hard_stop_threshold() {
+                let run_len = identical_tool_calls.run_len;
+                let tool_name = identical_tool_calls.tool_name.clone();
+                let true_noop = identical_tool_calls.is_true_noop_run;
+                tracing::warn!(
+                    session_id = %self.session_info.id,
+                    tool_name = %tool_name,
+                    run_len,
+                    true_noop,
+                    "action stationarity: ending turn after repeated identical tool calls"
+                );
+                xai_grok_telemetry::unified_log::warn(
+                    "shell.turn.action_stationarity_stop",
+                    Some(self.session_info.id.0.as_ref()),
+                    Some(serde_json::json!({
+                        "loop_index": loop_index,
+                        "tool_name": tool_name,
+                        "run_len": run_len,
+                        "true_noop": true_noop,
+                    })),
+                );
+                xai_grok_telemetry::session_ctx::log_event(
+                    xai_grok_telemetry::events::ActionStationarityStop {
+                        true_noop,
+                        run_len,
+                        tool_name: tool_name.clone(),
+                    },
+                );
+                let snapshot = self
+                    .finalize_turn_bookkeeping(
+                        req_id,
+                        conv_turn_start,
+                        &turn_span_totals,
+                        model_fingerprint.clone(),
+                    )
+                    .await;
+                return Ok(TurnOutcome::StationarityEnded {
+                    snapshot: Box::new(snapshot),
+                });
+            }
+            if identical_tool_calls.take_nudge() {
+                let run_len = identical_tool_calls.run_len;
+                let tool_name = identical_tool_calls.tool_name.clone();
+                tracing::warn!(
+                    session_id = %self.session_info.id,
+                    tool_name = %tool_name,
+                    run_len,
+                    "action stationarity: nudging model to break repeated identical tool calls"
+                );
+                xai_grok_telemetry::unified_log::warn(
+                    "shell.turn.action_stationarity_nudge",
+                    Some(self.session_info.id.0.as_ref()),
+                    Some(serde_json::json!({
+                        "loop_index": loop_index,
+                        "tool_name": tool_name,
+                        "run_len": run_len,
+                    })),
+                );
+                let reminder = self
+                    .tool_bridge_handle()
+                    .render_prompt(
+                        ACTION_STATIONARITY_NUDGE_TEMPLATE,
+                        &serde_json::json!({
+                            "tool_name": tool_name,
+                            "run_len": run_len,
+                        }),
+                    )
+                    .await
+                    .unwrap_or_else(|| ACTION_STATIONARITY_NUDGE_TEMPLATE.to_string());
+                self.push_system_reminder(&reminder);
+            }
             self.drain_pending_interjections().await;
             self.flush_pending_skill_reminders().await;
             self.inject_pending_monitor_events().await;
@@ -2617,6 +2742,24 @@ impl SessionActor {
                 }
                 turn_tools_called.push(tc.name.clone());
             }
+            let step_signature = tool_calls
+                .iter()
+                .map(|tc| format!("{}\u{1f}{}", tc.name, tc.arguments.as_ref()))
+                .collect::<Vec<_>>()
+                .join("\u{1e}");
+            let step_tool_name = tool_calls
+                .first()
+                .map(|tc| tc.name.clone())
+                .unwrap_or_default();
+            let is_true_noop = self.is_run_true_step(&tool_calls).await;
+            identical_tool_calls.observe(&step_signature, &step_tool_name, is_true_noop);
+            if is_true_noop {
+                xai_grok_telemetry::session_ctx::log_event(
+                    xai_grok_telemetry::events::ShellTrueNoop {
+                        tool_name: step_tool_name.clone(),
+                    },
+                );
+            }
             let tool_call_responses: Vec<ToolCallResponse> = tool_calls
                 .into_iter()
                 .map(|tc| ToolCallResponse {
@@ -2683,6 +2826,134 @@ impl SessionActor {
         }
     }
 }
+const MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS: u32 = 16;
+const NUDGE_AFTER_IDENTICAL_TOOL_CALLS: u32 = 8;
+const MAX_CONSECUTIVE_TRUE_NOOPS: u32 = 4;
+const _: () = assert!(NUDGE_AFTER_IDENTICAL_TOOL_CALLS < MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS);
+const _: () = assert!(MAX_CONSECUTIVE_TRUE_NOOPS < NUDGE_AFTER_IDENTICAL_TOOL_CALLS);
+const ACTION_STATIONARITY_NUDGE_TEMPLATE: &str = "You have called the same tool \
+     (`${{ tool_name }}`) with the exact same arguments ${{ run_len }} times in a row — \
+     you appear to be stuck in a polling loop. Stop repeating this call. If you are \
+     waiting on a long-running job or command, use a background task${%- if tools.by_kind.monitor %} \
+     or the `${{ tools.by_kind.monitor }}` tool${%- endif %}, or run a single `sleep` and \
+     then check once — do not poll in a tight loop. If you cannot make progress, stop and \
+     tell the user what you are waiting for. This turn will be halted automatically if the \
+     identical call keeps repeating.";
+fn hash_step_signature(signature: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    signature.hash(&mut hasher);
+    hasher.finish()
+}
+fn command_is_true(cmd: &str) -> bool {
+    cmd.trim().eq_ignore_ascii_case("true")
+}
+#[derive(Default)]
+struct IdenticalToolCallRun {
+    last_signature_hash: Option<u64>,
+    tool_name: String,
+    run_len: u32,
+    is_true_noop_run: bool,
+    nudged: bool,
+}
+impl IdenticalToolCallRun {
+    fn observe(&mut self, signature: &str, tool_name: &str, is_true_noop: bool) -> u32 {
+        let hash = hash_step_signature(if is_true_noop {
+            "\0true_noop"
+        } else {
+            signature
+        });
+        if self.last_signature_hash == Some(hash) {
+            self.run_len += 1;
+        } else {
+            self.run_len = 1;
+            self.last_signature_hash = Some(hash);
+            self.is_true_noop_run = is_true_noop;
+            self.nudged = false;
+        }
+        self.tool_name = tool_name.to_string();
+        self.run_len
+    }
+    /// Once per identical run at/after the nudge threshold. Call only after results are committed.
+    fn take_nudge(&mut self) -> bool {
+        let fire = self.run_len >= NUDGE_AFTER_IDENTICAL_TOOL_CALLS && !self.nudged;
+        self.nudged |= fire;
+        fire
+    }
+    fn hard_stop_threshold(&self) -> u32 {
+        if self.is_true_noop_run {
+            MAX_CONSECUTIVE_TRUE_NOOPS
+        } else {
+            MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS
+        }
+    }
+}
+#[cfg(test)]
+mod identical_tool_call_run_tests {
+    use super::{
+        IdenticalToolCallRun, MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS, MAX_CONSECUTIVE_TRUE_NOOPS,
+        NUDGE_AFTER_IDENTICAL_TOOL_CALLS, command_is_true,
+    };
+    #[test]
+    fn identical_non_true_resets_and_caps_at_16() {
+        let mut run = IdenticalToolCallRun::default();
+        assert_eq!(run.observe("a", "a", false), 1);
+        assert_eq!(run.observe("a", "a", false), 2);
+        assert_eq!(run.observe("b", "b", false), 1);
+        let mut last = 0;
+        for _ in 0..MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS {
+            last = run.observe("same", "same", false);
+        }
+        assert_eq!(last, MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS);
+        assert_eq!(
+            run.hard_stop_threshold(),
+            MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS
+        );
+    }
+    #[test]
+    fn true_noops_chain_across_args_and_stop_at_4() {
+        let mut run = IdenticalToolCallRun::default();
+        for i in 1..=4 {
+            assert_eq!(run.observe(&format!("sig{i}"), "bash", true), i);
+        }
+        assert!(run.is_true_noop_run);
+        assert_eq!(run.hard_stop_threshold(), MAX_CONSECUTIVE_TRUE_NOOPS);
+        assert_eq!(run.observe("squeue", "bash", false), 1);
+        assert!(!run.is_true_noop_run);
+    }
+    #[test]
+    fn command_is_true_trim_and_case() {
+        assert!(command_is_true("true"));
+        assert!(command_is_true(" TRUE "));
+        assert!(!command_is_true("true && echo hi"));
+        assert!(!command_is_true("lisa status"));
+    }
+    #[test]
+    fn nudge_latch_fires_once_per_run_after_threshold() {
+        let mut run = IdenticalToolCallRun::default();
+        for i in 1..NUDGE_AFTER_IDENTICAL_TOOL_CALLS {
+            assert_eq!(run.observe("poll", "get_task_output", false), i);
+            assert!(
+                !run.take_nudge(),
+                "must not nudge before threshold; run_len={i}"
+            );
+        }
+        assert_eq!(
+            run.observe("poll", "get_task_output", false),
+            NUDGE_AFTER_IDENTICAL_TOOL_CALLS
+        );
+        assert!(run.take_nudge());
+        assert!(!run.take_nudge());
+        assert_eq!(
+            run.observe("poll", "get_task_output", false),
+            NUDGE_AFTER_IDENTICAL_TOOL_CALLS + 1
+        );
+        assert!(!run.take_nudge());
+        assert_eq!(run.observe("other", "bash", false), 1);
+        assert!(!run.nudged);
+        assert!(!run.take_nudge());
+    }
+}
 /// Backoff schedule for resubmits after a *successful* 401 auth recovery
 /// (fresh token minted, request to be re-sent).
 ///
@@ -2698,15 +2969,6 @@ impl SessionActor {
 ///   401→refresh→retry event. Without `reset()` after a successful response,
 ///   the third rotation of one turn would land on the last (largest) delay
 ///   and the fourth would fail the turn outright.
-fn should_transcribe_zai_images(
-    provider: Option<xai_grok_sampling_types::ProviderId>,
-    normalized_image_count: usize,
-    embedded_image_count: usize,
-) -> bool {
-    normalized_image_count.saturating_add(embedded_image_count) > 0
-        && provider.is_some_and(xai_grok_sampling_types::ProviderId::is_zai_coding_plan)
-}
-
 struct AuthRetrySchedule {
     delays: std::iter::Take<ExponentialBackoff>,
     attempt: u32,
@@ -2943,37 +3205,6 @@ mod native_browse_recovery_tests {
             .await;
     }
 }
-#[cfg(test)]
-mod zai_attachment_routing_tests {
-    use super::should_transcribe_zai_images;
-    use xai_grok_sampling_types::ProviderId;
-
-    #[test]
-    fn transcribes_normalized_embedded_and_mixed_images_only_for_zai() {
-        assert!(should_transcribe_zai_images(
-            Some(ProviderId::ZaiCodingPlan),
-            1,
-            0
-        ));
-        assert!(should_transcribe_zai_images(
-            Some(ProviderId::ZaiCodingPlan),
-            0,
-            1
-        ));
-        assert!(should_transcribe_zai_images(
-            Some(ProviderId::ZaiCodingPlan),
-            2,
-            3
-        ));
-        assert!(!should_transcribe_zai_images(
-            Some(ProviderId::ZaiCodingPlan),
-            0,
-            0
-        ));
-        assert!(!should_transcribe_zai_images(Some(ProviderId::Xai), 1, 1));
-    }
-}
-
 #[cfg(test)]
 mod auth_retry_schedule_tests {
     use super::AuthRetrySchedule;

@@ -431,7 +431,7 @@ fn provider_safe_compaction_tools(
     tools: Vec<ToolSpec>,
     hosted_tools: Vec<HostedTool>,
 ) -> (Vec<ToolSpec>, Vec<HostedTool>) {
-    if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_zai_coding_plan() {
+    if provider.is_openai_codex() || provider.is_kimi_code() {
         (Vec::new(), Vec::new())
     } else {
         (tools, hosted_tools)
@@ -1022,9 +1022,7 @@ mod classify_tests {
             description: Some("read a file".to_string()),
             parameters: serde_json::json!({"type": "object"}),
         };
-        let hosted = HostedTool::WebSearch {
-            allowed_domains: None,
-        };
+        let hosted = HostedTool::WebSearch { options: None };
         let (xai_tools, xai_hosted) = provider_safe_compaction_tools(
             xai_grok_sampling_types::ProviderId::Xai,
             vec![tool.clone()],
@@ -1049,9 +1047,7 @@ mod classify_tests {
             description: Some("read a file".to_string()),
             parameters: serde_json::json!({"type": "object"}),
         };
-        let hosted = HostedTool::WebSearch {
-            allowed_domains: None,
-        };
+        let hosted = HostedTool::WebSearch { options: None };
 
         let (kimi_tools, kimi_hosted) = provider_safe_compaction_tools(
             xai_grok_sampling_types::ProviderId::KimiCode,
@@ -2047,6 +2043,8 @@ mod reasoning_compaction_regression_tests {
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: Default::default(),
             extra_headers: Default::default(),
+            query_params: Default::default(),
+            env_http_headers: Default::default(),
             context_window: 256_000,
             client_version: None,
             force_http1: false,
@@ -2816,9 +2814,7 @@ mod codex_responses_compaction_tests {
             false,
             true,
             vec![tool],
-            vec![HostedTool::WebSearch {
-                allowed_domains: None,
-            }],
+            vec![HostedTool::WebSearch { options: None }],
         )
         .await;
         assert_eq!(

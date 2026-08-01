@@ -16,10 +16,10 @@ mod model;
 pub mod oidc;
 pub(crate) mod recovery;
 pub(crate) mod refresh;
+pub(crate) mod single_flight;
 mod storage;
 mod token_output;
 pub(crate) mod token_type;
-pub mod zai_coding_plan;
 pub use auth_provider::{AuthProviderConfig, AuthProviderRef};
 pub(crate) use auth_provider::{
     PROVIDER_TIMEOUT_CEILING_SECS, PROVIDER_TOKEN_EXPIRY_SKEW_SECS, ProviderRefreshOutcome,

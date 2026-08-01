@@ -19,6 +19,21 @@ use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
 use crate::types::RequestId;
 
+/// Preserve the exact provider wire value alongside the normalized internal
+/// stop reason used by the agent loop.
+fn messages_stop_reason_wire(reason: &messages::StopReason) -> String {
+    match serde_json::to_value(reason) {
+        Ok(serde_json::Value::String(value)) => value,
+        other => {
+            debug_assert!(
+                false,
+                "StopReason must serialize to a string, got {other:?}"
+            );
+            "end_turn".to_owned()
+        }
+    }
+}
+
 /// Returns whether a Messages API event reflects real model progress
 /// rather than a liveness-only heartbeat (Ping).
 pub(crate) fn messages_event_has_meaningful_content(event: &MessageStreamEvent) -> bool {
@@ -114,6 +129,9 @@ pub(crate) fn stream_messages_for_provider<'a>(
         let mut final_output_tokens: u32 = 0;
         let mut final_stop_reason: Option<StopReason> = None;
         let mut final_stop_message: Option<String> = None;
+        let mut final_message_id: Option<String> = None;
+        let mut final_raw_stop_reason: Option<String> = None;
+        let mut final_stop_sequence: Option<String> = None;
 
         // Assistant-response accumulators (built up as ContentBlockStop
         // events fire). Reasoning is collected into a synthesized
@@ -167,10 +185,21 @@ pub(crate) fn stream_messages_for_provider<'a>(
 
             match event {
                 MessageStreamEvent::MessageStart { message } => {
+                    final_message_id = Some(message.id.clone());
                     final_model = Some(message.model.clone());
                     final_input_tokens = message.usage.input_tokens;
                     final_cache_read_input_tokens = message.usage.cache_read_input_tokens;
                     final_cache_creation_input_tokens = message.usage.cache_creation_input_tokens;
+                    yield SamplingEvent::ResponseStarted {
+                        request_id: request_id.clone(),
+                        message_id: message.id,
+                        model: message.model,
+                        input_tokens: u64::from(message.usage.input_tokens),
+                        cache_read_input_tokens: u64::from(message.usage.cache_read_input_tokens),
+                        cache_creation_input_tokens: u64::from(
+                            message.usage.cache_creation_input_tokens,
+                        ),
+                    };
                 }
 
                 MessageStreamEvent::ContentBlockStart {
@@ -264,6 +293,7 @@ pub(crate) fn stream_messages_for_provider<'a>(
                         id,
                         name,
                         input: _,
+                        ..
                     } => {
                         let tool_index = next_tool_index;
                         next_tool_index += 1;
@@ -372,6 +402,16 @@ pub(crate) fn stream_messages_for_provider<'a>(
                                 }
                             }
                             BlockType::Thinking => {
+                                if let Some(signature) = state
+                                    .signature
+                                    .as_ref()
+                                    .filter(|signature| !signature.is_empty())
+                                {
+                                    yield SamplingEvent::ReasoningCompleted {
+                                        request_id: request_id.clone(),
+                                        signature: signature.clone(),
+                                    };
+                                }
                                 // The block's presence is itself significant.
                                 // Kimi can emit an empty unsigned thinking block
                                 // before a tool call and requires that exact
@@ -415,6 +455,11 @@ pub(crate) fn stream_messages_for_provider<'a>(
                         } else {
                             details.explanation
                         };
+                    }
+                    final_raw_stop_reason =
+                        delta.stop_reason.as_ref().map(messages_stop_reason_wire);
+                    if delta.stop_sequence.is_some() {
+                        final_stop_sequence = delta.stop_sequence.clone();
                     }
                     final_stop_reason = delta.stop_reason.map(|sr| match sr {
                         messages::StopReason::EndTurn => StopReason::Stop,
@@ -539,6 +584,7 @@ pub(crate) fn stream_messages_for_provider<'a>(
                 total_tokens: total_prompt_tokens.saturating_add(final_output_tokens),
                 reasoning_tokens: 0,
                 cached_prompt_tokens: final_cache_read_input_tokens,
+                cache_creation_prompt_tokens: final_cache_creation_input_tokens,
             })
         } else {
             None
@@ -581,6 +627,9 @@ pub(crate) fn stream_messages_for_provider<'a>(
             message_chunks_emitted: message_chunk_count,
             doom_loop_signals: Vec::new(),
             stop_message: final_stop_message,
+            message_id: final_message_id,
+            raw_stop_reason: final_raw_stop_reason,
+            stop_sequence: final_stop_sequence,
             provider_end_turn: None,
         };
 

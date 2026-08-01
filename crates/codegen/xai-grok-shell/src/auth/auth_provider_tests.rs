@@ -866,87 +866,6 @@ fn provider_debug_never_exposes_helper_command_or_arguments() {
     assert!(debug.contains("argument_count: Some(1)"), "{debug}");
 }
 
-#[test]
-fn resolve_program_resolves_against_cwd() {
-    let cwd = std::path::Path::new("/work");
-    assert_eq!(
-        super::resolve_program("token-helper", Some(cwd)),
-        std::path::PathBuf::from("token-helper")
-    );
-    let absolute = if cfg!(windows) {
-        r"C:\bin\helper.exe"
-    } else {
-        "/usr/local/bin/helper"
-    };
-    assert_eq!(
-        super::resolve_program(absolute, Some(cwd)),
-        std::path::PathBuf::from(absolute)
-    );
-    assert_eq!(
-        super::resolve_program("bin/helper", Some(cwd)),
-        cwd.join("bin/helper")
-    );
-    assert_eq!(
-        super::resolve_program("bin/helper", None),
-        std::path::PathBuf::from("bin/helper")
-    );
-    assert_eq!(
-        super::resolve_program("bin/helper", Some(std::path::Path::new("relative-work"))),
-        std::path::PathBuf::from("bin/helper"),
-        "relative programs are already resolved after Command changes cwd"
-    );
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn provider_resolves_relative_program_against_cwd() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let dir = tempfile::tempdir().unwrap();
-    let script = dir.path().join("token.sh");
-    std::fs::write(&script, "#!/bin/sh\nprintf 'cwd-tok'\n").unwrap();
-    let mut permissions = std::fs::metadata(&script).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&script, permissions).unwrap();
-
-    let provider = AuthProviderRef::new(
-        "test-cwd-relative".to_owned(),
-        AuthProviderConfig {
-            command: "./token.sh".to_owned(),
-            args: Some(vec![]),
-            token_ttl_secs: Some(3600),
-            timeout_secs: None,
-            cwd: Some(dir.path().to_string_lossy().into_owned()),
-        },
-    );
-    assert_eq!(
-        provider.ensure_fresh_token(None).await.rotated().as_deref(),
-        Some("cwd-tok")
-    );
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn provider_command_runs_in_cwd() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("token.txt"), "file-tok").unwrap();
-
-    let provider = AuthProviderRef::new(
-        "test-cwd-shell".to_owned(),
-        AuthProviderConfig {
-            command: "cat token.txt".to_owned(),
-            args: None,
-            token_ttl_secs: Some(3600),
-            timeout_secs: None,
-            cwd: Some(dir.path().to_string_lossy().into_owned()),
-        },
-    );
-    assert_eq!(
-        provider.ensure_fresh_token(None).await.rotated().as_deref(),
-        Some("file-tok")
-    );
-}
-
 /// Every first-party credential env var is scrubbed from the helper, so a BYOK
 /// helper never inherits the keys BYOK isolates on the wire.
 ///
@@ -967,7 +886,6 @@ async fn provider_helper_env_scrubs_first_party_credentials() {
         "XAI_API_KEY",
         "GROK_CODE_XAI_API_KEY",
         "KIMI_API_KEY",
-        "Z_AI_API_KEY",
         "GROK_AUTH",
         "GROK_AUTH_PATH",
         "GROK_DEPLOYMENT_KEY",
@@ -1003,5 +921,87 @@ async fn provider_helper_env_scrubs_first_party_credentials() {
         String::from_utf8_lossy(&output.stdout),
         "tok[]",
         "no first-party credential may survive into the helper env"
+    );
+}
+
+/// `resolve_program` branches: bare name via `PATH`, absolute as-is, relative
+/// against `cwd`.
+#[test]
+fn resolve_program_resolves_against_cwd() {
+    let cwd = std::path::Path::new("/work");
+    assert_eq!(
+        super::resolve_program("token-helper", Some(cwd)),
+        std::path::PathBuf::from("token-helper")
+    );
+    let abs = if cfg!(windows) {
+        r"C:\bin\helper.exe"
+    } else {
+        "/usr/local/bin/helper"
+    };
+    assert_eq!(
+        super::resolve_program(abs, Some(cwd)),
+        std::path::PathBuf::from(abs)
+    );
+    assert_eq!(
+        super::resolve_program("bin/helper", Some(cwd)),
+        cwd.join("bin/helper")
+    );
+    assert_eq!(
+        super::resolve_program("bin/helper", None),
+        std::path::PathBuf::from("bin/helper"),
+        "with no cwd a relative path is left to the process cwd"
+    );
+}
+
+/// The `args` form (the portable, no-shell shape a desktop/Windows helper
+/// should use) resolves a relative program against the provider's `cwd`.
+#[cfg(unix)]
+#[tokio::test]
+async fn provider_resolves_relative_program_against_cwd() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("token.sh");
+    std::fs::write(&script, "#!/bin/sh\nprintf 'cwd-tok'\n").unwrap();
+    let mut perms = std::fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).unwrap();
+
+    let provider = AuthProviderRef::new(
+        "test-cwd-relative".to_owned(),
+        AuthProviderConfig {
+            command: "./token.sh".to_owned(),
+            args: Some(vec![]),
+            token_ttl_secs: Some(3600),
+            timeout_secs: None,
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+        },
+    );
+    assert_eq!(
+        provider.ensure_fresh_token(None).await.rotated().as_deref(),
+        Some("cwd-tok")
+    );
+}
+
+/// `cwd` is the command's runtime directory: reading a file by relative name
+/// only succeeds if `current_dir` took effect (here via the shell form).
+#[cfg(unix)]
+#[tokio::test]
+async fn provider_command_runs_in_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("token.txt"), "file-tok").unwrap();
+
+    let provider = AuthProviderRef::new(
+        "test-cwd-shell".to_owned(),
+        AuthProviderConfig {
+            command: "cat token.txt".to_owned(),
+            args: None,
+            token_ttl_secs: Some(3600),
+            timeout_secs: None,
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+        },
+    );
+    assert_eq!(
+        provider.ensure_fresh_token(None).await.rotated().as_deref(),
+        Some("file-tok")
     );
 }

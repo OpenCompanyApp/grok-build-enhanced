@@ -229,15 +229,6 @@ pub(super) fn handle_task_backgrounded(notif: &acp::ExtNotification, app: &mut A
         bg.scrollback_entry_id = Some(entry_id);
     }
 
-    // Ext notifications reorder vs session updates: work registering after
-    // its awaiting wait must re-evaluate the skipped park. Root only — child
-    // tasks never enter root `bg_tasks`.
-    if !matches!(matched, SessionMatch::Child(_))
-        && let Some((_, _, agent)) = resolve_notif_agent(app, &session_notif.session_id)
-    {
-        agent.maybe_push_parked_marker();
-    }
-
     is_active
 }
 
@@ -570,11 +561,8 @@ pub(super) fn handle_task_completed(notif: &acp::ExtNotification, app: &mut AppV
         return false;
     };
 
-    let (task_snapshot, will_wake) = match session_notif.update {
-        XaiSessionUpdate::TaskCompleted {
-            task_snapshot,
-            will_wake,
-        } => (task_snapshot, will_wake),
+    let task_snapshot = match session_notif.update {
+        XaiSessionUpdate::TaskCompleted { task_snapshot, .. } => task_snapshot,
         _ => return false,
     };
 
@@ -613,9 +601,8 @@ pub(super) fn handle_task_completed(notif: &acp::ExtNotification, app: &mut AppV
     // Prefer the human description for "Task completed/failed: …" labels
     // (same as "Task started"), falling back to the raw command only when
     // no description was supplied.
-    let (command, elapsed, mut description, scrollback_entry_id, was_running) =
+    let (command, elapsed, mut description, scrollback_entry_id) =
         if let Some(bg_task) = session.bg_tasks.get_mut(task_id) {
-            let was_running = bg_task.status == BgTaskStatus::Running;
             bg_task.status = if success {
                 BgTaskStatus::Done
             } else {
@@ -631,7 +618,6 @@ pub(super) fn handle_task_completed(notif: &acp::ExtNotification, app: &mut AppV
                 bg_task.elapsed(),
                 bg_task.description.clone(),
                 bg_task.scrollback_entry_id,
-                was_running,
             )
         } else {
             // Task we didn't know about — use snapshot data. Prefer
@@ -657,9 +643,7 @@ pub(super) fn handle_task_completed(notif: &acp::ExtNotification, app: &mut AppV
                     Some(d)
                 }
             });
-            // Unknown task: it never counted toward the parked marker's
-            // running total, so its completion is not a countdown edge.
-            (command, elapsed, description, None, false)
+            (command, elapsed, description, None)
         };
 
     // Finish the "Task started" scrollback entry (stops bullet animation).
@@ -711,32 +695,6 @@ pub(super) fn handle_task_completed(notif: &acp::ExtNotification, app: &mut AppV
             .with_bg_task_description(description)
     };
     scrollback.push_block(block);
-
-    // Parked countdown: a Running command just finished under the parked
-    // "Worked for … still running" story. Root sessions only: a subagent-local
-    // task never counted toward the root marker's total. Re-borrow the
-    // agent — `resolve_target_view` consumed the earlier `&mut`.
-    if was_running
-        && !matches!(matched, SessionMatch::Child(_))
-        && let Some(agent) = app.agents.get_mut(&matched.agent_id())
-    {
-        agent.maybe_push_parked_marker();
-    }
-
-    // Between turns, a root-session completion re-emits the work-only status
-    // line so the story stays chronological (zero left: no line). When a wake
-    // response follows (`will_wake`, stamped by the shell), the wake turn's
-    // end marker carries the fresh counts instead — skip the line. Child
-    // (subagent) tasks route their chip to the child view above and never
-    // count toward the root marker — no root status line for them. Mutually
-    // exclusive with the parked tick above: parked means the turn is still
-    // running, which `maybe_push_work_status`'s busy gate refuses.
-    if !will_wake
-        && !matches!(matched, SessionMatch::Child(_))
-        && let Some(agent) = app.agents.get_mut(&matched.agent_id())
-    {
-        agent.maybe_push_work_status();
-    }
 
     is_active
 }

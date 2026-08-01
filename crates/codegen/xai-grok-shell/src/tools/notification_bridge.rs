@@ -423,7 +423,7 @@ async fn handle_notification(
                 "FileWritten notification forwarded to hunk tracker"
             );
         }
-
+        ToolNotification::SubagentCompleted(_) => {}
         ToolNotification::TaskCompleted(task_snapshot) => {
             let is_monitor =
                 task_snapshot.kind == xai_grok_tools::computer::types::TaskKind::Monitor;
@@ -503,6 +503,7 @@ async fn handle_notification(
                         traceparent: xai_file_utils::trace_context::current_traceparent(),
                         json_schema: None,
                         send_now: false,
+                        tool_overrides_update: None,
                         admission: Some(crate::session::commands::TaskWakeAdmission {
                             respond_to: admission_tx,
                             fallback: crate::session::commands::TaskWakeFallback {
@@ -1062,7 +1063,8 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
-            is_backgrounded: true,
+            description: None,
+            is_backgrounded: false,
         }
     }
 
@@ -1262,7 +1264,7 @@ mod tests {
         );
 
         // Suppressed leg: goal loop active — no wake follows the chip.
-        let (config, mut gateway_rx, _persistence_rx, _cmd_rx) = make_test_config_full();
+        let (config, mut gateway_rx, mut persistence_rx, mut cmd_rx) = make_test_config_full();
         config
             .goal_loop_active
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1276,7 +1278,127 @@ mod tests {
         assert_eq!(
             task_completed_will_wake(&mut gateway_rx),
             Some(false),
-            "a suppressed completion must stamp will_wake: false"
+            "an actor-declined completion must stamp will_wake: false"
+        );
+        assert!(
+            !config.task_completion_reservations.contains("bg-goal"),
+            "goal-loop suppression must not reserve a synthetic wake"
+        );
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(SessionCommand::DispatchNotificationHook { .. })
+        ));
+        let mut persisted = false;
+        while let Ok(message) = persistence_rx.try_recv() {
+            if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(update)) =
+                message
+                && matches!(
+                    &update.update,
+                    crate::extensions::notification::SessionUpdate::TaskCompleted { .. }
+                )
+            {
+                persisted = true;
+            }
+        }
+        assert!(
+            persisted,
+            "goal-loop suppression must still persist x.ai/task_completed"
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn stalled_admission_is_bounded_and_task_completion_still_emits() {
+        let (config, mut gateway_rx, mut persistence_rx, mut cmd_rx) = make_test_config_full();
+        config
+            .task_output_tool_name
+            .set(Some("get_command_or_subagent_output".to_string()))
+            .expect("slot is fresh in this test fixture");
+        let mut offsets = HashMap::new();
+        let notification = handle_notification(
+            &config,
+            ToolNotification::TaskCompleted(make_task_snapshot("bg-stalled", TaskKind::Bash)),
+            &mut offsets,
+        );
+        tokio::pin!(notification);
+        tokio::select! {
+            _ = &mut notification => panic!("admission should still be waiting"),
+            command = cmd_rx.recv() => assert!(matches!(command, Some(SessionCommand::Prompt { .. }))),
+        }
+        tokio::time::advance(TASK_WAKE_ADMISSION_TIMEOUT + std::time::Duration::from_millis(1))
+            .await;
+        tokio::task::yield_now().await;
+        notification.await;
+        assert_eq!(task_completed_will_wake(&mut gateway_rx), Some(false));
+        assert!(
+            config.task_completion_reservations.contains("bg-stalled"),
+            "a timed-out admission may still be handled and deferred by the actor"
+        );
+        let mut persisted_completion = false;
+        while let Ok(message) = persistence_rx.try_recv() {
+            if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(update)) =
+                message
+                && matches!(
+                    &update.update,
+                    crate::extensions::notification::SessionUpdate::TaskCompleted { .. }
+                )
+            {
+                persisted_completion = true;
+            }
+        }
+        assert!(persisted_completion);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_monitor_admission_queues_one_fallback_and_late_actor_drops_prompt() {
+        let (config, mut gateway_rx, _persistence_rx, mut cmd_rx) = make_test_config_full();
+        config
+            .task_output_tool_name
+            .set(Some("get_command_or_subagent_output".to_string()))
+            .expect("slot is fresh in this test fixture");
+        let mut offsets = HashMap::new();
+        let notification = handle_notification(
+            &config,
+            ToolNotification::TaskCompleted(make_task_snapshot("mon-timeout", TaskKind::Monitor)),
+            &mut offsets,
+        );
+        tokio::pin!(notification);
+        let prompt = tokio::select! {
+            _ = &mut notification => panic!("admission should still be waiting"),
+            command = cmd_rx.recv() => command.expect("prompt command"),
+        };
+        tokio::time::advance(TASK_WAKE_ADMISSION_TIMEOUT + std::time::Duration::from_millis(1))
+            .await;
+        tokio::task::yield_now().await;
+        notification.await;
+        let SessionCommand::Prompt {
+            admission: Some(admission),
+            respond_to,
+            ..
+        } = prompt
+        else {
+            panic!("expected task wake prompt");
+        };
+        assert!(matches!(
+            admission.fallback.source,
+            NotificationSource::MonitorCompleted { ref task_id } if task_id == "mon-timeout"
+        ));
+        assert!(admission.respond_to.send(true).is_err());
+        let _ = respond_to.send(Ok(crate::session::commands::PromptTurnOk {
+            stop_reason: acp::StopReason::Cancelled,
+            total_tokens: 0,
+            turn_snapshot: None,
+            completion_kind: crate::session::commands::PromptCompletionKind::RemovedFromQueue,
+            structured_output: None,
+            usage: None,
+            tool_overrides: None,
+        }));
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(SessionCommand::DispatchNotificationHook { .. })
+        ));
+        assert!(cmd_rx.try_recv().is_err());
+        assert_eq!(task_completed_will_wake(&mut gateway_rx), Some(false));
+        assert!(
+            config.task_completion_reservations.contains("mon-timeout"),
+            "the late actor fallback retains the reservation until user delivery"
         );
     }
 
@@ -2324,7 +2446,8 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
-            is_backgrounded: true,
+            description: None,
+            is_backgrounded: false,
         }
     }
 

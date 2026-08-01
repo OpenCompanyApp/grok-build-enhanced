@@ -32,8 +32,7 @@ pub trait Auth401AttributionCallback: Send + Sync + std::fmt::Debug {
 /// Shared, cheap-to-clone alias for the attribution callback.
 pub type SharedAttributionCallback = Arc<dyn Auth401AttributionCallback>;
 
-/// Record a 401 attribution event if a callback is wired without passing any
-/// credential material to telemetry.
+/// Record a 401 attribution event without retaining any credential bytes.
 pub(crate) fn emit_401(
     callback: Option<&SharedAttributionCallback>,
     consumer: ToolConsumer,

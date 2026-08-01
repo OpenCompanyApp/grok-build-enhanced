@@ -12,7 +12,6 @@ use super::cache::{FetchCache, FetchCacheLookup};
 use super::config::{MAX_REDIRECTS, MAX_URL_LENGTH, USER_AGENT_STRING, WebFetchParams};
 use super::error::{WebFetchError, safe_url_origin};
 use super::hosted_kimi::{HostedFetchResult, KimiHostedFetch};
-use super::hosted_zai::ZaiHostedReader;
 use super::http::HttpClient;
 use super::overflow::{OverflowHandler, RecoveryTools, inline_budget};
 use super::ssrf;
@@ -80,7 +79,6 @@ pub struct WebFetchClient {
     converter: Arc<htmd::HtmlToMarkdown>,
     params: WebFetchParams,
     kimi_hosted: Option<KimiHostedFetch>,
-    zai_reader: Option<ZaiHostedReader>,
     download_writer: SessionFileWriter,
     image_writer: SessionFileWriter,
     video_writer: SessionFileWriter,
@@ -124,7 +122,6 @@ impl WebFetchClient {
             converter,
             params: params.clone(),
             kimi_hosted: None,
-            zai_reader: None,
             download_writer: SessionFileWriter::new(DEFAULT_DOWNLOAD_DIR, "pdf"),
             image_writer: SessionFileWriter::new("images", "jpg"),
             video_writer: SessionFileWriter::new("videos", "mp4"),
@@ -141,19 +138,6 @@ impl WebFetchClient {
     ) -> Result<Self, WebFetchError> {
         self.kimi_hosted = Some(KimiHostedFetch::new(
             super::hosted_kimi::KIMI_CODE_BASE_URL,
-            auth_provider,
-            self.params.max_content_length(),
-        )?);
-        Ok(self)
-    }
-
-    /// Prefer Coding Plan Reader MCP for validated public URLs, with the local
-    /// SSRF-safe fetcher retained as a transport/protocol/service fallback.
-    pub fn with_zai_coding_plan_reader(
-        mut self,
-        auth_provider: crate::types::SharedApiKeyProvider,
-    ) -> Result<Self, WebFetchError> {
-        self.zai_reader = Some(ZaiHostedReader::new(
             auth_provider,
             self.params.max_content_length(),
         )?);
@@ -185,7 +169,7 @@ impl WebFetchClient {
         // provider call or local cache lookup. Otherwise content cached while
         // loopback was explicitly allowed could bypass a later fail-closed
         // provider session.
-        if self.kimi_hosted.is_some() || self.zai_reader.is_some() {
+        if self.kimi_hosted.is_some() {
             ssrf::check_ssrf(&url, self.params.allow_loopback()).await?;
         }
 
@@ -202,43 +186,6 @@ impl WebFetchClient {
 
         if let Some(hosted) = self.kimi_hosted.as_ref() {
             match hosted.fetch(&url).await? {
-                HostedFetchResult::Content(content) => {
-                    let source_bytes = content.len();
-                    let processed = self
-                        .process_text_content(
-                            content.as_bytes(),
-                            "text/markdown; charset=utf-8",
-                            session_folder,
-                            RecoveryTools {
-                                read: read_tool_name,
-                                execute: execute_tool_name,
-                            },
-                        )
-                        .await;
-                    let was_truncated = processed.was_truncated;
-                    let output = WebFetchOutput::Content(WebFetchContent {
-                        url: url_str.clone(),
-                        content: processed.content,
-                        content_type: processed.content_type,
-                        status_code: 200,
-                        bytes: source_bytes,
-                        source_artifact: processed
-                            .artifact_path
-                            .map(|path| WebFetchSourceArtifact { path }),
-                        inline_fallback: processed.inline_fallback,
-                        output_location: None,
-                    });
-                    self.cache
-                        .write()
-                        .insert_text(url_str, output.clone(), was_truncated);
-                    return Ok(output);
-                }
-                HostedFetchResult::Fallback => {}
-            }
-        }
-
-        if let Some(reader) = self.zai_reader.as_ref() {
-            match reader.fetch(&url).await? {
                 HostedFetchResult::Content(content) => {
                     let source_bytes = content.len();
                     let processed = self

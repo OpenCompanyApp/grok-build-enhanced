@@ -4,6 +4,7 @@
 //! boundary for Kimi Code. It deliberately contains no shell auth-store logic.
 
 mod schema;
+pub(crate) mod video;
 mod wire;
 
 pub(crate) use wire::{deserialize_chat_chunk, deserialize_chat_response, stream_error};
@@ -25,13 +26,15 @@ use xai_grok_sampling_types::{
 const KIMI_MESSAGES_BETA_QUERY: &str = "beta=true";
 const DEFAULT_REASONING_KEY: &str = "reasoning_content";
 const REASONING_KEYS: [&str; 3] = ["reasoning_content", "reasoning_details", "reasoning"];
+const MAX_REASONING_FRAGMENT_BYTES: usize = 64 * 1024;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 enum ReasoningDialect {
     #[default]
     Content,
     Details,
     Reasoning,
+    ProviderDefined(String),
 }
 
 impl ReasoningDialect {
@@ -40,22 +43,43 @@ impl ReasoningDialect {
             "reasoning_content" => Some(Self::Content),
             "reasoning_details" => Some(Self::Details),
             "reasoning" => Some(Self::Reasoning),
+            _ if valid_reasoning_field_name(key) => Some(Self::ProviderDefined(key.to_owned())),
             _ => None,
         }
     }
 
-    fn key(self) -> &'static str {
+    fn key(&self) -> &str {
         match self {
             Self::Content => "reasoning_content",
             Self::Details => "reasoning_details",
             Self::Reasoning => "reasoning",
+            Self::ProviderDefined(key) => key,
         }
     }
+}
+
+fn valid_reasoning_field_name(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    key.len() <= 64
+        && (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
+}
+
+fn provider_reasoning_candidate(key: &str) -> bool {
+    valid_reasoning_field_name(key)
+        && !matches!(
+            key,
+            "content" | "role" | "tool_calls" | "function_call" | "refusal" | "audio"
+        )
 }
 
 #[derive(Default)]
 struct ReasoningDialectInner {
     credential_binding: Option<CredentialBinding>,
+    model: Option<String>,
     dialect: ReasoningDialect,
 }
 
@@ -68,24 +92,26 @@ pub(crate) struct ReasoningDialectState {
 }
 
 impl ReasoningDialectState {
-    pub(crate) fn bind(&self, binding: Option<&CredentialBinding>) {
+    pub(crate) fn bind(&self, model: &str, binding: Option<&CredentialBinding>) {
         let binding = binding.cloned();
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if inner.credential_binding != binding {
+        if inner.credential_binding != binding || inner.model.as_deref() != Some(model) {
             inner.credential_binding = binding;
+            inner.model = Some(model.to_owned());
             inner.dialect = ReasoningDialect::default();
         }
     }
 
-    fn key(&self) -> &'static str {
+    fn key(&self) -> String {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .dialect
             .key()
+            .to_owned()
     }
 
     fn observe(&self, key: &str) {
@@ -112,19 +138,32 @@ impl ReasoningDialectState {
             else {
                 continue;
             };
-            let observed = REASONING_KEYS.iter().find_map(|key| {
-                message
-                    .get(*key)
-                    .and_then(serde_json::Value::as_str)
-                    .map(|value| (*key, value.to_owned()))
-            });
+            let observed = REASONING_KEYS
+                .iter()
+                .find_map(|key| {
+                    message
+                        .get(*key)
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|value| {
+                            (value.len() <= MAX_REASONING_FRAGMENT_BYTES)
+                                .then(|| ((*key).to_owned(), value.to_owned()))
+                        })
+                })
+                .or_else(|| {
+                    message.iter().find_map(|(key, value)| {
+                        provider_reasoning_candidate(key)
+                            .then(|| value.as_str())
+                            .flatten()
+                            .filter(|value| value.len() <= MAX_REASONING_FRAGMENT_BYTES)
+                            .map(|value| (key.clone(), value.to_owned()))
+                    })
+                });
             let Some((key, reasoning)) = observed else {
+                message.retain(|key, _| !provider_reasoning_candidate(key));
                 continue;
             };
-            self.observe(key);
-            for known_key in REASONING_KEYS {
-                message.remove(known_key);
-            }
+            self.observe(&key);
+            message.retain(|candidate, _| !provider_reasoning_candidate(candidate));
             message.insert(
                 DEFAULT_REASONING_KEY.to_owned(),
                 serde_json::Value::String(reasoning),
@@ -406,7 +445,7 @@ pub(crate) fn chat_body(
     wire::normalize_chat_history(
         &mut body,
         request.reasoning_effort != Some(ReasoningEffort::None),
-        reasoning_dialect.key(),
+        &reasoning_dialect.key(),
     )?;
     schema::normalize_tool_schemas(&mut body, "chat_completions")?;
     wire::normalize_tool_call_ids(&mut body, "chat_completions")?;
@@ -893,6 +932,28 @@ mod tests {
     }
 
     #[test]
+    fn provider_defined_reasoning_field_is_bounded_and_normalized() {
+        let state = ReasoningDialectState::default();
+        let mut response = serde_json::json!({
+            "choices": [{"delta": {
+                "content": "answer",
+                "provider.reasoning-v2": "thought",
+                "bad field": "discard",
+                "oversized": "x".repeat(MAX_REASONING_FRAGMENT_BYTES + 1)
+            }}]
+        });
+
+        state.normalize_response_value(&mut response, "delta");
+
+        let delta = &response["choices"][0]["delta"];
+        assert_eq!(delta["content"], "answer");
+        assert_eq!(delta["reasoning_content"], "thought");
+        assert!(delta.get("provider.reasoning-v2").is_none());
+        assert!(delta.get("oversized").is_none());
+        assert_eq!(state.key(), "provider.reasoning-v2");
+    }
+
+    #[test]
     fn empty_reasoning_content_still_selects_the_canonical_dialect() {
         let state = ReasoningDialectState::default();
         let mut response = serde_json::json!({
@@ -933,7 +994,7 @@ mod tests {
             record_id: Some("kimi-code".to_owned()),
             generation: 1,
         };
-        state.bind(Some(&first));
+        state.bind("k3", Some(&first));
         let mut observed = serde_json::json!({
             "choices": [{"message": {"reasoning_details": "kept"}}]
         });
@@ -944,7 +1005,28 @@ mod tests {
             generation: 2,
             ..first
         };
-        state.bind(Some(&replacement));
+        state.bind("k3", Some(&replacement));
+
+        assert_eq!(state.key(), "reasoning_content");
+    }
+
+    #[test]
+    fn model_change_resets_provider_defined_reasoning_dialect() {
+        let state = ReasoningDialectState::default();
+        let binding = CredentialBinding {
+            provider: ProviderId::KimiCode,
+            source: CredentialSourceId::KimiCodeApiKey,
+            record_id: Some("kimi-code".to_owned()),
+            generation: 7,
+        };
+        state.bind("k3", Some(&binding));
+        let mut observed = serde_json::json!({
+            "choices": [{"message": {"provider.reasoning": "kept"}}]
+        });
+        state.normalize_response_value(&mut observed, "message");
+        assert_eq!(state.key(), "provider.reasoning");
+
+        state.bind("k3.1", Some(&binding));
 
         assert_eq!(state.key(), "reasoning_content");
     }

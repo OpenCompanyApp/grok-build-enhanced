@@ -24,11 +24,11 @@ chrono = { workspace = true, features = ["serde"] }
 eventsource-stream = { workspace = true }
 futures-util = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
-reqwest = { workspace = true, features = ["stream"] }
+reqwest = { workspace = true, features = ["multipart", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "macros", "time", "sync"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }

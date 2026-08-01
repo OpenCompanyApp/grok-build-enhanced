@@ -360,6 +360,7 @@ mod tests {
                 total_tokens: 4,
                 reasoning_tokens: 0,
                 cached_prompt_tokens: 0,
+                cache_creation_prompt_tokens: 0,
             },
             None,
             Some(10),
@@ -534,7 +535,6 @@ mod tests {
             None,
             Some(ProviderId::OpenAiCodex),
             Some(ProviderId::KimiCode),
-            Some(ProviderId::ZaiCodingPlan),
             Some(ProviderId::Custom),
         ] {
             let err = SamplingError::Api {
@@ -687,7 +687,6 @@ mod tests {
                 None,
                 Some(ProviderId::OpenAiCodex),
                 Some(ProviderId::KimiCode),
-                Some(ProviderId::ZaiCodingPlan),
                 Some(ProviderId::Custom),
             ] {
                 let err = SamplingError::Api {

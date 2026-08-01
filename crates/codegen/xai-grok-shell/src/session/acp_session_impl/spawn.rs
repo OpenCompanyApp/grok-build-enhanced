@@ -49,11 +49,9 @@ struct MemoryEmbeddingRoute {
 fn persisted_provider_binding(
     config: &xai_grok_sampler::SamplerConfig,
 ) -> Option<xai_grok_sampling_types::CredentialBinding> {
-    (config.provider.is_openai_codex()
-        || config.provider.is_kimi_code()
-        || config.provider.is_zai_coding_plan())
-    .then(|| config.credential_binding.clone())
-    .flatten()
+    (config.provider.is_openai_codex() || config.provider.is_kimi_code())
+        .then(|| config.credential_binding.clone())
+        .flatten()
 }
 
 fn restored_previous_model(
@@ -80,7 +78,7 @@ fn resolve_memory_embedding_route(
     base_url: &str,
     api_key: Option<&str>,
 ) -> MemoryEmbeddingRoute {
-    if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_zai_coding_plan() {
+    if provider.is_openai_codex() || provider.is_kimi_code() {
         return MemoryEmbeddingRoute {
             config: None,
             base_url: String::new(),
@@ -301,6 +299,7 @@ pub(crate) async fn spawn_session_actor(
     system_prompt_label: String,
     compaction_mode: xai_chat_state::CompactionMode,
     compaction_verbatim_input: bool,
+    compaction_tool_choice: crate::util::config::CompactionToolChoice,
     two_pass_enabled: bool,
     buffering_settings: Option<BufferingSettings>,
     origin_client: Option<crate::http::OriginClientInfo>,
@@ -348,6 +347,7 @@ pub(crate) async fn spawn_session_actor(
     goal_enabled: bool,
     background_workflows_enabled: bool,
     subagents_enabled: bool,
+    subagents_max_depth: u32,
     ask_user_question_enabled: bool,
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
@@ -381,6 +381,7 @@ pub(crate) async fn spawn_session_actor(
     >,
     max_turns: Option<usize>,
     forked_tool_override: Option<Vec<ToolSpec>>,
+    is_chat_kind: bool,
 ) -> Result<
     (
         SessionHandle,
@@ -432,8 +433,7 @@ pub(crate) async fn spawn_session_actor(
         let web_fetch_allowed_domains = web_fetch_config
             .params_for_codex_subscription(
                 sampling_config.provider.is_openai_codex()
-                    || sampling_config.provider.is_kimi_code()
-                    || sampling_config.provider.is_zai_coding_plan(),
+                    || sampling_config.provider.is_kimi_code(),
             )
             .map_or_else(Vec::new, |params| params.allowed_domains());
         let mut permission_config =
@@ -601,18 +601,6 @@ pub(crate) async fn spawn_session_actor(
             );
             xai_grok_tools::implementations::WebSearchConfig::Disabled
         }
-    } else if sampling_config.provider.is_zai_coding_plan() {
-        if api_key_provider.is_some() {
-            xai_grok_tools::implementations::WebSearchConfig::ZaiCodingPlan {
-                endpoint: xai_grok_sampling_types::ZAI_CODING_PLAN_SEARCH_MCP_URL.to_owned(),
-            }
-        } else {
-            tracing::warn!(
-                provider = "zai_coding_plan",
-                "web_search disabled: provider-scoped request authentication is unavailable"
-            );
-            xai_grok_tools::implementations::WebSearchConfig::Disabled
-        }
     } else if let Some(cfg) = web_search_sampling_config.as_ref() {
         if let Some(api_key) = cfg.api_key.clone() {
             xai_grok_tools::implementations::WebSearchConfig::Enabled {
@@ -689,6 +677,8 @@ pub(crate) async fn spawn_session_actor(
         top_p: sampling_config.top_p,
         api_backend: sampling_config.api_backend.clone(),
         extra_headers: sampling_config.extra_headers.clone(),
+        query_params: sampling_config.query_params.clone(),
+        env_http_headers: sampling_config.env_http_headers.clone(),
         comp_hash: sampling_config.comp_hash.clone(),
         context_window: context_window_override.unwrap_or(baseline_context_window),
         reasoning_effort: sampling_config.reasoning_effort,
@@ -887,47 +877,8 @@ pub(crate) async fn spawn_session_actor(
         };
     let bridge_state_path =
         crate::session::persistence::session_dir(&session_info).join("tool_state.json");
+    let initial_agent_name = agent_definition.name.clone();
     let initial_agent_type = Some(agent_definition.name.clone());
-    let harness_metrics = if telemetry_enabled || xai_grok_telemetry::external::is_active() {
-        let plugin_names = plugin_registry
-            .as_ref()
-            .map(|reg| {
-                reg.active_plugins()
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        Some(super::telemetry::SessionHarnessMetrics {
-            session_id: session_info.id.0.to_string(),
-            client_identifier: session_client_identifier.clone(),
-            model_id: session_model_id.0.to_string(),
-            agent_name: agent_definition.name.clone(),
-            permission_mode: if session_yolo_mode {
-                xai_grok_telemetry::enums::PermissionMode::AlwaysApprove
-            } else if session_auto_mode
-                && crate::util::config::auto_permission_mode_enabled_from_disk()
-            {
-                xai_grok_telemetry::enums::PermissionMode::Auto
-            } else {
-                xai_grok_telemetry::enums::PermissionMode::Ask
-            },
-            mcp_server_names: mcp_servers
-                .iter()
-                .map(|s| mcp_server_name(s).to_owned())
-                .collect(),
-            lsp_server_names: tool_context.lsp_server_names.clone(),
-            memory_enabled: memory_config.is_some(),
-            auto_update,
-            cwd: tool_context.cwd.as_str().to_owned(),
-            skills_config: skills_config.clone(),
-            compat,
-            plugin_registry: plugin_registry.clone(),
-            plugin_names,
-        })
-    } else {
-        None
-    };
     let compaction_policy = xai_grok_agent::CompactionPolicy {
         auto_compact_threshold_percent: auto_compact_threshold_percent as u32,
         compact_model: None,
@@ -1126,6 +1077,11 @@ pub(crate) async fn spawn_session_actor(
         }
         Arc::new(TokioMutex::new(state))
     };
+    let scheduler_background_loops = crate::util::config::resolve_scheduler_background_loops(
+        remote_settings
+            .as_ref()
+            .and_then(|settings| settings.scheduler_background_loops),
+    );
     let rebuild_spec = std::sync::Arc::new(crate::session::agent_rebuild::AgentRebuildSpec {
         working_directory: tool_context.cwd.as_path().to_path_buf(),
         terminal_backend: terminal_backend.clone(),
@@ -1155,9 +1111,6 @@ pub(crate) async fn spawn_session_actor(
             }
             xai_grok_tools::implementations::WebSearchConfig::KimiCode { .. } => {
                 Some(xai_grok_sampling_types::ProviderId::KimiCode)
-            }
-            xai_grok_tools::implementations::WebSearchConfig::ZaiCodingPlan { .. } => {
-                Some(xai_grok_sampling_types::ProviderId::ZaiCodingPlan)
             }
             xai_grok_tools::implementations::WebSearchConfig::Enabled { .. } => {
                 configured_web_search_provider
@@ -1190,14 +1143,12 @@ pub(crate) async fn spawn_session_actor(
         monitor_event_buffer: tool_context.monitor_event_buffer.clone(),
         user_question_tx: user_question_tx.clone(),
         subagent_depth: tool_context.subagent_depth,
+        subagents_max_depth,
         session_id_str: session_info.id.0.to_string(),
+        blocking_wait_depth: tool_context.blocking_wait_depth.clone(),
         respect_gitignore,
         path_not_found_hints,
-        scheduler_background_loops: crate::util::config::resolve_scheduler_background_loops(
-            remote_settings
-                .as_ref()
-                .and_then(|settings| settings.scheduler_background_loops),
-        ),
+        scheduler_background_loops,
         mcp_state: mcp_state.clone(),
         managed_gateway_tool_client: managed_gateway_tool_client.clone(),
         is_non_interactive: startup_hints.non_interactive,
@@ -1226,6 +1177,46 @@ pub(crate) async fn spawn_session_actor(
             );
             e
         })?;
+    let harness_metrics = if telemetry_enabled || xai_grok_telemetry::external::is_active() {
+        let plugin_names = plugin_registry
+            .as_ref()
+            .map(|reg| {
+                reg.active_plugins()
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(super::telemetry::SessionHarnessMetrics {
+            session_id: session_info.id.0.to_string(),
+            client_identifier: session_client_identifier.clone(),
+            model_id: session_model_id.0.to_string(),
+            agent_name: initial_agent_name,
+            permission_mode: if session_yolo_mode {
+                xai_grok_telemetry::enums::PermissionMode::AlwaysApprove
+            } else if session_auto_mode
+                && crate::util::config::auto_permission_mode_enabled_from_disk()
+            {
+                xai_grok_telemetry::enums::PermissionMode::Auto
+            } else {
+                xai_grok_telemetry::enums::PermissionMode::Ask
+            },
+            mcp_server_names: mcp_servers
+                .iter()
+                .map(|s| mcp_server_name(s).to_owned())
+                .collect(),
+            lsp_server_names: tool_context.lsp_server_names.clone(),
+            memory_enabled: memory_config.is_some(),
+            auto_update,
+            cwd: tool_context.cwd.as_str().to_owned(),
+            skill_names: agent.tool_bridge().skill_discovery_snapshot_names().await,
+            compat,
+            plugin_registry: plugin_registry.clone(),
+            plugin_names,
+        })
+    } else {
+        None
+    };
     let resolved_task_output =
         xai_grok_tools::reminders::task_completion::resolve_task_output_tool_name(
             agent.tool_bridge(),
@@ -1295,6 +1286,13 @@ pub(crate) async fn spawn_session_actor(
     } else {
         save_system_prompt(&session_info, &system_prompt);
     }
+    let initial_prefix_carries_fallback_date = resumed_prefix_carries_fallback_date(
+        agent
+            .definition()
+            .user_message_template
+            .surfaces_local_date(),
+        &conversation,
+    );
     persist_chat_history_jsonl_sync(&session_info, &conversation);
     chat_state_handle.replace_conversation(conversation);
     let feedback_client = feedback_proxy_url.map(|base_url| {
@@ -1700,12 +1698,16 @@ pub(crate) async fn spawn_session_actor(
         }
     };
     let doom_loop_recovery = effective_config.resolve_doom_loop_recovery();
+    let resolved_tool_overrides: std::sync::Arc<
+        arc_swap::ArcSwapOption<xai_grok_sampling_types::ToolOverrides>,
+    > = std::sync::Arc::new(arc_swap::ArcSwapOption::empty());
     let session = Arc::new_cyclic(|weak: &std::sync::Weak<SessionActor>| SessionActor {
         session_info: session_info.clone(),
         auth_method_id,
         model_auth_memo: std::cell::RefCell::new(None),
         attribution_callback,
         auth_manager,
+        is_chat_kind,
         state,
         notifications: NotificationSender {
             gateway: gateway.clone(),
@@ -1725,6 +1727,8 @@ pub(crate) async fn spawn_session_actor(
         pending_interactions: pending_interactions.clone(),
         telemetry_enabled,
         supports_backend_search: std::cell::Cell::new(sampling_config.supports_backend_search),
+        tool_overrides: std::cell::RefCell::new(None),
+        resolved_tool_overrides: resolved_tool_overrides.clone(),
         compactions_remaining: std::cell::Cell::new(sampling_config.compactions_remaining),
         compaction_at_tokens: std::cell::Cell::new(sampling_config.compaction_at_tokens),
         doom_loop_recovery,
@@ -1743,6 +1747,7 @@ pub(crate) async fn spawn_session_actor(
             previous_model: std::cell::Cell::new(restored_previous_model),
             compaction_mode,
             verbatim_input: compaction_verbatim_input,
+            tool_choice: compaction_tool_choice,
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
         },
@@ -1878,6 +1883,7 @@ pub(crate) async fn spawn_session_actor(
         deferred_prefix: TaskSlot::new(),
         extension_registry: session_extension_registry(weak.clone()),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
+        prefix_carries_fallback_date: std::cell::Cell::new(initial_prefix_carries_fallback_date),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
         hook_registry: std::cell::RefCell::new(built_hook_registry),
@@ -2215,6 +2221,7 @@ pub(crate) async fn spawn_session_actor(
             pending_interactions,
             info: session_info,
             max_turns,
+            resolved_tool_overrides,
             hunk_tracker_handle,
             chat_state_handle: chat_state_handle_for_handle,
             signals_handle,
@@ -2245,12 +2252,37 @@ pub(crate) async fn spawn_session_actor(
             terminal_backend: Some(terminal_backend.clone()),
             tools_notification_handle: Some(tools_notification_handle.clone()),
             scheduler_handle: scheduler_handle_for_handle,
+            scheduler_background_loops,
         },
         permission_events_rx,
         system_prompt,
         session_done_rx,
     ))
 }
+fn resumed_prefix_carries_fallback_date(
+    template_surfaces_local_date: bool,
+    conversation: &[ConversationItem],
+) -> bool {
+    if template_surfaces_local_date {
+        return false;
+    }
+    conversation.iter().any(|item| {
+        let ConversationItem::User(user) = item else {
+            return false;
+        };
+        let contains = |needle: &str| {
+            user.content.iter().any(|part| {
+                matches!(
+                    part,
+                    xai_grok_sampling_types::conversation::ContentPart::Text { text }
+                        if text.contains(needle)
+                )
+            })
+        };
+        contains("<user_info>") && contains(crate::session::user_message::USER_INFO_DATE_MARKER)
+    })
+}
+
 /// Handle for a session's dedicated thread. Stored separately from `SessionHandle`
 /// (which derives `Clone`) because `JoinHandle` is not `Clone`.
 pub struct SessionThread {
@@ -2311,6 +2343,7 @@ pub(crate) async fn spawn_session_on_thread(
     system_prompt_label: String,
     compaction_mode: xai_chat_state::CompactionMode,
     compaction_verbatim_input: bool,
+    compaction_tool_choice: crate::util::config::CompactionToolChoice,
     two_pass_enabled: bool,
     buffering_settings: Option<BufferingSettings>,
     origin_client: Option<crate::http::OriginClientInfo>,
@@ -2358,6 +2391,7 @@ pub(crate) async fn spawn_session_on_thread(
     goal_enabled: bool,
     background_workflows_enabled: bool,
     subagents_enabled: bool,
+    subagents_max_depth: u32,
     ask_user_question_enabled: bool,
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
@@ -2392,6 +2426,7 @@ pub(crate) async fn spawn_session_on_thread(
     >,
     max_turns: Option<usize>,
     forked_tool_override: Option<Vec<ToolSpec>>,
+    is_chat_kind: bool,
 ) -> Result<
     (
         SessionHandle,
@@ -2477,6 +2512,7 @@ pub(crate) async fn spawn_session_on_thread(
                         system_prompt_label,
                         compaction_mode,
                         compaction_verbatim_input,
+                        compaction_tool_choice,
                         two_pass_enabled,
                         buffering_settings,
                         origin_client,
@@ -2524,6 +2560,7 @@ pub(crate) async fn spawn_session_on_thread(
                         goal_enabled,
                         background_workflows_enabled,
                         subagents_enabled,
+                        subagents_max_depth,
                         ask_user_question_enabled,
                         client_hooks,
                         prompt_display_cwd,
@@ -2553,6 +2590,7 @@ pub(crate) async fn spawn_session_on_thread(
                         parent_scheduler_handle,
                         max_turns,
                         forked_tool_override,
+                        is_chat_kind,
                     )
                     .await
                     {

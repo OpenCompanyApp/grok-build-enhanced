@@ -73,10 +73,6 @@ pub enum ProviderId {
     /// Anthropic-compatible Messages protocol.
     #[serde(rename = "kimi_code")]
     KimiCode,
-    /// Global personal Z.AI GLM Coding Plan subscription. This must never
-    /// share credentials or endpoints with Z.AI Open Platform or BigModel CN.
-    #[serde(rename = "zai_coding_plan")]
-    ZaiCodingPlan,
     /// Existing custom-model behavior. The provider-specific request policy
     /// remains caller-defined unless a more specific provider is selected.
     Custom,
@@ -91,17 +87,10 @@ impl ProviderId {
         matches!(self, Self::KimiCode)
     }
 
-    pub const fn is_zai_coding_plan(self) -> bool {
-        matches!(self, Self::ZaiCodingPlan)
-    }
-
     /// Whether requests cross a first-class subscription-provider boundary
     /// whose payloads and response diagnostics must remain redacted.
     pub const fn requires_redacted_provider_diagnostics(self) -> bool {
-        matches!(
-            self,
-            Self::OpenAiCodex | Self::KimiCode | Self::ZaiCodingPlan
-        )
+        matches!(self, Self::OpenAiCodex | Self::KimiCode)
     }
 
     pub const fn as_str(self) -> &'static str {
@@ -109,7 +98,6 @@ impl ProviderId {
             Self::Xai => "xai",
             Self::OpenAiCodex => "openai_codex",
             Self::KimiCode => "kimi_code",
-            Self::ZaiCodingPlan => "zai_coding_plan",
             Self::Custom => "custom",
         }
     }
@@ -135,8 +123,6 @@ pub enum CredentialSourceId {
     OpenAiCodexSubscription,
     #[serde(rename = "kimi_code_api_key")]
     KimiCodeApiKey,
-    #[serde(rename = "zai_coding_plan_api_key")]
-    ZaiCodingPlanApiKey,
     StaticApiKey,
     /// In-memory token minted by a trusted named helper for one exact custom
     /// provider route. This source is never valid for a first-party provider.
@@ -184,15 +170,6 @@ impl CredentialBinding {
         Self {
             provider: ProviderId::KimiCode,
             source: CredentialSourceId::KimiCodeApiKey,
-            record_id,
-            generation: 0,
-        }
-    }
-
-    pub fn zai_coding_plan(record_id: Option<String>) -> Self {
-        Self {
-            provider: ProviderId::ZaiCodingPlan,
-            source: CredentialSourceId::ZaiCodingPlanApiKey,
             record_id,
             generation: 0,
         }

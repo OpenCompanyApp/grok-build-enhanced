@@ -21,23 +21,23 @@ use reqwest::header::{
 use serde::Serialize;
 
 use xai_grok_sampling_types::error::{
-    parse_error_bytes, try_parse_stream_error, try_parse_stream_error_redacted,
+    try_parse_stream_error, try_parse_stream_error_redacted, user_facing_api_error_message,
 };
 use xai_grok_sampling_types::{
-    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
-    ConversationResponse, CreateResponseWrapper, CredentialBinding, DOOM_LOOP_CHECK_HEADER,
-    MessagesRequestWrapper, OPENAI_CODEX_RESPONSES_LITE_HEADER, ProviderId, ReasoningEffort,
-    ResponseModelMetadata, Result, SamplingError, build_messages_request, is_check_event, messages,
-    rs,
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ChatContentBlock,
+    ConversationRequest, ConversationResponse, CreateResponseWrapper, CredentialBinding,
+    DOOM_LOOP_CHECK_HEADER, MessageContent, MessagesRequestWrapper,
+    OPENAI_CODEX_RESPONSES_LITE_HEADER, ProviderId, ReasoningEffort, ResponseModelMetadata, Result,
+    SamplingError, build_messages_request, is_check_event, messages, rs,
 };
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
+use crate::provider::kimi_code;
 pub(crate) use crate::provider::openai_codex::turn_state::CodexTurnStateStore;
 use crate::provider::openai_codex::{
     endpoint as codex_endpoint, errors as codex_errors, headers as codex_headers,
     responses as codex_responses, sse::CodexSseDecoder,
 };
-use crate::provider::{kimi_code, zai_coding_plan};
 use codex_headers::CODEX_TURN_STATE_HEADER;
 
 // Re-export ApiBackend from the shared types crate for downstream callers.
@@ -57,7 +57,7 @@ fn normalize_reasoning_effort_for_provider(
     provider: ProviderId,
     effort: ReasoningEffort,
 ) -> Result<ReasoningEffort> {
-    if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_zai_coding_plan() {
+    if provider.is_openai_codex() || provider.is_kimi_code() {
         return Ok(effort);
     }
     match effort {
@@ -525,6 +525,9 @@ pub struct SamplingClient {
     /// Kimi Chat Completions reasoning-key dialect shared by cheap clones but
     /// reset whenever the provider credential record changes.
     kimi_reasoning_dialect: kimi_code::ReasoningDialectState,
+    /// Request-local Kimi video IDs. The cache is process memory only and is
+    /// scoped by credential generation plus canonical file identity.
+    kimi_video_uploads: kimi_code::video::UploadCache,
     /// Per-turn ChatGPT sticky-routing state shared by cheap client clones.
     /// An empty request ID (for example an auxiliary title call) neither reads
     /// nor clears this state, so concurrent auxiliary work cannot disturb the
@@ -719,23 +722,6 @@ impl SamplingClient {
                 ));
             }
         }
-        if config.provider.is_zai_coding_plan() {
-            zai_coding_plan::validate_config(
-                config.provider,
-                &config.base_url,
-                config.api_backend.clone(),
-            )?;
-            if config.api_key.is_some()
-                || config.bearer_resolver.is_some()
-                || config.request_auth.is_none()
-                || config.auth_scheme != AuthScheme::Bearer
-            {
-                return Err(SamplingError::InvalidConfiguration(
-                    "Z.AI Coding Plan requires provider-scoped bearer authentication",
-                ));
-            }
-        }
-
         let mut headers = HeaderMap::new();
         let mut responses_lite = false;
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -817,13 +803,6 @@ impl SamplingClient {
                     "Kimi Code protected/provider headers cannot be set via extra_headers",
                 ));
             }
-            if config.provider.is_zai_coding_plan()
-                && zai_coding_plan::is_protected_header(&header_name)
-            {
-                return Err(SamplingError::InvalidConfiguration(
-                    "Z.AI Coding Plan protected/provider headers cannot be set via extra_headers",
-                ));
-            }
             let mut header_value = HeaderValue::from_str(value)
                 .map_err(|_| SamplingError::InvalidConfiguration("Invalid extra header value"))?;
             if Self::is_sensitive_header(header_name.as_str()) {
@@ -887,7 +866,6 @@ impl SamplingClient {
                     );
                 }
             }
-            ProviderId::ZaiCodingPlan => {}
         }
 
         // Always set User-Agent: per-session origin if available, else fallback.
@@ -911,8 +889,6 @@ impl SamplingClient {
             None
         } else if config.provider.is_kimi_code() {
             Some(kimi_code::http_client(config.force_http1)?)
-        } else if config.provider.is_zai_coding_plan() {
-            Some(zai_coding_plan::http_client(config.force_http1)?)
         } else if config.force_http1 {
             tracing::info!("Using HTTP/1.1 for sampling client (force_http1=true)");
             Some(crate::shared_http::client_http1().map_err(SamplingError::Http)?)
@@ -966,6 +942,7 @@ impl SamplingClient {
             request_auth: config.request_auth,
             provider_auth_recovery_state: Default::default(),
             kimi_reasoning_dialect: Default::default(),
+            kimi_video_uploads: Default::default(),
             codex_turn_state,
         })
     }
@@ -977,6 +954,7 @@ impl SamplingClient {
         rebuilt.provider_auth_recovery_state =
             std::sync::Arc::clone(&self.provider_auth_recovery_state);
         rebuilt.kimi_reasoning_dialect = self.kimi_reasoning_dialect.clone();
+        rebuilt.kimi_video_uploads = self.kimi_video_uploads.clone();
         Ok(rebuilt)
     }
 
@@ -1057,9 +1035,6 @@ impl SamplingClient {
                 self.defaults.api_backend.clone(),
                 credential_binding.as_ref(),
             )?;
-        }
-        if self.defaults.provider.is_zai_coding_plan() {
-            zai_coding_plan::seal_headers(&headers, credential_binding.as_ref())?;
         }
         if let Some(rejected) = rejected
             && !credential_binding
@@ -1254,7 +1229,6 @@ impl SamplingClient {
         let auth_type = match (self.defaults.provider, self.defaults.auth_scheme, has_auth) {
             (ProviderId::OpenAiCodex, _, true) => "openai-codex-subscription",
             (ProviderId::KimiCode, _, true) => "kimi-code-api-key",
-            (ProviderId::ZaiCodingPlan, _, true) => "zai-coding-plan-api-key",
             (_, AuthScheme::XApiKey, true) => "x-api-key",
             (_, AuthScheme::Bearer, true) => "bearer",
             (_, _, false) => "none",
@@ -1368,9 +1342,6 @@ impl SamplingClient {
         if provider.is_kimi_code() {
             return kimi_code::response_header_diagnostics(headers);
         }
-        if provider.is_zai_coding_plan() {
-            return zai_coding_plan::response_header_diagnostics(headers);
-        }
         if self.defaults.redact_response_diagnostics {
             return vec![format!("  details omitted (provider={provider})")];
         }
@@ -1421,14 +1392,10 @@ impl SamplingClient {
     }
 
     async fn read_response_bytes(&self, response: reqwest::Response) -> Result<bytes::Bytes> {
-        if self.defaults.provider.is_zai_coding_plan() {
-            zai_coding_plan::read_limited_response_body(response).await
-        } else {
-            response
-                .bytes()
-                .await
-                .map_err(|error| self.transport_error(error))
-        }
+        response
+            .bytes()
+            .await
+            .map_err(|error| self.transport_error(error))
     }
 
     fn unauthorized_message(&self, endpoint: &str, server_message: Option<&str>) -> String {
@@ -1496,15 +1463,13 @@ impl SamplingClient {
             codex_errors::response_message(body)
         } else if self.defaults.provider.is_kimi_code() {
             kimi_code::response_message(status, body)
-        } else if self.defaults.provider.is_zai_coding_plan() {
-            zai_coding_plan::response_message(status, body)
         } else if self.defaults.redact_response_diagnostics {
             format!(
                 "{} request failed with HTTP {status}",
                 self.defaults.provider
             )
         } else {
-            parse_error_bytes(body)
+            user_facing_api_error_message(status, body)
         }
     }
 
@@ -1563,21 +1528,6 @@ impl SamplingClient {
         let retry_after_secs = extract_retry_after(response.headers());
         let should_retry = extract_should_retry(response.headers());
         let bytes = self.read_response_bytes(response).await?;
-        if self.defaults.provider.is_zai_coding_plan()
-            && let Some(error) = zai_coding_plan::business_error(bytes.as_ref())
-        {
-            if matches!(
-                error,
-                SamplingError::Api {
-                    status: reqwest::StatusCode::UNAUTHORIZED,
-                    ..
-                }
-            ) {
-                self.record_401_attribution(crate::attribution::SamplingConsumer::ChatCompletions);
-            }
-            return Err(error);
-        }
-
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 self.record_401_attribution(crate::attribution::SamplingConsumer::ChatCompletions);
@@ -1589,8 +1539,6 @@ impl SamplingClient {
             let message = self.provider_error_message(status, bytes.as_ref());
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
-            } else if self.defaults.provider.is_zai_coding_plan() {
-                zai_coding_plan::should_retry(status, bytes.as_ref(), should_retry)
             } else {
                 should_retry
             };
@@ -1633,11 +1581,168 @@ impl SamplingClient {
     // Chat Completions API
     // =========================================================================
 
+    async fn prepare_chat_video_inputs(
+        &self,
+        request: &mut ChatCompletionRequest,
+    ) -> Result<Option<CredentialBinding>> {
+        let mut inputs = Vec::new();
+        for (message_index, message) in request.messages.iter().enumerate() {
+            let MessageContent::Blocks(blocks) = &message.content else {
+                continue;
+            };
+            for (block_index, block) in blocks.iter().enumerate() {
+                if let ChatContentBlock::VideoUrl { video_url } = block {
+                    inputs.push((
+                        message_index,
+                        block_index,
+                        video_url.url.clone(),
+                        video_url.mime_type.clone(),
+                    ));
+                }
+            }
+        }
+        if inputs.is_empty() {
+            return Ok(None);
+        }
+        // This check intentionally precedes filesystem and HTTP work. A video
+        // must never be silently dropped or transmitted to another provider.
+        if !self.defaults.provider.is_kimi_code() {
+            return Err(SamplingError::InvalidConfiguration(
+                "video input is supported only by the Kimi Code provider",
+            ));
+        }
+        if self.defaults.api_backend != ApiBackend::ChatCompletions {
+            return Err(SamplingError::InvalidConfiguration(
+                "Kimi video input requires the Chat Completions backend",
+            ));
+        }
+
+        let mut prepared = Vec::with_capacity(inputs.len());
+        for (_, _, path, mime_type) in &inputs {
+            prepared.push(kimi_code::video::prepare(path, mime_type).await?);
+        }
+        let mut remote_urls = Vec::with_capacity(prepared.len());
+        let mut upload_binding: Option<CredentialBinding> = None;
+        for video in &prepared {
+            let (remote_id, binding) = self.upload_kimi_video(video).await?;
+            if upload_binding
+                .as_ref()
+                .is_some_and(|expected| expected != &binding)
+            {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Kimi credential changed while video inputs were uploading",
+                ));
+            }
+            upload_binding = Some(binding);
+            remote_urls.push(format!("ms://{remote_id}"));
+        }
+        for ((message_index, block_index, _, _), remote_url) in inputs.into_iter().zip(remote_urls)
+        {
+            let MessageContent::Blocks(blocks) = &mut request.messages[message_index].content
+            else {
+                unreachable!("video location was collected from a block message");
+            };
+            let ChatContentBlock::VideoUrl { video_url } = &mut blocks[block_index] else {
+                unreachable!("video location changed during request preparation");
+            };
+            video_url.url = remote_url;
+            video_url.mime_type.clear();
+        }
+        Ok(upload_binding)
+    }
+
+    async fn upload_kimi_video(
+        &self,
+        video: &kimi_code::video::PreparedVideo,
+    ) -> Result<(String, CredentialBinding)> {
+        kimi_code::validate_config(
+            self.defaults.provider,
+            &self.base_url,
+            self.defaults.api_backend.clone(),
+        )?;
+        let endpoint = format!("{}/files", self.base_url.trim_end_matches('/'));
+        let prepared = self.post(endpoint).await?;
+        let binding =
+            prepared
+                .credential_binding
+                .clone()
+                .ok_or(SamplingError::InvalidConfiguration(
+                    "Kimi video upload requires a generation-bound credential",
+                ))?;
+        if let Some(remote_id) = self.kimi_video_uploads.get(&binding, &video.identity) {
+            return Ok((remote_id, binding));
+        }
+        let part = reqwest::multipart::Part::bytes(video.bytes.clone())
+            .file_name(video.file_name.clone())
+            .mime_str(video.mime_type)
+            .map_err(|_| SamplingError::InvalidConfiguration("invalid Kimi video MIME type"))?;
+        let form = reqwest::multipart::Form::new()
+            .text("purpose", "video")
+            .part("file", part);
+        let response = prepared
+            .builder
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|error| self.transport_error(error))?;
+        let status = response.status();
+        if matches!(
+            status,
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        ) {
+            return Err(SamplingError::Auth(format!(
+                "Kimi video upload authentication failed ({status})"
+            )));
+        }
+        if !status.is_success() {
+            return Err(SamplingError::Api {
+                status,
+                message: "Kimi video upload failed".to_owned(),
+                model_metadata: None,
+                retry_after_secs: None,
+                should_retry: None,
+            });
+        }
+        if response.content_length().is_some_and(|len| len > 64 * 1024) {
+            return Err(SamplingError::InvalidConfiguration(
+                "Kimi video upload response exceeded the 64 KiB limit",
+            ));
+        }
+        #[derive(serde::Deserialize)]
+        struct UploadResponse {
+            id: String,
+        }
+        let mut body = Vec::new();
+        let mut chunks = response.bytes_stream();
+        while let Some(chunk) = chunks.next().await {
+            let chunk = chunk.map_err(|error| self.transport_error(error))?;
+            if body.len().saturating_add(chunk.len()) > 64 * 1024 {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Kimi video upload response exceeded the 64 KiB limit",
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let remote_id = serde_json::from_slice::<UploadResponse>(&body)
+            .map_err(SamplingError::Serialization)?
+            .id;
+        if remote_id.is_empty() || remote_id.len() > 512 || remote_id.chars().any(char::is_control)
+        {
+            return Err(SamplingError::InvalidConfiguration(
+                "Kimi video upload returned an invalid file identifier",
+            ));
+        }
+        self.kimi_video_uploads
+            .insert(&binding, video.identity.clone(), remote_id.clone());
+        Ok((remote_id, binding))
+    }
+
     pub async fn chat_completion(
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse> {
-        let payload = self.apply_defaults(request)?;
+        let mut payload = self.apply_defaults(request)?;
+        let video_binding = self.prepare_chat_video_inputs(&mut payload).await?;
         let x_grok_conv_id = &payload.x_grok_conv_id.clone().unwrap_or_default();
         let x_grok_req_id = &payload.x_grok_req_id.clone().unwrap_or_default();
         let model_id = payload.model.clone().unwrap_or_default();
@@ -1660,15 +1765,20 @@ impl SamplingClient {
         };
         let endpoint = if self.defaults.provider.is_kimi_code() {
             kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
-        } else if self.defaults.provider.is_zai_coding_plan() {
-            zai_coding_plan::endpoint(&self.base_url)?
         } else {
             self.endpoint("chat/completions")
         };
         let prepared = self.post(endpoint).await?;
+        if video_binding.as_ref() != None
+            && video_binding.as_ref() != prepared.credential_binding.as_ref()
+        {
+            return Err(SamplingError::InvalidConfiguration(
+                "Kimi credential changed between video upload and inference",
+            ));
+        }
         if self.defaults.provider.is_kimi_code() {
             self.kimi_reasoning_dialect
-                .bind(prepared.credential_binding.as_ref());
+                .bind(&model_id, prepared.credential_binding.as_ref());
         }
         let request_credential = prepared.credential_binding;
         let request_builder =
@@ -1679,8 +1789,6 @@ impl SamplingClient {
                 false,
                 &self.kimi_reasoning_dialect,
             )?)
-        } else if self.defaults.provider.is_zai_coding_plan() {
-            request_builder.json(&zai_coding_plan::chat_body(&payload, false)?)
         } else {
             request_builder.json(&payload)
         };
@@ -1712,7 +1820,8 @@ impl SamplingClient {
         BoxStream<'static, Result<ChatCompletionChunk>>,
         Option<ResponseModelMetadata>,
     )> {
-        let payload = self.apply_defaults(request)?;
+        let mut payload = self.apply_defaults(request)?;
+        let video_binding = self.prepare_chat_video_inputs(&mut payload).await?;
         let x_grok_conv_id = &payload.x_grok_conv_id.clone().unwrap_or_default();
         let x_grok_req_id = &payload.x_grok_req_id.clone().unwrap_or_default();
         let model_id = payload.model.clone().unwrap_or_default();
@@ -1740,15 +1849,20 @@ impl SamplingClient {
         };
         let endpoint = if self.defaults.provider.is_kimi_code() {
             kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
-        } else if self.defaults.provider.is_zai_coding_plan() {
-            zai_coding_plan::endpoint(&self.base_url)?
         } else {
             self.endpoint("chat/completions")
         };
         let prepared = self.post(endpoint).await?;
+        if video_binding.as_ref() != None
+            && video_binding.as_ref() != prepared.credential_binding.as_ref()
+        {
+            return Err(SamplingError::InvalidConfiguration(
+                "Kimi credential changed between video upload and inference",
+            ));
+        }
         if self.defaults.provider.is_kimi_code() {
             self.kimi_reasoning_dialect
-                .bind(prepared.credential_binding.as_ref());
+                .bind(&model_id, prepared.credential_binding.as_ref());
         }
         let request_http = prepared.http.clone();
         let request_credential = prepared.credential_binding;
@@ -1761,8 +1875,6 @@ impl SamplingClient {
                 true,
                 &self.kimi_reasoning_dialect,
             )?)
-        } else if self.defaults.provider.is_zai_coding_plan() {
-            request_builder.json(&zai_coding_plan::chat_body(&payload, true)?)
         } else {
             request_builder.json(&streaming_request)
         };
@@ -1793,22 +1905,6 @@ impl SamplingClient {
         let span = tracing::Span::current();
         span.record("status_code", status.as_u16() as i64);
         span.record("success", status.is_success());
-        if self.defaults.provider.is_zai_coding_plan()
-            && status.is_success()
-            && response
-                .headers()
-                .get(CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_none_or(|value| !value.to_ascii_lowercase().contains("text/event-stream"))
-        {
-            let bytes = zai_coding_plan::read_limited_response_body(response).await?;
-            if let Some(error) = zai_coding_plan::business_error(bytes.as_ref()) {
-                return Err(error);
-            }
-            return Err(SamplingError::InvalidConfiguration(
-                "Z.AI Coding Plan streaming response was not an event stream",
-            ));
-        }
         let model_metadata = extract_model_metadata(
             response.headers(),
             self.defaults.provider,
@@ -1840,8 +1936,6 @@ impl SamplingClient {
             let bytes = self.read_response_bytes(response).await?;
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
-            } else if self.defaults.provider.is_zai_coding_plan() {
-                zai_coding_plan::should_retry(status, bytes.as_ref(), should_retry)
             } else {
                 should_retry
             };
@@ -1927,11 +2021,7 @@ impl SamplingClient {
                             );
                         }
 
-                        if stream_provider.is_zai_coding_plan()
-                            && let Some(stream_error) = zai_coding_plan::stream_error(data)
-                        {
-                            Some(Err(stream_error))
-                        } else if stream_provider.is_kimi_code()
+                        if stream_provider.is_kimi_code()
                             && let Some(stream_error) = kimi_code::stream_error(data)
                         {
                             Some(Err(stream_error))
@@ -2653,8 +2743,6 @@ impl SamplingClient {
             let req_headers = self.request_header_diagnostics(false);
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
-            } else if self.defaults.provider.is_zai_coding_plan() {
-                zai_coding_plan::should_retry(status, bytes.as_ref(), should_retry)
             } else {
                 should_retry
             };
@@ -2826,8 +2914,6 @@ impl SamplingClient {
             let bytes = self.read_response_bytes(response).await?;
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
-            } else if self.defaults.provider.is_zai_coding_plan() {
-                zai_coding_plan::should_retry(status, bytes.as_ref(), should_retry)
             } else {
                 should_retry
             };
@@ -3066,6 +3152,11 @@ impl SamplingClient {
         Option<ResponseModelMetadata>,
         Option<crate::doom_loop::DoomLoopSignalCollector>,
     )> {
+        if request.has_video_inputs() {
+            return Err(SamplingError::InvalidConfiguration(
+                "video input is unsupported by the Responses API",
+            ));
+        }
         self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
@@ -3111,6 +3202,11 @@ impl SamplingClient {
         &self,
         mut request: ConversationRequest,
     ) -> Result<rs::Response> {
+        if request.has_video_inputs() {
+            return Err(SamplingError::InvalidConfiguration(
+                "video input is unsupported by the Responses API",
+            ));
+        }
         self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
@@ -3151,6 +3247,11 @@ impl SamplingClient {
         BoxStream<'static, Result<messages::MessageStreamEvent>>,
         Option<ResponseModelMetadata>,
     )> {
+        if request.has_video_inputs() {
+            return Err(SamplingError::InvalidConfiguration(
+                "video input is unsupported by the Messages API",
+            ));
+        }
         self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
@@ -3184,6 +3285,11 @@ impl SamplingClient {
         &self,
         mut request: ConversationRequest,
     ) -> Result<messages::MessagesResponse> {
+        if request.has_video_inputs() {
+            return Err(SamplingError::InvalidConfiguration(
+                "video input is unsupported by the Messages API",
+            ));
+        }
         self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
@@ -3376,6 +3482,8 @@ mod tests {
             auth_scheme: AuthScheme::Bearer,
             service_tier: None,
             extra_headers: IndexMap::new(),
+            query_params: IndexMap::new(),
+            env_http_headers: IndexMap::new(),
             comp_hash: None,
             context_window: 8192,
             force_http1: false,
@@ -3513,7 +3621,6 @@ mod tests {
             ProviderId::Xai,
             ProviderId::OpenAiCodex,
             ProviderId::KimiCode,
-            ProviderId::ZaiCodingPlan,
         ] {
             let mut messages = tool_exchange("call_with_symbols!");
             normalize_custom_mistral_tool_call_ids(provider, "mistral-large", &mut messages)
@@ -3952,25 +4059,33 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct StaticZaiRequestAuth;
+    struct GenerationKimiRequestAuth {
+        generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    }
 
-    impl crate::config::RequestAuth for StaticZaiRequestAuth {
+    impl crate::config::RequestAuth for GenerationKimiRequestAuth {
         fn apply(
             &self,
             headers: &mut HeaderMap,
         ) -> std::result::Result<CredentialBinding, crate::config::RequestAuthError> {
-            let mut value = HeaderValue::from_static("Bearer opaque-zai-key");
+            let mut value = HeaderValue::from_static("Bearer synthetic-kimi-video-key");
             value.set_sensitive(true);
             headers.insert(AUTHORIZATION, value);
-            let mut binding = CredentialBinding::zai_coding_plan(Some("zai-record".to_owned()));
-            binding.generation = 1;
+            let mut binding = CredentialBinding::kimi_code(Some("kimi-video-record".to_owned()));
+            binding.generation = self.generation.load(std::sync::atomic::Ordering::SeqCst);
             Ok(binding)
         }
     }
 
-    fn zai_config() -> SamplerConfig {
-        let mut config = SamplerConfig::zai_coding_plan("glm-5.2");
-        config.request_auth = Some(std::sync::Arc::new(StaticZaiRequestAuth));
+    fn kimi_video_config(
+        base_url: String,
+        generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> SamplerConfig {
+        let mut config = SamplerConfig::kimi_code("k3", ApiBackend::ChatCompletions);
+        config.base_url = base_url;
+        config.request_auth = Some(std::sync::Arc::new(GenerationKimiRequestAuth {
+            generation,
+        }));
         config
     }
 
@@ -4193,10 +4308,7 @@ mod tests {
         codex.base_url = base_url.clone();
         let mut kimi = kimi_config(ApiBackend::ChatCompletions);
         kimi.base_url = base_url.clone();
-        let mut zai = zai_config();
-        zai.base_url = base_url.clone();
-
-        for config in [xai_labelled_custom, custom, codex, kimi, zai] {
+        for config in [xai_labelled_custom, custom, codex, kimi] {
             let client = SamplingClient::new(config).expect("matrix client should build");
             let response = client
                 .post(format!("{base_url}/capture"))
@@ -4212,7 +4324,7 @@ mod tests {
 
         let captures = capture.lock().await.clone();
         server.abort();
-        assert_eq!(captures.len(), 5);
+        assert_eq!(captures.len(), 4);
 
         assert!(captures[0].get(AUTHORIZATION).is_none());
         assert!(captures[0].get("x-api-key").is_none());
@@ -4220,7 +4332,6 @@ mod tests {
         assert!(captures[2].get(AUTHORIZATION).is_some());
         assert!(captures[2].get(CHATGPT_ACCOUNT_ID_HEADER).is_some());
         assert!(captures[3].get(AUTHORIZATION).is_some());
-        assert!(captures[4].get(AUTHORIZATION).is_some());
         for headers in captures {
             assert!(headers.keys().all(|name| {
                 !name.as_str().starts_with("x-xai-")
@@ -4420,6 +4531,221 @@ mod tests {
         assert!(body["messages"][0].get("content").is_none());
         assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call_unsafe");
         assert!(body.get("search_parameters").is_none());
+    }
+
+    #[tokio::test]
+    async fn kimi_video_upload_is_scoped_cached_and_projected_without_persisting_remote_id() {
+        use axum::Router;
+        use axum::body::Bytes;
+        use axum::extract::State;
+        use axum::http::{HeaderMap as AxumHeaderMap, StatusCode};
+        use axum::routing::post;
+
+        #[derive(Clone, Default)]
+        struct Capture {
+            uploads: std::sync::Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>,
+            chat_bodies: std::sync::Arc<tokio::sync::Mutex<Vec<serde_json::Value>>>,
+        }
+        async fn upload(
+            State(capture): State<Capture>,
+            headers: AxumHeaderMap,
+            body: Bytes,
+        ) -> (StatusCode, axum::Json<serde_json::Value>) {
+            assert!(headers.get(AUTHORIZATION).is_some());
+            capture.uploads.lock().await.push(body.to_vec());
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({"id": "video_fixture_id"})),
+            )
+        }
+        async fn chat(
+            State(capture): State<Capture>,
+            headers: AxumHeaderMap,
+            axum::Json(body): axum::Json<serde_json::Value>,
+        ) -> (StatusCode, axum::Json<serde_json::Value>) {
+            assert!(headers.get(AUTHORIZATION).is_some());
+            capture.chat_bodies.lock().await.push(body);
+            (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": {"message": "captured"}})),
+            )
+        }
+
+        let capture = Capture::default();
+        let app = Router::new()
+            .route("/files", post(upload))
+            .route("/chat/completions", post(chat))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let path =
+            std::env::temp_dir().join(format!("grok-kimi-video-{}.mp4", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"synthetic-video-bytes").unwrap();
+        let request = ChatCompletionRequest::new(
+            "k3",
+            vec![ChatRequestMessage {
+                role: xai_grok_sampling_types::Role::User,
+                content: MessageContent::Blocks(vec![ChatContentBlock::VideoUrl {
+                    video_url: xai_grok_sampling_types::VideoUrl {
+                        url: path.to_string_lossy().into_owned(),
+                        mime_type: "video/mp4".to_owned(),
+                    },
+                }]),
+                name: None,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                model_id: None,
+                reasoning_content: None,
+            }],
+        );
+        let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let base_url = format!("http://{address}");
+        let client = SamplingClient::new(kimi_video_config(
+            base_url.clone(),
+            std::sync::Arc::clone(&generation),
+        ))
+        .unwrap();
+
+        for _ in 0..2 {
+            client
+                .chat_completion(request.clone())
+                .await
+                .expect_err("capture endpoint deliberately rejects inference");
+        }
+        assert_eq!(
+            capture.uploads.lock().await.len(),
+            1,
+            "same generation must reuse upload"
+        );
+
+        generation.store(2, std::sync::atomic::Ordering::SeqCst);
+        client
+            .chat_completion(request.clone())
+            .await
+            .expect_err("capture endpoint deliberately rejects inference");
+        assert_eq!(
+            capture.uploads.lock().await.len(),
+            2,
+            "credential change must re-upload"
+        );
+
+        let resumed = SamplingClient::new(kimi_video_config(base_url, generation)).unwrap();
+        resumed
+            .chat_completion(request.clone())
+            .await
+            .expect_err("capture endpoint deliberately rejects inference");
+        assert_eq!(
+            capture.uploads.lock().await.len(),
+            3,
+            "new process client must re-upload"
+        );
+
+        let uploads = capture.uploads.lock().await;
+        assert!(uploads.iter().all(|body| {
+            let body = String::from_utf8_lossy(body);
+            body.contains("name=\"purpose\"")
+                && body.contains("video")
+                && body.contains("synthetic-video-bytes")
+        }));
+        drop(uploads);
+        let chat_bodies = capture.chat_bodies.lock().await;
+        assert_eq!(chat_bodies.len(), 4);
+        assert!(chat_bodies.iter().all(|body| {
+            body["messages"][0]["content"][0]["video_url"]["url"]
+                == serde_json::Value::String("ms://video_fixture_id".to_owned())
+        }));
+        assert!(request.messages[0].content.blocks().iter().any(|block| {
+            matches!(block, ChatContentBlock::VideoUrl { video_url } if video_url.url == path.to_string_lossy())
+        }));
+
+        std::fs::remove_file(path).unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn non_kimi_video_is_rejected_before_filesystem_or_network_access() {
+        let mut config = minimal_config();
+        config.base_url = "http://127.0.0.1:9".to_owned();
+        let client = SamplingClient::new(config).unwrap();
+        let request = ChatCompletionRequest::new(
+            "custom",
+            vec![ChatRequestMessage {
+                role: xai_grok_sampling_types::Role::User,
+                content: MessageContent::Blocks(vec![ChatContentBlock::VideoUrl {
+                    video_url: xai_grok_sampling_types::VideoUrl {
+                        url: "/definitely/not/read/video.mp4".to_owned(),
+                        mime_type: "video/mp4".to_owned(),
+                    },
+                }]),
+                name: None,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                model_id: None,
+                reasoning_content: None,
+            }],
+        );
+        let error = client.chat_completion(request).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("supported only by the Kimi Code provider")
+        );
+    }
+
+    #[tokio::test]
+    async fn kimi_video_upload_auth_failure_never_reaches_inference() {
+        use axum::Router;
+        use axum::http::StatusCode;
+        use axum::routing::post;
+
+        let chat_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let chat_calls_for_route = std::sync::Arc::clone(&chat_calls);
+        let app = Router::new()
+            .route("/files", post(|| async { StatusCode::UNAUTHORIZED }))
+            .route(
+                "/chat/completions",
+                post(move || {
+                    let calls = std::sync::Arc::clone(&chat_calls_for_route);
+                    async move {
+                        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let path =
+            std::env::temp_dir().join(format!("grok-kimi-video-auth-{}.mp4", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"synthetic-video-bytes").unwrap();
+        let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let client =
+            SamplingClient::new(kimi_video_config(format!("http://{address}"), generation))
+                .unwrap();
+        let request = ChatCompletionRequest::new(
+            "k3",
+            vec![ChatRequestMessage {
+                role: xai_grok_sampling_types::Role::User,
+                content: MessageContent::Blocks(vec![ChatContentBlock::VideoUrl {
+                    video_url: xai_grok_sampling_types::VideoUrl {
+                        url: path.to_string_lossy().into_owned(),
+                        mime_type: "video/mp4".to_owned(),
+                    },
+                }]),
+                name: None,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                model_id: None,
+                reasoning_content: None,
+            }],
+        );
+        let error = client.chat_completion(request).await.unwrap_err();
+        assert!(error.to_string().contains("authentication failed"));
+        assert_eq!(chat_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        std::fs::remove_file(path).unwrap();
+        server.abort();
     }
 
     #[tokio::test]
