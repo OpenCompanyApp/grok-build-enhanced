@@ -3,8 +3,8 @@
 //! Provides `single_check()` which queries `GET /user?include=subscription`
 //! for the live subscription tier from the backend, independent of the JWT.
 //! If a qualifying tier is detected, does a best-effort JWT refresh and
-//! settings re-fetch, then returns an `UnblockResult` so the agent can
-//! lift the gate.
+//! returns an `UnblockResult` so the agent can re-fetch settings and lift
+//! the gate through its own settings seam.
 //!
 //! The pager drives the polling via `x.ai/auth/check_subscription`: the 5s
 //! paywall chain, the free-tier watch, the refocus check, and
@@ -16,19 +16,16 @@ use crate::auth::manager::RefreshReason;
 use crate::auth::token_type::TokenType;
 use std::sync::Arc;
 use std::time::Duration;
-/// Subscription tiers that qualify for Grok Build access.
-/// Any active subscription qualifies -- the access gate in remote settings
-/// controls which tiers are actually allowed.
-const QUALIFYING_TIERS: &[&str] = &[
-    "SuperGrokPro",
-    "GrokPro",
-    "SuperGrokLite",
-    "XPremiumPlus",
-    "XPremium",
-    "XBasic",
-];
-/// Successful subscription check result: confirmed qualifying tier +
-/// optionally refreshed settings.
+/// Whether a `/user?include=subscription` tier qualifies for Grok Build
+/// access. Any active subscription qualifies -- the proxy only returns a
+/// tier when an active subscription exists (`None` otherwise), and the
+/// access gate in remote settings controls which tiers are actually
+/// allowed. The `"Free"` guard is defense-in-depth should the proxy ever
+/// start stamping free users explicitly.
+fn is_qualifying_tier(tier: &str) -> bool {
+    !tier.is_empty() && tier != "Free"
+}
+/// Successful subscription check result: a confirmed qualifying tier.
 pub(crate) struct UnblockResult {
     pub(crate) new_tier: String,
     pub(crate) settings: Option<crate::util::config::RemoteSettings>,
@@ -119,7 +116,7 @@ pub(crate) async fn single_check(
         Some(tier) if !tier.is_empty() => tier.clone(),
         _ => return None,
     };
-    if !QUALIFYING_TIERS.contains(&new_tier.as_str()) {
+    if !is_qualifying_tier(&new_tier) {
         return None;
     }
     xai_grok_telemetry::unified_log::info(
@@ -143,19 +140,6 @@ pub(crate) async fn single_check(
             )),
         );
     }
-    let settings = if crate::util::config::resolve_remote_fetch_enabled() {
-        let base_url = proxy_base_url.to_string();
-        let auth_for_settings = auth_manager.current().unwrap_or(auth);
-        let atk = alpha_test_key.map(str::to_string);
-        tokio::task::spawn_blocking(move || {
-            crate::remote::fetch_settings_blocking(&base_url, &auth_for_settings, atk.as_deref())
-        })
-        .await
-        .ok()
-        .flatten()
-    } else {
-        None
-    };
     xai_grok_telemetry::unified_log::info(
         "paywall_check_unblocked",
         None,
@@ -164,41 +148,45 @@ pub(crate) async fn single_check(
             "new_tier": new_tier,
         })),
     );
+    let settings = if crate::util::config::resolve_remote_fetch_enabled() {
+        let base_url = proxy_base_url.to_string();
+        let auth_for_settings = auth_manager.current().unwrap_or(auth);
+        let alpha_test_key = alpha_test_key.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            crate::remote::fetch_settings_blocking(
+                &base_url,
+                &auth_for_settings,
+                alpha_test_key.as_deref(),
+            )
+        })
+        .await
+        .ok()
+        .flatten()
+    } else {
+        None
+    };
     Some(UnblockResult { new_tier, settings })
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn qualifying_tiers_includes_all_paid_tiers() {
+    fn all_paid_tiers_qualify() {
         for tier in &[
             "SuperGrokPro",
+            "SuperGrokPlus",
             "GrokPro",
             "SuperGrokLite",
             "XPremiumPlus",
             "XPremium",
             "XBasic",
         ] {
-            assert!(
-                QUALIFYING_TIERS.contains(tier),
-                "{tier} must be in QUALIFYING_TIERS"
-            );
+            assert!(is_qualifying_tier(tier), "{tier} must qualify");
         }
     }
     #[test]
-    fn free_tier_is_not_qualifying() {
-        assert!(!QUALIFYING_TIERS.contains(&"Free"));
-    }
-    #[test]
-    fn empty_tier_is_not_qualifying() {
-        assert!(!QUALIFYING_TIERS.contains(&""));
-    }
-    /// The subscription check only returns `Some` when `/user` reports a
-    /// qualifying tier. Verify the tier matching is exact (no prefix match).
-    #[test]
-    fn partial_tier_name_is_not_qualifying() {
-        assert!(!QUALIFYING_TIERS.contains(&"Super"));
-        assert!(!QUALIFYING_TIERS.contains(&"Grok"));
-        assert!(!QUALIFYING_TIERS.contains(&"XPremium+"));
+    fn free_and_empty_tiers_are_not_qualifying() {
+        assert!(!is_qualifying_tier("Free"));
+        assert!(!is_qualifying_tier(""));
     }
 }

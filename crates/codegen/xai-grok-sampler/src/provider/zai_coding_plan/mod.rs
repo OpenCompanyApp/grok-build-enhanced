@@ -68,7 +68,9 @@ pub(crate) fn endpoint(base_url: &str) -> Result<String> {
 
 /// Never follow redirects while carrying a Coding Plan credential.
 pub(crate) fn http_client(force_http1: bool) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    let mut builder = xai_grok_provider_http::with_extra_root_certificates(
+        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()),
+    );
     if force_http1 {
         builder = builder
             .pool_max_idle_per_host(0)

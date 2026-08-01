@@ -7,7 +7,7 @@ authoritative 99-row Grok inventory. Fetched source history is evidence only;
 no upstream tree was merged or rebased into Enhanced.
 
 Reviewed revisions intentionally remain unchanged. The combined Grok inventory
-now contains 144 classified observable behaviors and still has **120 open
+now contains 144 classified observable behaviors and currently has **107 open
 `adopt` obligations**. Codex and OpenCode retain explicit live/proxy/history
 proof obligations, and Kimi video prompts retain one stable temporary deferral.
 The Grok acknowledgement gate is therefore closed.
@@ -64,7 +64,7 @@ rows close in this pass:
 | `GB-69F0-019` | adopt / closed | Linux PipeWire capture invokes `pw-record --raw`. |
 | `GB-6E38-017` | adopt / closed | xAI web search defaults to `grok-4.5` in both shell and workspace construction. |
 
-The other **82 prior `adopt` rows remain open** with their July 25 acceptance
+The other **73 prior `adopt` rows remain open** with their July 25 acceptance
 criteria unchanged. The seven prior `already equivalent` rows remain closed:
 `GB-A572-009`, `GB-A572-018`, `GB-A572-027C`, `GB-A572-035`,
 `GB-A572-039`, `GB-69F0-002`, and `GB-69F0-016`. The official xAI npm
@@ -91,7 +91,7 @@ release rule.
 | `GB-0731-014` | Show only genuinely backgrounded outstanding tasks in the background tray. | adopt / closed | Task snapshots carry `is_backgrounded`; workspace filters use the shared predicate. |
 | `GB-0731-015` | Clean up child work when the owning parent process dies. | adopt / open | Port parent-death teardown and cross-session negatives. |
 | `GB-0731-016` | Keep plan/reasoning chrome correct in minimal mode. | adopt / open | Port minimal-mode snapshots and PTYs. |
-| `GB-0731-017` | Serialize auth-store mutation across processes. | adopt / open | Add writer lock and sibling login/refresh/logout races per provider. |
+| `GB-0731-017` | Serialize auth-store mutation across processes. | adopt / closed | Path-scoped writer locks and cross-process refresh/logout race tests pass. |
 | `GB-0731-018` | Preserve compatible behavior in legacy Alacritty terminals. | adopt / open | Port capability detection and PTYs. |
 | `GB-0731-019` | Avoid showing a paywall before subscription state is authoritative. | adopt / open | Reconcile cold-start verification and stale-state tests. |
 | `GB-0731-020` | Keep the UI responsive during cold initialization. | adopt / open | Port staged initialization and delayed-service PTYs. |
@@ -109,7 +109,7 @@ release rule.
 | `GB-0731-032` | Preserve full streaming-JSON output and boundaries. | adopt / open | Port stream parser and headless contracts. |
 | `GB-0731-033` | Expose `/undo` as the supported rewind command. | adopt / closed | Alias, user guide, and command tests retain `/rewind` compatibility. |
 | `GB-0731-034` | Advertise slash commands appropriate to the active session mode. | adopt / open | Reconcile mode transitions and command updates. |
-| `GB-0731-035` | Refresh or relogin correctly after machine sleep. | adopt / open | Add clock-jump and provider-isolation tests. |
+| `GB-0731-035` | Refresh or relogin correctly after machine sleep. | adopt / closed | Sleep gate, dark-wake budget, in-flight drain, and provider-isolation tests pass. |
 | `GB-0731-036` | Warn before draft/history operations that would discard work. | adopt / open | Port confirmation and cancellation paths. |
 | `GB-0731-037` | Commit settings enum changes consistently. | adopt / open | Reconcile settings persistence and rollback. |
 | `GB-0731-038` | Close settings correctly after deep-link navigation. | adopt / open | Port navigation/state tests. |
@@ -118,7 +118,7 @@ release rule.
 | `GB-0731-041` | Project coding-data lock state accurately. | adopt / open | Reconcile settings/auth projection without changing telemetry policy. |
 | `GB-0731-042` | Include terminal-version metadata in ordinary telemetry. | adopt / open | Port bounded detection and schema tests. |
 | `GB-0731-043` | Keep the exit-plan approval barrier ordered with the active turn. | adopt / closed | Mixed write/exit order and permission-cancel race tests pass. |
-| `GB-0731-044` | Honor configured extra certificate authorities. | adopt / open | Port scoped TLS roots without weakening provider routing. |
+| `GB-0731-044` | Honor configured extra certificate authorities. | adopt / closed | Existing provider HTTP leaf validates a capped PEM bundle and projects roots into reqwest 0.12/0.13 clients without disabling normal verification. |
 | `GB-0731-045` | Discover and refresh remote managed skills. | adopt / open | Port ownership, refresh, and trust-boundary tests. |
 
 Atomic Grok summary: **111 open adopt**, **24 closed adopt**, **8 closed
@@ -200,7 +200,7 @@ Validation completed against the final formatted source candidate:
 
 ## Acknowledgement and publication gate
 
-The 120 open Grok adoption rows, provider proof obligations, and Kimi temporary
+The 107 open Grok adoption rows, provider proof obligations, and Kimi temporary
 deferral forbid advancing any reviewed pin or creating a Grok acknowledgement
 marker. `latest_fetched` remains a review queue. Publication actions were not
 authorized and are not part of this refresh.

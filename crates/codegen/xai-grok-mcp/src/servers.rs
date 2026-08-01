@@ -44,6 +44,20 @@ use xai_grok_tools::util::ProcessGroup;
 /// for callers that historically imported it from this module.
 pub use xai_grok_workspace_types::MCP_TOOL_NAME_DELIMITER;
 
+/// Reqwest 0.13 adapter over the version-neutral, validated DER cache.
+fn with_extra_root_certificates(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    for der in xai_grok_provider_http::extra_root_ders() {
+        match reqwest::Certificate::from_der(der) {
+            Ok(certificate) => builder = builder.add_root_certificate(certificate),
+            Err(error) => tracing::warn!(
+                %error,
+                "GROK_EXTRA_CA_BUNDLE certificate rejected by MCP transport"
+            ),
+        }
+    }
+    builder
+}
+
 /// Normalize an MCP server URL for comparison: strip trailing slashes.
 /// Must match the normalization the host's managed-config layer uses
 /// (e.g. shell's `session::managed_mcp::normalize_url`) so refresh
@@ -3389,12 +3403,11 @@ impl McpClient {
                     }
                 }
                 ensure_figma_user_agent(&mut headers, name, &config.url);
-                let http_client = reqwest::Client::builder()
-                    .default_headers(headers)
-                    .build()
-                    .map_err(|e| {
-                        McpError::ClientError(format!("Failed to build HTTP client: {e}"))
-                    })?;
+                let http_client = with_extra_root_certificates(
+                    reqwest::Client::builder().default_headers(headers),
+                )
+                .build()
+                .map_err(|e| McpError::ClientError(format!("Failed to build HTTP client: {e}")))?;
                 // `AuthClient::new` wants an owned manager, but ours is shared
                 // (`Arc`) with the OAuth flow; the struct is non_exhaustive, so
                 // build with a throwaway manager and swap in the shared one.
@@ -3599,10 +3612,10 @@ impl McpClient {
             }
         }
         ensure_figma_user_agent(&mut headers, server_name, &config.url);
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| McpError::ClientError(format!("Failed to build HTTP client: {e}")))?;
+        let client =
+            with_extra_root_certificates(reqwest::Client::builder().default_headers(headers))
+                .build()
+                .map_err(|e| McpError::ClientError(format!("Failed to build HTTP client: {e}")))?;
         let mcp_http_client =
             crate::mcp_http_client::McpHttpClient::new(client, server_name, warn_budget);
         let transport_config = StreamableHttpClientTransportConfig::with_uri(config.url.as_str());

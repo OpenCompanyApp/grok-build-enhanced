@@ -288,11 +288,13 @@ impl Default for BackendClient {
 }
 impl BackendClient {
     fn build_default_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(DEFAULT_TIMEOUT)
-            .build()
-            .expect("failed to build HTTP client")
+        xai_grok_provider_http::with_extra_root_certificates(
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(DEFAULT_TIMEOUT),
+        )
+        .build()
+        .expect("failed to build HTTP client")
     }
     pub fn new() -> Self {
         let reqwest_client = Self::build_default_client();

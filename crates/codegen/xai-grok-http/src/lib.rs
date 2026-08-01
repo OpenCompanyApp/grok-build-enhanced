@@ -30,6 +30,13 @@ use std::sync::{Arc, OnceLock};
 
 use xai_grok_workspace::permission::ClientType;
 
+/// Per-attempt ceiling for a startup settings or model-catalog fetch.
+pub const STARTUP_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Cap on non-interactive boot auth; longer cold mints run after readiness.
+pub const STARTUP_AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Ceiling on one startup token-refresh round trip.
+pub const STARTUP_AUTH_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Startup span timer, local to this crate.
 ///
 /// Replaces `xai_grok_shell::instrumentation_timer!`, which cannot be referenced
@@ -284,7 +291,7 @@ pub fn shared_client() -> reqwest::Client {
     CLIENT
         .get_or_init(|| {
             let _timer = startup_timer!("startup.http_client_build");
-            reqwest::Client::builder()
+            xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
                 .connect_timeout(std::time::Duration::from_secs(30))
                 .user_agent(process_user_agent_string())
                 .pool_idle_timeout(std::time::Duration::from_secs(30))
@@ -326,7 +333,7 @@ pub fn shared_upload_client() -> reqwest::Client {
     static UPLOAD_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     UPLOAD_CLIENT
         .get_or_init(|| {
-            reqwest::Client::builder()
+            xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
                 // Force HTTP/1.1: batch_upload multipart bodies are silently
                 // dropped when an HTTP/2 connection degrades (GOAWAY, flow-control
                 // exhaustion). Because all streams share one connection, a single
@@ -348,7 +355,7 @@ pub fn shared_upload_client() -> reqwest::Client {
 /// connect timeout (callers bound each request with their own total timeout). The retry escape
 /// policy that reaches for this client to dodge a poisoned pool lives on `send_with_retry_escaping_pool`.
 pub(crate) fn fresh_http1_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
         .http1_only()
         .pool_max_idle_per_host(0)
         .user_agent(process_user_agent_string())
@@ -500,16 +507,18 @@ pub fn shared_blocking_client() -> Result<reqwest::blocking::Client, reqwest::Er
     // instead of aborting through an `expect`. DNS uses one separately fallible
     // process worker rather than growing that runtime's blocking pool.
     let _timer = startup_timer!("startup.http_blocking_client_build");
-    let client = reqwest::blocking::Client::builder()
-        .dns_resolver(Arc::new(
-            xai_grok_provider_http::outbound_proxy::FallibleDnsResolver,
-        ))
-        .connect_timeout(std::time::Duration::from_secs(30))
-        .timeout(std::time::Duration::from_secs(30))
-        .user_agent(process_user_agent_string())
-        .pool_idle_timeout(std::time::Duration::from_secs(30))
-        .tcp_keepalive(std::time::Duration::from_secs(30))
-        .build()?;
+    let client = xai_grok_provider_http::with_extra_root_certificates_blocking(
+        reqwest::blocking::Client::builder(),
+    )
+    .dns_resolver(Arc::new(
+        xai_grok_provider_http::outbound_proxy::FallibleDnsResolver,
+    ))
+    .connect_timeout(std::time::Duration::from_secs(30))
+    .timeout(std::time::Duration::from_secs(30))
+    .user_agent(process_user_agent_string())
+    .pool_idle_timeout(std::time::Duration::from_secs(30))
+    .tcp_keepalive(std::time::Duration::from_secs(30))
+    .build()?;
     Ok(BLOCKING_CLIENT.get_or_init(|| client).clone())
 }
 

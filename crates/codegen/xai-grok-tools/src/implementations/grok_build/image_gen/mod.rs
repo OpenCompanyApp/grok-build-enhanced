@@ -226,7 +226,7 @@ impl ImageGenClient {
             None
         } else {
             Some(
-                reqwest::Client::builder()
+                xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
                     .timeout(std::time::Duration::from_secs(IMAGE_GEN_TIMEOUT_SECS))
                     .read_timeout(std::time::Duration::from_secs(IMAGE_GEN_READ_TIMEOUT_SECS))
                     .redirect(reqwest::redirect::Policy::none())

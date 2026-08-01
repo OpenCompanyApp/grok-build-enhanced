@@ -194,7 +194,9 @@ pub(crate) fn endpoint(base_url: &str, backend: ApiBackend) -> Result<String> {
 /// can never be replayed to a redirect target. This mirrors the stronger
 /// transport boundary already used by the ChatGPT Codex adapter.
 pub(crate) fn http_client(force_http1: bool) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    let mut builder = xai_grok_provider_http::with_extra_root_certificates(
+        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()),
+    );
     if force_http1 {
         builder = builder
             .pool_max_idle_per_host(0)

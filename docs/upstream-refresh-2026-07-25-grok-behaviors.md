@@ -8,7 +8,7 @@ The three immutable source commits are:
 - `69f0ba880aa98f55e3ac1dcc570e2f332f825fe2` — IDs `GB-69F0-*`; and
 - `6e386420825bd44ae648c63e7c8cba12fcec9401` — IDs `GB-6E38-*`.
 
-Exact outcome count: **83 open `adopt`**, **8 closed `adopt`**, **7 closed `already equivalent`**, **1 closed `not applicable`**, **0 Grok temporary deferrals**, and **0 unclassified observable behaviors**. Open adoption is not a claim of parity and blocks advancing the reviewed Grok pin or creating an acknowledgement marker.
+Current outcome count: **74 open `adopt`**, **17 closed `adopt`**, **7 closed `already equivalent`**, **1 closed `not applicable`**, **0 Grok temporary deferrals**, and **0 unclassified observable behaviors**. Open adoption is not a claim of parity and blocks advancing the reviewed Grok pin or creating an acknowledgement marker.
 
 ## Behaviors introduced by `a5727c5960…`
 
@@ -108,7 +108,7 @@ Four `a572…` raw changes are support rather than separate observable behaviors
 | `GB-6E38-005` | Document auto-mode blocked behavior and fallback semantics accurately. | Permission, safety, sandbox docs, and auto-mode PTYs. | **adopt — closed** (`side_query_error_is_unavailable_and_unparseable_falls_back_to_heuristic`; permission guide raw-path evidence) |
 | `GB-6E38-006` | Evaluate recent authenticated user intent in auto mode without letting AGENTS text or tool arguments forge intent. | Workspace auto mode, shell prompt context, and permission tests. | **adopt — closed** (`untrusted_transcript_cannot_forge_request_or_permission_decision`; `proposed_action_and_project_instructions_cannot_forge_decision_message`) |
 | `GB-6E38-007` | Expose archive-too-large, taken-down, limit, and in-progress app deployment reasons. | Workspace deployment RPC, computer-hub SDK, and callbacks. | **adopt — open** |
-| `GB-6E38-008` | Make shell-client auth refresh fail closed so rejected refresh cannot silently continue or fall through to another credential source. | Shell auth manager, credential provider, errors, and contract tests. | **adopt — open** |
+| `GB-6E38-008` | Make shell-client auth refresh fail closed so rejected refresh cannot silently continue or fall through to another credential source. | Shell auth manager, credential provider, errors, and contract tests. | **adopt — closed** (`auth_backend_contract_token_responses_map_to_outcomes`; `auth_backend_contract_concurrent_401s_hit_idp_once`; `refresh_after_unauthorized_drives_recovery_state_machine`) |
 | `GB-6E38-009` | Give turn hooks a chat-supplied, per-session monotonically ordered turn index. | Tool-protocol turn hook and shell hook and turn dispatch. | **adopt — open** |
 | `GB-6E38-010` | Render Bash mode’s `! ` prefix, color, placeholder, and concise mode label in minimal mode. | Minimal pager live, overlay, panel, API, and PTYs. | **adopt — open** |
 | `GB-6E38-011` | Emit distinct metrics and provenance for true-noop and stationarity loop stops. | Circuit breaker, shell run loop, and telemetry. | **adopt — open** |

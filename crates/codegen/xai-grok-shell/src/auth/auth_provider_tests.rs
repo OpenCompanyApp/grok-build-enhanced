@@ -239,6 +239,8 @@ async fn provider_timeout_edit_does_not_invalidate_token() {
     );
 }
 
+/// `cwd` is part of `token_identity`, so editing it invalidates the cache: the
+/// same helper in a different directory can mint a different token.
 #[tokio::test]
 async fn provider_cwd_edit_invalidates_cached_token() {
     let dir = tempfile::tempdir().unwrap();

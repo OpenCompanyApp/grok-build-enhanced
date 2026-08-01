@@ -21,8 +21,9 @@
 //!   "current_credential_present": <bool>,
 //!   "current_has_refresh_token": <bool>,
 //!   "mint_age_seconds": <i64; current time minus auth.create_time, or -1>,
-//!   "expires_at_seconds_from_now": <i64; auth.expires_at minus now,
-//!                                 or 0 when no current token>,
+//!   "expires_at_seconds_from_now": <i64; auth.expires_at minus now
+//!                                 (negative once expired), or 0 when the
+//!                                 manager is empty>,
 //!   "consumer": "OaiCompatClient.<endpoint>" | "StorageClient.<op>"
 //!             | "FeedbackClient.<op>" | "SessionRegistryClient.<op>"
 //!             | "IdleResumeModelRefresh",
@@ -357,7 +358,9 @@ fn compute_attribution_payload(
         .is_some_and(|auth| auth.refresh_token.is_some());
 
     // Mint-age + expiry come from the same `current_auth` we already
-    // read; sentinels `-1 / 0` when the manager has no current token.
+    // read; sentinels `-1 / 0` when the manager holds nothing. For a
+    // hard-expired token these report true age and (negative)
+    // time-past-expiry: how long the bearer was dead at the 401.
     //
     // TODO: mirror the full External-with-ttl branch from
     // `AuthManager::is_token_expired` (uses
@@ -502,6 +505,39 @@ mod tests {
         assert_eq!(payload_field(&payload, "current_has_refresh_token"), false);
         assert_eq!(payload_field(&payload, "mint_age_seconds"), -1);
         assert_eq!(payload_field(&payload, "expires_at_seconds_from_now"), 0);
+    }
+
+    /// Test helper: a token minted 2h ago that hard-expired 1h ago --
+    /// the in-memory state during the exact window most 401s occur in
+    /// (`current()` is `None`, `expired_auth()` is `Some`).
+    fn hard_expired_auth(key: &str) -> GrokAuth {
+        GrokAuth {
+            key: key.to_string(),
+            create_time: Utc::now() - Duration::hours(2),
+            expires_at: Some(Utc::now() - Duration::hours(1)),
+            ..GrokAuth::test_default()
+        }
+    }
+
+    /// Hard-expired credentials are deliberately reported as absent rather
+    /// than exposing any credential-derived diagnostic value.
+    #[test]
+    fn hard_expired_credential_remains_redacted() {
+        let (_dir, am) = empty_auth_manager();
+        let sent = "expired-token-1234567890abcdef";
+        am.hot_swap(hard_expired_auth(sent));
+        assert!(am.current().is_none(), "hard-expired precondition");
+
+        let payload = compute_attribution_payload(&am, "Test.expired", true);
+
+        assert_eq!(payload_field(&payload, "bearer_was_sent"), true);
+        assert_eq!(payload_field(&payload, "current_credential_present"), false);
+        assert_eq!(payload_field(&payload, "current_has_refresh_token"), false);
+        assert_eq!(payload_field(&payload, "mint_age_seconds"), -1);
+        assert_eq!(payload_field(&payload, "expires_at_seconds_from_now"), 0);
+        let rendered = payload.to_string();
+        assert!(!rendered.contains(sent));
+        assert!(!rendered.contains("1234567890abcdef"));
     }
 
     /// Two-branch fallback: legacy token (no `expires_at`) uses

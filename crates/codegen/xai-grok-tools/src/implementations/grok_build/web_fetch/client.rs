@@ -1277,10 +1277,11 @@ mod tests {
             .respond_with(ResponseTemplate::new(302).insert_header("location", "/blocked"))
             .mount(&server)
             .await;
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
+        let client =
+            xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap();
         let validator = RejectBlockedRedirectValidator::default();
         let url = Url::parse(&format!("{}/start", server.uri())).unwrap();
 
@@ -1310,10 +1311,11 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
+        let client =
+            xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap();
         let validator = RejectBlockedRedirectValidator::default();
         let url = Url::parse(&format!("{}/start", server.uri())).unwrap();
 

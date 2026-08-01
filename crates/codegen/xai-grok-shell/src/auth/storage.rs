@@ -15,7 +15,17 @@ pub(crate) fn resolved_auth_path(grok_home: &Path) -> PathBuf {
 
 /// RAII guard for an exclusive advisory lock on `auth.json.lock`.
 /// The lock is released when the inner `File` is dropped (closing the FD).
+///
+/// Field order is load-bearing: `_heartbeat` drops before `_file`, so the
+/// heartbeat thread is stopped and joined while the flock is still held — a
+/// late heartbeat can never write holder info into a lock file a sibling has
+/// already re-acquired.
 pub(crate) struct AuthFileLock {
+    /// Periodic `PID:TS` re-writer (see `manager::lock::LockHeartbeat`).
+    /// `None` for short holds — non-blocking acquires and async acquires
+    /// below the refresh-sized budget — which never span an IdP exchange
+    /// and don't warrant a thread per acquisition.
+    pub(super) _heartbeat: Option<super::manager::lock::LockHeartbeat>,
     pub(super) _file: File,
 }
 
@@ -259,12 +269,28 @@ fn write_store_to_open_file(file: &mut File, auth_store: &AuthStore) -> std::io:
     Ok(())
 }
 
+/// Test-only, path-scoped write fault used by persistence recovery tests.
+#[cfg(test)]
+pub(super) static WRITE_FAULT_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
 /// Atomic write through a randomly named `create_new` temp file in the target
 /// directory. `NamedTempFile` owns cleanup across every early return and panic;
 /// explicit close-on-error lets ordinary failure paths verify cleanup as well.
 /// Its cross-platform `persist` atomically replaces the destination, including
 /// on Windows, without a delete-before-rename gap.
 fn write_auth_json_atomic(auth_file: &Path, auth_store: &AuthStore) -> std::io::Result<()> {
+    #[cfg(test)]
+    if WRITE_FAULT_PATH
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_deref()
+        == Some(auth_file)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "injected write fault (WRITE_FAULT_PATH)",
+        ));
+    }
     write_auth_json_atomic_with(auth_file, auth_store, write_store_to_open_file)
 }
 
@@ -585,6 +611,31 @@ mod write_fallback_tests {
         assert_eq!(std::fs::read(&legacy).unwrap(), b"unrelated sentinel");
         assert_eq!(read_key(&path).as_deref(), Some("secret-key"));
         assert!(auth_temp_files(dir.path()).is_empty());
+    }
+
+    /// On a failed atomic write, the `TmpReclaim` guard must remove the temp
+    /// file so no orphan accumulates. Here `auth.json` is a directory, so the
+    /// `rename` fails after the temp file is written.
+    #[test]
+    fn atomic_write_reclaims_tmp_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::create_dir(&path).unwrap();
+
+        assert!(
+            write_auth_json_atomic(&path, &sample_store()).is_err(),
+            "rename onto a directory must fail"
+        );
+
+        let orphans: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(
+            orphans.is_empty(),
+            "TmpReclaim must remove the temp file on failure: {orphans:?}"
+        );
     }
 
     /// A fallback write that truncates then fails must roll back to the prior

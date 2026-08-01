@@ -248,7 +248,11 @@
     {
       "acceptance_criteria": "Add writer lock and sibling login/refresh/logout races per provider.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:auth::codex::manager::tests::concurrent_managers_rotate_refresh_token_once",
+        "test:auth::manager::lock::tests::test_async_real_contention_resolved_after_release",
+        "test:auth::manager::tests::refresh_persist_failure_is_transient_but_swaps_in_memory"
+      ],
       "id": "GB-0731-017",
       "impact": "Serialize auth-store mutation across processes.",
       "intended_tests": [
@@ -257,7 +261,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Port capability detection and PTYs.",
@@ -458,7 +462,12 @@
     {
       "acceptance_criteria": "Add clock-jump and provider-isolation tests.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:auth::refresh::oidc_refresher::tests::sleep_gate_e2e_defers_then_recovers_on_wake",
+        "test:auth::refresh::oidc_refresher::tests::sleep_gate_e2e_in_flight_refresh_completes_across_imminent_sleep",
+        "test:auth::manager::tests::dark_wake_defer_forces_refresh_after_max",
+        "test:xai_system_power::tests::start_and_drop_is_clean"
+      ],
       "id": "GB-0731-035",
       "impact": "Refresh or relogin correctly after machine sleep.",
       "intended_tests": [
@@ -467,7 +476,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Port confirmation and cancellation paths.",
@@ -586,7 +595,12 @@
     {
       "acceptance_criteria": "Port scoped TLS roots without weakening provider routing.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:extra_ca_valid_env::valid_bundle_loads_one_root_and_builds_clients",
+        "test:extra_ca_invalid_env::invalid_or_unreadable_bundle_adds_no_roots",
+        "test:extra_ca_oversized_env::oversized_bundle_adds_no_roots",
+        "raw-path:crates/codegen/xai-grok-provider-http/src/extra_ca.rs"
+      ],
       "id": "GB-0731-044",
       "impact": "Honor configured extra certificate authorities.",
       "intended_tests": [
@@ -595,7 +609,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Port ownership, refresh, and trust-boundary tests.",
@@ -1026,7 +1040,11 @@
     {
       "acceptance_criteria": "Make shell-client auth refresh fail closed so rejected refresh cannot silently continue or fall through to another credential source.",
       "classification": "adopt",
-      "closure_evidence": [],
+      "closure_evidence": [
+        "test:auth::refresh::oidc_refresher::auth_backend_contract_tests::auth_backend_contract_token_responses_map_to_outcomes",
+        "test:auth::refresh::oidc_refresher::auth_backend_contract_tests::auth_backend_contract_concurrent_401s_hit_idp_once",
+        "test:auth::credential_provider::tests::refresh_after_unauthorized_drives_recovery_state_machine"
+      ],
       "id": "GB-6E38-008",
       "impact": "Make shell-client auth refresh fail closed so rejected refresh cannot silently continue or fall through to another credential source.",
       "intended_tests": [
@@ -1035,7 +1053,7 @@
       "owner": "Grok parity campaign",
       "source_id": "grok-build-upstream",
       "source_revision": "dd04f397b1d02f2272b092555669dfba1f01bc85",
-      "state": "open"
+      "state": "closed"
     },
     {
       "acceptance_criteria": "Give turn hooks a chat-supplied, per-session monotonically ordered turn index.",

@@ -63,7 +63,7 @@ impl ResponsesBackend {
             headers.insert(header_name, header_value);
         }
 
-        let http = reqwest::Client::builder()
+        let http = xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
             .default_headers(headers)
             .timeout(std::time::Duration::from_secs(60))
             // Never replay configured credentials to a redirect target.

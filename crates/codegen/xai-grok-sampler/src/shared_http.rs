@@ -105,7 +105,7 @@ fn build_http_client() -> Result<reqwest::Client, reqwest::Error> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
 
-    reqwest::Client::builder()
+    xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
         .redirect(same_origin_redirect_policy())
         .pool_max_idle_per_host(pool_max_idle)
         .pool_idle_timeout(Duration::from_secs(pool_idle_timeout_secs))
@@ -126,7 +126,7 @@ fn build_http_client_http1() -> Result<reqwest::Client, reqwest::Error> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
 
-    reqwest::Client::builder()
+    xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
         .redirect(same_origin_redirect_policy())
         .pool_max_idle_per_host(0)
         .pool_idle_timeout(Duration::from_secs(0))

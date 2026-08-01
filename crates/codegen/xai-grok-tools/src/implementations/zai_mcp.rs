@@ -68,7 +68,7 @@ impl ZaiMcpClient {
             return Err(ZaiMcpError::Authentication);
         }
         let endpoint = validate_endpoint(endpoint)?;
-        let http = reqwest::Client::builder()
+        let http = xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(60))
             .build()

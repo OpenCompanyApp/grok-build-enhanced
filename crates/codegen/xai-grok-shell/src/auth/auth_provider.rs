@@ -24,15 +24,11 @@ pub struct AuthProviderConfig {
     /// Command that prints a bearer token on stdout, bare or as JSON
     /// `{access_token, expires_in}`. Without `args` it runs via the platform shell.
     pub command: String,
-    /// Arguments for `command`. When present (even empty), the command runs
-    /// directly with no shell; `command` is a program name on `PATH`, or a path.
+    /// Command arguments; when set (even empty) the command execs directly.
     pub args: Option<Vec<String>>,
-    /// Fallback token lifetime in seconds, used when the command's output
-    /// carries no `expires_in`. Takes precedence over a JWT `exp` claim.
+    /// Fallback token lifetime used when the output carries no `expires_in`.
     pub token_ttl_secs: Option<u64>,
-    /// Maximum seconds to wait for the command (default 30, clamped to 1..=600).
-    /// A turn waits up to this long on a mint, so keep helpers fast and
-    /// non-interactive.
+    /// Max seconds to wait for the command (default 30, clamped to 1..=600).
     pub timeout_secs: Option<u64>,
     /// Working directory for the command; a leading `~` expands to home.
     pub cwd: Option<String>,
@@ -377,6 +373,7 @@ async fn run_capped(
     cmd: &mut tokio::process::Command,
     timeout: std::time::Duration,
 ) -> anyhow::Result<std::process::Output> {
+    #[allow(clippy::disallowed_methods)] // killed at the timeout this call reports
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("command failed to start: {e}"))?;

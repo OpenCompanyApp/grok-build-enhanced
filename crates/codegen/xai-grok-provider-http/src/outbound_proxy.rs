@@ -410,7 +410,7 @@ impl OpenAiCodexClientPool {
         }
 
         let builder = configure_builder_for_resolved_route(
-            (self.builder_factory)(),
+            crate::with_extra_root_certificates((self.builder_factory)()),
             self.route_class,
             &route,
         )?;
@@ -454,7 +454,11 @@ pub async fn build_openai_codex_client(
         .resolve_proxy_route_async(request_url.to_owned())
         .await
         .map_err(|_| BuildRouteAwareHttpClientError::ProxyResolution { route_class })?;
-    let builder = configure_builder_for_resolved_route(builder, route_class, &route)?;
+    let builder = configure_builder_for_resolved_route(
+        crate::with_extra_root_certificates(builder),
+        route_class,
+        &route,
+    )?;
     builder
         .build()
         .map_err(|_| BuildRouteAwareHttpClientError::ClientBuild { route_class })

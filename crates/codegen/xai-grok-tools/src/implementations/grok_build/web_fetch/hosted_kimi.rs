@@ -29,7 +29,7 @@ impl KimiHostedFetch {
             return Err(WebFetchError::HostedAuthentication);
         }
         let endpoint = validate_base_url(base_url)?;
-        let http = reqwest::Client::builder()
+        let http = xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(45))
             .build()
