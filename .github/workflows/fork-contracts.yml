@@ -1,4 +1,5 @@
 name: Fork contracts
+run-name: Fork contracts for ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 on:
   pull_request:
@@ -6,98 +7,234 @@ on:
     branches:
       - main
       - 'feat/**'
+      - 'fix/**'
+      - 'rebase/**'
+      - 'refresh/**'
+  workflow_dispatch:
+    inputs:
+      full_native:
+        description: Run native Linux ARM64 and macOS qualification even for a static-only diff
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: fork-contracts-${{ github.ref }}
+  group: fork-contracts-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: always
 
 jobs:
   static-contracts:
     name: Static fork contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    outputs:
+      broad_groups: ${{ steps.impact.outputs.broad_groups }}
+      run_rust: ${{ steps.impact.outputs.run_rust }}
+      run_native: ${{ steps.impact.outputs.run_native }}
+      reason: ${{ steps.impact.outputs.reason }}
     steps:
-      - name: Check out complete history without persisted credentials
+      - name: Check out exact source without persisted credentials
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
-      - name: Validate ownership, provenance, release, and hygiene contracts
+      - name: Classify changed paths conservatively
+        id: impact
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          export PYTHONDONTWRITEBYTECODE=1
-          python3 -I -B -m unittest discover -s fork/scripts/tests -v
-          python3 -I -B fork/scripts/check_manifest.py --strict-coverage
-          python3 -I -B fork/scripts/check_fork_contracts.py
-          python3 -I -B scripts/release/tests/test_release_pipeline.py
-          python3 -I -B scripts/release/tests/test_install_script.py
-          git diff --check
+          base_sha=${BASE_SHA:-missing}
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            base_sha=$(git rev-parse "$HEAD_SHA^" 2>/dev/null || printf missing)
+          fi
+          python3 -I -B scripts/ci/impact.py \
+            --base "$base_sha" \
+            --head "$HEAD_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Validate ownership, provenance, CI, release, and hygiene contracts
+        shell: bash
+        run: scripts/ci/run.sh static
+
+      - name: Summarize selected CI scope
+        shell: bash
+        env:
+          IMPACT_REASON: ${{ steps.impact.outputs.reason }}
+          RUN_NATIVE: ${{ steps.impact.outputs.run_native }}
+          RUN_RUST: ${{ steps.impact.outputs.run_rust }}
+        run: |
+          {
+            echo '### CI impact'
+            echo
+            echo "- Rust: \`$RUN_RUST\`"
+            echo "- Native: \`$RUN_NATIVE\`"
+            echo "- Reason: $IMPACT_REASON"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   rust-contracts:
     name: Focused Rust contracts
+    if: needs.static-contracts.outputs.run_rust == 'true'
     needs: static-contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target/fork-contracts
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/rust-contracts
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
     steps:
-      - name: Check out without persisted credentials
+      - name: Check out exact source without persisted credentials
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
-      - name: Install DotSlash for the pinned protoc wrapper
-        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+      - name: Set up cached Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-namespace: rust-contracts
 
-      - name: Exercise provider credential isolation
+      - name: Exercise focused contracts and composed binary
         shell: bash
+        run: scripts/ci/run.sh rust-contracts
+
+      - name: Report compiler cache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+  broad-rust:
+    name: Rust ${{ matrix.group }}
+    if: needs.static-contracts.outputs.run_rust == 'true'
+    needs: [static-contracts, rust-contracts]
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.static-contracts.outputs.broad_groups) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/${{ matrix.group }}
+      CI_TEST_THREADS: '2'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    steps:
+      - name: Check out exact source without persisted credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up cached Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-namespace: broad-${{ matrix.group }}
+
+      - name: Run ${{ matrix.group }} test group
+        shell: bash
+        run: scripts/ci/run.sh "${{ matrix.group }}"
+
+      - name: Report compiler cache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+  native-checks:
+    name: Native ${{ matrix.rust_target }}
+    if: >-
+      always() &&
+      needs.static-contracts.result == 'success' &&
+      (needs.rust-contracts.result == 'success' || needs.rust-contracts.result == 'skipped') &&
+      (needs.static-contracts.outputs.run_native == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.full_native == true))
+    needs: [static-contracts, rust-contracts]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            rust_target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/native-${{ matrix.rust_target }}
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    steps:
+      - name: Check out exact source without persisted credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up cached Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-namespace: native-${{ matrix.rust_target }}
+
+      - name: Check composed binary on the native host
+        shell: bash
+        run: scripts/ci/run.sh native "${{ matrix.rust_target }}"
+
+      - name: Report compiler cache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+  ci-result:
+    name: CI result
+    if: always()
+    needs: [static-contracts, rust-contracts, broad-rust, native-checks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected lane to pass
+        shell: bash
+        env:
+          BROAD_RESULT: ${{ needs.broad-rust.result }}
+          FULL_NATIVE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_native == true }}
+          NATIVE_RESULT: ${{ needs.native-checks.result }}
+          RUN_NATIVE: ${{ needs.static-contracts.outputs.run_native }}
+          RUN_RUST: ${{ needs.static-contracts.outputs.run_rust }}
+          RUST_RESULT: ${{ needs.rust-contracts.result }}
+          STATIC_RESULT: ${{ needs.static-contracts.result }}
         run: |
           set -euo pipefail
-          cargo test --locked -p xai-grok-sampler --lib \
-            'client::tests::codex_rejects_static_or_generic_header_credentials' -- --exact
-          cargo test --locked -p xai-grok-tools --lib \
-            'types::api_key_provider::tests::codex_auth_resolution_rejects_generic_static_key_fallback' -- --exact
-          cargo test --locked -p xai-grok-tools --lib \
-            'implementations::grok_build::video_gen::tests::authorization_header_values_are_always_sensitive' -- --exact
-          cargo test --locked -p xai-grok-tools --lib \
-            'implementations::grok_build::video_gen::tests::extra_authorization_header_cannot_disable_redaction' -- --exact
-          cargo test --locked -p xai-grok-shell --lib \
-            'session::acp_session::model_switch::provider_media_switch_tests::image_resource_and_definitions_follow_provider_switches' -- --exact
-          cargo test --locked -p xai-grok-shell --lib \
-            'agent::config::tests::custom_credentials_never_inherit_xai_session_or_global_keys' -- --exact
-          cargo test --locked -p xai-grok-shell --lib \
-            'session::provider::openai_codex::tests::custom_runtime_drops_xai_credentials_and_generic_tool_auth' -- --exact
-          cargo test --locked -p xai-grok-shell --lib \
-            'session::acp_session::auth_error_no_retry_tests::reconstruct_full_config_drops_cross_provider_custom_credential' -- --exact
-          cargo test --locked -p xai-grok-shell --lib \
-            'session::acp_session::session_setup::tests::idle_model_metadata_refresh_requires_xai_provider_identity' -- --exact
-          cargo test --locked -p xai-grok-shell --lib \
-            'session::acp_session::media_gen_auth_retry_tests::provider_owned_codex_401_never_falls_through_to_xai_auth_manager' -- --exact
-          cargo test --locked -p xai-grok-shell --lib \
-            'agent::models::tests::provider_scoped_fallback_never_crosses_from_codex_to_xai' -- --exact
+          require_result() {
+            local lane=$1 actual=$2 expected=$3
+            if [[ "$actual" != "$expected" ]]; then
+              echo "$lane result is $actual; expected $expected" >&2
+              exit 1
+            fi
+          }
 
-      - name: Exercise Enhanced identity and fork updater
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked -p xai-grok-version
-          cargo test --locked -p xai-grok-update --lib \
-            'version::tests::enhanced_release_selection_requires_the_exact_native_asset' -- --exact
-          cargo test --locked -p xai-grok-update --lib \
-            'version::tests::github_release_lookup_uses_public_api_metadata' -- --exact
-          cargo test --locked -p xai-grok-update --test test_fork_release_routing
-          cargo test --locked -p xai-grok-pager --lib \
-            'app::cli::tests::upgrade_alias_uses_the_enhanced_update_command' -- --exact
-          cargo test --locked -p xai-grok-pager --lib 'views::welcome::tests'
+          require_result static "$STATIC_RESULT" success
+          if [[ "$RUN_RUST" == true ]]; then
+            require_result rust-contracts "$RUST_RESULT" success
+            require_result broad-rust "$BROAD_RESULT" success
+          else
+            require_result rust-contracts "$RUST_RESULT" skipped
+            require_result broad-rust "$BROAD_RESULT" skipped
+          fi
 
-      - name: Check the composed Enhanced binary
-        shell: bash
-        run: cargo check --locked -p xai-grok-pager-bin
+          if [[ "$RUN_NATIVE" == true || "$FULL_NATIVE" == true ]]; then
+            require_result native "$NATIVE_RESULT" success
+          else
+            require_result native "$NATIVE_RESULT" skipped
+          fi

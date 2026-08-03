@@ -1,0 +1,23 @@
+when:
+  - event: deployment
+    branch: main
+    evaluate: 'CI_PIPELINE_DEPLOY_TARGET == "github-release"'
+
+concurrency:
+  limit: 1
+  group: grok-github-release
+
+steps:
+  - name: dispatch-watch-and-verify
+    image: python:3.14-alpine@sha256:26730869004e2b9c4b9ad09cab8625e81d256d1ce97e72df5520e806b1709f92
+    environment:
+      GITHUB_ACTIONS_TOKEN:
+        from_secret: grok_github_actions_token
+    commands:
+      - |
+        set -eu
+        : "${GROK_RELEASE_TAG:?deployment parameter GROK_RELEASE_TAG is required}"
+        python3 -I -B scripts/ci/github_orchestrator.py dispatch-release \
+          --release-tag "$GROK_RELEASE_TAG" \
+          --orchestration-id "woodpecker-r-${CI_PIPELINE_NUMBER}" \
+          --run-timeout 21600

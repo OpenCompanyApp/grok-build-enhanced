@@ -1,0 +1,31 @@
+when:
+  - event: deployment
+    branch: main
+    evaluate: 'CI_PIPELINE_DEPLOY_TARGET == "github-qualification"'
+
+concurrency:
+  limit: 1
+  group: grok-github-qualification
+
+steps:
+  - name: dispatch-watch-and-verify
+    image: python:3.14-alpine@sha256:26730869004e2b9c4b9ad09cab8625e81d256d1ce97e72df5520e806b1709f92
+    environment:
+      GITHUB_ACTIONS_TOKEN:
+        from_secret: grok_github_actions_token
+    commands:
+      - |
+        set -eu
+        : "${GROK_QUALIFICATION_SHA:?deployment parameter GROK_QUALIFICATION_SHA is required}"
+        : "${GROK_QUALIFICATION_BRANCH:?deployment parameter GROK_QUALIFICATION_BRANCH is required}"
+        set -- python3 -I -B scripts/ci/github_orchestrator.py dispatch-qualification \
+          --source-sha "$GROK_QUALIFICATION_SHA" \
+          --source-branch "$GROK_QUALIFICATION_BRANCH" \
+          --orchestration-id "woodpecker-q-${CI_PIPELINE_NUMBER}" \
+          --run-timeout 21600
+        case "${GROK_QUALIFICATION_RELEASE_BUILDS:-false}" in
+          true) set -- "$@" --release-builds ;;
+          false) ;;
+          *) echo "GROK_QUALIFICATION_RELEASE_BUILDS must be true or false" >&2; exit 2 ;;
+        esac
+        "$@"

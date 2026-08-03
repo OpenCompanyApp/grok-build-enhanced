@@ -784,17 +784,42 @@
     },
     {
       "id": "fork-ci-contracts",
-      "description": "Credential-free CI checks for provider isolation, Warp provenance, Enhanced identity, updater routing, generated workspace discipline, ownership, and secret-file hygiene.",
+      "description": "Credential-free GitHub-hosted static, Rust, native, deep, and exact-source qualification with local entrypoints plus deployment-only Woodpecker dispatch and verification.",
       "source_ids": [
         "grok-build-upstream"
       ],
       "paths": [
+        ".github/actions/setup-rust-ci/action.yml",
+        ".github/workflows/deep-ci.yml",
         ".github/workflows/fork-contracts.yml",
-        "fork/scripts/check_fork_contracts.py"
+        ".github/workflows/rebase-qualification.yml",
+        ".woodpecker/github-qualification.yml",
+        ".woodpecker/github-release.yml",
+        "docs/ci-cd.md",
+        "fork/scripts/check_fork_contracts.py",
+        "fork/scripts/tests/test_check_fork_contracts.py",
+        "scripts/ci/github_orchestrator.py",
+        "scripts/ci/impact.py",
+        "scripts/ci/qualification.py",
+        "scripts/ci/run.sh",
+        "scripts/ci/tests/test_ci_contract.py",
+        "scripts/ci/tests/test_github_orchestrator.py",
+        "scripts/ci/tests/test_impact.py",
+        "scripts/ci/tests/test_qualification.py"
       ],
       "integration_paths": [
+        ".github/actions/setup-rust-ci/action.yml",
+        ".github/workflows/deep-ci.yml",
         ".github/workflows/fork-contracts.yml",
-        "fork/scripts/check_fork_contracts.py"
+        ".github/workflows/rebase-qualification.yml",
+        ".woodpecker/github-qualification.yml",
+        ".woodpecker/github-release.yml",
+        "docs/ci-cd.md",
+        "fork/scripts/check_fork_contracts.py",
+        "scripts/ci/github_orchestrator.py",
+        "scripts/ci/impact.py",
+        "scripts/ci/qualification.py",
+        "scripts/ci/run.sh"
       ],
       "legal_paths": [
         "LICENSE"

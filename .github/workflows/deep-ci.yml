@@ -1,0 +1,219 @@
+name: Deep CI
+run-name: Deep CI for ${{ inputs.source_sha || github.sha }}
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+    - cron: '41 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Optional exact commit to test; defaults to the triggering main commit
+        required: false
+        type: string
+      cold_build:
+        description: Also run a cache-disabled composed check
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-ci-${{ inputs.source_sha || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Resolve and validate deep-CI source
+    if: github.repository == 'OpenCompanyApp/grok-build-enhanced'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Check out requested source without persisted credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
+
+      - name: Verify exact source
+        id: source
+        shell: bash
+        env:
+          REQUESTED_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'source_sha must resolve to 40 lowercase hexadecimal characters' >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == "$REQUESTED_SHA" ]] || {
+            echo 'checked-out source does not match requested SHA' >&2
+            exit 1
+          }
+          echo "source_sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Run static fork and CI contracts
+        shell: bash
+        run: scripts/ci/run.sh static
+
+  broad:
+    name: Deep Rust ${{ matrix.group }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, ui, pty, libraries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/deep-${{ matrix.group }}
+      CI_TEST_THREADS: '2'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    steps:
+      - name: Check out exact source without persisted credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Set up cached Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-namespace: deep-${{ matrix.group }}
+
+      - name: Run deep ${{ matrix.group }} group
+        shell: bash
+        run: scripts/ci/run.sh "${{ matrix.group }}"
+
+      - name: Report compiler cache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+  policy:
+    name: Workspace policy and clippy
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/deep-policy
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    steps:
+      - name: Check out exact source without persisted credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Set up cached Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-namespace: deep-policy
+
+      - name: Check every target and deny clippy warnings
+        shell: bash
+        run: scripts/ci/run.sh policy
+
+      - name: Report compiler cache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+  native:
+    name: Deep native ${{ matrix.rust_target }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            rust_target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/deep-native-${{ matrix.rust_target }}
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    steps:
+      - name: Check out exact source without persisted credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Set up cached Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-namespace: deep-native-${{ matrix.rust_target }}
+
+      - name: Check the composed binary on the native host
+        shell: bash
+        run: scripts/ci/run.sh native "${{ matrix.rust_target }}"
+
+      - name: Report compiler cache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+  cold-composed-check:
+    name: Cache-disabled composed check
+    if: >-
+      github.event.schedule == '41 3 * * 0' ||
+      (github.event_name == 'workflow_dispatch' && inputs.cold_build == true)
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/cold-composed
+      RUSTC_WRAPPER: ''
+      SCCACHE_GHA_ENABLED: 'false'
+    steps:
+      - name: Check out exact source without persisted credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Install DotSlash without restoring caches
+        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
+      - name: Run a locked cold composed check
+        shell: bash
+        run: cargo check --locked -p xai-grok-pager-bin
+
+  deep-result:
+    name: Deep CI result
+    if: always() && github.repository == 'OpenCompanyApp/grok-build-enhanced'
+    needs: [prepare, broad, policy, native, cold-composed-check]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected deep lane to pass
+        shell: bash
+        env:
+          BROAD_RESULT: ${{ needs.broad.result }}
+          COLD_RESULT: ${{ needs.cold-composed-check.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          POLICY_RESULT: ${{ needs.policy.result }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+        run: |
+          set -euo pipefail
+          for result in "$PREPARE_RESULT" "$BROAD_RESULT" "$POLICY_RESULT" "$NATIVE_RESULT" "$COLD_RESULT"; do
+            if [[ "$result" != success && "$result" != skipped ]]; then
+              echo "selected deep-CI lane did not pass: $result" >&2
+              exit 1
+            fi
+          done

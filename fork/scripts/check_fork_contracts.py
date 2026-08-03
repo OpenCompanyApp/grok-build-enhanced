@@ -191,27 +191,56 @@ def check_generated_workspace(manifest: dict[str, object]) -> None:
 
 def check_workflow_pins() -> None:
     workflows = sorted((ROOT / ".github/workflows").glob("*.y*ml"))
+    composite_actions = sorted((ROOT / ".github/actions").glob("**/action.y*ml"))
     if not workflows:
         raise ContractError("repository has no GitHub workflows")
-    uses_pattern = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE)
-    for workflow in workflows:
-        text = workflow.read_text(encoding="utf-8")
+
+    uses_pattern = re.compile(
+        r"^\s*uses:\s*([^@\s]+)(?:@([^\s#]+))?", re.MULTILINE
+    )
+    for automation_file in (*workflows, *composite_actions):
+        text = automation_file.read_text(encoding="utf-8")
         for action, revision in uses_pattern.findall(text):
-            if not ACTION_SHA.fullmatch(revision):
+            if action.startswith("./"):
+                continue
+            if not revision or not ACTION_SHA.fullmatch(revision):
                 raise ContractError(
-                    f"{workflow.relative_to(ROOT)} action {action} is not pinned to a full SHA"
+                    f"{automation_file.relative_to(ROOT)} action {action} "
+                    "is not pinned to a full SHA"
                 )
 
-    dotslash_requirements = {
-        ".github/workflows/fork-contracts.yml": 1,
+    setup_action = ".github/actions/setup-rust-ci/action.yml"
+    setup_dotslash_count = read(setup_action).count(DOTSLASH_ACTION)
+    if setup_dotslash_count != 1:
+        raise ContractError(
+            f"{setup_action} installs pinned DotSlash {setup_dotslash_count} time(s); "
+            "expected exactly 1"
+        )
+
+    setup_requirements = {
+        ".github/workflows/fork-contracts.yml": 3,
+        ".github/workflows/deep-ci.yml": 3,
+        ".github/workflows/rebase-qualification.yml": 3,
+    }
+    setup_reference = "uses: ./.github/actions/setup-rust-ci"
+    for relative, minimum_count in setup_requirements.items():
+        actual_count = read(relative).count(setup_reference)
+        if actual_count < minimum_count:
+            raise ContractError(
+                f"{relative} invokes the cached Rust setup {actual_count} time(s); "
+                f"expected at least {minimum_count}"
+            )
+
+    direct_dotslash_requirements = {
+        ".github/workflows/deep-ci.yml": 1,
         ".github/workflows/release.yml": 2,
     }
-    for relative, minimum_count in dotslash_requirements.items():
+    for relative, minimum_count in direct_dotslash_requirements.items():
         actual_count = read(relative).count(DOTSLASH_ACTION)
         if actual_count < minimum_count:
             raise ContractError(
                 f"{relative} installs pinned DotSlash {actual_count} time(s); "
-                f"expected at least {minimum_count} for every Rust job using bin/protoc"
+                f"expected at least {minimum_count} for uncached Rust jobs using bin/protoc"
             )
 
 

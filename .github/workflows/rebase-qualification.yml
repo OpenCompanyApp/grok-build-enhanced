@@ -1,0 +1,288 @@
+name: Exact rebase qualification
+run-name: Rebase qualification ${{ inputs.source_sha }} (${{ inputs.orchestration_id }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: Owner-controlled main, rebase/*, or refresh/* branch containing source_sha
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character source commit to qualify
+        required: true
+        type: string
+      orchestration_id:
+        description: Unique safe identifier used to correlate a Woodpecker dispatch with this run
+        required: true
+        type: string
+      confirm_qualification:
+        description: Run the complete exact-source qualification matrix
+        required: true
+        default: false
+        type: boolean
+      release_builds:
+        description: Also build and smoke-test release-dist on every native host
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rebase-qualification-${{ inputs.source_branch }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Validate exact candidate and static contracts
+    if: github.repository == 'OpenCompanyApp/grok-build-enhanced'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      source_sha: ${{ steps.candidate.outputs.source_sha }}
+      source_tree: ${{ steps.candidate.outputs.source_tree }}
+    steps:
+      - name: Require explicit qualification confirmation
+        shell: bash
+        env:
+          CONFIRMED: ${{ inputs.confirm_qualification }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIRMED" == true ]] || {
+            echo 'confirm_qualification must be true' >&2
+            exit 1
+          }
+
+      - name: Check out the requested immutable candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Verify exact source and owner-controlled branch
+        id: candidate
+        shell: bash
+        env:
+          REQUESTED_BRANCH: ${{ inputs.source_branch }}
+          REQUESTED_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'source_sha must be 40 lowercase hexadecimal characters' >&2
+            exit 1
+          }
+          [[ "$REQUESTED_BRANCH" == main || "$REQUESTED_BRANCH" == rebase/* || "$REQUESTED_BRANCH" == refresh/* ]] || {
+            echo 'source_branch must be main, rebase/*, or refresh/*' >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == "$REQUESTED_SHA" ]] || {
+            echo 'checked-out commit does not match source_sha' >&2
+            exit 1
+          }
+          git fetch --no-tags origin \
+            "+refs/heads/$REQUESTED_BRANCH:refs/remotes/origin/$REQUESTED_BRANCH"
+          git merge-base --is-ancestor "$REQUESTED_SHA" "refs/remotes/origin/$REQUESTED_BRANCH" || {
+            echo 'source_sha is not contained in source_branch' >&2
+            exit 1
+          }
+          {
+            echo "source_sha=$REQUESTED_SHA"
+            echo "source_tree=$(git rev-parse 'HEAD^{tree}')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run static fork, CI, release, and hygiene contracts
+        shell: bash
+        run: scripts/ci/run.sh static
+
+  rust-contracts:
+    name: Focused exact-source Rust contracts
+    if: github.repository == 'OpenCompanyApp/grok-build-enhanced'
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/rust-contracts
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    steps:
+      - name: Check out the exact qualified source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Set up cached Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-namespace: qualification-rust-contracts
+
+      - name: Run focused contracts and composed check
+        shell: bash
+        run: scripts/ci/run.sh rust-contracts
+
+      - name: Report compiler cache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+  broad-rust:
+    name: Exact-source Rust ${{ matrix.group }}
+    if: github.repository == 'OpenCompanyApp/grok-build-enhanced'
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, ui, pty, libraries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/${{ matrix.group }}
+      CI_TEST_THREADS: '2'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    steps:
+      - name: Check out the exact qualified source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Set up cached Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-namespace: qualification-${{ matrix.group }}
+
+      - name: Run ${{ matrix.group }} test group
+        shell: bash
+        run: scripts/ci/run.sh "${{ matrix.group }}"
+
+      - name: Report compiler cache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+  native:
+    name: Exact-source native ${{ matrix.rust_target }}
+    if: github.repository == 'OpenCompanyApp/grok-build-enhanced'
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            rust_target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/native-${{ matrix.rust_target }}
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    steps:
+      - name: Check out the exact qualified source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Set up cached Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          cache-namespace: qualification-native-${{ matrix.rust_target }}
+
+      - name: Check or build on the native host
+        shell: bash
+        env:
+          RELEASE_BUILDS: ${{ inputs.release_builds }}
+        run: |
+          set -euo pipefail
+          mode=check
+          if [[ "$RELEASE_BUILDS" == true ]]; then
+            mode=build
+          fi
+          scripts/ci/run.sh native "${{ matrix.rust_target }}" "$mode"
+
+      - name: Report compiler cache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+  qualification:
+    name: Exact rebase qualification result
+    if: always() && github.repository == 'OpenCompanyApp/grok-build-enhanced'
+    needs: [prepare, rust-contracts, broad-rust, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require every exact-source lane to pass
+        shell: bash
+        env:
+          BROAD_RESULT: ${{ needs.broad-rust.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          RUST_RESULT: ${{ needs.rust-contracts.result }}
+          STATIC_RESULT: ${{ needs.prepare.result }}
+        run: |
+          set -euo pipefail
+          for result in "$STATIC_RESULT" "$RUST_RESULT" "$BROAD_RESULT" "$NATIVE_RESULT"; do
+            [[ "$result" == success ]] || {
+              echo "exact-source qualification lane did not pass: $result" >&2
+              exit 1
+            }
+          done
+
+      - name: Check out the exact qualified source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Write exact-source qualification record
+        shell: bash
+        env:
+          BROAD_RESULT: ${{ needs.broad-rust.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          RELEASE_BUILDS: ${{ inputs.release_builds }}
+          RUST_RESULT: ${{ needs.rust-contracts.result }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+          STATIC_RESULT: ${{ needs.prepare.result }}
+        run: |
+          set -euo pipefail
+          release_args=()
+          if [[ "$RELEASE_BUILDS" == true ]]; then
+            release_args+=(--release-builds)
+          fi
+          python3 -I -B scripts/ci/qualification.py create \
+            --source-sha "$SOURCE_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            "${release_args[@]}" \
+            --result "static=$STATIC_RESULT" \
+            --result "rust_contracts=$RUST_RESULT" \
+            --result "broad=$BROAD_RESULT" \
+            --result "native=$NATIVE_RESULT" \
+            --target x86_64-unknown-linux-gnu \
+            --target aarch64-unknown-linux-gnu \
+            --target aarch64-apple-darwin \
+            --target x86_64-apple-darwin \
+            --output qualification.json
+
+      - name: Upload exact-source qualification evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: rebase-qualification-${{ needs.prepare.outputs.source_sha }}
+          path: qualification.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
