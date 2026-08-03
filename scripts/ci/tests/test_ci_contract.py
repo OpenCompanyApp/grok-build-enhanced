@@ -126,6 +126,9 @@ class CiContractTests(unittest.TestCase):
             self.assertIn(group, text)
         self.assertIn("CARGO_INCREMENTAL", text)
         self.assertIn("cargo check --locked -p xai-grok-pager-bin", text)
+        self.assertIn('--test-threads="$test_threads"', text)
+        self.assertIn("-p xai-grok-pager --test '*'", text)
+        self.assertNotIn("-p xai-grok-pager --tests", text)
 
 
 if __name__ == "__main__":

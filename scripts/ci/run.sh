@@ -74,6 +74,7 @@ run_rust_contracts() {
 }
 
 run_core() {
+  local test_threads="${CI_TEST_THREADS:-2}"
   cargo test --locked --lib \
     -p xai-grok-auth \
     -p xai-grok-config \
@@ -83,28 +84,32 @@ run_core() {
     -p xai-grok-sampling-types \
     -p xai-grok-shell \
     -p xai-grok-tools \
-    -p xai-grok-tools-api
+    -p xai-grok-tools-api -- \
+    --test-threads="$test_threads"
 }
 
 run_ui() {
+  local test_threads="${CI_TEST_THREADS:-2}"
   cargo test --locked --lib \
     -p xai-grok-markdown \
     -p xai-grok-markdown-core \
     -p xai-grok-mermaid \
     -p xai-grok-pager \
     -p xai-grok-pager-minimal \
-    -p xai-grok-pager-render
+    -p xai-grok-pager-render -- \
+    --test-threads="$test_threads"
 }
 
 run_pty() {
   local test_threads="${CI_TEST_THREADS:-2}"
   cargo test --locked -p xai-grok-pager-pty-harness --tests -- \
     --test-threads="$test_threads"
-  cargo test --locked -p xai-grok-pager --tests -- \
+  cargo test --locked -p xai-grok-pager --test '*' -- \
     --test-threads="$test_threads"
 }
 
 run_libraries() {
+  local test_threads="${CI_TEST_THREADS:-2}"
   local -a excludes=(
     --exclude xai-grok-auth
     --exclude xai-grok-config
@@ -124,7 +129,8 @@ run_libraries() {
     --exclude xai-grok-tools
     --exclude xai-grok-tools-api
   )
-  cargo test --locked --workspace "${excludes[@]}"
+  cargo test --locked --workspace "${excludes[@]}" -- \
+    --test-threads="$test_threads"
   cargo test --locked --workspace --doc "${excludes[@]}"
 }
 
