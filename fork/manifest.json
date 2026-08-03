@@ -826,6 +826,28 @@
       ]
     },
     {
+      "id": "ci-baseline-stability",
+      "description": "Deterministic CI baseline fixes for queue-pair cleanup, active file-search dismissal, route-aware clipboard assertions, and command and shortcut registry contracts.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-file-utils/src/queue.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs",
+        "crates/codegen/xai-grok-pager/src/app/mermaid_worker.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/prompt_widget/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/shortcuts_help.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-file-utils/src/queue.rs",
+        "crates/codegen/xai-grok-pager/src/views/prompt_widget/mod.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
       "id": "codex-search-contract-guardrail",
       "description": "Credential-free normalized standalone-search contract snapshot, pinned-source extractor, drift classification, and aggregate fork validation.",
       "source_ids": [
