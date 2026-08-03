@@ -1615,8 +1615,15 @@ pub(super) mod paste_key_tests {
             .map(|(m, _)| m.clone())
             .unwrap_or_default();
         assert!(
-            toast.starts_with("Copied") || toast.starts_with("Copy failed"),
-            "copy-source emits a clipboard toast, got {toast:?}",
+            [
+                "Copied",
+                "Copy sent",
+                "Clipboard unreachable",
+                "Copy failed",
+            ]
+            .iter()
+            .any(|prefix| toast.starts_with(prefix)),
+            "copy-source emits a route-aware clipboard toast, got {toast:?}",
         );
         assert!(
             !agent.mermaid_needs_tick(),

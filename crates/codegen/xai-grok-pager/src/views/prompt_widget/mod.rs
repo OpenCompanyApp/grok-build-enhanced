@@ -1581,8 +1581,13 @@ impl PromptWidget {
         // Reset flight recorder delta (overwritten if key reaches textarea).
         self.last_input_delta = crate::input_log::LastInputDelta::default();
 
-        // ── File search key handling (when dropdown is visible) ─────────
-        if self.file_search.is_visible() {
+        // ── File search key handling ───────────────────────────────────
+        // Esc also dismisses an active context while its asynchronous result
+        // set is empty, when there is no dropdown row to make `is_visible()`
+        // true. Other navigation keys remain gated on visible results.
+        if self.file_search.is_visible()
+            || (self.file_search.context().is_some() && key!(Esc).matches(key))
+        {
             match self.handle_file_search_key(key) {
                 FileSearchKeyResult::Handled => return PromptEvent::Edited,
                 FileSearchKeyResult::Accepted => {

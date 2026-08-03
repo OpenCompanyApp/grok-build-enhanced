@@ -2304,42 +2304,49 @@ fn cleanup_queue_dir(queue_dir: &Path, max_age: Duration, stats: Option<&UploadQ
         Err(_) => return 0,
     };
     let all_names: HashSet<std::ffi::OsString> = entries.iter().map(|e| e.file_name()).collect();
+    // Snapshot every age before deleting anything. Otherwise an arbitrary
+    // `read_dir` order can remove an expired sidecar first, making its paired
+    // temp file lose the authoritative `enqueued_at` and fall back to mtime.
+    let entries: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            let path = entry.path();
+            let name = entry.file_name();
+            let age = pair_age(&path, &name, &all_names).unwrap_or_else(|| {
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|m| m.elapsed().ok())
+                    .unwrap_or(Duration::MAX)
+            });
+            Some((path, name, metadata, age))
+        })
+        .collect();
     let mut cleaned = 0u64;
     let mut cleaned_bytes = 0u64;
-    for entry in &entries {
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let path = entry.path();
-        let name = entry.file_name();
+    for (path, name, metadata, age) in &entries {
         let is_scratch_root = metadata.is_dir() && name == "scratch";
         if is_scratch_root {
-            let (sub_cleaned, sub_bytes) = cleanup_scratch_subdirs(&path, max_age);
+            let (sub_cleaned, sub_bytes) = cleanup_scratch_subdirs(path, max_age);
             cleaned += sub_cleaned;
             cleaned_bytes += sub_bytes;
             continue;
         }
-        let age = pair_age(&path, &name, &all_names).unwrap_or_else(|| {
-            metadata
-                .modified()
-                .ok()
-                .and_then(|m| m.elapsed().ok())
-                .unwrap_or(Duration::MAX)
-        });
-        if age <= max_age {
+        if *age <= max_age {
             continue;
         }
         if metadata.is_dir() {
-            let size = dir_size(&path).unwrap_or(0);
-            if std::fs::remove_dir_all(&path).is_ok() {
+            let size = dir_size(path).unwrap_or(0);
+            if std::fs::remove_dir_all(path).is_ok() {
                 cleaned += 1;
                 cleaned_bytes += size;
             }
-        } else if std::fs::remove_file(&path).is_ok() {
+        } else if std::fs::remove_file(path).is_ok() {
             cleaned += 1;
             cleaned_bytes += metadata.len();
             if let Some(stats) = stats
-                && is_mismatched_queue_file(&name, &all_names)
+                && is_mismatched_queue_file(name, &all_names)
             {
                 stats
                     .cleanup_orphan_mismatched

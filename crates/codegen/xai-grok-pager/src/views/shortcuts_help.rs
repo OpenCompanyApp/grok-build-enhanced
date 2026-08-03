@@ -3270,9 +3270,12 @@ mod tests {
             "registry-backed hints must carry their ActionId for expand/detail"
         );
 
-        // Registry rows carry ActionId; search + paste are display-only.
+        // Registry rows carry ActionId; editor-native search, paste, undo, and
+        // redo rows are display-only because their handlers bypass the registry.
         let search_key = key!('/');
         let paste_key = key!('v', CONTROL);
+        let undo_key = key!('z', CONTROL);
+        let redo_key = key!('z', CONTROL | SHIFT);
         for entry in &entries {
             let ShortcutsHelpEntry::Hint {
                 item, action_id, ..
@@ -3281,7 +3284,9 @@ mod tests {
                 continue;
             };
             let is_pseudo = (item.label == "search" && item.keys.contains(&search_key))
-                || (item.label == "paste" && item.keys.contains(&paste_key));
+                || (item.label == "paste" && item.keys.contains(&paste_key))
+                || (item.label == "undo" && item.keys.contains(&undo_key))
+                || (item.label == "redo" && item.keys.contains(&redo_key));
             if is_pseudo {
                 assert!(
                     action_id.is_none(),

@@ -338,6 +338,7 @@ mod tests {
             "toggle-mouse-reporting",
             "transcript",
             "t",
+            "undo",
             "usage",
             "view-plan",
             "vim-mode",
