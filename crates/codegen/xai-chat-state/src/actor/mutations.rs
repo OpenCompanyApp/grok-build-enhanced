@@ -325,6 +325,8 @@ impl ChatStateActor {
                         ContentPart::Text { text } => text.len(),
                         ContentPart::Image { url } => url.len(),
                         ContentPart::Video { path, mime_type } => path.len() + mime_type.len(),
+                        ContentPart::Audio { path, mime_type }
+                        | ContentPart::Document { path, mime_type } => path.len() + mime_type.len(),
                     })
                     .sum::<usize>(),
                 ConversationItem::Assistant(a) => a.content.len(),

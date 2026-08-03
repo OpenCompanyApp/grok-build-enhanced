@@ -1,9 +1,11 @@
+mod exa;
 mod kimi_code;
 mod openai_codex;
 mod responses;
 
 use crate::types::output::WebSearchReference;
 
+pub(super) use exa::ExaHostedBackend;
 pub(super) use kimi_code::KimiCodeBackend;
 pub(super) use openai_codex::OpenAiCodexBackend;
 pub(super) use responses::ResponsesBackend;

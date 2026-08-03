@@ -431,7 +431,7 @@ fn provider_safe_compaction_tools(
     tools: Vec<ToolSpec>,
     hosted_tools: Vec<HostedTool>,
 ) -> (Vec<ToolSpec>, Vec<HostedTool>) {
-    if provider.is_openai_codex() || provider.is_kimi_code() {
+    if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_open_code_go() {
         (Vec::new(), Vec::new())
     } else {
         (tools, hosted_tools)

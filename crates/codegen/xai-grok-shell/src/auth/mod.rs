@@ -14,6 +14,7 @@ pub mod kimi_code;
 pub(crate) mod manager;
 mod model;
 pub mod oidc;
+pub mod opencode_go;
 pub(crate) mod recovery;
 pub(crate) mod refresh;
 pub(crate) mod single_flight;

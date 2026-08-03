@@ -17,8 +17,9 @@ identity:
 | [OpenAI Codex subscription](openai-codex-subscription-provider-reference.md) | **Implemented, experimental** | Runtime `openai_codex` with the isolated `openai_codex_subscription` credential source and `openai::codex` auth scope. |
 | Generic custom transport | Implemented transport path, not a product-specific account integration | Runtime `custom`; it is not inferred to be Codex and receives neither Codex subscription credentials nor generic xAI tool credentials. |
 | [Kimi Code](kimi-code-integration-research.md) | **Implemented, experimental; initial live matrix qualified 2026-07-19** | Runtime `kimi_code` with isolated `kimi_code_api_key` credentials under `kimi::code`, authenticated dynamic models, Chat/Messages inference, and enabled hosted search/fetch integration. Current Chat/K3, usage, search, and fetch paths are live-qualified; broader Messages/session/cache/quota/media cases remain. |
+| [OpenCode Go](opencode-go-integration.md) | **Implemented, experimental; offline-qualified** | Runtime `open_code_go` with isolated `open_code_go_api_key` credentials under `opencode::go`, audited public model discovery, exact Chat/Responses/Messages routes, bounded media inputs, and keyless Exa MCP search enabled by default. |
 | [Z.AI GLM Coding Plan](zai-glm-coding-plan-integration-research.md) | **Research only** | No runtime identity, login command, credential scope, model catalog, usage surface, or product claim. The document records interoperability research only. |
-| OpenCode | **Not a provider candidate implemented by this fork** | Upstream interoperability/provenance research only; there is no `opencode` runtime identity, login, catalog, session, or credential scope. |
+| OpenCode application / Zen | **Not implemented as a runtime provider** | OpenCode remains an interoperability reference. The narrow OpenCode Go adapter above does not import OpenCode auth/cookies and does not add a Zen provider. |
 
 Shipped provider behavior is also documented in the
 [pager user guide](../../crates/codegen/xai-grok-pager/docs/user-guide/).

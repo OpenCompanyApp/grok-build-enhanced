@@ -73,6 +73,10 @@ pub enum ProviderId {
     /// Anthropic-compatible Messages protocol.
     #[serde(rename = "kimi_code")]
     KimiCode,
+    /// OpenCode Go subscription gateway. The identity remains OpenCode Go
+    /// regardless of the laboratory that produced the selected model.
+    #[serde(rename = "open_code_go", alias = "opencode_go")]
+    OpenCodeGo,
     /// Existing custom-model behavior. The provider-specific request policy
     /// remains caller-defined unless a more specific provider is selected.
     Custom,
@@ -87,10 +91,14 @@ impl ProviderId {
         matches!(self, Self::KimiCode)
     }
 
+    pub const fn is_open_code_go(self) -> bool {
+        matches!(self, Self::OpenCodeGo)
+    }
+
     /// Whether requests cross a first-class subscription-provider boundary
     /// whose payloads and response diagnostics must remain redacted.
     pub const fn requires_redacted_provider_diagnostics(self) -> bool {
-        matches!(self, Self::OpenAiCodex | Self::KimiCode)
+        matches!(self, Self::OpenAiCodex | Self::KimiCode | Self::OpenCodeGo)
     }
 
     pub const fn as_str(self) -> &'static str {
@@ -98,6 +106,7 @@ impl ProviderId {
             Self::Xai => "xai",
             Self::OpenAiCodex => "openai_codex",
             Self::KimiCode => "kimi_code",
+            Self::OpenCodeGo => "open_code_go",
             Self::Custom => "custom",
         }
     }
@@ -123,6 +132,8 @@ pub enum CredentialSourceId {
     OpenAiCodexSubscription,
     #[serde(rename = "kimi_code_api_key")]
     KimiCodeApiKey,
+    #[serde(rename = "open_code_go_api_key", alias = "opencode_go_api_key")]
+    OpenCodeGoApiKey,
     StaticApiKey,
     /// In-memory token minted by a trusted named helper for one exact custom
     /// provider route. This source is never valid for a first-party provider.
@@ -170,6 +181,15 @@ impl CredentialBinding {
         Self {
             provider: ProviderId::KimiCode,
             source: CredentialSourceId::KimiCodeApiKey,
+            record_id,
+            generation: 0,
+        }
+    }
+
+    pub fn open_code_go(record_id: Option<String>) -> Self {
+        Self {
+            provider: ProviderId::OpenCodeGo,
+            source: CredentialSourceId::OpenCodeGoApiKey,
             record_id,
             generation: 0,
         }

@@ -259,7 +259,8 @@ async fn refresh_provider_memory_resource(
     params.embed_api_key = sampling_config.api_key.clone();
     match sampling_config.provider {
         xai_grok_sampling_types::ProviderId::OpenAiCodex
-        | xai_grok_sampling_types::ProviderId::KimiCode => {
+        | xai_grok_sampling_types::ProviderId::KimiCode
+        | xai_grok_sampling_types::ProviderId::OpenCodeGo => {
             // Provider-owned subscription auth is not a general xAI
             // credential, and these scoped backends expose no supported
             // embeddings route.
@@ -331,6 +332,11 @@ fn web_search_config_for_provider(
     if sampling_config.provider.is_kimi_code() {
         return WebSearchConfig::KimiCode {
             base_url: xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned(),
+        };
+    }
+    if sampling_config.provider.is_open_code_go() {
+        return WebSearchConfig::ExaHosted {
+            base_url: xai_grok_sampling_types::EXA_HOSTED_MCP_URL.to_owned(),
         };
     }
     // Preserve a dedicated provider-owned web-search model when returning to
@@ -481,7 +487,8 @@ impl SessionActor {
         if let Some(previous) = previous_sampling_config.as_ref()
             && previous.provider == sampling_config.provider
             && (sampling_config.provider.is_openai_codex()
-                || sampling_config.provider.is_kimi_code())
+                || sampling_config.provider.is_kimi_code()
+                || sampling_config.provider.is_open_code_go())
         {
             crate::session::provider::pin_provider_candidate_to_active_record(
                 &mut sampling_config,
@@ -514,6 +521,9 @@ impl SessionActor {
             }
             xai_grok_sampling_types::ProviderId::KimiCode => {
                 acp::ModelId::new(format!("kimi-code/{}", sampling_config.model))
+            }
+            xai_grok_sampling_types::ProviderId::OpenCodeGo => {
+                acp::ModelId::new(format!("opencode-go/{}", sampling_config.model))
             }
             xai_grok_sampling_types::ProviderId::Xai
             | xai_grok_sampling_types::ProviderId::Custom => {
@@ -661,7 +671,8 @@ impl SessionActor {
         }
         let agent_name = self.agent.borrow().definition().name.clone();
         let persisted_binding = (sampling_config.provider.is_openai_codex()
-            || sampling_config.provider.is_kimi_code())
+            || sampling_config.provider.is_kimi_code()
+            || sampling_config.provider.is_open_code_go())
         .then(|| sampling_config.credential_binding.clone())
         .flatten();
         let _ = self
@@ -714,7 +725,8 @@ impl SessionActor {
         let hosted_web_search_enabled = web_search_config.allows_hosted_responses_tool();
         let backend_search_enabled = self.rebuild_spec.backend_search
             && !sampling_config.provider.is_openai_codex()
-            && !sampling_config.provider.is_kimi_code();
+            && !sampling_config.provider.is_kimi_code()
+            && !sampling_config.provider.is_open_code_go();
         self.agent.borrow_mut().refresh_backend_search_config(
             backend_search_enabled,
             hosted_web_search_enabled,

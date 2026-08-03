@@ -16,8 +16,8 @@ use crate::rs;
 use crate::tool_overrides::drop_empty;
 use crate::types::{
     ChatCompletionRequest, ChatContentBlock, ChatRequestMessage, ChatResponseMessage, FinishReason,
-    ImageUrl, MessageContent, Role, ToolCallRequest, ToolChoice, ToolDefinition, TraceContext,
-    Usage, VideoUrl,
+    ImageUrl, InputAudio, InputFile, MessageContent, Role, ToolCallRequest, ToolChoice,
+    ToolDefinition, TraceContext, Usage, VideoUrl,
 };
 use crate::{ToolOverrides, WebSearchOptions, XSearchOptions};
 
@@ -418,6 +418,12 @@ pub enum ContentPart {
     /// Local video input. Only the path and validated MIME type are durable;
     /// provider upload identifiers are request-local and must never persist.
     Video { path: Arc<str>, mime_type: Arc<str> },
+    /// Local audio input. Provider wire data is prepared from this durable
+    /// path only at request time.
+    Audio { path: Arc<str>, mime_type: Arc<str> },
+    /// Local document input (currently PDF for OpenCode Go). Provider wire
+    /// data is prepared from this durable path only at request time.
+    Document { path: Arc<str>, mime_type: Arc<str> },
 }
 
 // ============================================================================
@@ -1467,7 +1473,10 @@ impl ConversationItem {
                 .iter()
                 .filter_map(|p| match p {
                     ContentPart::Text { text } => Some(text.as_ref()),
-                    ContentPart::Image { .. } | ContentPart::Video { .. } => None,
+                    ContentPart::Image { .. }
+                    | ContentPart::Video { .. }
+                    | ContentPart::Audio { .. }
+                    | ContentPart::Document { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -1906,6 +1915,14 @@ impl From<ChatRequestMessage> for ConversationItem {
                             path: Arc::<str>::from(video_url.url),
                             mime_type: Arc::<str>::from(video_url.mime_type),
                         },
+                        ChatContentBlock::InputAudio { input_audio } => ContentPart::Audio {
+                            path: Arc::<str>::from(input_audio.data),
+                            mime_type: Arc::<str>::from(input_audio.mime_type),
+                        },
+                        ChatContentBlock::File { file } => ContentPart::Document {
+                            path: Arc::<str>::from(file.file_data),
+                            mime_type: Arc::<str>::from(file.mime_type),
+                        },
                     })
                     .collect();
                 ConversationItem::User(UserItem {
@@ -2075,7 +2092,10 @@ fn chat_assistant_has_sendable_content(message: &ChatRequestMessage) -> bool {
         MessageContent::Text(text) => !text.trim().is_empty(),
         MessageContent::Blocks(blocks) => blocks.iter().any(|block| match block {
             ChatContentBlock::Text { text } => !text.trim().is_empty(),
-            ChatContentBlock::ImageUrl { .. } | ChatContentBlock::VideoUrl { .. } => true,
+            ChatContentBlock::ImageUrl { .. }
+            | ChatContentBlock::VideoUrl { .. }
+            | ChatContentBlock::InputAudio { .. }
+            | ChatContentBlock::File { .. } => true,
         }),
     };
     content_is_sendable
@@ -2093,7 +2113,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
             let has_attachments = u
                 .content
                 .iter()
-                .any(|p| matches!(p, ContentPart::Image { .. } | ContentPart::Video { .. }));
+                .any(|p| !matches!(p, ContentPart::Text { .. }));
             // if the user message does not contain images, prefer to collapse the content into a single text block
             // this is aligned with the legacy behavior before introducing the blocks support
             let content = if !has_attachments {
@@ -2124,6 +2144,35 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
                         ContentPart::Video { path, mime_type } => ChatContentBlock::VideoUrl {
                             video_url: VideoUrl {
                                 url: path.as_ref().to_owned(),
+                                mime_type: mime_type.as_ref().to_owned(),
+                            },
+                        },
+                        ContentPart::Audio { path, mime_type } => {
+                            let format = if mime_type.as_ref() == "audio/wav" {
+                                "wav"
+                            } else {
+                                "mp3"
+                            };
+                            ChatContentBlock::InputAudio {
+                                input_audio: InputAudio {
+                                    data: path
+                                        .split_once(',')
+                                        .map(|(_, data)| data)
+                                        .unwrap_or(path.as_ref())
+                                        .to_owned(),
+                                    format: format.to_owned(),
+                                    mime_type: mime_type.as_ref().to_owned(),
+                                },
+                            }
+                        }
+                        ContentPart::Document { path, mime_type } => ChatContentBlock::File {
+                            file: InputFile {
+                                file_data: path.as_ref().to_owned(),
+                                filename: std::path::Path::new(path.as_ref())
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("document.pdf")
+                                    .to_owned(),
                                 mime_type: mime_type.as_ref().to_owned(),
                             },
                         },
@@ -2769,7 +2818,7 @@ fn content_parts_to_easy_input_content(
 ) -> rs::EasyInputContent {
     let has_attachments = parts
         .iter()
-        .any(|part| matches!(part, ContentPart::Image { .. } | ContentPart::Video { .. }));
+        .any(|part| !matches!(part, ContentPart::Text { .. }));
     let wire_parts: Vec<&ContentPart> = parts
         .iter()
         .filter(|part| include_user_wire_part(has_attachments, part))
@@ -2795,6 +2844,16 @@ fn content_parts_to_easy_input_content(
             ContentPart::Video { .. } => rs::InputContent::InputText(rs::InputTextContent {
                 text: "[unsupported video input]".to_owned(),
             }),
+            ContentPart::Audio { .. } => rs::InputContent::InputText(rs::InputTextContent {
+                text: "[unsupported audio input]".to_owned(),
+            }),
+            ContentPart::Document { path, .. } => rs::InputContent::InputFile(
+                rs::InputFileArgs::default()
+                    .file_data(path.as_ref())
+                    .filename("document.pdf")
+                    .build()
+                    .expect("valid provider-prepared document"),
+            ),
         })
         .collect();
 
@@ -3456,7 +3515,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     let content_parts_to_anthropic_blocks = |parts: &[ContentPart]| -> Vec<ContentBlock> {
         let has_attachments = parts
             .iter()
-            .any(|part| matches!(part, ContentPart::Image { .. } | ContentPart::Video { .. }));
+            .any(|part| !matches!(part, ContentPart::Text { .. }));
         parts
             .iter()
             .filter(|part| include_user_wire_part(has_attachments, part))
@@ -3505,10 +3564,36 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                         }
                     }
                 }
-                ContentPart::Video { .. } => ContentBlock::Text {
-                    text: "[unsupported video input]".to_owned(),
+                ContentPart::Video { path, mime_type } => {
+                    let data = path
+                        .split_once(',')
+                        .map(|(_, data)| data)
+                        .unwrap_or(path.as_ref());
+                    ContentBlock::Video {
+                        source: crate::messages::VideoSource::Base64 {
+                            media_type: mime_type.as_ref().to_owned(),
+                            data: data.to_owned(),
+                        },
+                        cache_control: None,
+                    }
+                }
+                ContentPart::Audio { .. } => ContentBlock::Text {
+                    text: "[unsupported audio input]".to_owned(),
                     cache_control: None,
                 },
+                ContentPart::Document { path, mime_type } => {
+                    let data = path
+                        .split_once(',')
+                        .map(|(_, data)| data)
+                        .unwrap_or(path.as_ref());
+                    ContentBlock::Document {
+                        source: crate::messages::DocumentSource::Base64 {
+                            media_type: mime_type.as_ref().to_owned(),
+                            data: data.to_owned(),
+                        },
+                        cache_control: None,
+                    }
+                }
             })
             .collect()
     };
@@ -3530,6 +3615,8 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             }
             ContentBlock::Unknown => false,
             ContentBlock::Image { .. }
+            | ContentBlock::Document { .. }
+            | ContentBlock::Video { .. }
             | ContentBlock::ToolUse { .. }
             | ContentBlock::ToolResult { .. }
             | ContentBlock::RedactedThinking { .. } => true,

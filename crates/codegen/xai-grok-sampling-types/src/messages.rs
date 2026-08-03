@@ -116,6 +116,16 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    Document {
+        source: DocumentSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    Video {
+        source: VideoSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -154,6 +164,18 @@ pub enum ContentBlock {
 pub enum ImageSource {
     Base64 { media_type: String, data: String },
     Url { url: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DocumentSource {
+    Base64 { media_type: String, data: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VideoSource {
+    Base64 { media_type: String, data: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

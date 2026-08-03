@@ -6,6 +6,7 @@ use super::*;
 
 const OPENAI_CODEX_MODEL_PREFIX: &str = "openai-codex/";
 const KIMI_CODE_MODEL_PREFIX: &str = "kimi-code/";
+const OPENCODE_GO_MODEL_PREFIX: &str = "opencode-go/";
 
 fn is_strict_openai_codex_model_id(model_id: &acp::ModelId) -> bool {
     model_id.0.starts_with(OPENAI_CODEX_MODEL_PREFIX)
@@ -23,6 +24,10 @@ pub(super) fn restored_codex_comp_hash(
 
 fn is_strict_kimi_code_model_id(model_id: &acp::ModelId) -> bool {
     model_id.0.starts_with(KIMI_CODE_MODEL_PREFIX)
+}
+
+fn is_strict_open_code_go_model_id(model_id: &acp::ModelId) -> bool {
+    model_id.0.starts_with(OPENCODE_GO_MODEL_PREFIX)
 }
 
 async fn refresh_openai_codex_catalog_for_selection(agent: &MvpAgent) -> Result<(), acp::Error> {
@@ -45,6 +50,11 @@ async fn resolve_explicit_model_for_selection(
             .ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::KimiCode)
             .await?;
         Some(xai_grok_sampling_types::ProviderId::KimiCode)
+    } else if is_strict_open_code_go_model_id(requested) {
+        agent
+            .ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::OpenCodeGo)
+            .await?;
+        Some(xai_grok_sampling_types::ProviderId::OpenCodeGo)
     } else {
         None
     };
@@ -108,6 +118,18 @@ async fn resolve_persisted_kimi_code_model_for_load(
         agent,
         persisted,
         xai_grok_sampling_types::ProviderId::KimiCode,
+    )
+    .await
+}
+
+async fn resolve_persisted_open_code_go_model_for_load(
+    agent: &MvpAgent,
+    persisted: &acp::ModelId,
+) -> Result<acp::ModelId, acp::Error> {
+    resolve_persisted_provider_model_for_load(
+        agent,
+        persisted,
+        xai_grok_sampling_types::ProviderId::OpenCodeGo,
     )
     .await
 }
@@ -798,6 +820,42 @@ impl acp::Agent for MvpAgent {
                     );
                 }
                 emit_login_span(true, auth_method::KIMI_CODE_METHOD_ID, None, None);
+                Ok(Default::default())
+            }
+            auth_method::OPENCODE_GO_METHOD_ID => {
+                let grok_home = crate::util::grok_home::grok_home();
+                let (credentials, binding) =
+                    crate::auth::opencode_go::current_credentials_and_binding(&grok_home)
+                        .map_err(|error| {
+                            emit_login_span(
+                                false,
+                                auth_method::OPENCODE_GO_METHOD_ID,
+                                None,
+                                Some("credentials_unavailable"),
+                            );
+                            acp::Error::auth_required().data(format!(
+                                "OpenCode Go authentication failed: {error}. Run `grok login --provider opencode-go` to configure an API key."
+                            ))
+                        })?;
+                if self.sampling_config.borrow().provider
+                    == xai_grok_sampling_types::ProviderId::OpenCodeGo
+                {
+                    let store = crate::auth::opencode_go::OpenCodeGoCredentialStore::new(
+                        &grok_home,
+                    );
+                    let mut sampling_config = self.sampling_config.borrow_mut();
+                    let backend = sampling_config.api_backend.clone();
+                    sampling_config.credential_binding = Some(binding.clone());
+                    sampling_config.request_auth = Some(
+                        crate::auth::opencode_go::shared_request_auth(
+                            store,
+                            credentials,
+                            backend,
+                            binding,
+                        ),
+                    );
+                }
+                emit_login_span(true, auth_method::OPENCODE_GO_METHOD_ID, None, None);
                 Ok(Default::default())
             }
             auth_method::XAI_API_KEY_METHOD_ID => {
@@ -1827,6 +1885,15 @@ impl acp::Agent for MvpAgent {
                 )
                 .await?,
             ))
+        } else if is_strict_open_code_go_model_id(&summary.current_model_id) {
+            Some((
+                xai_grok_sampling_types::ProviderId::OpenCodeGo,
+                resolve_persisted_open_code_go_model_for_load(
+                    self,
+                    &summary.current_model_id,
+                )
+                .await?,
+            ))
         } else {
             None
         };
@@ -1845,6 +1912,7 @@ impl acp::Agent for MvpAgent {
         restored_sampling.credential_binding = (
             restored_sampling.provider.is_openai_codex()
                 || restored_sampling.provider.is_kimi_code()
+                || restored_sampling.provider.is_open_code_go()
         )
             .then(|| summary.credential_binding.clone())
             .flatten();
@@ -2271,6 +2339,8 @@ impl acp::Agent for MvpAgent {
             if provider_model != persisted_model {
                 let (provider_name, fallback_name) = if provider.is_kimi_code() {
                     ("Kimi Code", "Kimi")
+                } else if provider.is_open_code_go() {
+                    ("OpenCode Go", "OpenCode Go")
                 } else {
                     ("ChatGPT Codex", "Codex")
                 };

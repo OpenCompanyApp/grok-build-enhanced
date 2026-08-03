@@ -1,6 +1,6 @@
 # Upstream versions
 
-Last checked: 2026-07-31T16:23:43Z
+Last checked: 2026-08-03
 
 This file records both the source revision last reviewed for this fork and the
 newest fetched revision. A difference is a review queue, not permission to
@@ -9,7 +9,9 @@ blindly copy upstream code.
 | Project | Remote and tracked ref | Last reviewed / fork baseline | Latest fetched |
 | --- | --- | --- | --- |
 | OpenAI Codex CLI | `https://github.com/openai/codex.git` `main` | [`2c005abb0765bfe3ef42a23fe88d5b806184fa83`](https://github.com/openai/codex/commit/2c005abb0765bfe3ef42a23fe88d5b806184fa83) | same |
-| OpenCode | `https://github.com/anomalyco/opencode.git` `dev` | [`e4bd9757a3a5dc7461d286000a19e9bd7df57c40`](https://github.com/anomalyco/opencode/commit/e4bd9757a3a5dc7461d286000a19e9bd7df57c40) | same |
+| OpenCode | `https://github.com/anomalyco/opencode.git` `dev` | [`1882c33827cf0ce5c948b69ab5a87ed8f6790cf8`](https://github.com/anomalyco/opencode/commit/1882c33827cf0ce5c948b69ab5a87ed8f6790cf8) | same |
+| models.dev | `https://github.com/sst/models.dev.git` `dev` | [`f67be44f095a4ab24ceab33c3907317bb0375087`](https://github.com/sst/models.dev/commit/f67be44f095a4ab24ceab33c3907317bb0375087) | same |
+| Exa MCP server | `https://github.com/exa-labs/exa-mcp-server.git` `master` | [`a664592b5dd7c5598b70158c771dcc5c2a4fb2c1`](https://github.com/exa-labs/exa-mcp-server/commit/a664592b5dd7c5598b70158c771dcc5c2a4fb2c1) | same |
 | Grok Build upstream | `https://github.com/xai-org/grok-build.git` `main` | Reviewed [`dd04f397b1d02f2272b092555669dfba1f01bc85`](https://github.com/xai-org/grok-build/commit/dd04f397b1d02f2272b092555669dfba1f01bc85) | same |
 | OpenCode Codex auth reference | `https://github.com/numman-ali/opencode-openai-codex-auth.git` `main` | [`bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016`](https://github.com/numman-ali/opencode-openai-codex-auth/commit/bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016) | same |
 | Warp themes | `https://github.com/warpdotdev/themes.git` `main` | [`b385044250f1ed3c9379ab34a8fe82f02fdffaa4`](https://github.com/warpdotdev/themes/commit/b385044250f1ed3c9379ab34a8fe82f02fdffaa4) | same |

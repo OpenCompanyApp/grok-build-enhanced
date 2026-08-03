@@ -3536,6 +3536,17 @@ pub fn resolve_model_list(
         tracing::debug!(count = kimi_models.len(), "loaded Kimi Code model catalog");
         resolved.extend(kimi_models);
     }
+    // OpenCode Go discovery is public, but routing and capabilities are
+    // restricted to the audited provider registry before this cache is
+    // written. Credentials remain provider-owned and are never cached here.
+    let open_code_go_models = crate::auth::opencode_go::load_cached_model_entries();
+    if !open_code_go_models.is_empty() {
+        tracing::debug!(
+            count = open_code_go_models.len(),
+            "loaded OpenCode Go model catalog"
+        );
+        resolved.extend(open_code_go_models);
+    }
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
         let base = resolved.shift_remove(key);
@@ -4903,6 +4914,18 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
             auth_scheme: info.auth_scheme,
         };
     }
+    if info.provider == ProviderId::OpenCodeGo {
+        // OpenCode Go keys are attached only by its provider request-auth
+        // binder. They never fall through to xAI, Codex, Kimi, or custom
+        // credentials.
+        return ResolvedCredentials {
+            provider: ProviderId::OpenCodeGo,
+            api_key: None,
+            base_url: xai_grok_sampling_types::OPENCODE_GO_BASE_URL.to_owned(),
+            auth_type: xai_chat_state::AuthType::ApiKey,
+            auth_scheme: info.auth_scheme,
+        };
+    }
     if info.provider == ProviderId::Custom {
         let api_key = model.own_credential().or_else(|| {
             model
@@ -5226,7 +5249,7 @@ pub fn resolve_aux_model_sampling_config(
         );
         if matches!(
             entry.info.provider,
-            ProviderId::OpenAiCodex | ProviderId::KimiCode
+            ProviderId::OpenAiCodex | ProviderId::KimiCode | ProviderId::OpenCodeGo
         ) {
             // Return provider/model routing only. The fallible session binder
             // attests the restored record and attaches sampler + tool auth at
@@ -5428,6 +5451,7 @@ pub fn sampling_config_for_model(
             xai_grok_sampling_types::CredentialSourceId::OpenAiCodexSubscription
         }
         ProviderId::KimiCode => xai_grok_sampling_types::CredentialSourceId::KimiCodeApiKey,
+        ProviderId::OpenCodeGo => xai_grok_sampling_types::CredentialSourceId::OpenCodeGoApiKey,
         ProviderId::Custom if model.effective_auth_provider().is_some() => {
             xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider
         }

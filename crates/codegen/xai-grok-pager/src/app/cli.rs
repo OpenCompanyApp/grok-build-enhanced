@@ -168,6 +168,8 @@ pub enum AuthProviderArg {
     OpenAiCodex,
     #[value(name = "kimi-code", alias = "kimi_code")]
     KimiCode,
+    #[value(name = "opencode-go", alias = "opencode_go")]
+    OpenCodeGo,
 }
 
 /// ChatGPT Codex standalone-search access mode selected at launch.

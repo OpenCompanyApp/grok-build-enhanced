@@ -1,4 +1,4 @@
-use super::backends::{KimiCodeBackend, OpenAiCodexBackend, ResponsesBackend};
+use super::backends::{ExaHostedBackend, KimiCodeBackend, OpenAiCodexBackend, ResponsesBackend};
 use super::types::{CodexWebSearchContext, WebSearchConfig};
 use crate::attribution::SharedAttributionCallback;
 use crate::types::SharedApiKeyProvider;
@@ -9,6 +9,7 @@ enum WebSearchBackend {
     Responses(ResponsesBackend),
     OpenAiCodex(OpenAiCodexBackend),
     KimiCode(KimiCodeBackend),
+    ExaHosted(ExaHostedBackend),
 }
 
 /// Provider-neutral web-search client facade.
@@ -101,6 +102,9 @@ impl WebSearchClient {
                 })?;
                 WebSearchBackend::KimiCode(KimiCodeBackend::new(base_url, request_auth_provider)?)
             }
+            WebSearchConfig::ExaHosted { base_url } => {
+                WebSearchBackend::ExaHosted(ExaHostedBackend::new(base_url)?)
+            }
         };
         Ok(Self { backend })
     }
@@ -120,6 +124,7 @@ impl WebSearchClient {
             WebSearchBackend::KimiCode(backend) => {
                 backend.set_attribution_callback(callback);
             }
+            WebSearchBackend::ExaHosted(_) => {}
         }
         self
     }
@@ -137,6 +142,7 @@ impl WebSearchClient {
                 backend.search(query, allowed_domains).await?
             }
             WebSearchBackend::KimiCode(backend) => backend.search(query, allowed_domains).await?,
+            WebSearchBackend::ExaHosted(backend) => backend.search(query, allowed_domains).await?,
         };
         let citations = result.citations();
         Ok((result.content, citations))
@@ -155,6 +161,7 @@ impl WebSearchClient {
                 backend.search(query, allowed_domains).await?
             }
             WebSearchBackend::KimiCode(backend) => backend.search(query, allowed_domains).await?,
+            WebSearchBackend::ExaHosted(backend) => backend.search(query, allowed_domains).await?,
         };
         Ok((result.content, result.citation_pairs))
     }
@@ -177,6 +184,9 @@ impl WebSearchClient {
                     .await?
             }
             WebSearchBackend::KimiCode(backend) => {
+                backend.run_commands(&commands, allowed_domains).await?
+            }
+            WebSearchBackend::ExaHosted(backend) => {
                 backend.run_commands(&commands, allowed_domains).await?
             }
         };

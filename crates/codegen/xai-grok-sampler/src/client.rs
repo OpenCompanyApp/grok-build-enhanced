@@ -38,6 +38,7 @@ use crate::provider::openai_codex::{
     endpoint as codex_endpoint, errors as codex_errors, headers as codex_headers,
     responses as codex_responses, sse::CodexSseDecoder,
 };
+use crate::provider::opencode_go;
 use codex_headers::CODEX_TURN_STATE_HEADER;
 
 // Re-export ApiBackend from the shared types crate for downstream callers.
@@ -57,7 +58,7 @@ fn normalize_reasoning_effort_for_provider(
     provider: ProviderId,
     effort: ReasoningEffort,
 ) -> Result<ReasoningEffort> {
-    if provider.is_openai_codex() || provider.is_kimi_code() {
+    if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_open_code_go() {
         return Ok(effort);
     }
     match effort {
@@ -722,6 +723,27 @@ impl SamplingClient {
                 ));
             }
         }
+        if config.provider.is_open_code_go() {
+            opencode_go::validate_config(config.provider, &config.base_url)?;
+            if config.api_key.is_some()
+                || config.bearer_resolver.is_some()
+                || config.request_auth.is_none()
+            {
+                return Err(SamplingError::InvalidConfiguration(
+                    "OpenCode Go requires provider-scoped request authentication",
+                ));
+            }
+            let expected_scheme = if matches!(config.api_backend, ApiBackend::Messages) {
+                AuthScheme::XApiKey
+            } else {
+                AuthScheme::Bearer
+            };
+            if config.auth_scheme != expected_scheme {
+                return Err(SamplingError::InvalidConfiguration(
+                    "OpenCode Go authentication scheme does not match the catalog protocol",
+                ));
+            }
+        }
         let mut headers = HeaderMap::new();
         let mut responses_lite = false;
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -803,6 +825,11 @@ impl SamplingClient {
                     "Kimi Code protected/provider headers cannot be set via extra_headers",
                 ));
             }
+            if config.provider.is_open_code_go() && opencode_go::is_protected_header(&header_name) {
+                return Err(SamplingError::InvalidConfiguration(
+                    "OpenCode Go protected/provider headers cannot be set via extra_headers",
+                ));
+            }
             let mut header_value = HeaderValue::from_str(value)
                 .map_err(|_| SamplingError::InvalidConfiguration("Invalid extra header value"))?;
             if Self::is_sensitive_header(header_name.as_str()) {
@@ -866,6 +893,16 @@ impl SamplingClient {
                     );
                 }
             }
+            ProviderId::OpenCodeGo => {
+                if matches!(config.api_backend, ApiBackend::Messages) {
+                    headers.insert(
+                        HeaderName::from_static("anthropic-version"),
+                        HeaderValue::from_static(
+                            xai_grok_sampling_types::OPENCODE_GO_ANTHROPIC_VERSION,
+                        ),
+                    );
+                }
+            }
         }
 
         // Always set User-Agent: per-session origin if available, else fallback.
@@ -889,6 +926,8 @@ impl SamplingClient {
             None
         } else if config.provider.is_kimi_code() {
             Some(kimi_code::http_client(config.force_http1)?)
+        } else if config.provider.is_open_code_go() {
+            Some(opencode_go::http_client(config.force_http1)?)
         } else if config.force_http1 {
             tracing::info!("Using HTTP/1.1 for sampling client (force_http1=true)");
             Some(crate::shared_http::client_http1().map_err(SamplingError::Http)?)
@@ -1031,6 +1070,13 @@ impl SamplingClient {
         }
         if self.defaults.provider.is_kimi_code() {
             kimi_code::seal_headers(
+                &headers,
+                self.defaults.api_backend.clone(),
+                credential_binding.as_ref(),
+            )?;
+        }
+        if self.defaults.provider.is_open_code_go() {
+            opencode_go::seal_headers(
                 &headers,
                 self.defaults.api_backend.clone(),
                 credential_binding.as_ref(),
@@ -1229,6 +1275,7 @@ impl SamplingClient {
         let auth_type = match (self.defaults.provider, self.defaults.auth_scheme, has_auth) {
             (ProviderId::OpenAiCodex, _, true) => "openai-codex-subscription",
             (ProviderId::KimiCode, _, true) => "kimi-code-api-key",
+            (ProviderId::OpenCodeGo, _, true) => "opencode-go-api-key",
             (_, AuthScheme::XApiKey, true) => "x-api-key",
             (_, AuthScheme::Bearer, true) => "bearer",
             (_, _, false) => "none",
@@ -3081,6 +3128,12 @@ impl SamplingClient {
         Option<ResponseModelMetadata>,
     )> {
         self.apply_conversation_defaults(&mut request)?;
+        opencode_go::prepare_media_inputs(
+            self.defaults.provider,
+            ApiBackend::ChatCompletions,
+            &mut request,
+        )
+        .await?;
 
         let trace = request.trace.take();
         let mut chat_request: ChatCompletionRequest = request.into();
@@ -3099,6 +3152,12 @@ impl SamplingClient {
         mut request: ConversationRequest,
     ) -> Result<ChatCompletionResponse> {
         self.apply_conversation_defaults(&mut request)?;
+        opencode_go::prepare_media_inputs(
+            self.defaults.provider,
+            ApiBackend::ChatCompletions,
+            &mut request,
+        )
+        .await?;
 
         let trace = request.trace.take();
         let mut chat_request: ChatCompletionRequest = request.into();
@@ -3152,12 +3211,18 @@ impl SamplingClient {
         Option<ResponseModelMetadata>,
         Option<crate::doom_loop::DoomLoopSignalCollector>,
     )> {
+        self.apply_conversation_defaults(&mut request)?;
+        opencode_go::prepare_media_inputs(
+            self.defaults.provider,
+            ApiBackend::Responses,
+            &mut request,
+        )
+        .await?;
         if request.has_video_inputs() {
             return Err(SamplingError::InvalidConfiguration(
                 "video input is unsupported by the Responses API",
             ));
         }
-        self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
         let x_grok_conv_id = request.x_grok_conv_id.clone();
@@ -3202,12 +3267,18 @@ impl SamplingClient {
         &self,
         mut request: ConversationRequest,
     ) -> Result<rs::Response> {
+        self.apply_conversation_defaults(&mut request)?;
+        opencode_go::prepare_media_inputs(
+            self.defaults.provider,
+            ApiBackend::Responses,
+            &mut request,
+        )
+        .await?;
         if request.has_video_inputs() {
             return Err(SamplingError::InvalidConfiguration(
                 "video input is unsupported by the Responses API",
             ));
         }
-        self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
         let x_grok_conv_id = request.x_grok_conv_id.clone();
@@ -3247,12 +3318,18 @@ impl SamplingClient {
         BoxStream<'static, Result<messages::MessageStreamEvent>>,
         Option<ResponseModelMetadata>,
     )> {
-        if request.has_video_inputs() {
+        self.apply_conversation_defaults(&mut request)?;
+        opencode_go::prepare_media_inputs(
+            self.defaults.provider,
+            ApiBackend::Messages,
+            &mut request,
+        )
+        .await?;
+        if request.has_video_inputs() && !self.defaults.provider.is_open_code_go() {
             return Err(SamplingError::InvalidConfiguration(
                 "video input is unsupported by the Messages API",
             ));
         }
-        self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
         let x_grok_conv_id = request.x_grok_conv_id.clone();
@@ -3285,12 +3362,18 @@ impl SamplingClient {
         &self,
         mut request: ConversationRequest,
     ) -> Result<messages::MessagesResponse> {
-        if request.has_video_inputs() {
+        self.apply_conversation_defaults(&mut request)?;
+        opencode_go::prepare_media_inputs(
+            self.defaults.provider,
+            ApiBackend::Messages,
+            &mut request,
+        )
+        .await?;
+        if request.has_video_inputs() && !self.defaults.provider.is_open_code_go() {
             return Err(SamplingError::InvalidConfiguration(
                 "video input is unsupported by the Messages API",
             ));
         }
-        self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
         let x_grok_conv_id = request.x_grok_conv_id.clone();

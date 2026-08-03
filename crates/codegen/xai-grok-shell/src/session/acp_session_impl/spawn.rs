@@ -49,9 +49,11 @@ struct MemoryEmbeddingRoute {
 fn persisted_provider_binding(
     config: &xai_grok_sampler::SamplerConfig,
 ) -> Option<xai_grok_sampling_types::CredentialBinding> {
-    (config.provider.is_openai_codex() || config.provider.is_kimi_code())
-        .then(|| config.credential_binding.clone())
-        .flatten()
+    (config.provider.is_openai_codex()
+        || config.provider.is_kimi_code()
+        || config.provider.is_open_code_go())
+    .then(|| config.credential_binding.clone())
+    .flatten()
 }
 
 fn restored_previous_model(
@@ -78,7 +80,7 @@ fn resolve_memory_embedding_route(
     base_url: &str,
     api_key: Option<&str>,
 ) -> MemoryEmbeddingRoute {
-    if provider.is_openai_codex() || provider.is_kimi_code() {
+    if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_open_code_go() {
         return MemoryEmbeddingRoute {
             config: None,
             base_url: String::new(),
@@ -601,6 +603,10 @@ pub(crate) async fn spawn_session_actor(
             );
             xai_grok_tools::implementations::WebSearchConfig::Disabled
         }
+    } else if sampling_config.provider.is_open_code_go() {
+        xai_grok_tools::implementations::WebSearchConfig::ExaHosted {
+            base_url: xai_grok_sampling_types::EXA_HOSTED_MCP_URL.to_owned(),
+        }
     } else if let Some(cfg) = web_search_sampling_config.as_ref() {
         if let Some(api_key) = cfg.api_key.clone() {
             xai_grok_tools::implementations::WebSearchConfig::Enabled {
@@ -1111,6 +1117,9 @@ pub(crate) async fn spawn_session_actor(
             }
             xai_grok_tools::implementations::WebSearchConfig::KimiCode { .. } => {
                 Some(xai_grok_sampling_types::ProviderId::KimiCode)
+            }
+            xai_grok_tools::implementations::WebSearchConfig::ExaHosted { .. } => {
+                Some(xai_grok_sampling_types::ProviderId::OpenCodeGo)
             }
             xai_grok_tools::implementations::WebSearchConfig::Enabled { .. } => {
                 configured_web_search_provider

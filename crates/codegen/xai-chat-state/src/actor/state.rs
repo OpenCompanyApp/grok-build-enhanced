@@ -49,7 +49,10 @@ pub fn estimate_item_tokens(item: &ConversationItem) -> u64 {
             for p in &u.content {
                 match p {
                     ContentPart::Text { text } => bytes += text.len(),
-                    ContentPart::Image { .. } | ContentPart::Video { .. } => attachments += 1,
+                    ContentPart::Image { .. }
+                    | ContentPart::Video { .. }
+                    | ContentPart::Audio { .. }
+                    | ContentPart::Document { .. } => attachments += 1,
                 }
             }
             (bytes as u64) / xai_token_estimation::BYTES_PER_TOKEN

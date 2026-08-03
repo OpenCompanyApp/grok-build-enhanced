@@ -204,6 +204,28 @@ pub struct VideoUrl {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct InputAudio {
+    /// Base64-encoded audio bytes on the provider wire. Before the sampler's
+    /// request-time preparation this field contains the local path.
+    pub data: String,
+    pub format: String,
+    /// Local-only MIME validation metadata.
+    #[serde(default, skip_serializing)]
+    pub mime_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct InputFile {
+    /// Data URL on the provider wire. Before request-time preparation this
+    /// field contains the local path.
+    pub file_data: String,
+    pub filename: String,
+    /// Local-only MIME validation metadata.
+    #[serde(default, skip_serializing)]
+    pub mime_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type")]
 pub enum ChatContentBlock {
     #[serde(rename = "text")]
@@ -212,6 +234,10 @@ pub enum ChatContentBlock {
     ImageUrl { image_url: ImageUrl },
     #[serde(rename = "video_url")]
     VideoUrl { video_url: VideoUrl },
+    #[serde(rename = "input_audio")]
+    InputAudio { input_audio: InputAudio },
+    #[serde(rename = "file")]
+    File { file: InputFile },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -333,6 +359,8 @@ impl ChatRequestMessage {
                 ChatContentBlock::Text { text } => Some(text.clone()),
                 ChatContentBlock::ImageUrl { .. } => None,
                 ChatContentBlock::VideoUrl { .. } => None,
+                ChatContentBlock::InputAudio { .. } => None,
+                ChatContentBlock::File { .. } => None,
             })
             .collect::<Vec<_>>()
             .join("\n")

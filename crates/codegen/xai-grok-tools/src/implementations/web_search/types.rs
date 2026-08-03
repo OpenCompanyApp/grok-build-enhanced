@@ -231,6 +231,9 @@ pub enum WebSearchConfig {
     /// Authentication is resolved per request from the Kimi-scoped provider;
     /// no API key is serialized into this configuration.
     KimiCode { base_url: String },
+    /// Keyless Exa hosted MCP search. This is the default search transport for
+    /// OpenCode Go sessions and carries no provider credential.
+    ExaHosted { base_url: String },
 }
 
 impl std::fmt::Debug for WebSearchConfig {
@@ -261,6 +264,10 @@ impl WebSearchConfig {
 
     pub fn is_kimi_code(&self) -> bool {
         matches!(self, Self::KimiCode { .. })
+    }
+
+    pub fn is_exa_hosted(&self) -> bool {
+        matches!(self, Self::ExaHosted { .. })
     }
 
     pub fn uses_provider_scoped_web(&self) -> bool {
@@ -304,6 +311,9 @@ impl WebSearchConfig {
                 settings: settings.clone(),
             },
             Self::KimiCode { base_url } => Self::KimiCode {
+                base_url: sanitize_redacted_base_url(base_url),
+            },
+            Self::ExaHosted { base_url } => Self::ExaHosted {
                 base_url: sanitize_redacted_base_url(base_url),
             },
         }

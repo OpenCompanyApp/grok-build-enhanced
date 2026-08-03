@@ -10,7 +10,7 @@ use std::sync::Arc;
 use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
     ApiBackend, CredentialBinding, CredentialSourceId, KIMI_CODE_BASE_URL, OPENAI_CODEX_BASE_URL,
-    OPENAI_CODEX_RESPONSES_LITE_HEADER, ProviderId,
+    OPENAI_CODEX_RESPONSES_LITE_HEADER, OPENCODE_GO_BASE_URL, ProviderId,
 };
 use xai_grok_tools::types::SharedApiKeyProvider;
 
@@ -20,6 +20,9 @@ use crate::auth::codex::{
 use crate::auth::kimi_code::{
     KimiCodeAuthError, KimiCodeCredentialStore, shared_sampler_request_auth as kimi_sampler_auth,
     shared_tool_auth_provider as kimi_tool_auth,
+};
+use crate::auth::opencode_go::{
+    OpenCodeGoAuthError, OpenCodeGoCredentialStore, shared_request_auth as opencode_go_request_auth,
 };
 
 /// Provider-qualified model identity carried alongside every bound auxiliary
@@ -59,12 +62,18 @@ pub(crate) enum ProviderBindingError {
     CodexAuth(#[from] CodexAuthError),
     #[error(transparent)]
     KimiCodeAuth(#[from] KimiCodeAuthError),
+    #[error(transparent)]
+    OpenCodeGoAuth(#[from] OpenCodeGoAuthError),
     #[error("restored OpenAI Codex credential binding is invalid")]
     InvalidRestoredBinding,
     #[error("restored Kimi Code credential binding is invalid")]
     InvalidKimiRestoredBinding,
+    #[error("restored OpenCode Go credential binding is invalid")]
+    InvalidOpenCodeGoRestoredBinding,
     #[error("the restored Kimi Code API-key record changed; rebuild the provider session")]
     KimiCredentialChanged,
+    #[error("the restored OpenCode Go API-key record changed; rebuild the provider session")]
+    OpenCodeGoCredentialChanged,
     #[error("the restored OpenAI Codex account changed; rebuild the provider session")]
     AccountChanged,
     #[error("the restored OpenAI Codex credential generation moved backwards")]
@@ -89,6 +98,9 @@ pub(crate) async fn bind_provider_runtime(
         sampler_config.api_key = None;
         sampler_config.credential_source = CredentialSourceId::Unspecified;
         sampler_config.credential_binding = None;
+    }
+    if sampler_config.provider.is_open_code_go() {
+        return bind_open_code_go(sampler_config);
     }
     if sampler_config.provider.is_kimi_code() {
         return bind_kimi_code(sampler_config);
@@ -137,6 +149,78 @@ pub(crate) async fn bind_provider_runtime(
 
     let manager = Arc::new(CodexAuthManager::new(&crate::util::grok_home::grok_home())?);
     bind_openai_codex_with_manager(sampler_config, manager).await
+}
+
+fn bind_open_code_go(
+    mut sampler_config: SamplerConfig,
+) -> Result<BoundProviderRuntime, ProviderBindingError> {
+    let grok_home = crate::util::grok_home::grok_home();
+    let store = OpenCodeGoCredentialStore::new(&grok_home);
+    let (credentials, current) =
+        crate::auth::opencode_go::current_credentials_and_binding(&grok_home)?;
+    if let Some(expected) =
+        restored_open_code_go_binding(sampler_config.credential_binding.as_ref())?
+        && (!expected.same_record(&current) || current.generation < expected.generation)
+    {
+        return Err(ProviderBindingError::OpenCodeGoCredentialChanged);
+    }
+
+    let backend = sampler_config.api_backend.clone();
+    sampler_config.provider = ProviderId::OpenCodeGo;
+    sampler_config.credential_source = CredentialSourceId::OpenCodeGoApiKey;
+    sampler_config.credential_binding = Some(current.clone());
+    sampler_config.api_key = None;
+    sampler_config.base_url = OPENCODE_GO_BASE_URL.to_owned();
+    sampler_config.auth_scheme = if backend == ApiBackend::Messages {
+        AuthScheme::XApiKey
+    } else {
+        AuthScheme::Bearer
+    };
+    sampler_config.extra_headers.clear();
+    sampler_config.attribution_callback = None;
+    sampler_config.bearer_resolver = None;
+    sampler_config.request_auth = Some(opencode_go_request_auth(
+        store,
+        credentials,
+        backend,
+        current,
+    ));
+    sampler_config.deployment_id = None;
+    sampler_config.user_id = None;
+    sampler_config.compactions_remaining = None;
+    sampler_config.compaction_at_tokens = None;
+
+    let route = ProviderModelRoute {
+        provider: ProviderId::OpenCodeGo,
+        model: sampler_config.model.clone(),
+    };
+    Ok(BoundProviderRuntime {
+        sampler_config,
+        api_key_provider: None,
+        route,
+    })
+}
+
+fn restored_open_code_go_binding(
+    binding: Option<&CredentialBinding>,
+) -> Result<Option<&CredentialBinding>, ProviderBindingError> {
+    let Some(binding) = binding else {
+        return Ok(None);
+    };
+    let correct_owner = binding.provider == ProviderId::OpenCodeGo
+        && binding.source == CredentialSourceId::OpenCodeGoApiKey;
+    if correct_owner && binding.record_id.is_none() && binding.generation == 0 {
+        return Ok(None);
+    }
+    let complete = correct_owner
+        && binding.generation > 0
+        && binding
+            .record_id
+            .as_deref()
+            .is_some_and(|record_id| !record_id.trim().is_empty());
+    complete
+        .then_some(Some(binding))
+        .ok_or(ProviderBindingError::InvalidOpenCodeGoRestoredBinding)
 }
 
 fn bind_kimi_code(
@@ -276,7 +360,8 @@ pub(crate) fn pin_provider_candidate_to_active_record(
 ) {
     let same_pinned_provider = (candidate.provider.is_openai_codex()
         && active_provider.is_openai_codex())
-        || (candidate.provider.is_kimi_code() && active_provider.is_kimi_code());
+        || (candidate.provider.is_kimi_code() && active_provider.is_kimi_code())
+        || (candidate.provider.is_open_code_go() && active_provider.is_open_code_go());
     candidate.credential_binding = same_pinned_provider
         .then(|| active_binding.cloned())
         .flatten();

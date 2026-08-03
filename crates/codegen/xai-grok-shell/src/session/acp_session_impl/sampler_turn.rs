@@ -521,7 +521,8 @@ impl SessionActor {
             is_xai && xai_grok_sampling_types::is_trusted_xai_inference_url(&cfg.base_url);
         let stored_credentials_match_provider = match cfg.provider {
             xai_grok_sampling_types::ProviderId::OpenAiCodex
-            | xai_grok_sampling_types::ProviderId::KimiCode => true,
+            | xai_grok_sampling_types::ProviderId::KimiCode
+            | xai_grok_sampling_types::ProviderId::OpenCodeGo => true,
             xai_grok_sampling_types::ProviderId::Custom => {
                 creds.provider == Some(xai_grok_sampling_types::ProviderId::Custom)
             }
@@ -655,6 +656,9 @@ impl SessionActor {
             xai_grok_sampling_types::ProviderId::KimiCode => {
                 xai_grok_sampling_types::CredentialSourceId::KimiCodeApiKey
             }
+            xai_grok_sampling_types::ProviderId::OpenCodeGo => {
+                xai_grok_sampling_types::CredentialSourceId::OpenCodeGoApiKey
+            }
             xai_grok_sampling_types::ProviderId::Custom if rotating_provider_owns_key => {
                 xai_grok_sampling_types::CredentialSourceId::RotatingAuthProvider
             }
@@ -685,7 +689,8 @@ impl SessionActor {
         };
         let request_api_key = match cfg.provider {
             xai_grok_sampling_types::ProviderId::OpenAiCodex
-            | xai_grok_sampling_types::ProviderId::KimiCode => None,
+            | xai_grok_sampling_types::ProviderId::KimiCode
+            | xai_grok_sampling_types::ProviderId::OpenCodeGo => None,
             xai_grok_sampling_types::ProviderId::Custom if custom_owns_key => creds.api_key.clone(),
             xai_grok_sampling_types::ProviderId::Custom => None,
             xai_grok_sampling_types::ProviderId::Xai
@@ -766,7 +771,7 @@ impl SessionActor {
         let bound_runtime = crate::session::provider::bind_provider_runtime(full_config, None)
             .await
             .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
-        if (is_codex || cfg.provider.is_kimi_code())
+        if (is_codex || cfg.provider.is_kimi_code() || cfg.provider.is_open_code_go())
             && state_cfg.credential_binding != bound_runtime.sampler_config.credential_binding
         {
             state_cfg.credential_binding = bound_runtime.sampler_config.credential_binding.clone();
@@ -1404,8 +1409,9 @@ impl SessionActor {
                 crate::sampling::error::error_data_with_status(detailed_message, error.status_code),
             ));
         }
-        let first_party_provider_owned_auth =
-            request_provider.is_openai_codex() || request_provider.is_kimi_code();
+        let first_party_provider_owned_auth = request_provider.is_openai_codex()
+            || request_provider.is_kimi_code()
+            || request_provider.is_open_code_go();
         let auth_provider = (request_provider == xai_grok_sampling_types::ProviderId::Custom
             && (matches!(error.kind, SamplingErrorKind::Auth) || error.status_code == Some(401)))
         .then(|| self.model_auth_provider(&failed_model_id, &failed_base_url))
@@ -1625,6 +1631,8 @@ impl SessionActor {
                     );
                 } else if request_provider.is_kimi_code() {
                     msg.push_str("\n\n  Re-authenticate: run `grok login --provider kimi-code`.");
+                } else if request_provider.is_open_code_go() {
+                    msg.push_str("\n\n  Re-authenticate: run `grok login --provider opencode-go`.");
                 }
             }
             msg
@@ -1760,7 +1768,7 @@ impl SessionActor {
         // binder, which runs after reconstructing the request config. Do not
         // evaluate the global xAI or generic static-key refresh paths for a
         // Codex or Kimi session.
-        if provider.is_openai_codex() || provider.is_kimi_code() {
+        if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_open_code_go() {
             return Ok(());
         }
         if provider == xai_grok_sampling_types::ProviderId::Custom {

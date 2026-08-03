@@ -1914,6 +1914,11 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                             .await
                             .map_err(anyhow::Error::from)
                     }
+                    AuthProviderArg::OpenCodeGo => {
+                        xai_grok_shell::auth::opencode_go::run_cli_models()
+                            .await
+                            .map_err(anyhow::Error::from)
+                    }
                 };
             }
             Command::Leader(leader_args) => {
@@ -2021,6 +2026,14 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                         }
                         xai_grok_shell::auth::kimi_code::run_kimi_code_cli_login().await?;
                     }
+                    AuthProviderArg::OpenCodeGo => {
+                        if oauth || device_auth || devbox {
+                            return Err(anyhow::anyhow!(
+                                "OpenCode Go uses an API key; OAuth/device/devbox login flags are not supported"
+                            ));
+                        }
+                        xai_grok_shell::auth::opencode_go::run_cli_login().await?;
+                    }
                 }
                 println!();
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
@@ -2049,6 +2062,9 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                     }
                     AuthProviderArg::KimiCode => {
                         xai_grok_shell::auth::kimi_code::run_kimi_code_cli_logout().await?;
+                    }
+                    AuthProviderArg::OpenCodeGo => {
+                        xai_grok_shell::auth::opencode_go::run_cli_logout().await?;
                     }
                 }
                 xai_grok_shell::instrumentation::finalize_and_exit(0);

@@ -172,10 +172,10 @@
       "remote": "https://github.com/anomalyco/opencode.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "e4bd9757a3a5dc7461d286000a19e9bd7df57c40"
+        "commit": "1882c33827cf0ce5c948b69ab5a87ed8f6790cf8"
       },
       "latest_fetched": {
-        "commit": "e4bd9757a3a5dc7461d286000a19e9bd7df57c40"
+        "commit": "1882c33827cf0ce5c948b69ab5a87ed8f6790cf8"
       }
     },
     {
@@ -296,6 +296,30 @@
       },
       "latest_fetched": {
         "commit": "54cd1f33a703c417f2492ee1f21f22b3633a43c4"
+      }
+    },
+    {
+      "id": "models-dev",
+      "project": "models.dev",
+      "remote": "https://github.com/sst/models.dev.git",
+      "tracked_ref": "dev",
+      "reviewed": {
+        "commit": "f67be44f095a4ab24ceab33c3907317bb0375087"
+      },
+      "latest_fetched": {
+        "commit": "f67be44f095a4ab24ceab33c3907317bb0375087"
+      }
+    },
+    {
+      "id": "exa-mcp-server",
+      "project": "Exa MCP server",
+      "remote": "https://github.com/exa-labs/exa-mcp-server.git",
+      "tracked_ref": "master",
+      "reviewed": {
+        "commit": "a664592b5dd7c5598b70158c771dcc5c2a4fb2c1"
+      },
+      "latest_fetched": {
+        "commit": "a664592b5dd7c5598b70158c771dcc5c2a4fb2c1"
       }
     }
   ],
@@ -1368,6 +1392,9 @@
       ],
       "paths": [
         "UPSTREAM_VERSIONS.md",
+        "Cargo.lock",
+        "crates/codegen/xai-chat-state/src/actor/mutations.rs",
+        "crates/codegen/xai-chat-state/src/actor/state.rs",
         "crates/codegen/xai-grok-sandbox/src/lib.rs",
         "crates/codegen/xai-grok-sandbox/src/profiles.rs",
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs",
@@ -4165,6 +4192,64 @@
       ],
       "integration_paths": [
         "clippy.toml"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "opencode-go-provider-and-exa-search",
+      "description": "Experimental first-class OpenCode Go API-key provider with audited public catalog routing, isolated durable credentials, bounded provider-capability media projection, ACP/session continuity, and keyless Exa MCP web search enabled by default for Go sessions.",
+      "source_ids": [
+        "opencode",
+        "models-dev",
+        "exa-mcp-server"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-pager/src/app/cli.rs",
+        "crates/codegen/xai-grok-sampler/Cargo.toml",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/mod.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/opencode_go.rs",
+        "crates/codegen/xai-grok-sampling-types/src/conversation.rs",
+        "crates/codegen/xai-grok-sampling-types/src/lib.rs",
+        "crates/codegen/xai-grok-sampling-types/src/messages.rs",
+        "crates/codegen/xai-grok-sampling-types/src/opencode_go.rs",
+        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
+        "crates/codegen/xai-grok-sampling-types/src/types.rs",
+        "crates/codegen/xai-grok-shell/src/agent/auth_method.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subagent/handle_request.rs",
+        "crates/codegen/xai-grok-shell/src/auth/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/model.rs",
+        "crates/codegen/xai-grok-shell/src/auth/opencode_go/catalog.rs",
+        "crates/codegen/xai-grok-shell/src/auth/opencode_go/credentials.rs",
+        "crates/codegen/xai-grok-shell/src/auth/opencode_go/error.rs",
+        "crates/codegen/xai-grok-shell/src/auth/opencode_go/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/opencode_go/request_auth.rs",
+        "crates/codegen/xai-grok-shell/src/auth/opencode_go/storage.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/session_compact.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/exa.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/mod.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/client.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/types.rs",
+        "docs/providers/README.md",
+        "docs/providers/opencode-go-integration.md",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/client.rs",
+        "fork/manifest.json"
       ],
       "legal_paths": [
         "LICENSE"

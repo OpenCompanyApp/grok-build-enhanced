@@ -13698,6 +13698,7 @@ dependencies = [
  "async-openai",
  "async-stream",
  "axum",
+ "base64",
  "bytes",
  "chrono",
  "eventsource-stream",
