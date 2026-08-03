@@ -9,12 +9,37 @@ inputs:
     description: Enable the GitHub Actions sccache backend.
     required: false
     default: "true"
+  install-ripgrep:
+    description: Install ripgrep when the selected test group shells out to rg.
+    required: false
+    default: "false"
 
 runs:
   using: composite
   steps:
     - name: Install DotSlash for the pinned protoc wrapper
+      id: install-dotslash
+      continue-on-error: true
       uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
+    - name: Retry the pinned DotSlash installer after a transient failure
+      if: steps.install-dotslash.outcome == 'failure'
+      uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
+    - name: Install ripgrep for tool test groups
+      if: inputs.install-ripgrep == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v rg >/dev/null 2>&1; then
+          if [[ "$RUNNER_OS" != Linux ]]; then
+            printf 'ripgrep is missing on unsupported CI host %s\n' "$RUNNER_OS" >&2
+            exit 1
+          fi
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install --yes --no-install-recommends ripgrep
+        fi
+        rg --version
 
     - name: Restore locked Cargo downloads
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

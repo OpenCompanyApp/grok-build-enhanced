@@ -103,13 +103,54 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
 }
 
 pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
-    let installer = get_installer().await.map(|value| value.to_string());
+    let installer = get_installer().await.map(str::to_string);
+    let latest_result = match installer.as_deref() {
+        Some(installer) => Some(get_latest_version(installer, update_config).await),
+        None => None,
+    };
+    update_status_from_latest_result(update_config, installer, latest_result).await
+}
+
+/// Explicit release-API seam for hermetic updater integration tests.
+///
+/// Production still uses [`check_update_status`] and the fixed fork-owned API
+/// URL. This helper exercises the same installer normalization and status
+/// assembly while allowing WireMock to supply release metadata.
+#[doc(hidden)]
+pub async fn check_update_status_from_api_for_test(
+    update_config: &UpdateConfig,
+    release_api_url: &str,
+    os: &str,
+    arch: &str,
+) -> UpdateStatus {
+    let installer = get_installer().await.map(str::to_string);
+    let latest_result = if installer.is_some() {
+        Some(
+            crate::version::fetch_gh_release_version_from_api(
+                &update_config.channel,
+                release_api_url,
+                os,
+                arch,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    update_status_from_latest_result(update_config, installer, latest_result).await
+}
+
+async fn update_status_from_latest_result(
+    update_config: &UpdateConfig,
+    installer: Option<String>,
+    latest_result: Option<Result<String>>,
+) -> UpdateStatus {
     let current_version = get_installed_grok_version();
     let current_config = config::load_config().await;
     let auto_update = current_config.cli.auto_update;
     let channel = update_config.channel.clone();
 
-    let Some(ref inst) = installer else {
+    let Some(latest_result) = latest_result else {
         return UpdateStatus {
             current_version,
             latest_version: None,
@@ -121,7 +162,7 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
         };
     };
 
-    match get_latest_version(inst, update_config).await {
+    match latest_result {
         Ok(latest_version) => {
             let mut error = None;
             // --check reports upgrades only; a rolled-back pointer isn't a "new version" to advertise here (auto-update converges separately).
@@ -180,8 +221,29 @@ pub async fn auto_update_target(update_config: &UpdateConfig) -> Option<(&'stati
     if is_homebrew_installer(installer) {
         return None;
     }
-    let current = get_installed_grok_version();
     let latest = fetch_latest_version(installer, update_config).await.ok()?;
+    auto_update_target_from_latest(installer, latest, update_config)
+}
+
+/// Explicit resolved-version seam for hermetic convergence tests.
+#[doc(hidden)]
+pub async fn auto_update_target_with_latest_for_test(
+    update_config: &UpdateConfig,
+    latest: &str,
+) -> Option<(&'static str, String)> {
+    let installer = get_installer().await?;
+    if is_homebrew_installer(installer) {
+        return None;
+    }
+    auto_update_target_from_latest(installer, latest.to_string(), update_config)
+}
+
+fn auto_update_target_from_latest(
+    installer: &'static str,
+    latest: String,
+    update_config: &UpdateConfig,
+) -> Option<(&'static str, String)> {
+    let current = get_installed_grok_version();
     needs_update(
         &current,
         &latest,
@@ -221,19 +283,45 @@ pub struct EnsureLatestOutcome {
 /// re-download is NOT fixed there; only the symlink layout can prove the
 /// disk is current without exec'ing the binary.
 pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<EnsureLatestOutcome> {
-    let mut outcome = EnsureLatestOutcome {
-        installed: None,
-        relaunch_needed: false,
-    };
     let Some(installer) = get_installer().await else {
-        return Ok(outcome);
+        return Ok(empty_ensure_latest_outcome());
     };
     if is_homebrew_installer(installer) {
-        return Ok(outcome);
+        return Ok(empty_ensure_latest_outcome());
     }
-    let allow_downgrade = installer_allows_downgrade(installer);
     let latest = fetch_latest_version(installer, update_config).await?;
+    ensure_latest_on_disk_with_resolved(installer, latest, update_config).await
+}
 
+/// Explicit resolved-version seam for hermetic disk-convergence tests.
+#[doc(hidden)]
+pub async fn ensure_latest_on_disk_with_latest_for_test(
+    update_config: &UpdateConfig,
+    latest: &str,
+) -> Result<EnsureLatestOutcome> {
+    let Some(installer) = get_installer().await else {
+        return Ok(empty_ensure_latest_outcome());
+    };
+    if is_homebrew_installer(installer) {
+        return Ok(empty_ensure_latest_outcome());
+    }
+    ensure_latest_on_disk_with_resolved(installer, latest.to_string(), update_config).await
+}
+
+fn empty_ensure_latest_outcome() -> EnsureLatestOutcome {
+    EnsureLatestOutcome {
+        installed: None,
+        relaunch_needed: false,
+    }
+}
+
+async fn ensure_latest_on_disk_with_resolved(
+    installer: &'static str,
+    latest: String,
+    update_config: &UpdateConfig,
+) -> Result<EnsureLatestOutcome> {
+    let mut outcome = empty_ensure_latest_outcome();
+    let allow_downgrade = installer_allows_downgrade(installer);
     let effective_current =
         disk_version_for_installer(installer).unwrap_or_else(get_installed_grok_version);
     if needs_update(

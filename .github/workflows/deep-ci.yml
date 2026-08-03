@@ -90,6 +90,7 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           cache-namespace: deep-${{ matrix.group }}
+          install-ripgrep: ${{ matrix.group == 'core' && 'true' || 'false' }}
 
       - name: Run deep ${{ matrix.group }} group
         shell: bash

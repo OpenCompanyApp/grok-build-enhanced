@@ -59,7 +59,10 @@ The following are never cached:
 - mutable cross-ref R2/S3 compiler directories.
 
 Every Rust job keeps `CARGO_INCREMENTAL=0`. A cache miss or outage may make a
-job slower but must not change correctness.
+job slower but must not change correctness. The setup action retries the same
+SHA-pinned DotSlash installer once after a transient failure. It also provisions
+`ripgrep` only for the core tool-test lane, whose grep/glob tests execute `rg`;
+other lanes avoid that package-install overhead.
 
 ## Smart local versus remote validation
 

@@ -210,12 +210,22 @@ def check_workflow_pins() -> None:
                 )
 
     setup_action = ".github/actions/setup-rust-ci/action.yml"
-    setup_dotslash_count = read(setup_action).count(DOTSLASH_ACTION)
-    if setup_dotslash_count != 1:
+    setup_text = read(setup_action)
+    setup_dotslash_count = setup_text.count(DOTSLASH_ACTION)
+    if setup_dotslash_count != 2:
         raise ContractError(
             f"{setup_action} installs pinned DotSlash {setup_dotslash_count} time(s); "
-            "expected exactly 1"
+            "expected exactly 2 for the initial attempt and bounded retry"
         )
+    for required in (
+        "id: install-dotslash",
+        "continue-on-error: true",
+        "steps.install-dotslash.outcome == 'failure'",
+    ):
+        if required not in setup_text:
+            raise ContractError(
+                f"{setup_action} is missing bounded DotSlash retry contract: {required}"
+            )
 
     setup_requirements = {
         ".github/workflows/fork-contracts.yml": 3,

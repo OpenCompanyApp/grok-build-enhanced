@@ -141,6 +141,7 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           cache-namespace: broad-${{ matrix.group }}
+          install-ripgrep: ${{ matrix.group == 'core' && 'true' || 'false' }}
 
       - name: Run ${{ matrix.group }} test group
         shell: bash

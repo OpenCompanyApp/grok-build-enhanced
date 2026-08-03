@@ -38,9 +38,16 @@ class WorkflowPinContractTests(unittest.TestCase):
     def _write_valid_automation(self) -> None:
         setup_reference = "    uses: ./.github/actions/setup-rust-ci\n"
         dotslash_reference = f"    uses: {contracts.DOTSLASH_ACTION}\n"
+        composite_dotslash_reference = f"      uses: {contracts.DOTSLASH_ACTION}\n"
         self._write(
             ".github/actions/setup-rust-ci/action.yml",
-            f"runs:\n  steps:\n{dotslash_reference}",
+            "runs:\n"
+            "  steps:\n"
+            "    - id: install-dotslash\n"
+            "      continue-on-error: true\n"
+            f"{composite_dotslash_reference}"
+            "    - if: steps.install-dotslash.outcome == 'failure'\n"
+            f"{composite_dotslash_reference}",
         )
         self._write(
             ".github/workflows/fork-contracts.yml",

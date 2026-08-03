@@ -53,6 +53,29 @@ class CiContractTests(unittest.TestCase):
         self.assertIn("~/.cargo/registry/cache", cache_paths)
         self.assertIn("SCCACHE_GHA_ENABLED", (WORKFLOW_DIR / "fork-contracts.yml").read_text())
 
+    def test_rust_setup_retries_dotslash_and_provisions_ripgrep_only_for_core(self) -> None:
+        action = (ROOT / ".github/actions/setup-rust-ci/action.yml").read_text(
+            encoding="utf-8"
+        )
+        dotslash = (
+            "facebook/install-dotslash@"
+            "1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a"
+        )
+        self.assertEqual(action.count(dotslash), 2)
+        self.assertIn("continue-on-error: true", action)
+        self.assertIn("steps.install-dotslash.outcome == 'failure'", action)
+        self.assertIn("install-ripgrep:", action)
+        self.assertIn("command -v rg", action)
+        self.assertIn("--no-install-recommends ripgrep", action)
+
+        ripgrep_input = (
+            "install-ripgrep: "
+            "${{ matrix.group == 'core' && 'true' || 'false' }}"
+        )
+        for name in ("fork-contracts.yml", "deep-ci.yml", "rebase-qualification.yml"):
+            workflow = (WORKFLOW_DIR / name).read_text(encoding="utf-8")
+            self.assertIn(ripgrep_input, workflow, name)
+
     def test_exact_rebase_workflow_binds_source_and_emits_evidence(self) -> None:
         text = (WORKFLOW_DIR / "rebase-qualification.yml").read_text(
             encoding="utf-8"
