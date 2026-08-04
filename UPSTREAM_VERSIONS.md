@@ -1,6 +1,6 @@
 # Upstream versions
 
-Last checked: 2026-08-03
+Last checked: 2026-08-04
 
 This file records both the source revision last reviewed for this fork and the
 newest fetched revision. A difference is a review queue, not permission to
@@ -14,6 +14,7 @@ blindly copy upstream code.
 | Exa MCP server | `https://github.com/exa-labs/exa-mcp-server.git` `master` | [`a664592b5dd7c5598b70158c771dcc5c2a4fb2c1`](https://github.com/exa-labs/exa-mcp-server/commit/a664592b5dd7c5598b70158c771dcc5c2a4fb2c1) | same |
 | Grok Build upstream | `https://github.com/xai-org/grok-build.git` `main` | Reviewed [`dd04f397b1d02f2272b092555669dfba1f01bc85`](https://github.com/xai-org/grok-build/commit/dd04f397b1d02f2272b092555669dfba1f01bc85) | same |
 | OpenCode Codex auth reference | `https://github.com/numman-ali/opencode-openai-codex-auth.git` `main` | [`bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016`](https://github.com/numman-ali/opencode-openai-codex-auth/commit/bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016) | same |
+| Oh My Pi coding harness | `https://github.com/can1357/oh-my-pi.git` `main` | [`01c1f91ff529c6af3fc27724a8ba429d83d41aed`](https://github.com/can1357/oh-my-pi/commit/01c1f91ff529c6af3fc27724a8ba429d83d41aed) | same |
 | Warp themes | `https://github.com/warpdotdev/themes.git` `main` | [`b385044250f1ed3c9379ab34a8fe82f02fdffaa4`](https://github.com/warpdotdev/themes/commit/b385044250f1ed3c9379ab34a8fe82f02fdffaa4) | same |
 | Kimi Code | `https://github.com/MoonshotAI/kimi-code.git` `main` | [`bfa00807c975fdc5b84dda32d47b16b09e8d42c1`](https://github.com/MoonshotAI/kimi-code/commit/bfa00807c975fdc5b84dda32d47b16b09e8d42c1) | same |
 | Kimi CLI (legacy reference) | `https://github.com/MoonshotAI/kimi-cli.git` `main` | [`4a550effdfcb29a25a5d325bf935296cc50cd417`](https://github.com/MoonshotAI/kimi-cli/commit/4a550effdfcb29a25a5d325bf935296cc50cd417) | same |
@@ -26,14 +27,15 @@ blindly copy upstream code.
 ## Refresh procedure
 
 1. Fetch `origin` in `inspiration/openai-codex`, `inspiration/opencode`,
-   `inspiration/warp-themes`, `inspiration/kimi-code`,
+   `inspiration/oh-my-pi`, `inspiration/warp-themes`, `inspiration/kimi-code`,
    `inspiration/kimi-cli`, `inspiration/zai-sdk-python`,
    `inspiration/zai-coding-plugins`, `inspiration/glm-5`,
    `inspiration/codexbar`, and `inspiration/zai-usage-helper`; fetch
    `upstream/main` in this repository.
 2. Compare the old and new revisions, concentrating on login, auth storage,
    model-provider metadata, Responses and Chat Completions transport,
-   standalone search, image tools, usage limits, token refresh behavior,
+   standalone search, image tools, tool/model regression harnesses, language
+   intelligence and debugger integrations, usage limits, token refresh behavior,
    Kimi model and managed-service contracts, Z.AI model and MCP contracts,
    Z.AI monitoring schema drift, and Warp theme catalog/license changes.
 3. Update **Latest fetched** immediately. Update **Last reviewed** only after

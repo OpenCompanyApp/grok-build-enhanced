@@ -1,6 +1,6 @@
 ---
 name: refresh-upstreams
-description: Safely refresh and audit Grok Build Enhanced against tracked Grok Build, OpenAI Codex, Kimi Code, OpenCode, Z.AI, GLM, Warp, and related source repositories without blindly rebasing disconnected snapshots. Use when the user says upstream changed, asks to check provider compatibility or refresh source revisions, or runs /refresh-upstreams.
+description: Safely refresh and audit Grok Build Enhanced against tracked Grok Build, OpenAI Codex, Kimi Code, OpenCode, Oh My Pi, Z.AI, GLM, Warp, and related source repositories without blindly rebasing disconnected snapshots. Use when the user says upstream changed, asks to check provider compatibility or refresh source revisions, or runs /refresh-upstreams.
 ---
 
 # Refresh upstreams
@@ -96,7 +96,11 @@ If tracked heads are unchanged, attest that and stop. If changed, inspect only e
 
 ### Other references
 
-Audit OpenCode/auth references when Codex auth or interoperability changed, and Warp themes only when the theme corpus or licenses changed.
+Audit OpenCode/auth references when Codex auth or interoperability changed,
+Oh My Pi when coding-harness evaluation or tool/model regression coverage
+changed, and Warp themes only when the theme corpus or licenses changed. Oh My
+Pi is non-normative inspiration: do not import its replacement agent engine,
+TUI, provider routing, or credential behavior.
 
 ## 5. Port confirmed gaps
 

@@ -28,7 +28,7 @@ responsive Grok braille symbol remain compatible.
 | Bundled Warp themes and theme UX | Implemented |
 | Kimi Code plan provider | Implemented and experimental: isolated API-key login, dynamic models, Chat/Messages inference, plan usage, and hosted web tools; the current Chat/K3/usage/web matrix was live-qualified on 2026-07-19 |
 | Z.AI GLM Coding Plan provider | Implemented and experimental: isolated API-key login, authenticated models, Chat Completions inference, preserved reasoning, plan usage, Search/Reader/Zread tools, and opt-in Vision MCP; the extended entitled GLM 5.2 headless/ACP/tool matrix was live-qualified on 2026-07-19 |
-| Enhanced release artifacts | Fork-owned stable `v0.2.3` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
+| Enhanced release artifacts | Fork-owned stable `v0.3.6` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
 | Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
 
 ## Fork-owned terminal preview
@@ -119,7 +119,7 @@ Pin an exact stable or prerelease version with strict SemVer:
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://raw.githubusercontent.com/OpenCompanyApp/grok-build-enhanced/main/install.sh \
-  | sh -s -- --version 0.2.3
+  | sh -s -- --version 0.3.6
 ```
 
 Useful installer options are:
@@ -157,7 +157,7 @@ auto_update = false
 GitHub CLI users can additionally verify the attestation for a retained binary:
 
 ```sh
-gh attestation verify "$HOME/.grok/downloads/grok-0.2.3-macos-aarch64" \
+gh attestation verify "$HOME/.grok/downloads/grok-0.3.6-macos-aarch64" \
   --repo OpenCompanyApp/grok-build-enhanced
 ```
 
@@ -355,6 +355,14 @@ focused terminal UX additions while preserving Grok Build's existing tool
 names, permission model, sessions, and responsive braille symbol. Third-party
 attribution is recorded in [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) and
 crate-local notices.
+
+Oh My Pi is tracked as a non-normative coding-harness reference. Its reviewed
+ideas include a tool/model regression harness, deeper LSP operations,
+syntax-aware search and edit previews, debugger integration, broader project
+instruction discovery, and provider-specific tool-call regressions. These are
+evaluation candidates—not shipped features—and do not authorize replacing the
+Grok agent loop, TUI, permissions, sessions, provider isolation, or credential
+handling. See the [pinned evaluation](docs/inspiration/oh-my-pi-2026-08-04.md).
 
 ### Additional provider status
 

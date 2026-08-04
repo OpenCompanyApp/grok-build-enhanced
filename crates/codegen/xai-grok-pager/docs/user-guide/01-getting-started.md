@@ -56,7 +56,7 @@ To pin an exact release, pass a strict SemVer after `sh -s --`:
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://raw.githubusercontent.com/OpenCompanyApp/grok-build-enhanced/main/install.sh \
-  | sh -s -- --version 0.2.3
+  | sh -s -- --version 0.3.6
 ```
 
 Other options include `--bin-dir PATH`, `--no-modify-path`, and `--force`.

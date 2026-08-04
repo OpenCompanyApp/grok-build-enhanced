@@ -203,6 +203,18 @@
       }
     },
     {
+      "id": "oh-my-pi",
+      "project": "Oh My Pi coding harness",
+      "remote": "https://github.com/can1357/oh-my-pi.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "01c1f91ff529c6af3fc27724a8ba429d83d41aed"
+      },
+      "latest_fetched": {
+        "commit": "01c1f91ff529c6af3fc27724a8ba429d83d41aed"
+      }
+    },
+    {
       "id": "warp-themes",
       "project": "Warp themes",
       "remote": "https://github.com/warpdotdev/themes.git",
@@ -1448,6 +1460,7 @@
         "openai-codex",
         "opencode",
         "opencode-codex-auth",
+        "oh-my-pi",
         "warp-themes",
         "kimi-code",
         "kimi-cli",
@@ -1465,6 +1478,7 @@
         "THIRD-PARTY-NOTICES",
         "UPSTREAM_VERSIONS.md",
         "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
+        "docs/inspiration/oh-my-pi-2026-08-04.md",
         "docs/providers/README.md",
         "docs/upstream-refresh-2026-07-19.md",
         "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md",
@@ -1476,6 +1490,7 @@
         "AGENTS.md",
         "README.md",
         "UPSTREAM_VERSIONS.md",
+        "docs/inspiration/oh-my-pi-2026-08-04.md",
         "docs/providers/README.md"
       ],
       "legal_paths": [

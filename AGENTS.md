@@ -67,6 +67,7 @@ Primary sources and inspiration repositories are:
 | OpenAI Codex compatibility reference | `https://github.com/openai/codex.git` `main` |
 | OpenCode interoperability reference | `https://github.com/anomalyco/opencode.git` `dev` |
 | OpenCode Codex auth reference | `https://github.com/numman-ali/opencode-openai-codex-auth.git` `main` |
+| Oh My Pi coding-harness inspiration | `https://github.com/can1357/oh-my-pi.git` `main` |
 | Warp themes | `https://github.com/warpdotdev/themes.git` `main` |
 | Kimi Code provider reference | `https://github.com/MoonshotAI/kimi-code.git` `main` |
 | Kimi CLI legacy reference | `https://github.com/MoonshotAI/kimi-cli.git` `main` |
@@ -116,9 +117,10 @@ temporary deferrals must stay explicit in that ledger and in refresh summaries.
 
 Grok Build is normative for behavior on preserved application surfaces. Codex,
 Kimi, OpenCode, Z.AI, and other inspiration sources are normative only within
-the provider-adapter, interoperability, or research scope declared here. They
-do not authorize replacement app servers, agent engines, TUI architectures, or
-cross-provider credential behavior.
+the provider-adapter, interoperability, or research scope declared here. Oh My
+Pi is non-normative inspiration limited to coding-harness evaluation. These
+sources do not authorize replacement app servers, agent engines, TUI
+architectures, or cross-provider credential behavior.
 
 ## Immutable baselines and ownership manifest
 
