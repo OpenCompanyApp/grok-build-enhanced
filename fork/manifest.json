@@ -4287,7 +4287,10 @@
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/VENDOR_MANIFEST.json",
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/standard/hadar_theme.yaml",
         "crates/codegen/xai-grok-pager-render/build.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/selection.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/warp/catalog.rs",
         "crates/codegen/xai-grok-pager/npm/grok/scripts/assemble-platform-packages.js",
+        "crates/codegen/xai-grok-pager/npm/grok/scripts/test-assemble-platform-packages.js",
         "crates/codegen/xai-grok-pager/src/views/welcome/workspace_mode.rs",
         "crates/codegen/xai-grok-sampler/src/handle.rs",
         "crates/codegen/xai-grok-sampler/src/provider/openai_codex/headers.rs",
@@ -4310,7 +4313,8 @@
         "docs/upstream-refresh-2026-08-06.md",
         "fork/manifest.json",
         "fork/scripts/check_fork_contracts.py",
-        "third_party/NOTICE"
+        "third_party/NOTICE",
+        "third_party/README.md"
       ],
       "integration_paths": [
         "UPSTREAM_VERSIONS.md",

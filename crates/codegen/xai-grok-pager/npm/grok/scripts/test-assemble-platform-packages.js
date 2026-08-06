@@ -114,7 +114,7 @@ test('--check-assets validates without mutating package templates', () => {
     const before = snapshotTemplates();
     const result = runAssembler(['--check-assets']);
     assertSucceeded(result);
-    assert.match(result.stdout, /Asset check passed: 340 Warp themes/);
+    assert.match(result.stdout, /Asset check passed: 341 Warp themes/);
     assert.deepEqual(snapshotTemplates(), before);
 });
 

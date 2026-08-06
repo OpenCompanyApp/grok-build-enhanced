@@ -56,7 +56,7 @@ dependencies continue to resolve from `Cargo.lock`.
 
 ## Packaged theme data
 
-The complete pinned set of 340 YAML/YML definitions from
+The complete pinned set of 341 YAML/YML definitions from
 [`warpdotdev/themes`](https://github.com/warpdotdev/themes) lives at
 [`xai-grok-pager-render/assets/warp-themes`](../crates/codegen/xai-grok-pager-render/assets/warp-themes/).
 Keeping it inside `xai-grok-pager-render` makes `cargo package` self-contained.

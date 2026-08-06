@@ -16793,7 +16793,7 @@ Revision: 82e51dcf9b47912d551107748ba3297a21b2eff3
 Licenses: Apache-2.0; individual MIT-derived theme definitions as noted below
 Vendored paths: crates/codegen/xai-grok-pager-render/assets/warp-themes/
 
-The distribution includes 340 YAML/YML theme definitions from the pinned
+The distribution includes 341 YAML/YML theme definitions from the pinned
 revision. Preview SVGs and background image files are not included. The
 vendored upstream license is at
 crates/codegen/xai-grok-pager-render/assets/warp-themes/LICENSE; the pager's

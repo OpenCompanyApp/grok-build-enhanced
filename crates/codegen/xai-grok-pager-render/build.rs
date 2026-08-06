@@ -8,13 +8,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const MANIFEST_SCHEMA_VERSION: u32 = 1;
-const EXPECTED_THEME_COUNT: usize = 340;
+const EXPECTED_THEME_COUNT: usize = 341;
 const EXPECTED_UPSTREAM_SOURCE: &str = "https://github.com/warpdotdev/themes.git";
 const EXPECTED_UPSTREAM_REVISION: &str = "82e51dcf9b47912d551107748ba3297a21b2eff3";
 const EXPECTED_LICENSE_SHA256: &str =
     "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4";
 const EXPECTED_VENDOR_MANIFEST_SHA256: &str =
-    "dc1b04a7ea2639d0e78f6810c433f12940304c921d2b7226178a9deed871f0cc";
+    "2f0f60c78e602d233e9f604977af6d47513af4a255931475148d70669bbc525c";
 const MAX_PORTABLE_COMPONENT_BYTES: usize = 255;
 const MAX_PORTABLE_PATH_BYTES: usize = 4_096;
 const MAX_THEME_BYTES: u64 = 1024 * 1024;
@@ -22,7 +22,7 @@ const MAX_LICENSE_BYTES: u64 = 256 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const CATEGORIES: &[(&str, usize)] = &[
     ("base16", 178),
-    ("standard", 134),
+    ("standard", 135),
     ("special_edition", 8),
     ("stradicat", 1),
     ("warp_bundled", 19),

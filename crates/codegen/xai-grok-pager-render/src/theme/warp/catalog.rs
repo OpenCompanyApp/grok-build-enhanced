@@ -102,8 +102,8 @@ mod tests {
 
     #[test]
     fn complete_catalog_parses() {
-        assert_eq!(EMBEDDED_WARP_THEMES.len(), 340);
-        assert_eq!(all().len(), 340);
+        assert_eq!(EMBEDDED_WARP_THEMES.len(), 341);
+        assert_eq!(all().len(), 341);
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
         let mut ids = all().iter().map(|theme| theme.id).collect::<Vec<_>>();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 340);
+        assert_eq!(ids.len(), 341);
     }
 
     #[test]

@@ -172,8 +172,14 @@ credential-routing defect.
 | Check | Result |
 | --- | --- |
 | `CARGO_INCREMENTAL=0 cargo check --locked -p xai-grok-pager-bin` at the carried adoption boundary | passed |
+| `cargo fmt --all -- --check` | passed |
+| Warp vendoring security/reproducibility unit tests | 5 passed |
+| `xai-grok-pager-render` `warp_vendor_build_validation` | 2 passed |
+| Warp corpus check | passed: 341 themes; category counts and revision matched |
+| `python3 -I -B fork/scripts/check_fork_contracts.py` | passed |
+| `python3 -I -B fork/scripts/check_manifest.py --strict-coverage` | passed before the final count-lock correction; rerun in the handoff commit |
+| `CARGO_INCREMENTAL=0 cargo check --locked -p xai-grok-pager-bin` after vendoring | passed |
 | Root `Cargo.toml` generated-manifest guard | unchanged, hash recorded above |
 | Warp vendor plan/apply | 1 add, 2 generated updates, 0 removals; 341 themes |
 
-The final validation matrix is completed in the refresh handoff commit. Live
-Codex and Kimi requests remain credential-gated and were not attempted.
+Live Codex and Kimi requests remain credential-gated and were not attempted.

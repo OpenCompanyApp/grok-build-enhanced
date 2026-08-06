@@ -75,10 +75,10 @@ const EXPECTED_WARP_LICENSE_SHA256 =
     'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4';
 const EXPECTED_VENDOR_MANIFEST_SHA256 =
     'dc1b04a7ea2639d0e78f6810c433f12940304c921d2b7226178a9deed871f0cc';
-const EXPECTED_THEME_COUNT = 340;
+const EXPECTED_THEME_COUNT = 341;
 const EXPECTED_CATEGORY_COUNTS = Object.freeze({
     base16: 178,
-    standard: 134,
+    standard: 135,
     special_edition: 8,
     stradicat: 1,
     warp_bundled: 19,

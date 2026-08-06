@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_catalog_has_exactly_340_unique_official_warp_choices() {
+    fn deterministic_catalog_has_exactly_341_unique_official_warp_choices() {
         use std::collections::HashSet;
 
         let first = deterministic_choices(true);
@@ -366,8 +366,8 @@ mod tests {
             .iter()
             .map(|choice| choice.canonical.as_str())
             .collect::<HashSet<_>>();
-        assert_eq!(official.len(), 340);
-        assert_eq!(unique.len(), 340, "official Warp canonicals must be unique");
+        assert_eq!(official.len(), 341);
+        assert_eq!(unique.len(), 341, "official Warp canonicals must be unique");
     }
 
     #[test]
