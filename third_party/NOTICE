@@ -57,7 +57,7 @@ License:    Apache License 2.0, with MIT-derived individual themes noted below
 License file:
   crates/codegen/xai-grok-pager-render/assets/warp-themes/LICENSE
 Upstream:   https://github.com/warpdotdev/themes
-Revision:   b385044250f1ed3c9379ab34a8fe82f02fdffaa4
+Revision:   82e51dcf9b47912d551107748ba3297a21b2eff3
 
 The vendored YAML comments preserve MIT provenance for the Cherry theme
 (Copyright (c) 2020 Nauval Rizky) and the three Soft Tactile themes (authors

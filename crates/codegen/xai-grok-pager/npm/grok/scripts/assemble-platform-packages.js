@@ -70,7 +70,7 @@ const WARP_THEMES_LICENSE_NAME = 'WARP_THEMES_LICENSE';
 
 const META_PKG_JSON = path.resolve(__dirname, '..', 'package.json');
 const EXPECTED_WARP_SOURCE = 'https://github.com/warpdotdev/themes.git';
-const EXPECTED_WARP_REVISION = 'b385044250f1ed3c9379ab34a8fe82f02fdffaa4';
+const EXPECTED_WARP_REVISION = '82e51dcf9b47912d551107748ba3297a21b2eff3';
 const EXPECTED_WARP_LICENSE_SHA256 =
     'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4';
 const EXPECTED_VENDOR_MANIFEST_SHA256 =

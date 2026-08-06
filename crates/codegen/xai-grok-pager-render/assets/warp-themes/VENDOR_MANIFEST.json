@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "source": "https://github.com/warpdotdev/themes.git",
-  "revision": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4",
-  "theme_count": 340,
+  "revision": "82e51dcf9b47912d551107748ba3297a21b2eff3",
+  "theme_count": 341,
   "category_counts": {
     "base16": 178,
-    "standard": 134,
+    "standard": 135,
     "special_edition": 8,
     "stradicat": 1,
     "warp_bundled": 19
@@ -1195,6 +1195,11 @@
       "path": "standard/hackthebox.yaml",
       "bytes": 451,
       "sha256": "816844484dd26fc072021b115dc7980308658904345e27f94434796291448226"
+    },
+    {
+      "path": "standard/hadar_theme.yaml",
+      "bytes": 469,
+      "sha256": "5df2bfac2102d8b920e117d78ad2722313497d1f8bd9af9e4dbb9ed87bab98d3"
     },
     {
       "path": "standard/halcyon.yaml",

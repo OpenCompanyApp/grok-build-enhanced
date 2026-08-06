@@ -220,7 +220,7 @@
       "remote": "https://github.com/warpdotdev/themes.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4"
+        "commit": "82e51dcf9b47912d551107748ba3297a21b2eff3"
       },
       "latest_fetched": {
         "commit": "82e51dcf9b47912d551107748ba3297a21b2eff3"
@@ -4268,6 +4268,60 @@
       ],
       "legal_paths": [
         "LICENSE"
+      ]
+    },
+    {
+      "id": "august6-refresh-boundary-and-warp-hadar",
+      "description": "Carries the verified August 2 Grok parity boundary into the August 6 refresh, records the open later-snapshot obligations, and deterministically vendors Warp's Hadar theme with matching legal and packaging locks.",
+      "source_ids": [
+        "grok-build-upstream",
+        "warp-themes"
+      ],
+      "paths": [
+        "THIRD-PARTY-NOTICES",
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/ptyctl/src/pty.rs",
+        "crates/codegen/xai-grok-pager-bin/Cargo.toml",
+        "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/UPSTREAM_REVISION",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/VENDOR_MANIFEST.json",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/standard/hadar_theme.yaml",
+        "crates/codegen/xai-grok-pager-render/build.rs",
+        "crates/codegen/xai-grok-pager/npm/grok/scripts/assemble-platform-packages.js",
+        "crates/codegen/xai-grok-pager/src/views/welcome/workspace_mode.rs",
+        "crates/codegen/xai-grok-sampler/src/handle.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/openai_codex/headers.rs",
+        "crates/codegen/xai-grok-shell/benches/skills_watcher_startup.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_registry.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/auth_retry.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/auth_retry_tests.rs",
+        "crates/codegen/xai-grok-shell/src/util/dual_clock.rs",
+        "crates/codegen/xai-grok-shell/src/util/dual_clock_tests.rs",
+        "crates/codegen/xai-grok-shell/tests/test_sampling_client.rs",
+        "crates/codegen/xai-grok-telemetry/src/session_ctx.rs",
+        "crates/codegen/xai-grok-tools/src/types/context.rs",
+        "crates/codegen/xai-grok-workspace-types/src/rpc/export.rs",
+        "crates/common/xai-computer-hub-sdk/src/server.rs",
+        "crates/common/xai-grok-compaction/src/code_compaction/sample.rs",
+        "crates/common/xai-tool-protocol/src/frames.rs",
+        "crates/common/xai-tool-protocol/src/lib.rs",
+        "crates/common/xai-tool-types/src/lib.rs",
+        "docs/upstream-refresh-2026-08-02.md",
+        "docs/upstream-refresh-2026-08-06.md",
+        "fork/manifest.json",
+        "fork/scripts/check_fork_contracts.py",
+        "third_party/NOTICE"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-pager-render/build.rs",
+        "fork/manifest.json",
+        "fork/scripts/check_fork_contracts.py"
+      ],
+      "legal_paths": [
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
+        "third_party/NOTICE"
       ]
     }
   ]

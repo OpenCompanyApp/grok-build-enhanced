@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 const MANIFEST_SCHEMA_VERSION: u32 = 1;
 const EXPECTED_THEME_COUNT: usize = 340;
 const EXPECTED_UPSTREAM_SOURCE: &str = "https://github.com/warpdotdev/themes.git";
-const EXPECTED_UPSTREAM_REVISION: &str = "b385044250f1ed3c9379ab34a8fe82f02fdffaa4";
+const EXPECTED_UPSTREAM_REVISION: &str = "82e51dcf9b47912d551107748ba3297a21b2eff3";
 const EXPECTED_LICENSE_SHA256: &str =
     "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4";
 const EXPECTED_VENDOR_MANIFEST_SHA256: &str =
