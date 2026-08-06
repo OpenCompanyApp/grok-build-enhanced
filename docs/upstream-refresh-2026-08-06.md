@@ -9,8 +9,8 @@ it was not merged, rebased, or acknowledged as reviewed upstream history.
 ## Immutable boundary
 
 - Starting Enhanced commit: `8887826302b79e17d31267cc47be06dce2b4c579`.
-- Isolated candidate: branch `refresh/upstreams-20260806-r2`, worktree
-  `/home/ruttydm/Projects/worktrees/grok-build-enhanced-refresh-20260806-r2`.
+- Isolated candidate: branch `refresh/upstreams-20260806-final`, worktree
+  `/home/ruttydm/Projects/worktrees/grok-build-enhanced-refresh-20260806-final`.
 - Audit timestamp: `2026-08-06T09:43:14Z`.
 - Root `Cargo.toml` remained byte-identical, SHA-256
   `28a3ea7e1c859729a0c5cf77f87ff7f0ece319a576697b274917359e11be480b`.
@@ -41,7 +41,7 @@ remains `ca5109c0aa9bf173839be391b4b14aeadf9a9bf9` and no runtime claim was made
 
 The complete `dd04f397…a4221165` behavior inventory and its 165-row raw-path
 ledger are in the August 2 ledger. Its 19 adopted, 3 already-equivalent, and 6
-not-applicable decisions were carried onto this candidate as commit `68b352e`.
+not-applicable decisions were carried onto this candidate as commit `3522054`.
 The locked pager build passes at that boundary.
 
 Warp commit `82e51dcf` adds only `standard/hadar_theme.yaml` and its upstream
