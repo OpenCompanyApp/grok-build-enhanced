@@ -163,7 +163,7 @@
         "commit": "2c005abb0765bfe3ef42a23fe88d5b806184fa83"
       },
       "latest_fetched": {
-        "commit": "2c005abb0765bfe3ef42a23fe88d5b806184fa83"
+        "commit": "7a0e974e08c798d1e8d59d407aeb6e24db1313af"
       }
     },
     {
@@ -175,7 +175,7 @@
         "commit": "1882c33827cf0ce5c948b69ab5a87ed8f6790cf8"
       },
       "latest_fetched": {
-        "commit": "1882c33827cf0ce5c948b69ab5a87ed8f6790cf8"
+        "commit": "def7220bfc65b84046e597e9be772eae81f663ff"
       }
     },
     {
@@ -187,7 +187,7 @@
         "commit": "dd04f397b1d02f2272b092555669dfba1f01bc85"
       },
       "latest_fetched": {
-        "commit": "dd04f397b1d02f2272b092555669dfba1f01bc85"
+        "commit": "a5589e958437d79e13db026eedcb1720bffd4063"
       }
     },
     {
@@ -211,7 +211,7 @@
         "commit": "01c1f91ff529c6af3fc27724a8ba429d83d41aed"
       },
       "latest_fetched": {
-        "commit": "01c1f91ff529c6af3fc27724a8ba429d83d41aed"
+        "commit": "1e492d6ff9b8d4412591942b11fe06e1395ae80f"
       }
     },
     {
@@ -223,7 +223,7 @@
         "commit": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4"
       },
       "latest_fetched": {
-        "commit": "b385044250f1ed3c9379ab34a8fe82f02fdffaa4"
+        "commit": "82e51dcf9b47912d551107748ba3297a21b2eff3"
       }
     },
     {
@@ -235,7 +235,7 @@
         "commit": "bfa00807c975fdc5b84dda32d47b16b09e8d42c1"
       },
       "latest_fetched": {
-        "commit": "bfa00807c975fdc5b84dda32d47b16b09e8d42c1"
+        "commit": "013203421df03b655cc04d1095e4e41d83c2ae44"
       }
     },
     {
@@ -247,7 +247,7 @@
         "commit": "4a550effdfcb29a25a5d325bf935296cc50cd417"
       },
       "latest_fetched": {
-        "commit": "4a550effdfcb29a25a5d325bf935296cc50cd417"
+        "commit": "cbc15c076d17f70fec9f89c90c0502e68657f505"
       }
     },
     {
@@ -295,7 +295,7 @@
         "commit": "cc8da27cec92029a6435bfee4a703a719290234e"
       },
       "latest_fetched": {
-        "commit": "8ef86077e70ac27d45ddddaf49e409824ccdf668"
+        "commit": "005a71f550cd8351522744043a3cd5f9311f717d"
       }
     },
     {
@@ -319,14 +319,14 @@
         "commit": "f67be44f095a4ab24ceab33c3907317bb0375087"
       },
       "latest_fetched": {
-        "commit": "f67be44f095a4ab24ceab33c3907317bb0375087"
+        "commit": "1d09b08b8c9d83ac4a59d38299f54630c83e802f"
       }
     },
     {
       "id": "exa-mcp-server",
       "project": "Exa MCP server",
       "remote": "https://github.com/exa-labs/exa-mcp-server.git",
-      "tracked_ref": "master",
+      "tracked_ref": "main",
       "reviewed": {
         "commit": "a664592b5dd7c5598b70158c771dcc5c2a4fb2c1"
       },

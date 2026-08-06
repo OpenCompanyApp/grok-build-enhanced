@@ -1,6 +1,6 @@
 # Upstream versions
 
-Last checked: 2026-08-04
+Last checked: 2026-08-06
 
 This file records both the source revision last reviewed for this fork and the
 newest fetched revision. A difference is a review queue, not permission to
@@ -8,20 +8,20 @@ blindly copy upstream code.
 
 | Project | Remote and tracked ref | Last reviewed / fork baseline | Latest fetched |
 | --- | --- | --- | --- |
-| OpenAI Codex CLI | `https://github.com/openai/codex.git` `main` | [`2c005abb0765bfe3ef42a23fe88d5b806184fa83`](https://github.com/openai/codex/commit/2c005abb0765bfe3ef42a23fe88d5b806184fa83) | same |
-| OpenCode | `https://github.com/anomalyco/opencode.git` `dev` | [`1882c33827cf0ce5c948b69ab5a87ed8f6790cf8`](https://github.com/anomalyco/opencode/commit/1882c33827cf0ce5c948b69ab5a87ed8f6790cf8) | same |
-| models.dev | `https://github.com/sst/models.dev.git` `dev` | [`f67be44f095a4ab24ceab33c3907317bb0375087`](https://github.com/sst/models.dev/commit/f67be44f095a4ab24ceab33c3907317bb0375087) | same |
-| Exa MCP server | `https://github.com/exa-labs/exa-mcp-server.git` `master` | [`a664592b5dd7c5598b70158c771dcc5c2a4fb2c1`](https://github.com/exa-labs/exa-mcp-server/commit/a664592b5dd7c5598b70158c771dcc5c2a4fb2c1) | same |
-| Grok Build upstream | `https://github.com/xai-org/grok-build.git` `main` | Reviewed [`dd04f397b1d02f2272b092555669dfba1f01bc85`](https://github.com/xai-org/grok-build/commit/dd04f397b1d02f2272b092555669dfba1f01bc85) | same |
+| OpenAI Codex CLI | `https://github.com/openai/codex.git` `main` | [`2c005abb0765bfe3ef42a23fe88d5b806184fa83`](https://github.com/openai/codex/commit/2c005abb0765bfe3ef42a23fe88d5b806184fa83) | [`7a0e974e08c798d1e8d59d407aeb6e24db1313af`](https://github.com/openai/codex/commit/7a0e974e08c798d1e8d59d407aeb6e24db1313af) |
+| OpenCode | `https://github.com/anomalyco/opencode.git` `dev` | [`1882c33827cf0ce5c948b69ab5a87ed8f6790cf8`](https://github.com/anomalyco/opencode/commit/1882c33827cf0ce5c948b69ab5a87ed8f6790cf8) | [`def7220bfc65b84046e597e9be772eae81f663ff`](https://github.com/anomalyco/opencode/commit/def7220bfc65b84046e597e9be772eae81f663ff) |
+| models.dev | `https://github.com/sst/models.dev.git` `dev` | [`f67be44f095a4ab24ceab33c3907317bb0375087`](https://github.com/sst/models.dev/commit/f67be44f095a4ab24ceab33c3907317bb0375087) | [`1d09b08b8c9d83ac4a59d38299f54630c83e802f`](https://github.com/sst/models.dev/commit/1d09b08b8c9d83ac4a59d38299f54630c83e802f) |
+| Exa MCP server | `https://github.com/exa-labs/exa-mcp-server.git` `main` | [`a664592b5dd7c5598b70158c771dcc5c2a4fb2c1`](https://github.com/exa-labs/exa-mcp-server/commit/a664592b5dd7c5598b70158c771dcc5c2a4fb2c1) | same |
+| Grok Build upstream | `https://github.com/xai-org/grok-build.git` `main` | Reviewed [`dd04f397b1d02f2272b092555669dfba1f01bc85`](https://github.com/xai-org/grok-build/commit/dd04f397b1d02f2272b092555669dfba1f01bc85) | [`a5589e958437d79e13db026eedcb1720bffd4063`](https://github.com/xai-org/grok-build/commit/a5589e958437d79e13db026eedcb1720bffd4063) |
 | OpenCode Codex auth reference | `https://github.com/numman-ali/opencode-openai-codex-auth.git` `main` | [`bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016`](https://github.com/numman-ali/opencode-openai-codex-auth/commit/bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016) | same |
-| Oh My Pi coding harness | `https://github.com/can1357/oh-my-pi.git` `main` | [`01c1f91ff529c6af3fc27724a8ba429d83d41aed`](https://github.com/can1357/oh-my-pi/commit/01c1f91ff529c6af3fc27724a8ba429d83d41aed) | same |
-| Warp themes | `https://github.com/warpdotdev/themes.git` `main` | [`b385044250f1ed3c9379ab34a8fe82f02fdffaa4`](https://github.com/warpdotdev/themes/commit/b385044250f1ed3c9379ab34a8fe82f02fdffaa4) | same |
-| Kimi Code | `https://github.com/MoonshotAI/kimi-code.git` `main` | [`bfa00807c975fdc5b84dda32d47b16b09e8d42c1`](https://github.com/MoonshotAI/kimi-code/commit/bfa00807c975fdc5b84dda32d47b16b09e8d42c1) | same |
-| Kimi CLI (legacy reference) | `https://github.com/MoonshotAI/kimi-cli.git` `main` | [`4a550effdfcb29a25a5d325bf935296cc50cd417`](https://github.com/MoonshotAI/kimi-cli/commit/4a550effdfcb29a25a5d325bf935296cc50cd417) | same |
+| Oh My Pi coding harness | `https://github.com/can1357/oh-my-pi.git` `main` | [`01c1f91ff529c6af3fc27724a8ba429d83d41aed`](https://github.com/can1357/oh-my-pi/commit/01c1f91ff529c6af3fc27724a8ba429d83d41aed) | [`1e492d6ff9b8d4412591942b11fe06e1395ae80f`](https://github.com/can1357/oh-my-pi/commit/1e492d6ff9b8d4412591942b11fe06e1395ae80f) |
+| Warp themes | `https://github.com/warpdotdev/themes.git` `main` | [`b385044250f1ed3c9379ab34a8fe82f02fdffaa4`](https://github.com/warpdotdev/themes/commit/b385044250f1ed3c9379ab34a8fe82f02fdffaa4) | [`82e51dcf9b47912d551107748ba3297a21b2eff3`](https://github.com/warpdotdev/themes/commit/82e51dcf9b47912d551107748ba3297a21b2eff3) |
+| Kimi Code | `https://github.com/MoonshotAI/kimi-code.git` `main` | [`bfa00807c975fdc5b84dda32d47b16b09e8d42c1`](https://github.com/MoonshotAI/kimi-code/commit/bfa00807c975fdc5b84dda32d47b16b09e8d42c1) | [`013203421df03b655cc04d1095e4e41d83c2ae44`](https://github.com/MoonshotAI/kimi-code/commit/013203421df03b655cc04d1095e4e41d83c2ae44) |
+| Kimi CLI (legacy reference) | `https://github.com/MoonshotAI/kimi-cli.git` `main` | [`4a550effdfcb29a25a5d325bf935296cc50cd417`](https://github.com/MoonshotAI/kimi-cli/commit/4a550effdfcb29a25a5d325bf935296cc50cd417) | [`cbc15c076d17f70fec9f89c90c0502e68657f505`](https://github.com/MoonshotAI/kimi-cli/commit/cbc15c076d17f70fec9f89c90c0502e68657f505) |
 | Z.AI Python SDK | `https://github.com/zai-org/z-ai-sdk-python.git` `main` | [`ca5109c0aa9bf173839be391b4b14aeadf9a9bf9`](https://github.com/zai-org/z-ai-sdk-python/commit/ca5109c0aa9bf173839be391b4b14aeadf9a9bf9) | same |
 | Z.AI coding plugins | `https://github.com/zai-org/zai-coding-plugins.git` `main` | [`0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254`](https://github.com/zai-org/zai-coding-plugins/commit/0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254) | same |
 | GLM-5 model reference | `https://github.com/zai-org/GLM-5.git` `main` | [`436efa09bc868a6922e307624189e7018406beb9`](https://github.com/zai-org/GLM-5/commit/436efa09bc868a6922e307624189e7018406beb9) | same |
-| CodexBar Z.AI usage reference | `https://github.com/steipete/CodexBar.git` `main` | [`cc8da27cec92029a6435bfee4a703a719290234e`](https://github.com/steipete/CodexBar/commit/cc8da27cec92029a6435bfee4a703a719290234e) | [`8ef86077e70ac27d45ddddaf49e409824ccdf668`](https://github.com/steipete/CodexBar/commit/8ef86077e70ac27d45ddddaf49e409824ccdf668) |
+| CodexBar Z.AI usage reference | `https://github.com/steipete/CodexBar.git` `main` | [`cc8da27cec92029a6435bfee4a703a719290234e`](https://github.com/steipete/CodexBar/commit/cc8da27cec92029a6435bfee4a703a719290234e) | [`005a71f550cd8351522744043a3cd5f9311f717d`](https://github.com/steipete/CodexBar/commit/005a71f550cd8351522744043a3cd5f9311f717d) |
 | Z.AI usage browser reference | `https://github.com/nniicckk6/zai-extention.git` `main` | [`54cd1f33a703c417f2492ee1f21f22b3633a43c4`](https://github.com/nniicckk6/zai-extention/commit/54cd1f33a703c417f2492ee1f21f22b3633a43c4) | same |
 
 ## Refresh procedure
