@@ -1476,7 +1476,10 @@ impl SessionActor {
                         "auth recovery: sampler 401, devbox re-mint, retrying"
                     );
                     self.prepare_sampler_for_turn().await?;
-                    return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit);
+                    return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                        credential: error.credential,
+                        store: RecoveredStore::SessionToken,
+                    });
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1506,7 +1509,10 @@ impl SessionActor {
                     None,
                 );
                 self.prepare_sampler_for_turn().await?;
-                return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit);
+                return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                    credential: error.credential,
+                    store: RecoveredStore::SessionToken,
+                });
             }
             tracing::warn!(
                 session_id = % self.session_info.id.0,
@@ -1522,7 +1528,10 @@ impl SessionActor {
             && self.try_provider_401_recovery(provider).await
         {
             self.prepare_sampler_for_turn().await?;
-            return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit);
+            return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                credential: error.credential,
+                store: RecoveredStore::AuthProvider,
+            });
         }
         if matches!(error.kind, SamplingErrorKind::IdleTimeout) {
             self.signals_handle().record_idle_timeout();
@@ -1673,8 +1682,8 @@ impl SessionActor {
     /// * `Ok(SamplerTurnOutcome::Response(_))` - model responded.
     /// * `Ok(SamplerTurnOutcome::CompactAndResubmit)` - compaction
     ///    ran, the outer turn loop should `continue`.
-    /// * `Ok(SamplerTurnOutcome::RefreshAuthAndResubmit)` - auth 401
-    ///    recovery succeeded, credentials refreshed, retry once.
+    /// * `Ok(SamplerTurnOutcome::RefreshAuthAndResubmit { .. })` - auth 401
+    ///    recovery succeeded, with value-free wire provenance and store kind.
     /// * `Err(acp::Error)` - terminal failure already reported via
     ///    `send_xai_notification(RetryState::Failed)`.
     pub(crate) async fn run_turn_via_sampler(
@@ -1743,8 +1752,8 @@ impl SessionActor {
                     SamplerFailureRecovery::CompactAndResubmit => {
                         Ok(SamplerTurnOutcome::CompactAndResubmit)
                     }
-                    SamplerFailureRecovery::RefreshAuthAndResubmit => {
-                        Ok(SamplerTurnOutcome::RefreshAuthAndResubmit)
+                    SamplerFailureRecovery::RefreshAuthAndResubmit { credential, store } => {
+                        Ok(SamplerTurnOutcome::RefreshAuthAndResubmit { credential, store })
                     }
                 }
             }

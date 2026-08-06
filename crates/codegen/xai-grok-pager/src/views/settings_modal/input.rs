@@ -170,9 +170,16 @@ fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> Settin
             if !close {
                 state.transition_to_browse();
             }
-            if let SettingValue::Enum(orig) = &original_value
-                && let Some(action) = action_for_enum(setting_key, orig)
-            {
+            // Dynamic enums (notably the runtime theme catalog) keep their
+            // original value as `String`; static enums use `Enum`. Both are
+            // preview-capable and must restore the original live value on
+            // Esc/breadcrumb navigation.
+            let revert = match &original_value {
+                SettingValue::Enum(orig) => action_for_enum(setting_key, orig),
+                SettingValue::String(orig) => action_for_enum(setting_key, orig),
+                _ => None,
+            };
+            if let Some(action) = revert {
                 return if close {
                     SettingsKeyOutcome::ActionThenClose(action)
                 } else {

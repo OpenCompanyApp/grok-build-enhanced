@@ -33,6 +33,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(60);
 #[serde(deny_unknown_fields)]
 struct Counts {
     sessions: usize,
+    loading_sessions: usize,
     session_threads: usize,
     resident_resources: usize,
     retained_resources: usize,
@@ -47,6 +48,7 @@ struct Counts {
     subagent_active: usize,
     subagent_completed: usize,
     workspace_bindings: Option<usize>,
+    workspace_activity_sessions: Option<usize>,
 }
 
 struct AutoApproveClient;
@@ -99,6 +101,20 @@ async fn read_counts(conn: &acp::ClientSideConnection) -> Counts {
     serde_json::from_value(response["result"]["registries"].clone()).unwrap_or_else(|error| {
         panic!("x.ai/debug/agent: bad registries payload: {error}\n{response}")
     })
+}
+
+/// Counts read once actor threads are reaped. Nothing signals thread exit, so
+/// poll until the registry settles rather than sampling the teardown window.
+async fn settled_counts(conn: &acp::ClientSideConnection) -> Counts {
+    let mut counts = read_counts(conn).await;
+    for _ in 0..100 {
+        if counts.session_threads == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        counts = read_counts(conn).await;
+    }
+    counts
 }
 
 async fn new_session(conn: &acp::ClientSideConnection, cwd: &std::path::Path) -> acp::SessionId {
@@ -272,21 +288,29 @@ fn session_churn_returns_registry_snapshot_to_baseline() {
         let client_conn = connect_and_auth().await;
 
         churn_one(&client_conn, workdir.path(), 0).await;
-        let baseline = read_counts(&client_conn).await;
+        let baseline = settled_counts(&client_conn).await;
         assert_eq!(
             baseline.sessions, 0,
             "warmup session must be fully removed before baseline"
         );
         assert_eq!(
-            (baseline.resident_resources, baseline.retained_resources),
-            (0, 0),
+            (
+                baseline.resident_resources,
+                baseline.retained_resources,
+                baseline.loading_sessions
+            ),
+            (0, 0, 0),
             "warmup must leave no per-session resource entries, including \
              entries holding no resources"
         );
         assert_eq!(
-            baseline.workspace_bindings,
-            Some(0),
-            "warmup must have built the local workspace and released its binding"
+            (
+                baseline.workspace_bindings,
+                baseline.workspace_activity_sessions
+            ),
+            (Some(0), Some(0)),
+            "warmup must have built the local workspace and released both its \
+             binding and its activity record"
         );
         assert_eq!(
             (
@@ -325,7 +349,7 @@ fn session_churn_returns_registry_snapshot_to_baseline() {
         )
         .await;
 
-        let after = read_counts(&client_conn).await;
+        let after = settled_counts(&client_conn).await;
         assert_eq!(
             after, baseline,
             "session churn must return every registry count to baseline \

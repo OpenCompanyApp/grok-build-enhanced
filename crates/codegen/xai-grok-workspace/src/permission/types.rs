@@ -595,7 +595,7 @@ mod tests {
             command: "tail -f /var/log/syslog".into(),
             description: "watch syslog".into(),
             timeout_ms: None,
-            persistent: Some(false),
+            persistent: false,
         });
         let access = AccessKind::from(&input);
         assert!(

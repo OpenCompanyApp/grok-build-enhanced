@@ -80,6 +80,8 @@ tokio-stream = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
+# Pre-main unified-log redirect for this crate's own test binary.
+ctor = "0.4"
 tonic = { workspace = true, features = ["transport"] }
 # In-memory log/metric exporters for the external-stream wire-shape tests.
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

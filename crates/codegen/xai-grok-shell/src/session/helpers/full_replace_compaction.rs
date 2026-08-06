@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use agent_client_protocol as acp;
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 use xai_grok_compaction::{
     CompactionPrompt, CompactionSampleError, CompactionSampler, FullReplaceAttemptOutcome,
     FullReplaceObserver, LlmCompactionOutput,
@@ -42,6 +43,7 @@ use crate::sampling::Client as OaiCompatClient;
 use crate::session::helpers::session_compact::{
     CompactFailure, CompactOutput, build_compaction_chat_history, generate_session_compact,
 };
+use crate::util::config::CompactionToolChoice;
 
 /// Wraps `generate_session_compact` as the shared engine's
 /// [`CompactionSampler`] for grok-build's full-replace pass.
@@ -78,6 +80,8 @@ pub(crate) struct ShellCompactionSampler {
     /// Wall-clock budget (secs) forwarded to `generate_session_compact` as the
     /// reasoning-runaway backstop; `0` disables it.
     wall_clock_budget_secs: u64,
+    tool_choice: CompactionToolChoice,
+    cancel: CancellationToken,
     /// Full output of the most recent successful sample (for L5 telemetry).
     last_success: Mutex<Option<CompactOutput>>,
     /// Model used by the most recent request. This keeps persisted compaction
@@ -98,6 +102,8 @@ impl ShellCompactionSampler {
         fallback: Option<(OaiCompatClient, SamplingConfig)>,
         idle_timeout: Duration,
         wall_clock_budget_secs: u64,
+        tool_choice: CompactionToolChoice,
+        cancel: CancellationToken,
     ) -> Self {
         let last_attempted_model = sampling_config.model.clone();
         Self {
@@ -114,6 +120,8 @@ impl ShellCompactionSampler {
             session_id,
             idle_timeout,
             wall_clock_budget_secs,
+            tool_choice,
+            cancel,
             last_success: Mutex::new(None),
             last_attempted_model: Mutex::new(last_attempted_model),
         }
@@ -144,6 +152,8 @@ impl ShellCompactionSampler {
             &route.config,
             self.idle_timeout,
             self.wall_clock_budget_secs,
+            self.tool_choice,
+            &self.cancel,
         )
         .await
     }
@@ -221,6 +231,7 @@ fn compact_failure_to_sample_error(failure: CompactFailure) -> CompactionSampleE
         CompactFailure::Deterministic(err)
         | CompactFailure::DeterministicWithCurrentModelFallback(err) => (true, err),
         CompactFailure::Transient(err) => (false, err),
+        CompactFailure::Cancelled => (true, CompactFailure::cancelled_error()),
     };
     let message = acp_error_message(&err);
     if deterministic {
@@ -541,6 +552,8 @@ mod tests {
             Some((active_client, active_config)),
             Duration::from_secs(5),
             0,
+            CompactionToolChoice::Auto,
+            CancellationToken::new(),
         );
         let prompt = CompactionPrompt {
             system: String::new(),

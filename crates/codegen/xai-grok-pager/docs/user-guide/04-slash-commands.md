@@ -80,6 +80,12 @@ Quit the application. Alias: `/exit`.
 
 Leave the current session and return to the welcome screen. Alias: `/welcome`.
 
+### `/delete`
+
+Delete the current session's history and return to the welcome screen. Confirms first.
+
+To delete a session you are not in, open `/resume` or the welcome session list and press `d` then `y`. On the dashboard, press `Ctrl+X` twice or click `[✗]`.
+
 ### `/rename`
 
 Rename the current session. Alias: `/title`.

@@ -5,6 +5,7 @@ use crate::sampling::{
     ConversationItem, ConversationRequest, ConversationToolChoice, HostedTool, SamplingError,
     ToolChoice, ToolDefinition, ToolSpec, conversation_to_chat_messages,
 };
+use crate::util::config::CompactionToolChoice;
 use agent_client_protocol as acp;
 use async_openai::types::responses::{self as responses, ResponseStreamEvent};
 use futures_util::StreamExt;
@@ -51,6 +52,15 @@ pub(crate) enum CompactFailure {
     /// N-attempt + backoff loop; a previous-model route may also switch to the
     /// active model before that loop retries.
     Transient(acp::Error),
+    /// User/stop cancelled the in-flight compact. Do not retry or suppress AUTO.
+    Cancelled,
+}
+/// Stable error payload for a user-cancelled compact (pager + retry loop).
+pub(crate) const COMPACT_CANCELLED_MSG: &str = "compact cancelled";
+impl CompactFailure {
+    pub(crate) fn cancelled_error() -> acp::Error {
+        acp::Error::internal_error().data(COMPACT_CANCELLED_MSG)
+    }
 }
 
 impl CompactFailure {
@@ -79,7 +89,7 @@ fn classify_sampling_error_for_provider(
 ) -> CompactFailure {
     let acp_err = acp::Error::internal_error().data(format!("compact failed: {err}"));
     match &err {
-        SamplingError::Auth(_)
+        SamplingError::Auth { .. }
         | SamplingError::ProviderAuthRejected { .. }
         | SamplingError::InvalidConfiguration(_)
         | SamplingError::Serialization(_)
@@ -409,14 +419,75 @@ enum StreamStep<T> {
     Ended,
     IdleTimeout,
 }
-async fn next_stream_step<S, T>(stream: &mut S, idle_timeout: std::time::Duration) -> StreamStep<T>
+async fn next_stream_step<S, T>(
+    stream: &mut S,
+    idle_timeout: std::time::Duration,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<StreamStep<T>, CompactFailure>
 where
     S: futures_util::Stream<Item = T> + Unpin,
 {
-    match tokio::time::timeout(idle_timeout, stream.next()).await {
-        Ok(Some(item)) => StreamStep::Item(item),
-        Ok(None) => StreamStep::Ended,
-        Err(_) => StreamStep::IdleTimeout,
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(CompactFailure::Cancelled),
+        step = tokio::time::timeout(idle_timeout, stream.next()) => Ok(match step {
+            Ok(Some(item)) => StreamStep::Item(item),
+            Ok(None) => StreamStep::Ended,
+            Err(_) => StreamStep::IdleTimeout,
+        }),
+    }
+}
+/// Abort `fut` if stop wins while the compact HTTP stream is still opening.
+async fn await_unless_cancelled<F, T>(
+    cancel: &tokio_util::sync::CancellationToken,
+    fut: F,
+) -> Result<T, CompactFailure>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(CompactFailure::Cancelled),
+        result = fut => Ok(result),
+    }
+}
+#[cfg(test)]
+mod compact_cancel_await_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+    #[tokio::test]
+    async fn pre_cancelled_token_skips_fut() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let err = await_unless_cancelled(&cancel, async {
+            panic!("fut must not run when already cancelled");
+        })
+        .await
+        .unwrap_err();
+        assert!(matches!(err, CompactFailure::Cancelled));
+    }
+    #[tokio::test]
+    async fn cancel_aborts_pending_open() {
+        let cancel = CancellationToken::new();
+        let cancel2 = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancel2.cancel();
+        });
+        let started = std::time::Instant::now();
+        let err = await_unless_cancelled(&cancel, async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            0u8
+        })
+        .await
+        .unwrap_err();
+        assert!(matches!(err, CompactFailure::Cancelled));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "stop must abort stream-open wait, elapsed {:?}",
+            started.elapsed()
+        );
     }
 }
 
@@ -466,9 +537,22 @@ pub(crate) async fn generate_session_compact(
     sampling_config: &SamplingConfig,
     idle_timeout: std::time::Duration,
     wall_clock_budget_secs: u64,
+    tool_choice: CompactionToolChoice,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<CompactOutput, CompactFailure> {
+    if cancel.is_cancelled() {
+        return Err(CompactFailure::Cancelled);
+    }
     let (tools, hosted_tools) =
         provider_safe_compaction_tools(sampling_config.provider, tools, hosted_tools);
+    let wire_tool_choice = match tool_choice {
+        CompactionToolChoice::Auto => ToolChoice::auto(),
+        CompactionToolChoice::None => ToolChoice::none(),
+    };
+    let conversation_tool_choice = match tool_choice {
+        CompactionToolChoice::Auto => ConversationToolChoice::Auto,
+        CompactionToolChoice::None => ConversationToolChoice::None,
+    };
     let num_messages = chat_history.len();
     let output = match sampling_config.api_backend {
         ApiBackend::ChatCompletions => {
@@ -485,7 +569,7 @@ pub(crate) async fn generate_session_compact(
                             .map(|t| ToolDefinition::function(t.name, t.description, t.parameters))
                             .collect(),
                     )
-                    .with_tool_choice(ToolChoice::none());
+                    .with_tool_choice(wire_tool_choice);
             }
             let sid = session_id.to_string();
             message.x_grok_conv_id = Some(sid.clone());
@@ -496,7 +580,8 @@ pub(crate) async fn generate_session_compact(
                 compact_model = % sampling_config.model, num_messages = num_messages,
                 "Sending compact request (streaming)"
             );
-            let stream_result = client.chat_completion_stream(message).await;
+            let stream_result =
+                await_unless_cancelled(cancel, client.chat_completion_stream(message)).await?;
             let mut stream = match stream_result {
                 Ok((s, _metadata)) => s,
                 Err(e) => {
@@ -513,7 +598,9 @@ pub(crate) async fn generate_session_compact(
             let mut last_progress_at = std::time::Instant::now();
             loop {
                 let idle_remaining = idle_timeout.saturating_sub(last_progress_at.elapsed());
-                let chunk_result = match next_stream_step(&mut stream, idle_remaining).await {
+                let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel)
+                    .await?
+                {
                     StreamStep::Item(item) => item,
                     StreamStep::Ended => break,
                     StreamStep::IdleTimeout => {
@@ -589,7 +676,7 @@ pub(crate) async fn generate_session_compact(
         ApiBackend::Responses => {
             let request = ConversationRequest {
                 items: chat_history,
-                tool_choice: (!tools.is_empty()).then_some(ConversationToolChoice::None),
+                tool_choice: (!tools.is_empty()).then_some(conversation_tool_choice),
                 tools,
                 hosted_tools,
                 model: Some(sampling_config.model.to_owned()),
@@ -602,7 +689,11 @@ pub(crate) async fn generate_session_compact(
             };
             let mut recovery_attempted = false;
             let stream_result = loop {
-                let result = client.conversation_stream_responses(request.clone()).await;
+                let result = await_unless_cancelled(
+                    cancel,
+                    client.conversation_stream_responses(request.clone()),
+                )
+                .await?;
                 match &result {
                     Err(error)
                         if maybe_recover_compaction_provider_auth(
@@ -641,7 +732,9 @@ pub(crate) async fn generate_session_compact(
             let mut last_progress_at = std::time::Instant::now();
             loop {
                 let idle_remaining = idle_timeout.saturating_sub(last_progress_at.elapsed());
-                let chunk_result = match next_stream_step(&mut stream, idle_remaining).await {
+                let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel)
+                    .await?
+                {
                     StreamStep::Item(item) => item,
                     StreamStep::Ended => break,
                     StreamStep::IdleTimeout => {
@@ -864,7 +957,9 @@ pub(crate) async fn generate_session_compact(
                 x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
-            let stream_result = client.conversation_stream_messages(request).await;
+            let stream_result =
+                await_unless_cancelled(cancel, client.conversation_stream_messages(request))
+                    .await?;
             let mut stream = match stream_result {
                 Ok((s, _metadata)) => s,
                 Err(e) => {
@@ -881,7 +976,9 @@ pub(crate) async fn generate_session_compact(
             let mut last_progress_at = std::time::Instant::now();
             loop {
                 let idle_remaining = idle_timeout.saturating_sub(last_progress_at.elapsed());
-                let chunk_result = match next_stream_step(&mut stream, idle_remaining).await {
+                let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel)
+                    .await?
+                {
                     StreamStep::Item(item) => item,
                     StreamStep::Ended => break,
                     StreamStep::IdleTimeout => {
@@ -1159,7 +1256,7 @@ mod classify_tests {
     #[test]
     fn codex_auth_construction_failure_does_not_change_models() {
         let failure = classify_sampling_error_for_provider(
-            SamplingError::Auth("expired".into()),
+            SamplingError::auth_unknown("expired"),
             xai_grok_sampling_types::ProviderId::OpenAiCodex,
         );
 
@@ -1192,9 +1289,9 @@ mod classify_tests {
 
     #[test]
     fn sampling_non_api_variants_classify_correctly() {
-        assert!(is_det(&classify_sampling_error(SamplingError::Auth(
-            "expired".into()
-        ))));
+        assert!(is_det(&classify_sampling_error(
+            SamplingError::auth_unknown("expired")
+        )));
         assert!(is_det(&classify_sampling_error(
             SamplingError::InvalidConfiguration("missing key")
         )));
@@ -2022,6 +2119,8 @@ mod reasoning_compaction_regression_tests {
             &config,
             std::time::Duration::from_secs(30),
             0,
+            CompactionToolChoice::None,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap_or_else(|_| panic!("compaction must succeed"));
@@ -2120,6 +2219,8 @@ mod reasoning_compaction_regression_tests {
             &config,
             std::time::Duration::from_secs(30),
             0,
+            CompactionToolChoice::None,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await;
         let output = result
@@ -2185,6 +2286,8 @@ mod reasoning_compaction_regression_tests {
             &config,
             std::time::Duration::from_secs(30),
             0,
+            CompactionToolChoice::None,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap_or_else(|_| panic!("compaction with tools must succeed"));
@@ -2198,6 +2301,8 @@ mod reasoning_compaction_regression_tests {
             &config,
             std::time::Duration::from_secs(30),
             0,
+            CompactionToolChoice::Auto,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap_or_else(|_| panic!("compaction without tools must succeed"));
@@ -2261,6 +2366,8 @@ mod reasoning_compaction_regression_tests {
             &config,
             std::time::Duration::from_millis(150),
             0,
+            CompactionToolChoice::Auto,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await;
         match result {
@@ -2280,6 +2387,9 @@ mod reasoning_compaction_regression_tests {
                 | CompactFailure::DeterministicWithCurrentModelFallback(_),
             ) => {
                 panic!("a stalled stream must be retryable (Transient), not Deterministic")
+            }
+            Err(CompactFailure::Cancelled) => {
+                panic!("an uncancelled stalled stream must not report cancellation")
             }
             Ok(_) => panic!("a stalled stream must not produce a summary"),
         }
@@ -2331,6 +2441,8 @@ mod reasoning_compaction_regression_tests {
             &config,
             std::time::Duration::from_millis(150),
             0,
+            CompactionToolChoice::Auto,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await;
         match result {
@@ -2350,6 +2462,9 @@ mod reasoning_compaction_regression_tests {
                 | CompactFailure::DeterministicWithCurrentModelFallback(_),
             ) => {
                 panic!("a stalled stream must be retryable (Transient), not Deterministic")
+            }
+            Err(CompactFailure::Cancelled) => {
+                panic!("an uncancelled stalled stream must not report cancellation")
             }
             Ok(_) => {
                 panic!(
@@ -2405,6 +2520,8 @@ mod reasoning_compaction_regression_tests {
             &config,
             std::time::Duration::from_millis(150),
             0,
+            CompactionToolChoice::Auto,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await;
         match result {
@@ -2424,6 +2541,9 @@ mod reasoning_compaction_regression_tests {
                 | CompactFailure::DeterministicWithCurrentModelFallback(_),
             ) => {
                 panic!("a stalled stream must be retryable (Transient), not Deterministic")
+            }
+            Err(CompactFailure::Cancelled) => {
+                panic!("an uncancelled stalled stream must not report cancellation")
             }
             Ok(_) => {
                 panic!("salvage removed: a substantial partial must error, not be returned")
@@ -2476,6 +2596,8 @@ mod reasoning_compaction_regression_tests {
             &config,
             std::time::Duration::from_millis(150),
             0,
+            CompactionToolChoice::Auto,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await;
         match result {
@@ -2681,6 +2803,8 @@ mod codex_responses_compaction_tests {
             &config,
             std::time::Duration::from_secs(5),
             0,
+            CompactionToolChoice::Auto,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await;
         let _ = shutdown_tx.send(());

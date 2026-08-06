@@ -165,7 +165,7 @@ fn validate_request_auth_headers(headers: &mut HeaderMap) -> Result<()> {
 
     let authorization_count = headers.get_all(AUTHORIZATION).iter().count();
     if authorization_count == 0 {
-        return Err(SamplingError::Auth(CODEX_AUTH_UNAVAILABLE.to_owned()));
+        return Err(SamplingError::auth_unknown(CODEX_AUTH_UNAVAILABLE));
     }
     if authorization_count != 1 {
         return Err(SamplingError::InvalidConfiguration(
@@ -178,12 +178,12 @@ fn validate_request_auth_headers(headers: &mut HeaderMap) -> Result<()> {
         .and_then(|value| value.strip_prefix("Bearer "))
         .is_some_and(|token| !token.is_empty());
     if !has_bearer {
-        return Err(SamplingError::Auth(CODEX_AUTH_UNAVAILABLE.to_owned()));
+        return Err(SamplingError::auth_unknown(CODEX_AUTH_UNAVAILABLE));
     }
 
     let account_count = headers.get_all(CHATGPT_ACCOUNT_ID_HEADER).iter().count();
     if account_count == 0 {
-        return Err(SamplingError::Auth(CODEX_AUTH_UNAVAILABLE.to_owned()));
+        return Err(SamplingError::auth_unknown(CODEX_AUTH_UNAVAILABLE));
     }
     if account_count != 1 {
         return Err(SamplingError::InvalidConfiguration(
@@ -195,7 +195,7 @@ fn validate_request_auth_headers(headers: &mut HeaderMap) -> Result<()> {
         .and_then(|value| value.to_str().ok())
         .is_some_and(|account_id| !account_id.trim().is_empty());
     if !has_account {
-        return Err(SamplingError::Auth(CODEX_AUTH_UNAVAILABLE.to_owned()));
+        return Err(SamplingError::auth_unknown(CODEX_AUTH_UNAVAILABLE));
     }
 
     let fedramp_values = headers.get_all(OPENAI_FEDRAMP_HEADER);

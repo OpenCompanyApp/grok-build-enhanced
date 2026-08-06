@@ -19,7 +19,7 @@ use tracing::Instrument;
 
 use xai_grok_sampling_types::{
     ConversationRequest, ConversationResponse, CredentialBinding, EmptyResponseContext,
-    SamplingError, error::Result as SamplingResult,
+    SamplingError, SentCredential, error::Result as SamplingResult,
 };
 
 use crate::client::{ApiBackend, CodexTurnStateStore, SamplingClient};
@@ -875,7 +875,10 @@ fn synthesize_from_info(info: &SamplingErrorInfo) -> SamplingError {
                 .find_map(|tok| tok.strip_suffix('s').and_then(|n| n.parse::<u64>().ok()))
                 .unwrap_or(0),
         },
-        SamplingErrorKind::Auth => SamplingError::Auth(info.message.clone()),
+        SamplingErrorKind::Auth => SamplingError::Auth {
+            message: info.message.clone(),
+            credential: info.credential,
+        },
         // Must stay Serialization: EventStreamError is retryable, and a
         // response-parse failure is deterministic on retry. `info.message`
         // is the variant's rendered Display, so rebuild via the constructor
@@ -1010,6 +1013,7 @@ fn handle_cancellation(
         empty_response_context: None,
         doom_loop_triggers: None,
         doom_loop_aborted_at_chunk: None,
+        credential: SentCredential::Unknown,
     };
     let _ = event_tx.send(SamplingEvent::Failed {
         request_id: request_id.clone(),
@@ -1017,7 +1021,7 @@ fn handle_cancellation(
     });
     send_completion(
         completion_tx,
-        Err(SamplingError::Auth("request cancelled".to_string())),
+        Err(SamplingError::auth_unknown("request cancelled")),
     );
 }
 
@@ -1710,7 +1714,7 @@ mod tests {
 
         assert!(
             !maybe_recover_provider_auth(
-                &SamplingError::Auth("generic auth failure".to_owned()),
+                &SamplingError::auth_unknown("generic auth failure"),
                 &client,
                 &config,
                 &mut attempted,
@@ -1740,6 +1744,7 @@ mod tests {
             empty_response_context: None,
             doom_loop_triggers: None,
             doom_loop_aborted_at_chunk: None,
+            credential: SentCredential::Unknown,
         };
         let err = synthesize_from_info(&info);
         match err {
@@ -1761,6 +1766,7 @@ mod tests {
             empty_response_context: None,
             doom_loop_triggers: None,
             doom_loop_aborted_at_chunk: None,
+            credential: SentCredential::Unknown,
         };
         let err = synthesize_from_info(&info);
         match err {
@@ -1787,6 +1793,7 @@ mod tests {
             empty_response_context: None,
             doom_loop_triggers: None,
             doom_loop_aborted_at_chunk: None,
+            credential: SentCredential::Unknown,
         };
         let err = synthesize_from_info(&info);
         match err {

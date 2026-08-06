@@ -141,6 +141,9 @@ impl CommandRegistry {
         hidden.insert("voice".to_string());
         // `/auto` is fail-closed: hidden until `set_auto_mode_available(true)`.
         hidden.insert("auto".to_string());
+        // `/fast` is provider/entitlement scoped. The shell advertises it only
+        // when the active session owns the matching command semantics.
+        hidden.insert("fast".to_string());
         // `/share` starts menu-hidden (still dispatchable) until
         // `set_share_visible(true)`. Menu-only so typed `/share` can
         // surface a client disable message rather than PassThrough.

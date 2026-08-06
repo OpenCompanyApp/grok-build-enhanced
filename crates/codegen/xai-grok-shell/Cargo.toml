@@ -8,7 +8,10 @@ edition.workspace = true
 default = []
 unstable = []
 test-support = []
+local-workspace = []
+dhat-heap = ["dep:dhat"]
 default-bazel = [
+    "test-support",
     ]
 
 [dependencies]
@@ -26,6 +29,7 @@ blake3 = { workspace = true }
 bm25 = "2.3"
 bytes = { workspace = true }
 chrono = { workspace = true }
+dhat = { version = "0.3", optional = true }
 indexmap = { workspace = true, features = ["serde"] }
 ignore = { workspace = true }
 jsonschema = { workspace = true }
@@ -185,6 +189,8 @@ windows = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+# Pre-main unified-log redirect used by parallel-safe telemetry tests.
+ctor = "0.4"
 filetime = { workspace = true }
 pretty_assertions = { workspace = true }
 tower = { workspace = true }
@@ -220,6 +226,35 @@ workspace = true
 [[bench]]
 name = "session_list"
 harness = false
+
+[[bench]]
+name = "fork_copy"
+harness = false
+required-features = ["test-support"]
+
+[[bench]]
+name = "skills_watcher_startup"
+harness = false
+
+[[test]]
+name = "test_leader_soak"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_session_load_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_fork_replay_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_load_perf"
+required-features = ["test-support"]
+
+[[test]]
+name = "testkit_synth_roundtrip"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

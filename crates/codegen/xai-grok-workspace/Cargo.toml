@@ -92,7 +92,6 @@ urlencoding = "2"
 xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
 # tonic stays for `tonic::Status`/`Code` mapping in workspace_ops deploy errors.
 tonic = { workspace = true }
-
 xai-fsnotify = { path = "../xai-fsnotify" }
 clap = { workspace = true }
 tracing-subscriber = { workspace = true }

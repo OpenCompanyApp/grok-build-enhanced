@@ -850,7 +850,7 @@ fn deep_link_preview_esc_closes_modal_and_forwards_revert_action() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let _ = dispatch(Action::OpenSettings, &mut app);
-    {
+    let original_theme = {
         let agent = app.agents.get_mut(&id).unwrap();
         let Some(ActiveModal::Settings { state }) = &mut agent.active_modal else {
             panic!("settings modal must be open")
@@ -862,7 +862,18 @@ fn deep_link_preview_esc_closes_modal_and_forwards_revert_action() {
             state.mode(),
             SettingsModalMode::PickingEnum { .. }
         ));
-    }
+        match state.mode() {
+            SettingsModalMode::PickingEnum {
+                original_value: crate::settings::SettingValue::Enum(name),
+                ..
+            } => name.to_string(),
+            SettingsModalMode::PickingEnum {
+                original_value: crate::settings::SettingValue::String(name),
+                ..
+            } => name,
+            other => panic!("theme picker must retain its original value, got {other:?}"),
+        }
+    };
     let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     let outcome = app.handle_input(&esc);
     assert!(
@@ -871,7 +882,7 @@ fn deep_link_preview_esc_closes_modal_and_forwards_revert_action() {
     );
     match outcome {
         InputOutcome::Action(Action::PreviewTheme(name)) => {
-            assert_eq!(name, "groknight");
+            assert_eq!(name, original_theme);
         }
         other => panic!("expected Action(PreviewTheme), got {other:?}"),
     }

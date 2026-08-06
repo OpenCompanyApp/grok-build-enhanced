@@ -66,6 +66,7 @@ pub fn is_context_length_error(message: &str) -> bool {
         || (m.contains("input token count") && m.contains("exceeds the maximum"))
         || (m.contains("input length") && m.contains("exceeds") && m.contains("context length"))
         || (m.contains("prompt too long") && m.contains("context length"))
+        || (m.contains("current message") && m.contains("exceeds budget"))
 }
 
 /// Classify an HTTP API failure (status + message) for the compaction retry
@@ -245,6 +246,8 @@ mod tests {
             "API error (status 503): Service unavailable: token limit exceeded",
             "Stream failed: throttling error: too many tokens",
             "connection reset by peer",
+            "Attached file content (300000 tokens) causes message to exceed budget",
+            "compact index estimate 2.0 GB exceeds budget 1.0 GB",
         ] {
             assert!(
                 !is_context_length_error(message),

@@ -28,7 +28,7 @@ use xai_grok_sampling_types::{
     ConversationRequest, ConversationResponse, CreateResponseWrapper, CredentialBinding,
     DOOM_LOOP_CHECK_HEADER, MessageContent, MessagesRequestWrapper,
     OPENAI_CODEX_RESPONSES_LITE_HEADER, ProviderId, ReasoningEffort, ResponseModelMetadata, Result,
-    SamplingError, build_messages_request, is_check_event, messages, rs,
+    SamplingError, SentCredential, build_messages_request, is_check_event, messages, rs,
 };
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
@@ -432,6 +432,7 @@ struct PreparedRequest {
     builder: reqwest::RequestBuilder,
     http: reqwest::Client,
     credential_binding: Option<CredentialBinding>,
+    sent_credential: SentCredential,
 }
 
 #[derive(Default)]
@@ -637,6 +638,15 @@ pub fn user_agent_string_for(origin: &OriginClientInfo) -> String {
     }
 }
 
+/// Construct a value-free authentication error from the request's build-time
+/// credential-header classification.
+fn auth_rejected(message: String, credential: SentCredential) -> SamplingError {
+    SamplingError::Auth {
+        message,
+        credential,
+    }
+}
+
 // =============================================================================
 // SamplingClient
 // =============================================================================
@@ -754,9 +764,8 @@ impl SamplingClient {
                         tracing::debug!(
                             "Invalid api_key: cannot be converted to a valid HTTP header"
                         );
-                        SamplingError::Auth(
-                            "Invalid api_key: cannot be converted to a valid HTTP header"
-                                .to_string(),
+                        SamplingError::auth_unknown(
+                            "Invalid api_key: cannot be converted to a valid HTTP header",
                         )
                     })?;
                     header_value.set_sensitive(true);
@@ -768,9 +777,8 @@ impl SamplingClient {
                         tracing::debug!(
                             "Invalid api_key: cannot be converted to a valid HTTP Authorization header"
                         );
-                        SamplingError::Auth(
-                            "Invalid api_key: cannot be converted to a valid HTTP Authorization header"
-                                .to_string(),
+                        SamplingError::auth_unknown(
+                            "Invalid api_key: cannot be converted to a valid HTTP Authorization header",
                         )
                     })?;
                     header_value.set_sensitive(true);
@@ -1017,24 +1025,26 @@ impl SamplingClient {
     fn prepare_request_headers(
         &self,
         rejected: Option<&CredentialBinding>,
-    ) -> Result<(HeaderMap, Option<CredentialBinding>)> {
+    ) -> Result<(HeaderMap, Option<CredentialBinding>, SentCredential)> {
         let mut headers = self.default_headers.clone();
-        if let Some(resolver) = &self.bearer_resolver
-            && let Some(fresh) = resolver.current_bearer()
-        {
-            match self.defaults.auth_scheme {
-                AuthScheme::XApiKey => {
-                    headers.remove(AUTHORIZATION);
-                    if let Ok(mut value) = HeaderValue::from_str(&fresh) {
-                        value.set_sensitive(true);
-                        headers.insert(HeaderName::from_static("x-api-key"), value);
+        if let Some(resolver) = &self.bearer_resolver {
+            // A dynamic resolver is authoritative. Remove every stale seed
+            // credential even when the resolver currently has no value.
+            headers.remove(AUTHORIZATION);
+            headers.remove(HeaderName::from_static("x-api-key"));
+            if let Some(fresh) = resolver.current_bearer() {
+                match self.defaults.auth_scheme {
+                    AuthScheme::XApiKey => {
+                        if let Ok(mut value) = HeaderValue::from_str(&fresh) {
+                            value.set_sensitive(true);
+                            headers.insert(HeaderName::from_static("x-api-key"), value);
+                        }
                     }
-                }
-                AuthScheme::Bearer => {
-                    headers.remove(HeaderName::from_static("x-api-key"));
-                    if let Ok(mut value) = HeaderValue::from_str(&format!("Bearer {fresh}")) {
-                        value.set_sensitive(true);
-                        headers.insert(AUTHORIZATION, value);
+                    AuthScheme::Bearer => {
+                        if let Ok(mut value) = HeaderValue::from_str(&format!("Bearer {fresh}")) {
+                            value.set_sensitive(true);
+                            headers.insert(AUTHORIZATION, value);
+                        }
                     }
                 }
             }
@@ -1053,7 +1063,7 @@ impl SamplingClient {
             .map(|request_auth| {
                 request_auth
                     .apply(&mut headers)
-                    .map_err(|error| SamplingError::Auth(error.to_string()))
+                    .map_err(|error| SamplingError::auth_unknown(error.to_string()))
             })
             .transpose()?;
 
@@ -1097,7 +1107,12 @@ impl SamplingClient {
         // final pass catches credential-like extra/injected headers and custom
         // RequestAuth implementations.
         Self::mark_sensitive_headers(&mut headers);
-        Ok((headers, credential_binding))
+        let present = match self.defaults.auth_scheme {
+            AuthScheme::Bearer => headers.contains_key(AUTHORIZATION),
+            AuthScheme::XApiKey => headers.contains_key(HeaderName::from_static("x-api-key")),
+        };
+        let sent_credential = SentCredential::from_header_present(present);
+        Ok((headers, credential_binding, sent_credential))
     }
 
     async fn request_http(&self, request_url: &str) -> Result<reqwest::Client> {
@@ -1167,7 +1182,7 @@ impl SamplingClient {
             *recovery_state = ProviderAuthRecoveryState::Idle;
         }
         drop(recovery_state);
-        let (headers, credential_binding) = prepared_headers?;
+        let (headers, credential_binding, sent_credential) = prepared_headers?;
 
         tracing::info!(
             target: crate::sampling_log::TARGET,
@@ -1181,6 +1196,7 @@ impl SamplingClient {
             builder: http.post(url).headers(headers),
             http,
             credential_binding,
+            sent_credential,
         })
     }
 
@@ -1220,17 +1236,14 @@ impl SamplingClient {
     /// not emit a duplicate event.
     ///
     /// Credential material is intentionally never passed to the callback.
-    fn record_401_attribution(&self, consumer: crate::attribution::SamplingConsumer) {
+    fn record_401_attribution(
+        &self,
+        consumer: crate::attribution::SamplingConsumer,
+        sent: SentCredential,
+    ) {
         if let Some(cb) = self.attribution_callback.as_ref() {
-            cb.record_401(consumer, self.has_auth());
+            cb.record_401(consumer, matches!(sent, SentCredential::Sent));
         }
-    }
-
-    fn has_auth(&self) -> bool {
-        self.request_auth.is_some()
-            || self.bearer_resolver.is_some()
-            || self.default_headers.get(AUTHORIZATION).is_some()
-            || self.default_headers.get("x-api-key").is_some()
     }
 
     /// Ask the provider-owned request authenticator to recover one rejected
@@ -1271,7 +1284,10 @@ impl SamplingClient {
     }
 
     pub fn auth_info(&self) -> crate::sampling_log::AuthInfo {
-        let has_auth = self.has_auth();
+        let has_auth = matches!(
+            self.prepare_request_headers(None),
+            Ok((_, _, SentCredential::Sent))
+        );
         let auth_type = match (self.defaults.provider, self.defaults.auth_scheme, has_auth) {
             (ProviderId::OpenAiCodex, _, true) => "openai-codex-subscription",
             (ProviderId::KimiCode, _, true) => "kimi-code-api-key",
@@ -1564,6 +1580,7 @@ impl SamplingClient {
         &self,
         response: reqwest::Response,
         credential_binding: Option<CredentialBinding>,
+        sent_credential: SentCredential,
     ) -> Result<ChatCompletionResponse> {
         let status = response.status();
         let model_metadata = extract_model_metadata(
@@ -1577,11 +1594,15 @@ impl SamplingClient {
         let bytes = self.read_response_bytes(response).await?;
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
-                self.record_401_attribution(crate::attribution::SamplingConsumer::ChatCompletions);
+                self.record_401_attribution(
+                    crate::attribution::SamplingConsumer::ChatCompletions,
+                    sent_credential,
+                );
                 let server_message = self.provider_error_message(status, bytes.as_ref());
-                return Err(SamplingError::Auth(format!(
-                    "Unauthorized (401): {server_message}"
-                )));
+                return Err(auth_rejected(
+                    format!("Unauthorized (401): {server_message}"),
+                    sent_credential,
+                ));
             }
             let message = self.provider_error_message(status, bytes.as_ref());
             let should_retry = if self.defaults.provider.is_kimi_code() {
@@ -1709,6 +1730,7 @@ impl SamplingClient {
         )?;
         let endpoint = format!("{}/files", self.base_url.trim_end_matches('/'));
         let prepared = self.post(endpoint).await?;
+        let sent_credential = prepared.sent_credential;
         let binding =
             prepared
                 .credential_binding
@@ -1737,9 +1759,10 @@ impl SamplingClient {
             status,
             reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
         ) {
-            return Err(SamplingError::Auth(format!(
-                "Kimi video upload authentication failed ({status})"
-            )));
+            return Err(auth_rejected(
+                format!("Kimi video upload authentication failed ({status})"),
+                sent_credential,
+            ));
         }
         if !status.is_success() {
             return Err(SamplingError::Api {
@@ -1816,6 +1839,7 @@ impl SamplingClient {
             self.endpoint("chat/completions")
         };
         let prepared = self.post(endpoint).await?;
+        let request_sent_credential = prepared.sent_credential;
         if video_binding.as_ref() != None
             && video_binding.as_ref() != prepared.credential_binding.as_ref()
         {
@@ -1845,7 +1869,8 @@ impl SamplingClient {
             .await
             .map_err(|error| self.transport_error(error))?;
 
-        self.handle_response(response, request_credential).await
+        self.handle_response(response, request_credential, request_sent_credential)
+            .await
     }
 
     /// Start a streaming chat completion request. Returns a stream of typed chunks.
@@ -1900,6 +1925,7 @@ impl SamplingClient {
             self.endpoint("chat/completions")
         };
         let prepared = self.post(endpoint).await?;
+        let request_sent_credential = prepared.sent_credential;
         if video_binding.as_ref() != None
             && video_binding.as_ref() != prepared.credential_binding.as_ref()
         {
@@ -1965,6 +1991,7 @@ impl SamplingClient {
                 span.record("error", "unauthorized (401)");
                 self.record_401_attribution(
                     crate::attribution::SamplingConsumer::ChatCompletionsStream,
+                    request_sent_credential,
                 );
                 let endpoint = if self.defaults.provider.is_kimi_code() {
                     kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
@@ -1973,8 +2000,9 @@ impl SamplingClient {
                 };
                 let bytes = self.read_response_bytes(response).await.unwrap_or_default();
                 let server_message = self.provider_error_message(status, bytes.as_ref());
-                return Err(SamplingError::Auth(
+                return Err(auth_rejected(
                     self.unauthorized_message(&endpoint, Some(&server_message)),
+                    request_sent_credential,
                 ));
             }
 
@@ -2243,6 +2271,7 @@ impl SamplingClient {
         // old raw_output machinery.
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
         let prepared = self.post(self.endpoint("responses")).await?;
+        let request_sent_credential = prepared.sent_credential;
         let request_credential = prepared.credential_binding;
         let http_request = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
@@ -2275,7 +2304,10 @@ impl SamplingClient {
 
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
-                self.record_401_attribution(crate::attribution::SamplingConsumer::Responses);
+                self.record_401_attribution(
+                    crate::attribution::SamplingConsumer::Responses,
+                    request_sent_credential,
+                );
                 if self.defaults.provider.is_openai_codex() {
                     let credential =
                         request_credential.ok_or(SamplingError::InvalidConfiguration(
@@ -2287,8 +2319,9 @@ impl SamplingClient {
                     });
                 }
                 let endpoint = self.endpoint("responses");
-                return Err(SamplingError::Auth(
+                return Err(auth_rejected(
                     self.unauthorized_message(&endpoint, None),
+                    request_sent_credential,
                 ));
             }
 
@@ -2447,6 +2480,7 @@ impl SamplingClient {
         let prepared = self
             .post_after_provider_auth_recovery(self.endpoint("responses"), rejected)
             .await?;
+        let request_sent_credential = prepared.sent_credential;
         let request_http = prepared.http.clone();
         let request_credential = prepared.credential_binding;
         let mut http_request = self
@@ -2491,7 +2525,10 @@ impl SamplingClient {
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 span.record("error", "unauthorized (401)");
-                self.record_401_attribution(crate::attribution::SamplingConsumer::ResponsesStream);
+                self.record_401_attribution(
+                    crate::attribution::SamplingConsumer::ResponsesStream,
+                    request_sent_credential,
+                );
                 if self.defaults.provider.is_openai_codex() {
                     let credential =
                         request_credential.ok_or(SamplingError::InvalidConfiguration(
@@ -2503,8 +2540,9 @@ impl SamplingClient {
                     });
                 }
                 let endpoint = self.endpoint("responses");
-                return Err(SamplingError::Auth(
+                return Err(auth_rejected(
                     self.unauthorized_message(&endpoint, None),
+                    request_sent_credential,
                 ));
             }
             let model_metadata = extract_model_metadata(
@@ -2740,6 +2778,7 @@ impl SamplingClient {
             self.endpoint("messages")
         };
         let prepared = self.post(endpoint.clone()).await?;
+        let request_sent_credential = prepared.sent_credential;
         let request_credential = prepared.credential_binding;
         let request_builder =
             self.apply_provider_request_headers(prepared.builder, &grok_headers)?;
@@ -2780,10 +2819,14 @@ impl SamplingClient {
 
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
-                self.record_401_attribution(crate::attribution::SamplingConsumer::Messages);
+                self.record_401_attribution(
+                    crate::attribution::SamplingConsumer::Messages,
+                    request_sent_credential,
+                );
                 let server_message = self.provider_error_message(status, bytes.as_ref());
-                return Err(SamplingError::Auth(
+                return Err(auth_rejected(
                     self.unauthorized_message(&endpoint, Some(&server_message)),
+                    request_sent_credential,
                 ));
             }
 
@@ -2888,6 +2931,7 @@ impl SamplingClient {
             self.endpoint("messages")
         };
         let prepared = self.post(endpoint.clone()).await?;
+        let request_sent_credential = prepared.sent_credential;
         let request_http = prepared.http.clone();
         let request_credential = prepared.credential_binding;
         let request_builder = self
@@ -2941,11 +2985,15 @@ impl SamplingClient {
         if !status.is_success() {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 span.record("error", "unauthorized (401)");
-                self.record_401_attribution(crate::attribution::SamplingConsumer::MessagesStream);
+                self.record_401_attribution(
+                    crate::attribution::SamplingConsumer::MessagesStream,
+                    request_sent_credential,
+                );
                 let bytes = self.read_response_bytes(response).await?;
                 let server_message = self.provider_error_message(status, bytes.as_ref());
-                return Err(SamplingError::Auth(
+                return Err(auth_rejected(
                     self.unauthorized_message(&endpoint, Some(&server_message)),
+                    request_sent_credential,
                 ));
             }
             let model_metadata = extract_model_metadata(
@@ -6137,7 +6185,10 @@ mod tests {
             ..minimal_config()
         };
         let client = SamplingClient::new(cfg).expect("client should build");
-        client.record_401_attribution(crate::attribution::SamplingConsumer::ChatCompletionsStream);
+        client.record_401_attribution(
+            crate::attribution::SamplingConsumer::ChatCompletionsStream,
+            SentCredential::Sent,
+        );
         let calls = cb.invocations.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(
@@ -6192,6 +6243,49 @@ mod tests {
         assert!(authorization.as_bytes() == LIVE_AUTHORIZATION);
     }
 
+    /// A wired dynamic resolver owns the credential slot even while it has no
+    /// usable value. A stale static seed must not leak onto that request, and
+    /// the resulting 401 attribution must report that no credential was sent.
+    #[tokio::test]
+    async fn empty_bearer_resolver_removes_stale_auth_and_records_missing() {
+        #[derive(Debug)]
+        struct EmptyResolver;
+        impl crate::config::BearerResolver for EmptyResolver {
+            fn current_bearer(&self) -> Option<String> {
+                None
+            }
+        }
+
+        let callback = std::sync::Arc::new(CountingCallback::default());
+        let callback_dyn: crate::attribution::SharedAttributionCallback = callback.clone();
+        let cfg = SamplerConfig {
+            api_key: Some("stale-static-credential".to_string()),
+            api_backend: ApiBackend::Responses,
+            attribution_callback: Some(callback_dyn),
+            bearer_resolver: Some(std::sync::Arc::new(EmptyResolver)),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("client should build");
+
+        let prepared = client
+            .post("https://example.test/v1/responses")
+            .await
+            .expect("request preparation should succeed");
+        let request = prepared.builder.build().expect("request should build");
+        assert!(request.headers().get(AUTHORIZATION).is_none());
+        assert_eq!(prepared.sent_credential, SentCredential::Missing);
+
+        client.record_401_attribution(
+            crate::attribution::SamplingConsumer::ResponsesStream,
+            prepared.sent_credential,
+        );
+        let calls = callback.invocations.lock().unwrap();
+        assert_eq!(
+            calls.as_slice(),
+            &[(crate::attribution::SamplingConsumer::ResponsesStream, false,)]
+        );
+    }
+
     /// `record_401_attribution` is a no-op when `attribution_callback`
     /// is `None` (the BYOK / sampler-only path). The previous tests
     /// in this module construct clients without a callback and rely
@@ -6207,7 +6301,10 @@ mod tests {
         };
         let client = SamplingClient::new(cfg).expect("client should build");
         // Must not panic.
-        client.record_401_attribution(crate::attribution::SamplingConsumer::ChatCompletions);
+        client.record_401_attribution(
+            crate::attribution::SamplingConsumer::ChatCompletions,
+            SentCredential::Sent,
+        );
     }
 
     /// `response.completed` carrying

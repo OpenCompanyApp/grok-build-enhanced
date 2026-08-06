@@ -109,12 +109,25 @@ pub fn rate_limited_user_message(is_api_key_auth: bool) -> &'static str {
     }
 }
 
+/// User-facing copy for capacity/overload failures (stream `overloaded_error`,
+/// HTTP 529, proxy-wrapped 5xx). See [`SamplingError::is_overloaded`].
+pub const OVERLOADED_USER_MESSAGE: &str = "Model is temporarily overloaded. Try again in a moment.";
+
 /// Map a `SamplingError` to an ACP `Error` for client-facing responses.
 /// This stays in xai-grok-shell because it depends on `agent_client_protocol::Error`.
 pub fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
     use reqwest::StatusCode;
+    // Capacity/overload gets the same short copy on every surface. Message
+    // only, `data` deliberately unset: `Display` appends JSON-encoded `data`,
+    // and this string is meant for direct display.
+    if err.is_overloaded() {
+        return acp::Error::new(
+            acp::ErrorCode::InternalError.into(),
+            OVERLOADED_USER_MESSAGE,
+        );
+    }
     match err {
-        SamplingError::Auth(msg) => acp::Error::auth_required().data(msg),
+        SamplingError::Auth { message, .. } => acp::Error::auth_required().data(message),
         SamplingError::ProviderAuthRejected { provider, .. } => {
             acp::Error::auth_required().data(format!("{provider} authentication was rejected"))
         }

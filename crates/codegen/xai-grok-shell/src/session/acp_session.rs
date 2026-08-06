@@ -63,7 +63,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot};
 use tokio::time::{Duration, sleep};
-use tokio_retry::strategy::ExponentialBackoff;
 use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use xai_grok_agent::AgentDefinition;
 use xai_grok_agent::prompt::agents_md::LEGACY_AGENTS_MD_REMINDER_PREFIX;
@@ -92,6 +91,8 @@ mod compaction_segments;
 mod types;
 pub(crate) use types::*;
 pub use types::{TodoGateDecision, TodoGateReason};
+#[path = "acp_session_impl/auth_retry.rs"]
+mod auth_retry;
 #[path = "acp_session_impl/goal.rs"]
 mod goal;
 #[path = "acp_session_impl/interjection.rs"]
@@ -105,6 +106,9 @@ mod tool_calls;
 mod turn;
 #[path = "acp_session_impl/workflow.rs"]
 mod workflow_run;
+pub(crate) use auth_retry::{
+    AuthRetryDecision, AuthRetrySchedule, human_duration, pace_uncharged_resubmit,
+};
 pub(crate) use interjection::*;
 #[path = "acp_session_impl/laziness.rs"]
 mod laziness;

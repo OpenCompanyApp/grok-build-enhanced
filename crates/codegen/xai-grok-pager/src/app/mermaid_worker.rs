@@ -2218,7 +2218,9 @@ mod tests {
         // CopyPath ran now (clipboard toast), no render pending, no runtime built.
         let toast = toast_of(&agent);
         assert!(
-            toast.starts_with("Copied") || toast.starts_with("Copy failed"),
+            toast.starts_with("Copied")
+                || toast.starts_with("Clipboard unreachable")
+                || toast.starts_with("Copy failed"),
             "a disk hit runs the copy action immediately, got {toast:?}",
         );
         assert!(

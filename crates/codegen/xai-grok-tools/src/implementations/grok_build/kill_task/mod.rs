@@ -85,6 +85,7 @@ impl crate::types::tool_metadata::ToolMetadata for KillTaskTool {
                 subagent_present: true,
                 bash_present: true,
                 is_windows: cfg!(not(unix)),
+                task_id_param: "task_id",
             })
         });
         &DESC
@@ -147,6 +148,9 @@ fn kill_task_description(
         subagent_present: renderer.tool_for_kind(ToolKind::Task).is_some(),
         bash_present: renderer.tool_for_kind(ToolKind::Execute).is_some(),
         is_windows: cfg!(not(unix)),
+        task_id_param: renderer
+            .param_for_kind(ToolKind::KillTaskAction, "task_id")
+            .unwrap_or("task_id"),
     })
 }
 
