@@ -11,6 +11,7 @@ pub(crate) const OPENAI_CODEX_ORIGINATOR: &str = "grok_build_codex";
 pub(crate) const CODEX_SESSION_ID_HEADER: &str = "session-id";
 pub(crate) const CODEX_THREAD_ID_HEADER: &str = "thread-id";
 pub(crate) const CODEX_CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
+pub(crate) const CODEX_ROUTING_HINT_HEADER: &str = "x-codex-routing-hint";
 pub(crate) const CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
 pub(crate) const CODEX_AUTH_CONFIGURATION_INVALID: &str =
     "OpenAI Codex authentication configuration is invalid";
@@ -88,6 +89,7 @@ pub(crate) fn is_provider_identity_header(name: &HeaderName) -> bool {
             | CODEX_SESSION_ID_HEADER
             | CODEX_THREAD_ID_HEADER
             | CODEX_CLIENT_REQUEST_ID_HEADER
+            | CODEX_ROUTING_HINT_HEADER
             | CODEX_TURN_STATE_HEADER
     )
 }
@@ -134,6 +136,7 @@ pub(crate) fn seal_after_request_auth(
         CODEX_SESSION_ID_HEADER,
         CODEX_THREAD_ID_HEADER,
         CODEX_CLIENT_REQUEST_ID_HEADER,
+        CODEX_ROUTING_HINT_HEADER,
         CODEX_TURN_STATE_HEADER,
         "originator",
         "version",
@@ -251,6 +254,8 @@ pub(crate) fn apply_request_identity(
     builder: reqwest::RequestBuilder,
     session_id: &str,
     conversation_id: &str,
+    model_id: &str,
+    service_tier: Option<&str>,
     responses_lite: bool,
 ) -> Result<reqwest::RequestBuilder> {
     let sensitive_value = |raw: &str| {
@@ -276,6 +281,15 @@ pub(crate) fn apply_request_identity(
                 CODEX_CLIENT_REQUEST_ID_HEADER,
                 sensitive_value(conversation_id)?,
             );
+    }
+    if !model_id.is_empty() {
+        let routing_hint = match service_tier {
+            Some(tier) => format!("model={model_id};tier={tier}"),
+            None => format!("model={model_id}"),
+        };
+        if let Ok(value) = HeaderValue::from_str(&routing_hint) {
+            builder = builder.header(CODEX_ROUTING_HINT_HEADER, value);
+        }
     }
     if responses_lite {
         builder = builder.header(OPENAI_CODEX_RESPONSES_LITE_HEADER, "true");
@@ -350,6 +364,8 @@ mod tests {
             reqwest::Client::new().post("https://example.test/responses"),
             "session-1",
             "thread-1",
+            "gpt-5-codex",
+            Some("priority"),
             true,
         )
         .unwrap()
@@ -367,5 +383,39 @@ mod tests {
             request.headers()[OPENAI_CODEX_RESPONSES_LITE_HEADER],
             "true"
         );
+        assert_eq!(
+            request.headers()[CODEX_ROUTING_HINT_HEADER],
+            "model=gpt-5-codex;tier=priority"
+        );
+    }
+
+    #[test]
+    fn routing_hint_requires_a_model_and_omits_an_invalid_value() {
+        let client = reqwest::Client::new();
+        let no_model = apply_request_identity(
+            client.post("https://example.test/responses"),
+            "session-1",
+            "thread-1",
+            "",
+            Some("priority"),
+            false,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert!(!no_model.headers().contains_key(CODEX_ROUTING_HINT_HEADER));
+
+        let invalid = apply_request_identity(
+            client.post("https://example.test/responses"),
+            "session-1",
+            "thread-1",
+            "model\nheader",
+            None,
+            false,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert!(!invalid.headers().contains_key(CODEX_ROUTING_HINT_HEADER));
     }
 }

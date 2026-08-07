@@ -4327,6 +4327,35 @@
         "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
         "third_party/NOTICE"
       ]
+    },
+    {
+      "id": "august7-refresh-boundary-and-codex-routing-hint",
+      "description": "Records the exhaustive August 7 Grok and provider audit, carries every open obligation, and adopts the provider-isolated ChatGPT Codex model and service-tier routing hint.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode",
+        "oh-my-pi",
+        "kimi-code",
+        "codexbar",
+        "models-dev"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/openai_codex/headers.rs",
+        "docs/upstream-refresh-2026-08-07.md",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/openai_codex/headers.rs",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
     }
   ]
 }

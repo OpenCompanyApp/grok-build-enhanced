@@ -171,6 +171,7 @@ struct GrokRequestHeaders<'a> {
     conv_id: &'a str,
     req_id: &'a str,
     model_id: &'a str,
+    service_tier: Option<&'a str>,
     session_id: &'a str,
     turn_idx: Option<&'a str>,
     agent_id: &'a str,
@@ -1210,6 +1211,8 @@ impl SamplingClient {
                 builder,
                 grok_headers.session_id,
                 grok_headers.conv_id,
+                grok_headers.model_id,
+                grok_headers.service_tier,
                 self.defaults.responses_lite,
             )?;
             Ok(self.codex_turn_state.apply(builder, grok_headers.req_id))
@@ -1827,6 +1830,7 @@ impl SamplingClient {
             conv_id: x_grok_conv_id,
             req_id: x_grok_req_id,
             model_id: &model_id,
+            service_tier: None,
             session_id: payload.x_grok_session_id.as_deref().unwrap_or_default(),
             turn_idx: payload.x_grok_turn_idx.as_deref(),
             agent_id: payload.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1913,6 +1917,7 @@ impl SamplingClient {
             conv_id: x_grok_conv_id,
             req_id: x_grok_req_id,
             model_id: &model_id,
+            service_tier: None,
             session_id: payload.x_grok_session_id.as_deref().unwrap_or_default(),
             turn_idx: payload.x_grok_turn_idx.as_deref(),
             agent_id: payload.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -2231,16 +2236,6 @@ impl SamplingClient {
             "responses request prepared"
         );
 
-        let grok_headers = GrokRequestHeaders {
-            conv_id: x_grok_conv_id,
-            req_id: x_grok_req_id,
-            model_id: &model_id,
-            session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
-            turn_idx: request.x_grok_turn_idx.as_deref(),
-            agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
-            deployment_id: request.x_grok_deployment_id.as_deref(),
-            user_id: request.x_grok_user_id.as_deref(),
-        };
         let mut request_body = serde_json::to_value(&request.inner).map_err(|e| {
             tracing::error!("Failed to serialize responses request: {}", e);
             SamplingError::Serialization(e)
@@ -2270,6 +2265,19 @@ impl SamplingClient {
         // it in post-serialize. This is the last surviving piece of the
         // old raw_output machinery.
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        let grok_headers = GrokRequestHeaders {
+            conv_id: x_grok_conv_id,
+            req_id: x_grok_req_id,
+            model_id: &model_id,
+            service_tier: request_body
+                .get("service_tier")
+                .and_then(serde_json::Value::as_str),
+            session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            turn_idx: request.x_grok_turn_idx.as_deref(),
+            agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
+            deployment_id: request.x_grok_deployment_id.as_deref(),
+            user_id: request.x_grok_user_id.as_deref(),
+        };
         let prepared = self.post(self.endpoint("responses")).await?;
         let request_sent_credential = prepared.sent_credential;
         let request_credential = prepared.credential_binding;
@@ -2421,16 +2429,6 @@ impl SamplingClient {
             "Sending responses API stream request"
         );
 
-        let grok_headers = GrokRequestHeaders {
-            conv_id: x_grok_conv_id,
-            req_id: x_grok_req_id,
-            model_id: &model_id,
-            session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
-            turn_idx: request.x_grok_turn_idx.as_deref(),
-            agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
-            deployment_id: request.x_grok_deployment_id.as_deref(),
-            user_id: request.x_grok_user_id.as_deref(),
-        };
         let extra_raw_tools = std::mem::take(&mut request.extra_raw_tools);
         let mut request_body = serde_json::to_value(&request.inner).map_err(|e| {
             tracing::error!("Failed to serialize responses request: {}", e);
@@ -2470,6 +2468,19 @@ impl SamplingClient {
             &mut request_body,
         )?;
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        let grok_headers = GrokRequestHeaders {
+            conv_id: x_grok_conv_id,
+            req_id: x_grok_req_id,
+            model_id: &model_id,
+            service_tier: request_body
+                .get("service_tier")
+                .and_then(serde_json::Value::as_str),
+            session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            turn_idx: request.x_grok_turn_idx.as_deref(),
+            agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
+            deployment_id: request.x_grok_deployment_id.as_deref(),
+            user_id: request.x_grok_user_id.as_deref(),
+        };
         // Fresh per attempt so signals never leak across retries; `None`
         // (check disabled) sends no header and does no peek work per event.
         let doom_loop = self
@@ -2766,6 +2777,7 @@ impl SamplingClient {
             conv_id: x_grok_conv_id,
             req_id: x_grok_req_id,
             model_id: &model_id,
+            service_tier: None,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -2919,6 +2931,7 @@ impl SamplingClient {
             conv_id: x_grok_conv_id,
             req_id: x_grok_req_id,
             model_id: &model_id,
+            service_tier: None,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -4073,6 +4086,7 @@ mod tests {
             conv_id: CODEX_THREAD_FIXTURE,
             req_id: "request-ignored",
             model_id: "gpt-5-codex",
+            service_tier: None,
             session_id: CODEX_SESSION_FIXTURE,
             turn_idx: None,
             agent_id: "agent-ignored",
@@ -4091,6 +4105,13 @@ mod tests {
                 .headers()
                 .get(OPENAI_CODEX_RESPONSES_LITE_HEADER)
                 .is_none()
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(codex_headers::CODEX_ROUTING_HINT_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("model=gpt-5-codex")
         );
         assert!(
             request
@@ -4112,6 +4133,44 @@ mod tests {
             assert!(
                 request.headers()[name].is_sensitive(),
                 "{name} must be sensitive at the HTTP layer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_routing_hint_is_never_projected_onto_other_providers() {
+        let grok_headers = GrokRequestHeaders {
+            conv_id: "conversation",
+            req_id: "request",
+            model_id: "foreign-model",
+            service_tier: Some("priority"),
+            session_id: "session",
+            turn_idx: None,
+            agent_id: "agent",
+            deployment_id: None,
+            user_id: None,
+        };
+
+        let mut xai = minimal_config();
+        xai.provider = ProviderId::Xai;
+        xai.base_url = xai_grok_sampling_types::XAI_API_BASE_URL.to_owned();
+        let custom = minimal_config();
+        let kimi = kimi_config(ApiBackend::ChatCompletions);
+
+        for config in [xai, custom, kimi] {
+            let client = SamplingClient::new(config).expect("provider client should build");
+            let prepared = client.post("https://example.test/capture").await.unwrap();
+            let request = client
+                .apply_provider_request_headers(prepared.builder, &grok_headers)
+                .unwrap()
+                .build()
+                .unwrap();
+            assert!(
+                request
+                    .headers()
+                    .get(codex_headers::CODEX_ROUTING_HINT_HEADER)
+                    .is_none(),
+                "routing hints are owned exclusively by the Codex backend"
             );
         }
     }
@@ -5320,6 +5379,10 @@ mod tests {
                     HeaderValue::from_static("poisoned-request"),
                 );
                 headers.insert(
+                    HeaderName::from_static(codex_headers::CODEX_ROUTING_HINT_HEADER),
+                    HeaderValue::from_static("model=poisoned-model;tier=poisoned-tier"),
+                );
+                headers.insert(
                     HeaderName::from_static("traceparent"),
                     HeaderValue::from_static("00-safe-trace-context-00"),
                 );
@@ -5337,6 +5400,8 @@ mod tests {
         let (mut config, auth_calls) = codex_config();
         config.base_url = format!("http://{addr}");
         config.model = "gpt-5.6-terra".to_string();
+        config.service_tier =
+            Some(xai_grok_sampling_types::OPENAI_CODEX_FAST_SERVICE_TIER.to_owned());
         config.comp_hash = Some("opaque-session-only-hash".to_string());
         config.supports_reasoning_summary_parameter = true;
         config.default_reasoning_summary = Some("auto".to_string());
@@ -5429,6 +5494,19 @@ mod tests {
         );
         assert_eq!(
             headers
+                .get_all(codex_headers::CODEX_ROUTING_HINT_HEADER)
+                .iter()
+                .count(),
+            1
+        );
+        assert_eq!(
+            headers
+                .get(codex_headers::CODEX_ROUTING_HINT_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("model=gpt-5.6-terra;tier=priority")
+        );
+        assert_eq!(
+            headers
                 .get_all(OPENAI_CODEX_RESPONSES_LITE_HEADER)
                 .iter()
                 .count(),
@@ -5465,6 +5543,7 @@ mod tests {
         assert!(body.get("tools").is_none());
         assert!(body.get("instructions").is_none());
         assert_eq!(body["stream"], true);
+        assert_eq!(body["service_tier"], "priority");
         assert_eq!(body["store"], false);
         assert!(body.get("stream_tool_calls").is_none());
         assert!(
