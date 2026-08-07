@@ -168,9 +168,9 @@ a known credential-routing defect.
 | --- | --- |
 | `cargo fmt --all -- --check` | passed |
 | Focused `xai-grok-sampler` routing-hint tests | 4 passed: sealed ordinary/priority wire values, spoof replacement, invalid-value omission, and xAI/Kimi/Custom negatives |
-| `CARGO_INCREMENTAL=0 cargo check --locked -p xai-grok-pager-bin` | pending final run |
-| `python3 -I -B fork/scripts/check_fork_contracts.py` | pending final run |
-| `python3 -I -B fork/scripts/check_manifest.py --strict-coverage` | pending final run |
+| `CARGO_INCREMENTAL=0 cargo check --locked -p xai-grok-pager-bin` | passed |
+| `python3 -I -B fork/scripts/check_fork_contracts.py` | passed |
+| `python3 -I -B fork/scripts/check_manifest.py --strict-coverage` | passed at the implementation commit; rerun after this validation-record commit |
 | Root `Cargo.toml` generated-manifest guard | unchanged; hash recorded above |
 
 Live Codex and Kimi requests remain credential-gated and were not attempted.
