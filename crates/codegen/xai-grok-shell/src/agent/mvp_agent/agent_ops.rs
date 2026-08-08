@@ -3484,9 +3484,11 @@ impl MvpAgent {
             );
             return (None, TraceUploadReason::ZdrTeam);
         }
-        if self.cfg.borrow().remote_settings.is_none()
-            && let Ok(auth) = self.auth_manager.auth().await
-        {
+        // Snapshot this before awaiting authentication. Keeping the RefCell
+        // borrow in the `if` condition extends it across `auth().await`, which
+        // races the background settings fetch that mutably updates `cfg`.
+        let remote_settings_missing = self.cfg.borrow().remote_settings.is_none();
+        if remote_settings_missing && let Ok(auth) = self.auth_manager.auth().await {
             self.refresh_remote_settings(&auth).await;
         }
         let (direct_method, has_deployment_key, endpoints) = {
@@ -4728,6 +4730,7 @@ impl MvpAgent {
             .and_then(|entry| entry.info.max_retries);
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
         let web_search_sampling_config = self.prepare_web_search_sampling_config();
+        let web_search_config = self.cfg.borrow().web_search.clone();
         let image_gen_config =
             self.prepare_image_gen_config_for_sampling_config(&sampling_config);
         let video_gen_config =
@@ -4971,7 +4974,7 @@ impl MvpAgent {
                     inference_idle_timeout_secs,
                     model_max_retries,
                     web_search_sampling_config,
-                    self.cfg.borrow().web_search.clone(),
+                    web_search_config,
                     web_fetch_config,
                     image_gen_config,
                     video_gen_config,

@@ -2862,6 +2862,78 @@ async fn data_collection_enabled_for_normal_user() {
         "normal user must have data collection enabled"
     );
 }
+/// A trace-upload auth refresh can overlap the detached startup settings
+/// fetch. It must not retain the agent config's `RefCell` borrow while the
+/// credential refresher is suspended, or settings installation will panic.
+#[test]
+fn trace_upload_auth_wait_releases_cfg_borrow() {
+    run_local_for_bridge_test(|| async {
+        use crate::auth::refresh::{RefreshOutcome, TokenRefresher};
+        use std::sync::Arc;
+
+        struct BlockingRefresher {
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        }
+
+        #[async_trait::async_trait]
+        impl TokenRefresher for BlockingRefresher {
+            async fn refresh(
+                &self,
+                _reason: crate::auth::manager::RefreshReason,
+            ) -> RefreshOutcome {
+                self.entered.notify_one();
+                self.release.notified().await;
+                RefreshOutcome::TransientFailure {
+                    message: "intentional test refresh failure".into(),
+                }
+            }
+        }
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let auth_manager = Arc::new(crate::auth::AuthManager::new(
+            temp_dir.path(),
+            crate::auth::GrokComConfig::default(),
+        ));
+        auth_manager.hot_swap(crate::auth::GrokAuth {
+            refresh_token: Some("test-refresh-token".into()),
+            expires_at: Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+            ..crate::auth::GrokAuth::test_default()
+        });
+        auth_manager.set_devbox_env_for_test(false);
+        auth_manager.set_refresher(Arc::new(BlockingRefresher {
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+        let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+        let agent = std::rc::Rc::new(
+            MvpAgent::new(
+                GatewaySender::new(gateway_tx),
+                &crate::agent::config::Config::default(),
+                auth_manager,
+                None,
+            )
+            .expect("valid test config"),
+        );
+
+        let trace_agent = agent.clone();
+        let trace_task =
+            tokio::task::spawn_local(async move { trace_agent.trace_upload_config().await });
+        tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+            .await
+            .expect("trace upload must reach the blocking auth refresh");
+
+        assert!(
+            agent.cfg.try_borrow_mut().is_ok(),
+            "cfg borrow must be released before awaiting authentication"
+        );
+        release.notify_one();
+        trace_task.abort();
+        let _ = trace_task.await;
+    });
+}
 #[tokio::test]
 async fn data_collection_disabled_for_zdr_team() {
     let agent = build_agent_with_auth(crate::auth::GrokAuth {
