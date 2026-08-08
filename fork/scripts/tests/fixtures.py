@@ -25,6 +25,28 @@ DELTA_FORMAT = "git-tree-delta-v1"
 COVERAGE_HISTORY_FORMAT = "git-first-parent-with-audited-upstream-merges-v1"
 ACKNOWLEDGEMENT_TRAILER = "Fork-Upstream-Acknowledgement"
 OBLIGATIONS_SOURCE = SCRIPTS_DIR.parent / "parity" / "obligations.json"
+FIXTURE_CURRENT_OBLIGATIONS = {
+    "schema_version": 1,
+    "campaign": "fixture-current-parity",
+    "inventory": {
+        "count": 1,
+        "sha256": "7f19decd85a8811080c5938287dbca51d17113cb69ddef1e1355e5b661036f84",
+    },
+    "target_sources": {
+        "fixture-source": "1111111111111111111111111111111111111111",
+    },
+    "obligations": [
+        {
+            "id": "FIXTURE-CURRENT-001",
+            "source_id": "fixture-source",
+            "source_revision": "1111111111111111111111111111111111111111",
+            "classification": "not applicable",
+            "state": "closed",
+            "behavior": "Fixture-only current parity behavior.",
+            "closure_evidence": ["test:fixture current parity evidence"],
+        }
+    ],
+}
 KNOWN_CHECKS = [
     "patch-stack-objects",
     "patch-stack-history",
@@ -64,12 +86,17 @@ class ForkFixture:
             "fork/parity/obligations.json",
             OBLIGATIONS_SOURCE.read_text(encoding="utf-8"),
         )
+        self.write_repo_file(
+            "fork/parity/current.json",
+            json.dumps(FIXTURE_CURRENT_OBLIGATIONS, indent=2, sort_keys=True) + "\n",
+        )
         self.git(
             "add",
             "--",
             "LICENSE",
             "src/integration.txt",
             "fork/parity/obligations.json",
+            "fork/parity/current.json",
         )
         self.git("commit", "--quiet", "-m", "fixture baseline")
         self.baseline = self.git_text("rev-parse", "HEAD")

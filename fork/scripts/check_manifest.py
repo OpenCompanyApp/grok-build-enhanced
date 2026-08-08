@@ -67,6 +67,23 @@ FROZEN_OBLIGATION_SOURCES = {
     "opencode": "e4bd9757a3a5dc7461d286000a19e9bd7df57c40",
     "kimi-code": "bfa00807c975fdc5b84dda32d47b16b09e8d42c1",
 }
+CURRENT_OBLIGATION_CAMPAIGN = "2026-08-07-upstream-parity"
+CURRENT_OBLIGATION_INVENTORY_SHA256 = (
+    "074ffa6780df9abb9b2ba1cb26c58dc541815fc4661e73d6df108890af68c04e"
+)
+CURRENT_OBLIGATION_COUNT = 106
+CURRENT_GROK_OBLIGATION_COUNT = 92
+CURRENT_OBLIGATION_SOURCES = {
+    "grok-build-upstream": "afbc0fb710320c7add294c2106d447ecc3e3af2e",
+    "openai-codex": "8e4b10446eed7bafb39d8a469f9be25a41f4864f",
+    "opencode": "284214c78d32a09fd9c729bdefc07be50f74eb40",
+    "kimi-code": "437a1b8ba1b7e0f6662bdadc669564fdc58c3f5a",
+    "kimi-cli": "cbc15c076d17f70fec9f89c90c0502e68657f505",
+    "oh-my-pi": "0e8142ad0e3189b5b51b49fd3434354683ba1b01",
+    "codexbar": "22b24b885693e890af52df15c29f7ca024904c74",
+    "models-dev": "ac01bd90859928691e2e8e65df5cf390ffb1539e",
+    "exa-mcp-server": "394f9210ed16d3e25d328e1e6db285824caedc04",
+}
 
 
 class DuplicateKeyError(ValueError):
@@ -1970,7 +1987,7 @@ def check_upstream_revisions(context: CheckContext) -> Outcome:
 
 
 def check_parity_obligations(context: CheckContext) -> Outcome:
-    """Validate the frozen campaign queue and evidence-bearing state transitions."""
+    """Validate frozen history plus the active evidence-bearing parity queue."""
 
     relative_path = "fork/parity/obligations.json"
     obligations_path = context.repo_root / relative_path
@@ -2126,10 +2143,279 @@ def check_parity_obligations(context: CheckContext) -> Outcome:
     if grok_count != 120:
         errors.append(f"obligation inventory must retain 120 Grok IDs, found {grok_count}")
 
+    current_summary, current_errors = _check_current_parity_obligations(context)
     return Outcome(
-        f"{len(ids)} frozen obligation(s) retained; {open_count} remain open",
-        sorted(errors),
+        f"{len(ids)} frozen obligation(s) retained; {open_count} remain open; "
+        f"{current_summary}",
+        sorted(errors + current_errors),
     )
+
+
+def _check_current_parity_obligations(
+    context: CheckContext,
+) -> tuple[str, list[str]]:
+    """Validate the active queue without permitting a rewritten frozen ledger."""
+
+    relative_path = "fork/parity/current.json"
+    current_path = context.repo_root / relative_path
+    errors: list[str] = []
+    checkout_error = _checkout_regular_file_status(context.repo_root, relative_path)
+    if checkout_error is not None:
+        return "current parity ledger is unavailable", [
+            f"{relative_path} {checkout_error}"
+        ]
+
+    try:
+        document = load_manifest(current_path)
+    except ValueError as error:
+        return "current parity ledger is invalid", [str(error)]
+
+    top_keys = {
+        "schema_version",
+        "campaign",
+        "inventory",
+        "target_sources",
+        "obligations",
+    }
+    _unknown_keys(document, top_keys, "current_obligations", errors)
+    _require_keys(document, top_keys, "current_obligations", errors)
+    if document.get("schema_version") != 1:
+        errors.append("current_obligations.schema_version must be the integer 1")
+    campaign = _string(
+        document.get("campaign"), "current_obligations.campaign", errors
+    )
+
+    inventory = _as_object(
+        document.get("inventory"), "current_obligations.inventory", errors
+    )
+    declared_count: int | None = None
+    declared_digest: str | None = None
+    if inventory is not None:
+        _unknown_keys(inventory, {"count", "sha256"}, "current_obligations.inventory", errors)
+        _require_keys(inventory, {"count", "sha256"}, "current_obligations.inventory", errors)
+        count_value = inventory.get("count")
+        if not isinstance(count_value, int) or isinstance(count_value, bool) or count_value < 1:
+            errors.append("current_obligations.inventory.count must be a positive integer")
+        else:
+            declared_count = count_value
+        digest_value = inventory.get("sha256")
+        if not isinstance(digest_value, str) or SHA256_RE.fullmatch(digest_value) is None:
+            errors.append("current_obligations.inventory.sha256 must be a lowercase SHA-256")
+        else:
+            declared_digest = digest_value
+
+    target_sources = _as_object(
+        document.get("target_sources"),
+        "current_obligations.target_sources",
+        errors,
+    )
+    if target_sources is not None:
+        if campaign == CURRENT_OBLIGATION_CAMPAIGN:
+            _unknown_keys(
+                target_sources,
+                set(CURRENT_OBLIGATION_SOURCES),
+                "current_obligations.target_sources",
+                errors,
+            )
+            _require_keys(
+                target_sources,
+                set(CURRENT_OBLIGATION_SOURCES),
+                "current_obligations.target_sources",
+                errors,
+            )
+            for source_id, revision in CURRENT_OBLIGATION_SOURCES.items():
+                if target_sources.get(source_id) != revision:
+                    errors.append(
+                        f"current_obligations.target_sources.{source_id} must remain {revision}"
+                    )
+        for source_id, revision in target_sources.items():
+            if not isinstance(source_id, str) or ID_RE.fullmatch(source_id) is None:
+                errors.append(
+                    "current_obligations.target_sources keys must be stable source IDs"
+                )
+            _validate_full_sha(
+                revision,
+                f"current_obligations.target_sources.{source_id}",
+                errors,
+            )
+
+    items = _as_list(
+        document.get("obligations"), "current_obligations.obligations", errors
+    )
+    ids: list[str] = []
+    open_count = 0
+    open_sources: set[str] = set()
+    if items is not None:
+        if not items:
+            errors.append("current_obligations.obligations must not be empty")
+        required_keys = {
+            "id",
+            "source_id",
+            "source_revision",
+            "classification",
+            "state",
+            "behavior",
+            "closure_evidence",
+        }
+        deferred_keys = {
+            "owner",
+            "impact",
+            "acceptance_criteria",
+            "intended_tests",
+            "blocker",
+            "deadline",
+            "target",
+        }
+        for index, item in enumerate(items):
+            location = f"current_obligations.obligations[{index}]"
+            record = _as_object(item, location, errors)
+            if record is None:
+                continue
+            _unknown_keys(record, required_keys | deferred_keys, location, errors)
+            _require_keys(record, required_keys, location, errors)
+            stable_id = _string(record.get("id"), f"{location}.id", errors)
+            if stable_id is not None:
+                if re.fullmatch(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+", stable_id) is None:
+                    errors.append(f"{location}.id must be an uppercase stable obligation ID")
+                ids.append(stable_id)
+
+            source_id = _string(record.get("source_id"), f"{location}.source_id", errors)
+            source_revision = _validate_full_sha(
+                record.get("source_revision"), f"{location}.source_revision", errors
+            )
+            if source_id is not None and target_sources is not None:
+                expected_revision = target_sources.get(source_id)
+                if expected_revision is None:
+                    errors.append(f"{location}.source_id is not a current campaign source")
+                elif source_revision != expected_revision:
+                    errors.append(
+                        f"{location}.source_revision must be {expected_revision} "
+                        f"for {source_id}"
+                    )
+
+            classification = _string(
+                record.get("classification"), f"{location}.classification", errors
+            )
+            if classification is not None and classification not in OBLIGATION_CLASSIFICATIONS:
+                errors.append(f"{location}.classification is not supported")
+            state = _string(record.get("state"), f"{location}.state", errors)
+            if state is not None and state not in OBLIGATION_STATES:
+                errors.append(f"{location}.state is not supported")
+            if state == "open":
+                open_count += 1
+                if source_id is not None:
+                    open_sources.add(source_id)
+                if classification != "temporarily deferred":
+                    errors.append(
+                        f"{location} is open but is not classified temporarily deferred"
+                    )
+            if classification == "temporarily deferred" and state != "open":
+                errors.append(
+                    f"{location} is temporarily deferred but is not open"
+                )
+            if state == "offline-qualified" and source_id == "grok-build-upstream":
+                errors.append(
+                    f"{location}.state cannot use provider qualification for Grok behavior"
+                )
+
+            _string(record.get("behavior"), f"{location}.behavior", errors)
+            closure_evidence = _string_list(
+                record.get("closure_evidence"),
+                f"{location}.closure_evidence",
+                errors,
+                nonempty=False,
+            )
+            if state == "open" and closure_evidence:
+                errors.append(f"{location} is open but declares closure evidence")
+            if state in {"closed", "offline-qualified"}:
+                if not closure_evidence:
+                    errors.append(f"{location} is evidence-free but marked {state}")
+                for evidence in closure_evidence:
+                    if not evidence.startswith(("test:", "raw-path:")):
+                        errors.append(
+                            f"{location}.closure_evidence entries must start with "
+                            "'test:' or 'raw-path:'"
+                        )
+            if state == "open" or classification == "temporarily deferred":
+                for field_name in (
+                    "owner",
+                    "impact",
+                    "acceptance_criteria",
+                    "blocker",
+                    "deadline",
+                    "target",
+                ):
+                    _string(record.get(field_name), f"{location}.{field_name}", errors)
+                intended_tests = _string_list(
+                    record.get("intended_tests"),
+                    f"{location}.intended_tests",
+                    errors,
+                )
+                if not intended_tests:
+                    errors.append(f"{location} must name at least one intended test")
+
+    duplicates = sorted({stable_id for stable_id in ids if ids.count(stable_id) > 1})
+    for stable_id in duplicates:
+        errors.append(
+            f"current_obligations.obligations contains duplicate ID {stable_id!r}"
+        )
+    inventory_digest = hashlib.sha256(
+        (("\n".join(sorted(ids)) + "\n") if ids else "").encode("ascii")
+    ).hexdigest()
+    if declared_count is not None and len(ids) != declared_count:
+        errors.append(
+            "current obligation inventory changed or an obligation was silently removed: "
+            f"declared {declared_count} IDs, found {len(ids)}"
+        )
+    if declared_digest is not None and inventory_digest != declared_digest:
+        errors.append(
+            "current obligation inventory changed or an obligation was silently removed: "
+            f"declared digest {declared_digest}, got {inventory_digest}"
+        )
+
+    if campaign == CURRENT_OBLIGATION_CAMPAIGN:
+        if declared_count != CURRENT_OBLIGATION_COUNT:
+            errors.append(
+                f"current obligation inventory must retain {CURRENT_OBLIGATION_COUNT} "
+                f"stable IDs, declared {declared_count!r}"
+            )
+        if declared_digest != CURRENT_OBLIGATION_INVENTORY_SHA256:
+            errors.append(
+                "current obligation inventory digest does not match the checked-in "
+                "August 7 campaign boundary"
+            )
+        grok_count = sum(stable_id.startswith("GB-") for stable_id in ids)
+        if grok_count != CURRENT_GROK_OBLIGATION_COUNT:
+            errors.append(
+                f"current obligation inventory must retain {CURRENT_GROK_OBLIGATION_COUNT} "
+                f"Grok IDs, found {grok_count}"
+            )
+
+        manifest_sources = {
+            source["id"]: source for source in context.document.get("sources", [])
+        }
+        for source_id, revision in CURRENT_OBLIGATION_SOURCES.items():
+            source = manifest_sources.get(source_id)
+            if source is None:
+                errors.append(
+                    f"current campaign source {source_id!r} is absent from fork/manifest.json"
+                )
+                continue
+            latest = source.get("latest_fetched", {}).get("commit")
+            if latest != revision:
+                errors.append(
+                    f"current campaign source {source_id!r} latest-fetched revision "
+                    f"must be {revision}"
+                )
+            if source_id not in open_sources:
+                reviewed = source.get("reviewed", {}).get("commit")
+                if reviewed != revision:
+                    errors.append(
+                        f"closed current campaign source {source_id!r} must advance "
+                        f"Reviewed to {revision}"
+                    )
+
+    return f"{len(ids)} current obligation(s); {open_count} remain open", errors
 
 
 def _checkout_regular_file_status(repo_root: Path, relative_path: str) -> str | None:

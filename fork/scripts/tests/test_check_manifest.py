@@ -40,6 +40,17 @@ class CheckManifestTests(unittest.TestCase):
             json.dumps(document, indent=2, sort_keys=True) + "\n",
         )
 
+    def current_obligation_document(self) -> dict[str, object]:
+        return json.loads(
+            self.fixture.path("fork/parity/current.json").read_text(encoding="utf-8")
+        )
+
+    def write_current_obligation_document(self, document: dict[str, object]) -> None:
+        self.fixture.write_repo_file(
+            "fork/parity/current.json",
+            json.dumps(document, indent=2, sort_keys=True) + "\n",
+        )
+
     def test_parity_obligations_reject_missing_ledger(self) -> None:
         self.fixture.remove_repo_path("fork/parity/obligations.json")
         result = self.fixture.run_checker()
@@ -74,6 +85,41 @@ class CheckManifestTests(unittest.TestCase):
                 result = self.fixture.run_checker()
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn(f"is evidence-free but marked {state}", result.stdout)
+
+    def test_current_parity_obligations_reject_missing_ledger(self) -> None:
+        self.fixture.remove_repo_path("fork/parity/current.json")
+        result = self.fixture.run_checker()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ERROR parity-obligations:", result.stdout)
+        self.assertIn("fork/parity/current.json does not exist", result.stdout)
+
+    def test_current_parity_obligations_reject_removed_id(self) -> None:
+        document = self.current_obligation_document()
+        document["obligations"] = []
+        self.write_current_obligation_document(document)
+        result = self.fixture.run_checker()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("current obligation inventory changed", result.stdout)
+
+    def test_current_parity_obligations_reject_evidence_free_closure(self) -> None:
+        document = self.current_obligation_document()
+        document["obligations"][0]["closure_evidence"] = []
+        self.write_current_obligation_document(document)
+        result = self.fixture.run_checker()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("is evidence-free but marked closed", result.stdout)
+
+    def test_current_parity_obligations_require_full_open_metadata(self) -> None:
+        document = self.current_obligation_document()
+        record = document["obligations"][0]
+        record["classification"] = "temporarily deferred"
+        record["state"] = "open"
+        record["closure_evidence"] = []
+        self.write_current_obligation_document(document)
+        result = self.fixture.run_checker()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(".owner must be a string", result.stdout)
+        self.assertIn("must name at least one intended test", result.stdout)
 
     def successive_acknowledgement_rig(
         self,

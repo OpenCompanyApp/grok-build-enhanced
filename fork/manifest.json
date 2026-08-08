@@ -160,10 +160,10 @@
       "remote": "https://github.com/openai/codex.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "2c005abb0765bfe3ef42a23fe88d5b806184fa83"
+        "commit": "8e4b10446eed7bafb39d8a469f9be25a41f4864f"
       },
       "latest_fetched": {
-        "commit": "a4b129eb3e1a6929c09d6e2e1af0638122c56f0d"
+        "commit": "8e4b10446eed7bafb39d8a469f9be25a41f4864f"
       }
     },
     {
@@ -172,7 +172,7 @@
       "remote": "https://github.com/anomalyco/opencode.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "1882c33827cf0ce5c948b69ab5a87ed8f6790cf8"
+        "commit": "284214c78d32a09fd9c729bdefc07be50f74eb40"
       },
       "latest_fetched": {
         "commit": "284214c78d32a09fd9c729bdefc07be50f74eb40"
@@ -184,10 +184,10 @@
       "remote": "https://github.com/xai-org/grok-build.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "dd04f397b1d02f2272b092555669dfba1f01bc85"
+        "commit": "afbc0fb710320c7add294c2106d447ecc3e3af2e"
       },
       "latest_fetched": {
-        "commit": "393430ee4934bc791b0d538f304a21691c517433"
+        "commit": "afbc0fb710320c7add294c2106d447ecc3e3af2e"
       }
     },
     {
@@ -208,10 +208,10 @@
       "remote": "https://github.com/can1357/oh-my-pi.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "01c1f91ff529c6af3fc27724a8ba429d83d41aed"
+        "commit": "0e8142ad0e3189b5b51b49fd3434354683ba1b01"
       },
       "latest_fetched": {
-        "commit": "39477ba39bfbdc6be2cfff0efde979dd32bd7eb7"
+        "commit": "0e8142ad0e3189b5b51b49fd3434354683ba1b01"
       }
     },
     {
@@ -232,10 +232,10 @@
       "remote": "https://github.com/MoonshotAI/kimi-code.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "bfa00807c975fdc5b84dda32d47b16b09e8d42c1"
+        "commit": "437a1b8ba1b7e0f6662bdadc669564fdc58c3f5a"
       },
       "latest_fetched": {
-        "commit": "0b2e803d5e71afaab45212bb2ee6117ecbf8bbc9"
+        "commit": "437a1b8ba1b7e0f6662bdadc669564fdc58c3f5a"
       }
     },
     {
@@ -244,7 +244,7 @@
       "remote": "https://github.com/MoonshotAI/kimi-cli.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "4a550effdfcb29a25a5d325bf935296cc50cd417"
+        "commit": "cbc15c076d17f70fec9f89c90c0502e68657f505"
       },
       "latest_fetched": {
         "commit": "cbc15c076d17f70fec9f89c90c0502e68657f505"
@@ -292,7 +292,7 @@
       "remote": "https://github.com/steipete/CodexBar.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "cc8da27cec92029a6435bfee4a703a719290234e"
+        "commit": "22b24b885693e890af52df15c29f7ca024904c74"
       },
       "latest_fetched": {
         "commit": "22b24b885693e890af52df15c29f7ca024904c74"
@@ -316,10 +316,10 @@
       "remote": "https://github.com/sst/models.dev.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "f67be44f095a4ab24ceab33c3907317bb0375087"
+        "commit": "ac01bd90859928691e2e8e65df5cf390ffb1539e"
       },
       "latest_fetched": {
-        "commit": "433e98fb61999384bc7b6cf7470dc9bad81f8d2a"
+        "commit": "ac01bd90859928691e2e8e65df5cf390ffb1539e"
       }
     },
     {
@@ -328,10 +328,10 @@
       "remote": "https://github.com/exa-labs/exa-mcp-server.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "a664592b5dd7c5598b70158c771dcc5c2a4fb2c1"
+        "commit": "394f9210ed16d3e25d328e1e6db285824caedc04"
       },
       "latest_fetched": {
-        "commit": "a664592b5dd7c5598b70158c771dcc5c2a4fb2c1"
+        "commit": "394f9210ed16d3e25d328e1e6db285824caedc04"
       }
     }
   ],
@@ -394,6 +394,22 @@
         "evidence": {
           "path": "docs/upstream-refresh-2026-07-31.md",
           "sha256": "327139129466ace28cc2f511e5e8cc0ae652b42e71291ebd421dd8d2b9ef8887"
+        }
+      },
+      {
+        "source_id": "grok-build-upstream",
+        "commit": "afbc0fb710320c7add294c2106d447ecc3e3af2e",
+        "tree": "99e3e7c4d8a6c0214101c99e5cedded0325e96be",
+        "reviewed_from": {
+          "commit": "dd04f397b1d02f2272b092555669dfba1f01bc85",
+          "tree": "c5c7bdcda32a828efa112883dcd5279ce78714ec"
+        },
+        "target_parents": [
+          "393430ee4934bc791b0d538f304a21691c517433"
+        ],
+        "evidence": {
+          "path": "docs/upstream-refresh-2026-08-07-afbc.md",
+          "sha256": "475f59faa797c6eef70a27a53cac97970b510e3e9d86e02d025c411292880d1c"
         }
       }
     ]
@@ -794,7 +810,7 @@
         "crates/codegen/xai-grok-tools/src/registry/types.rs",
         "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs",
         "crates/codegen/xai-grok-tools/src/types/output.rs",
-        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager/**",
         "crates/codegen/xai-grok-workspace/src/permission/types.rs"
       ],
       "integration_paths": [
@@ -802,7 +818,7 @@
         "crates/codegen/xai-grok-tools/src/implementations/grok_build/web_search/mod.rs",
         "crates/codegen/xai-grok-tools/src/implementations/web_search/client.rs",
         "crates/codegen/xai-grok-tools/src/types/api_key_provider.rs",
-        "crates/codegen/xai-grok-workspace/src/permission/manager.rs"
+        "crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs"
       ],
       "legal_paths": [
         "LICENSE",
@@ -1413,7 +1429,7 @@
         "crates/codegen/xai-grok-shell/tests/test_mcp_permission_persistence.rs",
         "crates/codegen/xai-grok-workspace/src/permission/auto_mode.rs",
         "crates/codegen/xai-grok-workspace/src/permission/bash_command_splitting.rs",
-        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager/**",
         "crates/codegen/xai-grok-workspace/src/permission/policy.rs",
         "crates/codegen/xai-grok-workspace/src/permission/resolution.rs",
         "crates/codegen/xai-grok-workspace/src/permission/shell_access.rs",
@@ -1422,7 +1438,7 @@
       "integration_paths": [
         "crates/codegen/xai-grok-sandbox/src/lib.rs",
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs",
-        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs",
         "crates/codegen/xai-grok-workspace/src/permission/shell_access.rs"
       ],
       "legal_paths": [
@@ -3528,7 +3544,7 @@
         "crates/codegen/xai-grok-workspace/src/permission/claude_settings.rs",
         "crates/codegen/xai-grok-workspace/src/permission/gate_preflight.rs",
         "crates/codegen/xai-grok-workspace/src/permission/hub_permission.rs",
-        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager/**",
         "crates/codegen/xai-grok-workspace/src/permission/mod.rs",
         "crates/codegen/xai-grok-workspace/src/permission/policy.rs",
         "crates/codegen/xai-grok-workspace/src/permission/prompter.rs",
@@ -3547,7 +3563,7 @@
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs",
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs",
         "crates/codegen/xai-grok-shell/src/session/plan_mode.rs",
-        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs",
         "crates/codegen/xai-grok-workspace/src/permission/policy.rs",
         "crates/codegen/xai-grok-workspace/src/permission/resolution.rs",
         "crates/codegen/xai-grok-workspace/src/permission/shell_access.rs",
@@ -4355,6 +4371,284 @@
       ],
       "legal_paths": [
         "LICENSE"
+      ]
+    },
+    {
+      "id": "august7-afbc-exhaustive-parity-adoption",
+      "description": "Owns the exact previously-unowned downstream paths adopted while closing the exhaustive afbc Grok parity campaign, including provider-isolated auth, session durability, TUI behavior, permissions, tools, workspace safety, telemetry, and their audited evidence.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode",
+        "kimi-code",
+        "kimi-cli",
+        "oh-my-pi",
+        "codexbar",
+        "models-dev",
+        "exa-mcp-server"
+      ],
+      "paths": [
+        "crates/build/xai-proto-build/Cargo.toml",
+        "crates/build/xai-proto-build/src/debug_redact.rs",
+        "crates/build/xai-proto-build/test_data/debug_redact_plain.proto",
+        "crates/build/xai-proto-build/test_data/debug_redact_test.proto",
+        "crates/codegen/ptyctl/src/styled.rs",
+        "crates/codegen/ptyctl/src/term.rs",
+        "crates/codegen/xai-codebase-graph/src/scope_graph/graph.rs",
+        "crates/codegen/xai-fast-worktree/src/db/tests.rs",
+        "crates/codegen/xai-file-utils/src/s3.rs",
+        "crates/codegen/xai-fsnotify/src/checkout.rs",
+        "crates/codegen/xai-fsnotify/src/checkout_tests.rs",
+        "crates/codegen/xai-fsnotify/src/lib.rs",
+        "crates/codegen/xai-grok-config/src/fs_atomic.rs",
+        "crates/codegen/xai-grok-extra-ca/Cargo.toml",
+        "crates/codegen/xai-grok-extra-ca/src/lib.rs",
+        "crates/codegen/xai-grok-extra-ca/src/lib_tests.rs",
+        "crates/codegen/xai-grok-extra-ca/tests/extra_ca_invalid_file.rs",
+        "crates/codegen/xai-grok-extra-ca/tests/extra_ca_oversized.rs",
+        "crates/codegen/xai-grok-extra-ca/tests/extra_ca_valid_env.rs",
+        "crates/codegen/xai-grok-extra-ca/tests/extra_ca_zero_certs.rs",
+        "crates/codegen/xai-grok-markdown/Cargo.toml",
+        "crates/codegen/xai-grok-markdown/src/hyperlinks.rs",
+        "crates/codegen/xai-grok-markdown/src/parse.rs",
+        "crates/codegen/xai-grok-pager-render/src/render/image_overlay.rs",
+        "crates/codegen/xai-grok-pager-render/src/render/image_overlay/content.rs",
+        "crates/codegen/xai-grok-pager-render/src/render/image_overlay/tests.rs",
+        "crates/codegen/xai-grok-pager-render/src/render/line_utils.rs",
+        "crates/codegen/xai-grok-pager-render/src/render/scrollbar.rs",
+        "crates/codegen/xai-grok-pager-render/src/terminal/tmux.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/env_appearance.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/osc11.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/oscura.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/rosepine.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/terminal_default.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/tokyonight.rs",
+        "crates/codegen/xai-grok-pager/docs/user-guide/18-sandbox.md",
+        "crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md",
+        "crates/codegen/xai-grok-pager/src/acp/version_mismatch.rs",
+        "crates/codegen/xai-grok-pager/src/acp/version_mismatch_tests.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/background_tasks.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/version_mismatch.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/key_owner.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/key_owner_tests.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/viewer_tests.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/permissions.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/rewind.rs",
+        "crates/codegen/xai-grok-pager/src/app/error_display.rs",
+        "crates/codegen/xai-grok-pager/src/app/foreign_sessions.rs",
+        "crates/codegen/xai-grok-pager/src/app/roster.rs",
+        "crates/codegen/xai-grok-pager/src/config_toml_edit.rs",
+        "crates/codegen/xai-grok-pager/src/disk_usage_cmd/display.rs",
+        "crates/codegen/xai-grok-pager/src/disk_usage_cmd/mod.rs",
+        "crates/codegen/xai-grok-pager/src/disk_usage_cmd/tests.rs",
+        "crates/codegen/xai-grok-pager/src/fs_size.rs",
+        "crates/codegen/xai-grok-pager/src/fs_size_tests.rs",
+        "crates/codegen/xai-grok-pager/src/input/key.rs",
+        "crates/codegen/xai-grok-pager/src/memory_trace.rs",
+        "crates/codegen/xai-grok-pager/src/notifications/protocol.rs",
+        "crates/codegen/xai-grok-pager/src/notifications/tmux.rs",
+        "crates/codegen/xai-grok-pager/src/project_picker/mod.rs",
+        "crates/codegen/xai-grok-pager/src/project_picker/sources.rs",
+        "crates/codegen/xai-grok-pager/src/recent_dirs.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/scrollback_pane.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/selection.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/sticky.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/exit.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/feedback.rs",
+        "crates/codegen/xai-grok-pager/src/trace_cmd.rs",
+        "crates/codegen/xai-grok-pager/src/views/list_pane/state/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/shortcuts_bar.rs",
+        "crates/codegen/xai-grok-pager/src/views/usage_modal.rs",
+        "crates/codegen/xai-grok-pager/src/worktree_cmd/display.rs",
+        "crates/codegen/xai-grok-pager/src/wrap_cmd.rs",
+        "crates/codegen/xai-grok-pager/tests/grok_home_paths.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/auto_wake_cancel_via_esc_preserves_queued_user_prompt.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/auto_wake_cancel_via_stop_click_preserves_queued_user_prompt.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/feedback_slash_opens_descriptive_pane.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/mcp_menu_loads_servers_in_non_project_dir.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/mcp_menu_loads_servers_in_project_dir.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_feedback_session_gate_and_pane.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_quit_resets_bracketed_paste.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/plan_scrollbar_grab_zone_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/question_tab_cycles_answers.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/queue_reorder_local_row_above_server_row.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/queue_reorder_moves_row_up.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/response_top_indicator_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/sticky_header_drag_copy_pty.rs",
+        "crates/codegen/xai-grok-pager/tests/pty_e2e/wrap_appearance_env_advertised_through_shell.rs",
+        "crates/codegen/xai-grok-pager/tests/scenarios/inline_edit_dismiss_returns_to_editor.yaml",
+        "crates/codegen/xai-grok-pager/tests/scenarios/inline_edit_resubmit.yaml",
+        "crates/codegen/xai-grok-pager/tests/scenarios/inline_edit_unchanged_exit.yaml",
+        "crates/codegen/xai-grok-pager/tests/scripted_scenarios.rs",
+        "crates/codegen/xai-grok-pager/tests/signal_errno_preservation.rs",
+        "crates/codegen/xai-grok-sandbox/src/deny/glob.rs",
+        "crates/codegen/xai-grok-shell/src/active_sessions.rs",
+        "crates/codegen/xai-grok-shell/src/agent/handlers/workspaces.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/heap_profile.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/replay.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/replay_tests.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/resource_telemetry.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_setup.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests/session_resume_close_tests.rs",
+        "crates/codegen/xai-grok-shell/src/agent/proxy.rs",
+        "crates/codegen/xai-grok-shell/src/agent/roster.rs",
+        "crates/codegen/xai-grok-shell/src/auth/api_key_probe.rs",
+        "crates/codegen/xai-grok-shell/src/auth/config.rs",
+        "crates/codegen/xai-grok-shell/src/auth/devbox_login_stub.rs",
+        "crates/codegen/xai-grok-shell/src/auth/manager/remedy.rs",
+        "crates/codegen/xai-grok-shell/src/bin/trace_classify.rs",
+        "crates/codegen/xai-grok-shell/src/bundle.rs",
+        "crates/codegen/xai-grok-shell/src/claude_import_state.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/chat_conversation_history.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/code_nav.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/fs.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/hunk_tracker.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/jj.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/memory.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/plugins.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/pr.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/repair.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/routing.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/search.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/session_search.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/suggest/file_provider.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/suggest/history_provider.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/suggest/mod.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/suggest/path_provider.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/terminal.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/worktree.rs",
+        "crates/codegen/xai-grok-shell/src/heap_profile/monitor.rs",
+        "crates/codegen/xai-grok-shell/src/leader/protocol.rs",
+        "crates/codegen/xai-grok-shell/src/leader/transport.rs",
+        "crates/codegen/xai-grok-shell/src/lib.rs",
+        "crates/codegen/xai-grok-shell/src/managed_config/tests.rs",
+        "crates/codegen/xai-grok-shell/src/remote/agent.rs",
+        "crates/codegen/xai-grok-shell/src/remote/chat_models_client.rs",
+        "crates/codegen/xai-grok-shell/src/remote/conversations_client.rs",
+        "crates/codegen/xai-grok-shell/src/remote/workspaces_client.rs",
+        "crates/codegen/xai-grok-shell/src/sampling/conversation.rs",
+        "crates/codegen/xai-grok-shell/src/sampling/conversation_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_mcp.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/laziness_classifier.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/rewind.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/side_call.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_layer_images.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn_summary.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/interjection_actor_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/mcp_connecting_reminder_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/system_prompt_provenance_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/turn/auth_retry_budget_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_tests/turn/disk_full_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_types.rs",
+        "crates/codegen/xai-grok-shell/src/session/announcement_state.rs",
+        "crates/codegen/xai-grok-shell/src/session/export.rs",
+        "crates/codegen/xai-grok-shell/src/session/feedback.rs",
+        "crates/codegen/xai-grok-shell/src/session/file_system.rs",
+        "crates/codegen/xai-grok-shell/src/session/fs_watch.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/chat.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/helpers/turn_summary.rs",
+        "crates/codegen/xai-grok-shell/src/session/inference_metrics.rs",
+        "crates/codegen/xai-grok-shell/src/session/mcp_dispatcher.rs",
+        "crates/codegen/xai-grok-shell/src/session/normalize_cache.rs",
+        "crates/codegen/xai-grok-shell/src/session/notifications.rs",
+        "crates/codegen/xai-grok-shell/src/session/pending_interaction.rs",
+        "crates/codegen/xai-grok-shell/src/session/prompt_history.rs",
+        "crates/codegen/xai-grok-shell/src/session/restore_stub.rs",
+        "crates/codegen/xai-grok-shell/src/session/result.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/copy.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/jsonl/copy_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/search_bootstrap.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/search_bootstrap_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/search_content.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/search_content_tests.rs",
+        "crates/codegen/xai-grok-shell/src/session/storage/search_db.rs",
+        "crates/codegen/xai-grok-shell/src/session/telemetry/mod.rs",
+        "crates/codegen/xai-grok-shell/src/session/telemetry/permission.rs",
+        "crates/codegen/xai-grok-shell/src/session/tool_index.rs",
+        "crates/codegen/xai-grok-shell/src/session/unified_list/cursor.rs",
+        "crates/codegen/xai-grok-shell/src/session/unified_list/facets.rs",
+        "crates/codegen/xai-grok-shell/src/terminal/background_task.rs",
+        "crates/codegen/xai-grok-shell/src/tools/mod.rs",
+        "crates/codegen/xai-grok-shell/src/tools/task_completed_frame.rs",
+        "crates/codegen/xai-grok-shell/src/tools/task_completed_frame_tests.rs",
+        "crates/codegen/xai-grok-shell/src/tools/todo.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/announcements.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/mcp_reenable.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/permissions.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/resolve/crash_handler.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/resolve/display_refresh.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/resolve/mcp.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/resolve/system_prompt.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/resolve/tool_approvals.rs",
+        "crates/codegen/xai-grok-shell/tests/acp_harness/mod.rs",
+        "crates/codegen/xai-grok-shell/tests/acp_session_setup_wire.rs",
+        "crates/codegen/xai-grok-shell/tests/external_auth_conforming_provider.rs",
+        "crates/codegen/xai-grok-shell/tests/external_auth_expired_credential.rs",
+        "crates/codegen/xai-grok-shell/tests/test_fork_copy_memory.rs",
+        "crates/codegen/xai-grok-shell/tests/test_leader_stdio_integration.rs",
+        "crates/codegen/xai-grok-telemetry/src/events/permission_analytics.rs",
+        "crates/codegen/xai-grok-telemetry/src/external/config.rs",
+        "crates/codegen/xai-grok-telemetry/src/external/emit.rs",
+        "crates/codegen/xai-grok-telemetry/src/instrumentation.rs",
+        "crates/codegen/xai-grok-telemetry/src/lib.rs",
+        "crates/codegen/xai-grok-telemetry/src/startup.rs",
+        "crates/codegen/xai-grok-telemetry/tests/external_otlp_grpc_tls.rs",
+        "crates/codegen/xai-grok-telemetry/tests/otlp_collector/mod.rs",
+        "crates/codegen/xai-grok-tools/build.rs",
+        "crates/codegen/xai-grok-tools/src/computer/local/lifecycle.rs",
+        "crates/codegen/xai-grok-tools/src/computer/local/terminal_snapshot_tests.rs",
+        "crates/codegen/xai-grok-tools/src/computer/mod.rs",
+        "crates/codegen/xai-grok-tools/src/computer/task_log.rs",
+        "crates/codegen/xai-grok-tools/src/computer/task_log_tests.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/task/admission.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/task/admission_tests.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/task/coordinator/queue.rs",
+        "crates/codegen/xai-grok-tools/src/implementations/grok_build/task/coordinator/spawn.rs",
+        "crates/codegen/xai-grok-tools/src/util/base64_images.rs",
+        "crates/codegen/xai-grok-tools/src/util/env.rs",
+        "crates/codegen/xai-grok-tools/src/util/mcp_truncate.rs",
+        "crates/codegen/xai-grok-tools/src/util/truncate.rs",
+        "crates/codegen/xai-grok-update/tests/test_blitz_cancel.rs",
+        "crates/codegen/xai-grok-update/tests/test_install_internal.rs",
+        "crates/codegen/xai-grok-workspace-types/src/rpc/envelope.rs",
+        "crates/codegen/xai-grok-workspace-types/src/rpc/repos.rs",
+        "crates/codegen/xai-grok-workspace/src/git_odb.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/auto_mode/mod.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/auto_mode/security_findings.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/auto_mode/security_findings_tests.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager/reasons.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager/request_classification.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/rules.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/state.rs",
+        "crates/codegen/xai-grok-workspace/src/restore_fetch.rs",
+        "crates/codegen/xai-grok-workspace/src/restore_fetch_tests.rs",
+        "crates/codegen/xai-grok-workspace/src/session/git_gate.rs",
+        "crates/codegen/xai-grok-workspace/src/session/git_gate_tests.rs",
+        "crates/codegen/xai-ratatui-textarea/examples/textarea_demo.rs",
+        "crates/codegen/xai-sqlite-journal/src/lib.rs",
+        "crates/codegen/xai-token-estimation/src/lib.rs",
+        "crates/codegen/xai-tty-utils/Cargo.toml",
+        "crates/codegen/xai-tty-utils/src/process_resources.rs",
+        "crates/common/xai-circuit-breaker/src/retry_policy.rs",
+        "crates/common/xai-computer-hub-sdk/src/pool.rs",
+        "crates/common/xai-grok-compaction/src/reminder.rs",
+        "crates/common/xai-tool-runtime/src/notification.rs",
+        "crates/common/xai-tool-runtime/tests/notification_serde.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager.rs",
+        "THIRD-PARTY-NOTICES",
+        "docs/upstream-refresh-2026-08-07-afbc.md",
+        "fork/parity/current.json",
+        "rust-toolchain.toml"
+      ],
+      "integration_paths": [
+        "docs/upstream-refresh-2026-08-07-afbc.md",
+        "fork/parity/current.json"
+      ],
+      "legal_paths": [
+        "THIRD-PARTY-NOTICES"
       ]
     }
   ]
