@@ -485,7 +485,7 @@ Type `/` in the input to access commands:
 | `/model <name>`                    | `/m`      | Switch to a different model                              |
 | `/new`                             |           | Start a new session (clears context)                     |
 | `/load [workspace] [session]`      | `/resume` | Load a previous session                                  |
-| `/rewind <prompt>`                 |           | Rewind to a previous prompt (restores files)             |
+| `/rewind <prompt>`                 | `/undo`   | Rewind conversation only; file changes stay as-is        |
 | `/compact [context]`               |           | Compact conversation history                             |
 | `/always-approve [on\|off]`        | `/yolo`   | Toggle auto-approve mode                                 |
 | `/multiline`                       | `/ml`     | Toggle multiline input mode                              |
@@ -2397,7 +2397,7 @@ Sessions are stored under `~/.grok/sessions/`, organized by URL-encoded working 
   updates.jsonl           # ACP session update stream (conversation + tool calls)
   chat_history.jsonl      # raw chat messages sent to the model
   plan.json               # TODO/task list state
-  rewind_points.jsonl     # file snapshots for /rewind undo
+  rewind_points.jsonl     # rewind points for /rewind undo
   signals.json            # session signals (turn count, token usage)
   feedback.jsonl          # user feedback and ratings
   compaction_checkpoints/ # saved state from auto-compact

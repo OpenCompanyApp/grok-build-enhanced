@@ -109,7 +109,7 @@ impl ShellAttribution {
     /// keeping the boundary in one place avoids `as Arc<dyn _>`
     /// coercions at every call site.)
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(
+    pub(crate) fn new(
         auth_manager: Arc<AuthManager>,
         session_id: Option<String>,
     ) -> Arc<dyn Auth401AttributionCallback> {
@@ -126,7 +126,7 @@ impl ShellAttribution {
     /// The two callbacks share the same underlying impl and emit the
     /// same `auth_401_attribution` event format -- only the trait
     /// signature differs (`SamplingConsumer` vs. `ToolConsumer`).
-    pub fn new_tool_callback(
+    pub(crate) fn new_tool_callback(
         auth_manager: Arc<AuthManager>,
         session_id: Option<String>,
     ) -> Arc<dyn ToolAuth401AttributionCallback> {
@@ -688,19 +688,19 @@ mod tests {
         use tracing_subscriber::registry::LookupSpan;
 
         #[derive(Debug, Default, Clone)]
-        pub struct CapturedSpan {
+        pub(crate) struct CapturedSpan {
             pub name: String,
             pub fields_str: std::collections::BTreeMap<String, String>,
             pub fields_i64: std::collections::BTreeMap<String, i64>,
             pub fields_bool: std::collections::BTreeMap<String, bool>,
         }
 
-        pub struct SpanCollector {
+        pub(crate) struct SpanCollector {
             pub spans: std::sync::Arc<Mutex<Vec<CapturedSpan>>>,
         }
 
         impl SpanCollector {
-            pub fn new() -> (Self, std::sync::Arc<Mutex<Vec<CapturedSpan>>>) {
+            pub(crate) fn new() -> (Self, std::sync::Arc<Mutex<Vec<CapturedSpan>>>) {
                 let buf = std::sync::Arc::new(Mutex::new(Vec::new()));
                 (Self { spans: buf.clone() }, buf)
             }

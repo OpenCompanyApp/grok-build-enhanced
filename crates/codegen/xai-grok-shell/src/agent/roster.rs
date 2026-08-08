@@ -69,6 +69,8 @@ pub struct RosterEntry {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub yolo: bool,
     pub activity: RosterActivity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_summary: Option<String>,
     /// `true` while a resident actor hosts the session (vs. read from disk).
     pub resident: bool,
     /// Best-effort last-change timestamp (unix millis). Used for sort order.
@@ -120,6 +122,7 @@ pub(crate) fn merge_roster(
         if let Some(title) = summary.display_title_opt() {
             entry.title = Some(title);
         }
+        entry.last_turn_summary = summary.last_turn_summary.clone();
         if entry.activity != RosterActivity::Working {
             entry.last_change_unix_ms = summary.last_change_unix_ms();
         }
@@ -136,6 +139,7 @@ pub(crate) fn merge_roster(
         reasoning_effort: summary.reasoning_effort,
         yolo: false,
         activity: RosterActivity::Dormant,
+        last_turn_summary: summary.last_turn_summary.clone(),
         resident: false,
         last_change_unix_ms: summary.last_change_unix_ms(),
         origin: RosterOrigin::Local,
@@ -177,6 +181,7 @@ mod merge_roster_tests {
             reasoning_effort: None,
             yolo: false,
             activity,
+            last_turn_summary: None,
             resident: true,
             last_change_unix_ms,
             origin: RosterOrigin::Local,

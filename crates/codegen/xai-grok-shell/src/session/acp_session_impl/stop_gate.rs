@@ -409,6 +409,7 @@ mod tests {
             owner_session_id: owner.map(str::to_owned),
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         }
     }
 

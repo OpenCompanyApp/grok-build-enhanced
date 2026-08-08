@@ -1278,9 +1278,7 @@ fn remove_source_locked(source_url_or_path: &str) -> xai_hooks_plugins_types::Ac
     }
 }
 
-/// Set the official auto-installed flag on a TOML document string (pure, no I/O)
-/// so callers can fold it into a single atomic write. Preserves formatting.
-fn set_official_flag_in_toml(content: &str) -> std::io::Result<String> {
+fn set_marketplace_bool_flag_in_toml(content: &str, key: &str) -> std::io::Result<String> {
     let mut doc = content.parse::<toml_edit::DocumentMut>().map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -1298,23 +1296,32 @@ fn set_official_flag_in_toml(content: &str) -> std::io::Result<String> {
                 "[marketplace] is not a table",
             )
         })?;
-    marketplace["official_marketplace_auto_installed"] = toml_edit::value(true);
+    marketplace[key] = toml_edit::value(true);
 
     Ok(doc.to_string())
 }
 
-/// Set the official auto-installed flag in `config.toml` (atomic write).
-fn set_official_marketplace_auto_installed(config_path: &std::path::Path) -> std::io::Result<()> {
+/// Set the official auto-installed flag on a TOML document string (pure, no
+/// I/O) so callers can fold it into a single atomic write.
+fn set_official_flag_in_toml(content: &str) -> std::io::Result<String> {
+    set_marketplace_bool_flag_in_toml(content, "official_marketplace_auto_installed")
+}
+
+fn set_marketplace_bool_flag(config_path: &std::path::Path, key: &str) -> std::io::Result<()> {
     if let Some(parent) = config_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let existing = crate::util::config::read_to_string_or_empty(config_path)?;
-    let updated = set_official_flag_in_toml(&existing)?;
+    let updated = set_marketplace_bool_flag_in_toml(&existing, key)?;
     crate::util::config::atomic_write_string(config_path, &updated)
 }
 
-/// Read the `official_marketplace_auto_installed` flag; `false` on any failure.
-fn read_official_marketplace_auto_installed(config_path: &std::path::Path) -> bool {
+/// Set the official auto-installed flag in `config.toml` (atomic write).
+fn set_official_marketplace_auto_installed(config_path: &std::path::Path) -> std::io::Result<()> {
+    set_marketplace_bool_flag(config_path, "official_marketplace_auto_installed")
+}
+
+fn read_marketplace_bool_flag(config_path: &std::path::Path, key: &str) -> bool {
     let raw = match std::fs::read_to_string(config_path) {
         Ok(s) => s,
         Err(_) => return false,
@@ -1325,9 +1332,14 @@ fn read_official_marketplace_auto_installed(config_path: &std::path::Path) -> bo
     };
     parsed
         .get("marketplace")
-        .and_then(|m| m.get("official_marketplace_auto_installed"))
+        .and_then(|marketplace| marketplace.get(key))
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
+}
+
+/// Read the `official_marketplace_auto_installed` flag; `false` on failure.
+fn read_official_marketplace_auto_installed(config_path: &std::path::Path) -> bool {
+    read_marketplace_bool_flag(config_path, "official_marketplace_auto_installed")
 }
 
 /// Acquire an advisory exclusive `flock` on `<grok_home>/.config-init.lock`,
@@ -1359,6 +1371,134 @@ fn acquire_init_lock(grok_home: &std::path::Path) -> std::io::Result<std::fs::Fi
     ))
 }
 
+fn is_default_skills_plugin_subdir(plugin_subdir: &str) -> bool {
+    plugin_subdir == "default-skills"
+}
+
+fn default_skills_repo_keys<'a>(
+    repos: impl IntoIterator<
+        Item = (
+            &'a str,
+            &'a xai_grok_agent::plugins::install_registry::InstalledRepo,
+        ),
+    >,
+) -> Vec<&'a str> {
+    repos
+        .into_iter()
+        .filter_map(|(key, repo)| {
+            repo.marketplace
+                .as_ref()
+                .filter(|mp| is_default_skills_plugin_subdir(&mp.plugin_subdir))
+                .map(|_| key)
+        })
+        .collect()
+}
+
+fn set_default_skills_installs_purged(config_path: &std::path::Path) -> std::io::Result<()> {
+    set_marketplace_bool_flag(config_path, "default_skills_installs_purged")
+}
+
+fn read_default_skills_installs_purged(config_path: &std::path::Path) -> bool {
+    read_marketplace_bool_flag(config_path, "default_skills_installs_purged")
+}
+
+/// One-shot purge of legacy marketplace `default-skills` installs.
+///
+/// Gated by sticky `default_skills_installs_purged` in config.toml. Best-effort:
+/// errors are logged and never block startup.
+pub(crate) fn purge_default_skills_installs(grok_home: &std::path::Path) {
+    purge_default_skills_installs_impl(grok_home, || {
+        xai_grok_agent::plugins::install_registry::InstallRegistry::try_load_from(
+            xai_grok_agent::plugins::install_registry::InstallRegistry::resolve_install_dir(),
+        )
+    });
+}
+
+fn purge_default_skills_installs_impl(
+    grok_home: &std::path::Path,
+    load_registry: impl FnOnce() -> Result<
+        xai_grok_agent::plugins::install_registry::InstallRegistry,
+        xai_grok_agent::plugins::install_registry::InstallError,
+    >,
+) {
+    let config_path = grok_home.join("config.toml");
+
+    if read_default_skills_installs_purged(&config_path) {
+        return;
+    }
+
+    let _lock = match acquire_init_lock(grok_home) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %grok_home.join(".config-init.lock").display(),
+                "skipping default-skills purge: failed to acquire init lock"
+            );
+            return;
+        }
+    };
+
+    if read_default_skills_installs_purged(&config_path) {
+        return;
+    }
+
+    let mut registry = match load_registry() {
+        Ok(reg) => reg,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "skipping default-skills purge: failed to load install registry"
+            );
+            return;
+        }
+    };
+    let keys: Vec<String> = default_skills_repo_keys(registry.list())
+        .into_iter()
+        .map(|k| k.to_string())
+        .collect();
+
+    for key in &keys {
+        let path = registry
+            .get_repo(key)
+            .map(|r| r.path.clone())
+            .unwrap_or_else(|| registry.install_dir().join(key));
+        if path.exists()
+            && let Err(e) = std::fs::remove_dir_all(&path)
+        {
+            let _ = std::fs::remove_file(&path);
+            if path.exists() {
+                tracing::warn!(
+                    error = %e,
+                    path = %path.display(),
+                    repo_key = %key,
+                    "failed to remove default-skills install dir"
+                );
+            }
+        }
+        registry.remove(key);
+    }
+
+    if !keys.is_empty() {
+        if let Err(e) = registry.save() {
+            tracing::warn!(error = %e, "failed to save registry after default-skills purge");
+            return;
+        }
+        tracing::info!(
+            count = keys.len(),
+            "purged legacy default-skills marketplace installs"
+        );
+    }
+
+    if let Err(e) = set_default_skills_installs_purged(&config_path) {
+        tracing::warn!(
+            error = %e,
+            path = %config_path.display(),
+            "failed to set default_skills_installs_purged flag"
+        );
+    }
+}
+
 /// Auto-register the official xAI marketplace source on first run.
 ///
 /// Gated by the caller (`init_process`); see
@@ -1366,7 +1506,7 @@ fn acquire_init_lock(grok_home: &std::path::Path) -> std::io::Result<std::fs::Fi
 /// `official_marketplace_auto_installed` is set. Under a process-wide flock it
 /// adds the source (or just sets the flag if it's already present in config.toml
 /// or a JSON store). Best-effort: errors are logged and never block startup.
-pub fn ensure_official_marketplace_source(grok_home: &std::path::Path) {
+pub(crate) fn ensure_official_marketplace_source(grok_home: &std::path::Path) {
     let config_path = grok_home.join("config.toml");
 
     if read_official_marketplace_auto_installed(&config_path) {

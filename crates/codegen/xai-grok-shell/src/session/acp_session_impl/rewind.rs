@@ -472,6 +472,11 @@ impl SessionActor {
                 target_prompt_index: target_index,
                 created_at: chrono::Utc::now().to_rfc3339(),
             });
+            self.abort_turn_summary();
+            let _ = self
+                .notifications
+                .persistence_tx
+                .send(PersistenceMsg::LastTurnSummary(None));
         }
 
         // Update the file state tracker to reflect the rewind.

@@ -3,6 +3,26 @@
 //! recovery, and per-response usage recording.
 use super::*;
 
+/// Unit tests exercise xAI refresh/retry behavior against an in-process mock
+/// server. Production builds never treat loopback as an xAI credential origin.
+#[cfg(test)]
+fn test_loopback_xai_origin(candidate: &str) -> bool {
+    reqwest::Url::parse(candidate)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
+}
+
+#[cfg(not(test))]
+const fn test_loopback_xai_origin(_candidate: &str) -> bool {
+    false
+}
+
 fn prefer_non_empty<T>(
     over: Option<T>,
     seed: Option<T>,
@@ -164,7 +184,7 @@ where
 impl SessionActor {
     pub(super) async fn prepare_tool_definitions_timed(&self) -> (Vec<ToolDefinition>, u64) {
         let mcp_wait_start = std::time::Instant::now();
-        match self.mcp_strategy {
+        match self.mcp_strategy.get() {
             McpInitStrategy::Blocking => {
                 if !self.mcp_state.lock().await.is_initialized() {
                     tracing::info!(
@@ -477,18 +497,6 @@ impl SessionActor {
                 }
             }
         }
-        #[allow(clippy::items_after_statements)]
-        struct AuthManagerBearerResolver(std::sync::Arc<crate::auth::AuthManager>);
-        impl std::fmt::Debug for AuthManagerBearerResolver {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_struct("AuthManagerBearerResolver").finish()
-            }
-        }
-        impl xai_grok_sampler::BearerResolver for AuthManagerBearerResolver {
-            fn current_bearer(&self) -> Option<String> {
-                self.0.current_or_expired().map(|a| a.key)
-            }
-        }
         let mut cfg = self
             .chat_state_handle
             .get_sampling_config()
@@ -517,8 +525,9 @@ impl SessionActor {
         let (model_facts, custom_auth_provider) =
             self.model_auth_state(cfg.model.as_str(), Some(&cfg.base_url));
         let is_xai = cfg.provider == xai_grok_sampling_types::ProviderId::Xai;
-        let trusted_xai_origin =
-            is_xai && xai_grok_sampling_types::is_trusted_xai_inference_url(&cfg.base_url);
+        let trusted_xai_origin = is_xai
+            && (xai_grok_sampling_types::is_trusted_xai_inference_url(&cfg.base_url)
+                || test_loopback_xai_origin(&cfg.base_url));
         let stored_credentials_match_provider = match cfg.provider {
             xai_grok_sampling_types::ProviderId::OpenAiCodex
             | xai_grok_sampling_types::ProviderId::KimiCode
@@ -749,11 +758,9 @@ impl SessionActor {
                 .then(|| self.attribution_callback.clone())
                 .flatten(),
             bearer_resolver: if use_bearer_resolver {
-                self.auth_manager
-                    .as_ref()
-                    .map(|am| -> xai_grok_sampler::SharedBearerResolver {
-                        std::sync::Arc::new(AuthManagerBearerResolver(am.clone()))
-                    })
+                self.auth_manager.as_ref().map(|am| {
+                    crate::auth::credential_provider::WireValidBearerResolver::shared(am.clone())
+                })
             } else {
                 None
             },
@@ -1219,6 +1226,31 @@ impl SessionActor {
         self.sampler_handle.update_config(sampler_config);
         Ok(())
     }
+
+    /// Fold an xAI authentication remedy into a terminal turn failure. Callers
+    /// must first establish that the failed request belongs to the xAI route;
+    /// the shell `AuthManager` never represents another provider's account.
+    fn apply_auth_remedy(
+        &self,
+        remedy: &crate::auth::AuthRemedy,
+        message: String,
+        status_code: Option<u16>,
+    ) -> (&'static str, String) {
+        xai_grok_telemetry::unified_log::info(
+            "auth: turn failure classified",
+            Some(self.session_info.id.0.as_ref()),
+            Some(serde_json::json!({
+                "status_code": status_code,
+                "remedy": format!("{remedy:?}"),
+            })),
+        );
+        let message = match remedy.advice() {
+            Some(advice) => format!("{message}\n\n{advice}"),
+            None => message,
+        };
+        (remedy.turn_error_type(), message)
+    }
+
     fn log_terminal_failure(
         &self,
         request_provider: xai_grok_sampling_types::ProviderId,
@@ -1257,6 +1289,46 @@ impl SessionActor {
             )),
         );
     }
+
+    /// Report the terminal failure produced by the outer turn's bounded 401
+    /// schedule. This path lives outside `handle_sampling_failure`, so it must
+    /// emit its own terminal retry-state notification.
+    pub(crate) async fn fail_turn_auth_budget_exhausted(&self, message: String) -> acp::Error {
+        const STATUS: Option<u16> = Some(401);
+        let request_provider = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|config| config.provider)
+            .unwrap_or(xai_grok_sampling_types::ProviderId::Xai);
+        let (error_type, message) = if request_provider == xai_grok_sampling_types::ProviderId::Xai
+        {
+            match self.auth_manager.as_ref() {
+                Some(auth_manager) => self.apply_auth_remedy(
+                    &auth_manager.auth_remedy().after_retries_exhausted(),
+                    message,
+                    STATUS,
+                ),
+                None => ("auth", message),
+            }
+        } else {
+            // Never project xAI account state or remedies onto another
+            // provider's terminal authentication failure.
+            ("auth", message)
+        };
+        self.log_terminal_failure(request_provider, error_type, STATUS, &message);
+        self.send_xai_notification(XaiSessionUpdate::RetryState(
+            crate::extensions::notification::RetryState::Failed {
+                error_type: error_type.to_owned(),
+                message: message.clone(),
+            },
+        ))
+        .await;
+        acp::Error::internal_error().data(crate::sampling::error::error_data_with_status(
+            message, STATUS,
+        ))
+    }
+
     pub(crate) async fn handle_sampling_failure(
         self: &Arc<Self>,
         error: xai_grok_sampler::SamplingErrorInfo,
@@ -1468,7 +1540,11 @@ impl SessionActor {
             && crate::auth::devbox_login::is_devbox_environment()
             && let Some(ref am) = self.auth_manager
         {
-            match am.try_devbox_recovery().await {
+            let rejected = am
+                .current_or_expired()
+                .map(|auth| auth.key)
+                .filter(|key| !key.is_empty());
+            match am.try_devbox_recovery(rejected.as_deref()).await {
                 Ok(auth) => {
                     tracing::info!(
                         session_id = % self.session_info.id.0,
@@ -1578,7 +1654,7 @@ impl SessionActor {
                 "{detailed_message}\n\n\
                  You are using a deprecated authentication method (WebLogin).\n\
                  This auth method is no longer supported and will cause errors.\n\n\
-                 To fix: run `grok logout` then `grok login` to re-authenticate with OAuth2.\n\n\
+                 To fix: run `grok update`, then `grok logout`, then `grok login` to re-authenticate with OAuth2.\n\n\
                  Version: {client_version}"
             );
             self.log_terminal_failure(request_provider, "legacy_auth", error.status_code, &msg);
@@ -1653,6 +1729,20 @@ impl SessionActor {
         } else {
             error.kind.as_str()
         };
+        let (error_type, detailed_message) =
+            if request_provider == xai_grok_sampling_types::ProviderId::Xai && error_type == "auth"
+            {
+                match self.auth_manager.as_ref() {
+                    Some(auth_manager) => self.apply_auth_remedy(
+                        &auth_manager.auth_remedy(),
+                        detailed_message,
+                        error.status_code,
+                    ),
+                    None => (error_type, detailed_message),
+                }
+            } else {
+                (error_type, detailed_message)
+            };
         self.log_terminal_failure(
             request_provider,
             error_type,
@@ -1814,7 +1904,9 @@ impl SessionActor {
             }
         }
         if provider == xai_grok_sampling_types::ProviderId::Xai {
-            if !xai_grok_sampling_types::is_trusted_xai_inference_url(&base_url) {
+            if !xai_grok_sampling_types::is_trusted_xai_inference_url(&base_url)
+                && !test_loopback_xai_origin(&base_url)
+            {
                 // Compatibility-default xAI state on a custom endpoint never
                 // consults or reloads an xAI credential source.
                 return Ok(());
@@ -1831,7 +1923,7 @@ impl SessionActor {
                 };
                 let key = match am.get_valid_token().await {
                     Ok(key) => key,
-                    Err(_) => {
+                    Err(error) => {
                         // A token inside the early-invalidation window can
                         // still be accepted on the wire, so retain it after a
                         // transient refresh failure. Once no wire-valid token
@@ -1841,6 +1933,20 @@ impl SessionActor {
                         // credential source.
                         if !am.has_usable_token() {
                             self.set_chat_provider_key(None).await;
+                        }
+                        // A transient preflight failure with no wire-valid
+                        // token is deliberately fail-closed on the wire, not
+                        // terminal for the turn: rebuild the sampler without
+                        // an Authorization header and let a server 401 enter
+                        // the bounded `ServerRejected` recovery path. A
+                        // definitive credential rejection still aborts here.
+                        if error.is_transient() {
+                            xai_grok_telemetry::unified_log::warn(
+                                "managed xAI preflight refresh failed transiently; continuing without a bearer",
+                                Some(self.session_info.id.0.as_ref()),
+                                None,
+                            );
+                            return Ok(());
                         }
                         return Err(acp::Error::auth_required()
                             .data("managed xAI authentication refresh failed"));

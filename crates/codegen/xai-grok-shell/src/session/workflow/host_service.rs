@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
@@ -20,6 +20,23 @@ use super::tracker::WorkflowTracker;
 
 pub(crate) const WORKFLOW_MAX_AGENT_RUNS: u32 =
     (xai_workflow::MAX_AGENT_BUDGET as u32) * (SCHEMA_CONTRACT_RETRIES + 1);
+pub(crate) const DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS: usize = 32;
+
+pub(crate) fn workflow_max_concurrent_agents(configured: usize) -> usize {
+    let parallelism = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS)
+        .max(2);
+    let requested = configured.max(1);
+    if requested > parallelism {
+        tracing::info!(
+            requested,
+            clamped_to = parallelism,
+            "workflow agent concurrency clamped to machine parallelism"
+        );
+    }
+    requested.min(parallelism)
+}
 pub(crate) const WORKFLOW_MAX_SCRIPT_TELEMETRY_EVENTS: u32 = 64;
 pub(crate) const WORKFLOW_MAX_SCRATCH_FILES: usize = 64;
 pub(crate) const WORKFLOW_MAX_SCRATCH_FILE_BYTES: usize = 10 * 1024 * 1024;
@@ -34,8 +51,18 @@ const SCRATCH_ARTIFACT_ROOT: &str = "scratch";
 
 pub(crate) type TelemetryHook = Arc<dyn Fn(&str, &serde_json::Value, bool) + Send + Sync>;
 
+#[derive(Debug, Default)]
+pub(crate) struct WorkflowAgentStats {
+    pub peak_concurrent: AtomicU32,
+    pub agents_failed: AtomicU32,
+    pub slot_waits: AtomicU32,
+    pub slot_wait_ms_total: AtomicU64,
+    pub slot_wait_ms_max: AtomicU64,
+}
+
 pub(crate) struct WorkflowHostParams {
     pub run_id: String,
+    pub max_concurrent_agents: usize,
     pub cwd: PathBuf,
     pub scratch_dir: PathBuf,
     pub tracker: Arc<parking_lot::Mutex<WorkflowTracker>>,
@@ -48,6 +75,7 @@ pub(crate) struct WorkflowHostParams {
     pub allow_fork_context: bool,
     pub templates: std::collections::HashMap<String, String>,
     pub telemetry: TelemetryHook,
+    pub stats: Arc<WorkflowAgentStats>,
     pub cancel: CancellationToken,
 }
 
@@ -71,6 +99,7 @@ pub(crate) fn spawn_workflow_host_service(
             agent_runs: AtomicU32::new(0),
             script_telemetry_events: AtomicU32::new(0),
             scratch_io: tokio::sync::Mutex::new(()),
+            agent_slots: tokio::sync::Semaphore::new(params.max_concurrent_agents.max(1)),
             params,
         });
         loop {
@@ -121,6 +150,7 @@ struct HostService {
     agent_runs: AtomicU32,
     script_telemetry_events: AtomicU32,
     scratch_io: tokio::sync::Mutex<()>,
+    agent_slots: tokio::sync::Semaphore,
     params: WorkflowHostParams,
 }
 
@@ -135,6 +165,13 @@ impl FinishOnce<'_> {
         debug_assert!(!self.finished, "agent roster row finished twice");
         if std::mem::replace(&mut self.finished, true) {
             return;
+        }
+        if state == "failed" {
+            self.host
+                .params
+                .stats
+                .agents_failed
+                .fetch_add(1, Ordering::Relaxed);
         }
         self.host.params.tracker.lock().agent_finished(
             &self.host.params.run_id,
@@ -323,6 +360,50 @@ impl HostService {
         self.params.tracker.lock().elapsed_ms(&self.params.run_id)
     }
 
+    async fn acquire_agent_slot(&self) -> Result<tokio::sync::SemaphorePermit<'_>, HostError> {
+        match self.agent_slots.try_acquire() {
+            Ok(permit) if self.params.cancel.is_cancelled() => {
+                drop(permit);
+                Err(HostError::Cancelled)
+            }
+            Ok(permit) => Ok(permit),
+            Err(tokio::sync::TryAcquireError::Closed) => Err(HostError::Cancelled),
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                if self.params.cancel.is_cancelled() {
+                    return Err(HostError::Cancelled);
+                }
+                xai_grok_telemetry::session_ctx::log_event(
+                    xai_grok_telemetry::events::SubagentLimitHit::workflow_run_concurrent(
+                        self.params.parent_session_id.clone(),
+                        self.params.run_id.clone(),
+                        self.params.max_concurrent_agents as u64,
+                        self.params
+                            .max_concurrent_agents
+                            .saturating_sub(self.agent_slots.available_permits())
+                            as u32,
+                    ),
+                );
+                let started = std::time::Instant::now();
+                let permit = tokio::select! {
+                    biased;
+                    _ = self.params.cancel.cancelled() => return Err(HostError::Cancelled),
+                    permit = self.agent_slots.acquire() => permit.map_err(|_| HostError::Cancelled)?,
+                };
+                let waited_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                self.params.stats.slot_waits.fetch_add(1, Ordering::Relaxed);
+                self.params
+                    .stats
+                    .slot_wait_ms_total
+                    .fetch_add(waited_ms, Ordering::Relaxed);
+                self.params
+                    .stats
+                    .slot_wait_ms_max
+                    .fetch_max(waited_ms, Ordering::Relaxed);
+                Ok(permit)
+            }
+        }
+    }
+
     async fn spawn_agent(&self, mut opts: AgentOpts) -> Result<AgentResult, HostError> {
         if self.params.cancel.is_cancelled() {
             return Err(HostError::Cancelled);
@@ -391,6 +472,8 @@ impl HostService {
             None => opts.prompt.clone(),
             Some(schema) => contract_prompt(&opts.prompt, schema),
         };
+
+        let _agent_slot = self.acquire_agent_slot().await?;
 
         let description = self.params.tracker.lock().agent_started(
             &self.params.run_id,
@@ -471,7 +554,11 @@ impl HostService {
                 fork_context,
             );
 
-            self.active_agents.fetch_add(1, Ordering::Relaxed);
+            let now_running = self.active_agents.fetch_add(1, Ordering::Relaxed) + 1;
+            self.params
+                .stats
+                .peak_concurrent
+                .fetch_max(now_running, Ordering::Relaxed);
             self.tick();
 
             let backend = ChannelBackend::new(self.params.subagent_event_tx.clone());
@@ -875,6 +962,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let params = WorkflowHostParams {
             run_id: run_id.clone(),
+            max_concurrent_agents: 2,
             cwd: std::env::temp_dir(),
             scratch_dir: std::env::temp_dir().join("wf-scratch-reserve-rollback"),
             tracker: tracker.clone(),
@@ -885,6 +973,7 @@ mod tests {
             allow_fork_context: false,
             templates: Default::default(),
             telemetry: Arc::new(|_, _, _| {}),
+            stats: Arc::new(WorkflowAgentStats::default()),
             cancel: cancel.clone(),
         };
 
@@ -947,6 +1036,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let params = WorkflowHostParams {
             run_id: run_id.clone(),
+            max_concurrent_agents: 2,
             cwd: std::env::temp_dir(),
             scratch_dir: std::env::temp_dir().join("wf-scratch-release-persist"),
             tracker: tracker.clone(),
@@ -957,6 +1047,7 @@ mod tests {
             allow_fork_context: false,
             templates: Default::default(),
             telemetry: Arc::new(|_, _, _| {}),
+            stats: Arc::new(WorkflowAgentStats::default()),
             cancel: cancel.clone(),
         };
 

@@ -233,10 +233,7 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
     let session = match request.session_id.as_ref() {
         Some(session_id) => Some(
             agent
-                .sessions
-                .borrow()
-                .get(session_id)
-                .cloned()
+                .resident_handle(session_id)
                 .ok_or_else(|| acp::Error::invalid_params().data("unknown billing session"))?,
         ),
         None => None,

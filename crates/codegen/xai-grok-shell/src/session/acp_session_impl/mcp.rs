@@ -984,7 +984,7 @@ impl SessionActor {
         let ctx = crate::session::mcp_servers::McpSpawnCtx::for_session(
             session_id,
             &event_writer,
-            OauthInteractivity::from_non_interactive(self.startup_hints.non_interactive),
+            OauthInteractivity::from_non_interactive(self.attach_non_interactive.get()),
             self.tool_context.process_scope.as_ref(),
         );
         let new_client = crate::session::mcp_servers::start_mcp_server(
@@ -1061,21 +1061,35 @@ impl SessionActor {
             return;
         }
         self.mcp_connecting_reminder_injected.set(true);
-        let mut text =
-            "MCP servers currently connecting (tools will become available shortly):\n".to_string();
-        for name in &connecting {
-            text.push_str(&format!("- {name}\n"));
-        }
-        text.push_str(
-            "\nDo not attempt to use tools from these servers yet. \
-             If the user's request likely requires one of these servers, \
-             mention that the server is still connecting and proceed with \
-             what you can do in the meantime.",
-        );
+        let delivery_tools = self.delivery_tools.borrow().clone();
+        let text = format_mcp_connecting_reminder(&connecting, &delivery_tools);
         self.push_system_reminder(&text);
         tracing::info!(
             servers = ?connecting,
+            ?delivery_tools,
             "Injected MCP connecting system-reminder"
+        );
+    }
+    /// Re-apply only policy owned by the currently attaching client. Structural
+    /// spawn hints remain frozen so subagent and cache-prefix identity cannot
+    /// change during a resident load.
+    pub(super) fn apply_attach_policy(&self, hints: &crate::session::StartupHints) {
+        let strategy = hints.resolve_mcp_strategy();
+        let changed = self.mcp_strategy.get() != strategy
+            || self.attach_non_interactive.get() != hints.non_interactive
+            || *self.delivery_tools.borrow() != hints.delivery_tools;
+        self.mcp_strategy.set(strategy);
+        self.attach_non_interactive.set(hints.non_interactive);
+        *self.delivery_tools.borrow_mut() = hints.delivery_tools.clone();
+        if changed {
+            self.mcp_connecting_reminder_injected.set(false);
+        }
+        tracing::info!(
+            ?strategy,
+            non_interactive = hints.non_interactive,
+            delivery_tools = ?hints.delivery_tools,
+            changed,
+            "updated resident-session attachment policy"
         );
     }
     /// Ensure MCP tools are initialized (spawns processes and performs handshakes on first call)
@@ -1235,7 +1249,7 @@ impl SessionActor {
             "Starting MCP initialization ({} new servers, {} already initialized, strategy: {:?})",
             configs_to_start.len(),
             existing_client_names.len(),
-            self.mcp_strategy
+            self.mcp_strategy.get()
         );
         let session_id = self.session_info.id.0.as_ref();
         tokio::task::yield_now().await;
@@ -1256,7 +1270,7 @@ impl SessionActor {
         let ctx = crate::session::mcp_servers::McpSpawnCtx::for_session(
             session_id,
             &spawn_writer,
-            OauthInteractivity::from_non_interactive(self.startup_hints.non_interactive),
+            OauthInteractivity::from_non_interactive(self.attach_non_interactive.get()),
             self.tool_context.process_scope.as_ref(),
         );
         let mcp_results = build_pending_clients(
@@ -1374,7 +1388,7 @@ impl SessionActor {
             })
             .collect();
         let server_count = (mcp_server_configs.len() + acp_pending_names.len()) as u32;
-        let mcp_strategy = self.mcp_strategy;
+        let mcp_strategy = self.mcp_strategy.get();
         let is_reinit = !existing_client_names.is_empty();
         let event_writer = self.events.writer();
         let init_total_bg = init_total;
@@ -1892,4 +1906,37 @@ pub(super) struct McpAnnouncementSnapshot {
     /// The announcement body: server listing plus the tool usage hint.
     pub(super) text: String,
     pub(super) server_count: usize,
+}
+
+/// Render the connecting reminder while respecting headless surfaces that
+/// explicitly deliver all user-visible output through MCP tools.
+pub(super) fn format_mcp_connecting_reminder(
+    connecting: &[String],
+    delivery_tools: &[String],
+) -> String {
+    let mut text =
+        "MCP servers currently connecting (tools will become available shortly):\n".to_string();
+    for name in connecting {
+        text.push_str(&format!("- {name}\n"));
+    }
+    if delivery_tools.is_empty() {
+        text.push_str(
+            "\nDo not attempt to use tools from these servers yet. \
+             If the user's request likely requires one of these servers, \
+             mention that the server is still connecting and proceed with \
+             what you can do in the meantime.",
+        );
+    } else {
+        text.push_str(&format!(
+            "\nThese servers are being awaited and their tools are expected \
+             to become available as you work. Use them normally, and if a \
+             call reports the tool as unavailable, retry it after your other \
+             work rather than giving up. User-visible output from this \
+             session is delivered ONLY through: {}. Do NOT end the turn \
+             without delivering your answer through the appropriate \
+             delivery tool.",
+            delivery_tools.join(", ")
+        ));
+    }
+    text
 }

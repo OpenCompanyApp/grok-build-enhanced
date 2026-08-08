@@ -19,6 +19,8 @@ pub enum CodexAuthError {
     MissingAccountId,
     #[error("the selected ChatGPT workspace is not allowed")]
     WorkspaceNotAllowed,
+    #[error("managed authentication requirements do not permit ChatGPT Codex login")]
+    ManagedPolicyDenied,
     #[error("the ChatGPT account changed; rebuild the provider session")]
     AccountChanged,
     #[error("OpenAI Codex device login is not available")]

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use fs2::FileExt;
 
+use super::policy::CodexManagedAuthPolicy;
 use super::{CodexAuthError, CodexCredentials, OPENAI_CODEX_SCOPE};
 use crate::auth::manager::lock::try_lock_auth_file_async;
 use crate::auth::model::AuthStore;
@@ -44,19 +45,51 @@ impl CodexCredentialStore {
 
     pub fn load(&self) -> Result<Option<CodexCredentials>, CodexAuthError> {
         match read_auth_json(&self.auth_path) {
-            Ok(store) => {
-                let credentials = store.get_codex().cloned();
-                if credentials.is_none() && store.contains_key(OPENAI_CODEX_SCOPE) {
-                    return Err(CodexAuthError::Storage(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "openai::codex credential record is invalid",
-                    )));
-                }
-                Ok(credentials)
-            }
+            Ok(store) => credentials_from_store(store),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(CodexAuthError::Storage(error)),
         }
+    }
+
+    /// Load one immutable file snapshot after checking its account binding in
+    /// raw JSON. The workspace decision therefore occurs before the provider
+    /// record's bearer/refresh/ID token fields are hydrated into typed secrets.
+    pub(super) fn load_with_policy(
+        &self,
+        policy: &CodexManagedAuthPolicy,
+    ) -> Result<Option<CodexCredentials>, CodexAuthError> {
+        policy.ensure_usable()?;
+        if policy.allowed_workspaces().is_none() {
+            return self.load();
+        }
+
+        let contents = match std::fs::read_to_string(&self.auth_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(CodexAuthError::Storage(error)),
+        };
+        if contents.trim().is_empty() {
+            return Ok(None);
+        }
+        let raw: serde_json::Value = serde_json::from_str(&contents).map_err(invalid_data)?;
+        if let Some(record) = raw.get(OPENAI_CODEX_SCOPE) {
+            let account_id = record
+                .get("chatgpt_account_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    CodexAuthError::Storage(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "openai::codex credential record is invalid",
+                    ))
+                })?;
+            if !policy.allows_workspace(account_id) {
+                return Err(CodexAuthError::WorkspaceNotAllowed);
+            }
+        }
+
+        let store: AuthStore = serde_json::from_value(raw).map_err(invalid_data)?;
+        credentials_from_store(store)
     }
 
     pub async fn save(&self, credentials: CodexCredentials) -> Result<(), CodexAuthError> {
@@ -134,6 +167,21 @@ impl CodexCredentialStore {
             tokio::time::sleep(PROVIDER_LOCK_POLL_INTERVAL).await;
         }
     }
+}
+
+fn invalid_data(error: serde_json::Error) -> CodexAuthError {
+    CodexAuthError::Storage(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+fn credentials_from_store(store: AuthStore) -> Result<Option<CodexCredentials>, CodexAuthError> {
+    let credentials = store.get_codex().cloned();
+    if credentials.is_none() && store.contains_key(OPENAI_CODEX_SCOPE) {
+        return Err(CodexAuthError::Storage(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "openai::codex credential record is invalid",
+        )));
+    }
+    Ok(credentials)
 }
 
 fn open_provider_lock_file(path: &Path) -> std::io::Result<File> {
@@ -251,5 +299,28 @@ mod tests {
         .unwrap();
         let store = CodexCredentialStore::from_auth_path(path);
         assert!(matches!(store.load(), Err(CodexAuthError::Storage(_))));
+    }
+
+    #[tokio::test]
+    async fn managed_workspace_is_checked_before_typed_credential_hydration() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodexCredentialStore::from_auth_path(dir.path().join("auth.json"));
+        store
+            .save(credentials_for_test(
+                "private-account-canary",
+                "refresh-secret-canary",
+                Utc::now() + ChronoDuration::hours(1),
+            ))
+            .await
+            .unwrap();
+        let policy = super::CodexManagedAuthPolicy::for_test_workspaces(["managed-account"]);
+
+        let error = store
+            .load_with_policy(&policy)
+            .expect_err("mismatched stored workspace must be rejected");
+        assert!(matches!(error, CodexAuthError::WorkspaceNotAllowed));
+        let shown = error.to_string();
+        assert!(!shown.contains("private-account-canary"));
+        assert!(!shown.contains("refresh-secret-canary"));
     }
 }

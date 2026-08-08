@@ -1,9 +1,9 @@
 //! Auxiliary model-call concern for `SessionActor`: side questions, recap
 //! generation, and AI-suggest.
 
+use super::side_call::{AuxCall, log_prompt_cache_hit};
 use super::*;
 
-use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use crate::session::SideQuestionError;
 use xai_grok_sampling_types::SamplingError;
 
@@ -19,13 +19,10 @@ fn side_question_retry_policy() -> backon::ExponentialBuilder {
         .with_jitter()
 }
 
-/// Whether a failed `/btw` attempt is worth retrying: overload only (not
-/// every retryable 5xx / stream glitch), minus the shared retry vetoes
-/// (`x-should-retry: false`, context length — see
-/// [`SamplingError::is_retry_vetoed`], also enforced by the sampler actor's
-/// `classify_error`).
+/// Retry transient failures per the canonical rule, excluding rate limits
+/// (which need Retry-After-scale waits) and shared retry vetoes.
 fn should_retry_side_question(e: &SamplingError) -> bool {
-    e.is_overloaded() && !e.is_retry_vetoed()
+    e.is_retryable() && !e.is_rate_limited() && !e.is_retry_vetoed()
 }
 
 /// Clone the base `/btw` request and stamp a fresh `req_id`, so retried
@@ -62,63 +59,30 @@ impl SessionActor {
             .await
             .map_err(|e| SideQuestionError::PrepareClient(e.to_string()))?;
 
-        // Full conversation snapshot including system prompt, tool calls, and results.
-        // Strip reasoning/thinking blocks from assistant items so we don't send
-        // `ContentBlock::Thinking` without a top-level `thinking` config. The
-        // Anthropic Messages API rejects requests that include thinking blocks in
-        // messages but omit the `thinking` parameter.
+        // Only Messages rejects replayed thinking without a top-level config;
+        // other backends retain it so the parent cache prefix stays identical.
+        let conversation = self.chat_state_handle.get_conversation().await;
         let mut items: Vec<ConversationItem> =
-            xai_chat_state::compaction_utils::strip_reasoning_blocks(
-                self.chat_state_handle.get_conversation().await,
-            );
+            if sampling_client.api_backend().requires_reasoning_strip() {
+                xai_chat_state::compaction_utils::strip_reasoning_blocks(conversation)
+            } else {
+                conversation
+            };
 
         // /btw fires mid-turn, so the snapshot may end with an assistant
         // message whose tool_calls have no matching ToolResult yet. The
         // Anthropic Messages API rejects this with "tool_use ids were found
         // without tool_result blocks". Truncate the trailing incomplete
         // assistant+tool_result run.
-        while let Some(last) = items.last() {
-            match last {
-                ConversationItem::Assistant(a) if !a.tool_calls.is_empty() => {
-                    items.pop();
-                }
-                ConversationItem::ToolResult(_) => {
-                    items.pop();
-                }
-                _ => break,
-            }
-        }
+        crate::session::helpers::session_recap::pop_trailing_tool_run(&mut items);
 
-        // Wrap the question in a <system-reminder> user message.
-        let tag = self.reminder_wrapper_tag();
-        let wrapped_question = format!(
-            "<{tag}>This is a side question from the user. \
-             You must answer this question directly in a single response.\n\n\
-             IMPORTANT CONTEXT:\n\
-             - You are a separate, lightweight agent spawned to answer this one question\n\
-             - The main agent is NOT interrupted - it continues working independently in the background\n\
-             - You share the conversation context but are a completely separate instance\n\
-             - Do NOT reference being interrupted or what you were \"previously doing\" - that framing is incorrect\n\n\
-             CRITICAL CONSTRAINTS:\n\
-             - You have NO tools available - you cannot read files, run commands, search, or take any actions\n\
-             - This is a one-off response - there will be no follow-up turns\n\
-             - You can ONLY provide information based on what you already know from the conversation context\n\
-             - NEVER say things like \"Let me try...\", \"I'll now...\", \"Let me check...\", or promise to take any action\n\
-             - If you don't know the answer, say so - do not offer to look it up or investigate\n\n\
-             Simply answer the question with the information you have.</{tag}>\n\n\
-             {question}"
-        );
-        items.push(ConversationItem::user(wrapped_question));
+        let (instruction, tool_specs, hosted_tools) =
+            self.side_question_prompt_and_tools(question).await;
+        items.push(instruction);
 
-        let tool_definitions = self.prepare_tool_definitions().await;
-        let tool_specs: Vec<ToolSpec> = tool_definitions.into_iter().map(ToolSpec::from).collect();
-
-        let model = self
-            .chat_state_handle
-            .get_sampling_config()
-            .await
-            .map(|c| c.model)
-            .unwrap_or_default();
+        let sampling_config = self.chat_state_handle.get_sampling_config().await;
+        let reasoning_effort = sampling_config.as_ref().and_then(|c| c.reasoning_effort);
+        let model = sampling_config.map(|c| c.model).unwrap_or_default();
 
         let persist = |answer: String, success: bool, error: Option<String>, attempts: u32| {
             let _ = self.notifications.persistence_tx.send(PersistenceMsg::Btw(
@@ -144,16 +108,16 @@ impl SessionActor {
         // Built once; each attempt clones it and stamps a fresh req_id (the
         // per-attempt clone is the cost of the owned-request API — retries
         // are rare, so the success path pays exactly one clone).
-        let base_request = ConversationRequest {
+        let base_request = self.parent_cached_request(AuxCall {
             items,
             tools: tool_specs,
-            model: Some(model.clone()),
-            temperature: None,
-            x_grok_conv_id: Some(btw_session_id.clone()),
-            x_grok_session_id: Some(parent_session_id.clone()),
-            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
-            ..Default::default()
-        };
+            hosted_tools,
+            model: model.clone(),
+            reasoning_effort,
+            backend: sampling_client.api_backend(),
+            conv_id: btw_session_id.clone(),
+            req_id: format!("xai-btw-{}", uuid::Uuid::new_v4()),
+        });
 
         // conversation_collect is one-shot (no sampler-actor retry); /btw adds
         // its own bounded overload-only retry (policy + predicate above).
@@ -168,13 +132,14 @@ impl SessionActor {
                     tracing::warn!(
                         backoff_ms = backoff.as_millis() as u64,
                         error = %e,
-                        "side question overload; retrying"
+                        "side question transient failure; retrying"
                     );
                 })
                 .await;
 
         match result {
             Ok(response) => {
+                log_prompt_cache_hit("btw", sampling_client.api_backend(), &response);
                 let content = response.assistant_text();
                 if content.is_empty() {
                     let err = SideQuestionError::EmptyResponse;
@@ -190,6 +155,39 @@ impl SessionActor {
                 Err(err)
             }
         }
+    }
+
+    /// `/btw` ships main-turn tool definitions unchanged to preserve the
+    /// provider cache prefix; the instruction forbids invoking them.
+    async fn side_question_prompt_and_tools(
+        &self,
+        question: &str,
+    ) -> (
+        ConversationItem,
+        Vec<ToolSpec>,
+        Vec<xai_grok_sampling_types::HostedTool>,
+    ) {
+        let tag = self.reminder_wrapper_tag();
+        let instruction = ConversationItem::user(format!(
+            "<{tag}>This is a side question from the user. \
+             You must answer this question directly in a single response.\n\n\
+             IMPORTANT CONTEXT:\n\
+             - You are a separate, lightweight agent spawned to answer this one question\n\
+             - The main agent is NOT interrupted - it continues working independently in the background\n\
+             - You share the conversation context but are a completely separate instance\n\
+             - Do NOT reference being interrupted or what you were \"previously doing\" - that framing is incorrect\n\n\
+             CRITICAL CONSTRAINTS:\n\
+             - Do NOT call any tools, respond with plain text only\n\
+             - A tool call cannot help you: nothing runs on the user's machine and you get no turn in which to read a result\n\
+             - This is a one-off response - there will be no follow-up turns\n\
+             - You can ONLY provide information based on what you already know from the conversation context\n\
+             - NEVER say things like \"Let me try...\", \"I'll now...\", \"Let me check...\", or promise to take any action\n\
+             - If you don't know the answer, say so - do not offer to look it up or investigate\n\n\
+             Simply answer the question with the information you have.</{tag}>\n\n\
+             {question}"
+        ));
+        let tool_specs = self.turn_base_tool_specs(&self.prepare_tool_definitions().await);
+        (instruction, tool_specs, self.hosted_tools_for_turn())
     }
 
     /// Generate a session recap and broadcast it via
@@ -217,6 +215,10 @@ impl SessionActor {
         let last = if stored > main_turns {
             let healed = main_turns.saturating_sub(1);
             self.last_recap_main_turn.set(healed);
+            session_recap::save_recap_watermark(
+                &crate::session::persistence::session_dir(&self.session_info),
+                healed,
+            );
             healed
         } else {
             stored
@@ -253,8 +255,8 @@ impl SessionActor {
         // (not on failure/empty/cancel) so auto can retry later for this turn if needed.
         let clear_in_flight = || self.recap_in_flight.set(false);
 
-        let sampling_client = match self.prepare_chat_completion(false).await {
-            Ok(c) => c,
+        let setup = match self.prepare_side_call().await {
+            Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, "recap: failed to prepare sampling client");
                 clear_in_flight();
@@ -267,24 +269,15 @@ impl SessionActor {
         };
 
         let tag = self.reminder_wrapper_tag();
-        // Strip reasoning only on the Messages backend (it rejects thinking
-        // blocks without a `thinking` config). Other backends keep reasoning
-        // verbatim so the prefix matches the last turn and the prefix KV
-        // cache stays warm. Mirrors compaction's `summary_strips_reasoning`.
-        let strip_reasoning =
-            sampling_client.api_backend() == crate::sampling::ApiBackend::Messages;
+        let items = session_recap::budget_recap_items(
+            conversation,
+            tag,
+            setup.strip_reasoning,
+            setup.context_window,
+        );
 
-        // Budget off the recap model's context window (today the session model).
-        // One read serves both the window and the model.
-        let sampling_config = self.chat_state_handle.get_sampling_config().await;
-        let context_window = sampling_config
-            .as_ref()
-            .map(|c| c.context_window.get())
-            .unwrap_or(DEFAULT_CONTEXT_WINDOW);
-        let items =
-            session_recap::budget_recap_items(conversation, tag, strip_reasoning, context_window);
-
-        let model = sampling_config.map(|c| c.model).unwrap_or_default();
+        let strip_reasoning = setup.strip_reasoning;
+        let model = setup.model.clone();
 
         // Leave BOTH temperature and max_output_tokens unset: the cli-chat-proxy
         // layer may inject a `thinking` budget for thinking-enabled models
@@ -294,34 +287,16 @@ impl SessionActor {
         // ~25–40 words, and `clean_recap_text` caps it at a generous
         // RECAP_MAX_CHARS safety net, so an explicit token cap isn't needed.
         let started_at = chrono::Utc::now().to_rfc3339();
-        // The recap reuses the session's existing prompt prefix. Keep the
-        // conversation identity stable so Codex can address the same prompt
-        // cache entry; the request ID below remains unique for diagnostics.
-        let x_grok_conv_id = self.session_info.id.to_string();
+        let x_grok_conv_id = format!("recap-{}", uuid::Uuid::new_v4());
         let x_grok_req_id = format!("xai-recap-{}", uuid::Uuid::new_v4());
         // Clone the exact request items for the on-disk artifact (recap never
         // mutates conversation state, so this file is the only durable record).
         let chat_history_for_artifact = items.clone();
-        // Main-turn tool specs: tools serialize into the cached token prefix.
-        let tool_defs = self.prepare_tool_definitions().await;
-        let tools = self.turn_base_tool_specs(&tool_defs);
-        // Mirror the main turn's hosted tools so a recap can't search past the active cutoff.
-        let hosted_tools = self.hosted_tools_for_turn();
-        let request = ConversationRequest {
-            items,
-            tools,
-            hosted_tools,
-            model: Some(model.clone()),
-            temperature: None,
-            x_grok_conv_id: Some(x_grok_conv_id.clone()),
-            x_grok_req_id: Some(x_grok_req_id.clone()),
-            x_grok_session_id: Some(self.session_info.id.to_string()),
-            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
-            prompt_cache_key: Some(self.session_info.id.to_string()),
-            ..Default::default()
-        };
+        let request = self
+            .side_call_request(&setup, items, x_grok_conv_id.clone(), x_grok_req_id.clone())
+            .await;
 
-        let response = match sampling_client.conversation_collect(request).await {
+        let response = match setup.client.conversation_collect(request).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, "recap: model call failed");
@@ -347,6 +322,7 @@ impl SessionActor {
             }
         };
 
+        log_prompt_cache_hit("recap", setup.client.api_backend(), &response);
         let raw_response = response.assistant_text();
         let summary = session_recap::clean_recap_text(&raw_response);
         if summary.is_empty() {
@@ -453,7 +429,7 @@ impl SessionActor {
 
     /// Invalidate in-flight recap (real user prompt at queue time / turn start).
     pub(crate) fn cancel_pending_recap_for_new_prompt(&self) {
-        self.recap_epoch.set(self.recap_epoch.get().wrapping_add(1));
+        self.invalidate_side_calls_for_new_prompt();
     }
 
     /// Whether `epoch` is stale because a newer prompt started.
@@ -470,6 +446,10 @@ impl SessionActor {
         } else {
             self.last_recap_main_turn.set(main_turns);
             self.recap_in_flight.set(false);
+            crate::session::helpers::session_recap::save_recap_watermark(
+                &crate::session::persistence::session_dir(&self.session_info),
+                main_turns,
+            );
             true
         }
     }
@@ -775,8 +755,8 @@ mod tests {
     }
 
     #[test]
-    fn side_question_retries_overload_only() {
-        // Stream overload and its proxy-wrapped 500 shape retry; so does 529.
+    fn side_question_retries_transient_failures() {
+        // Stream overload and retryable server failures use the shared policy.
         assert!(should_retry_side_question(&SamplingError::StreamError {
             error_type: "overloaded_error".into(),
             message: "Overloaded".into(),
@@ -800,9 +780,10 @@ mod tests {
             "invalid_request_error: prompt is too long: 300000 tokens > 200000 maximum",
             None
         )));
-        // Rate limit and generic 5xx are not overload — no /btw retry.
+        // Rate limits need a longer Retry-After-scale budget, while ordinary
+        // eligible 5xx failures fit this side-call's bounded retry window.
         assert!(!should_retry_side_question(&api(429, "slow down", None)));
-        assert!(!should_retry_side_question(&api(
+        assert!(should_retry_side_question(&api(
             503,
             "upstream connect timeout",
             None

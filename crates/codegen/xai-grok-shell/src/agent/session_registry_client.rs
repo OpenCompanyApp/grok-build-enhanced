@@ -191,7 +191,7 @@ impl SessionRegistryClient {
     }
 
     /// Execute with auth middleware, returning the response plus the
-    /// bearer suffix the middleware stamped (for truthful 401
+    /// non-secret bearer-presence marker the middleware stamped (for truthful 401
     /// attribution in [`Self::check_response`]).
     async fn send_authed(
         &self,
@@ -199,7 +199,7 @@ impl SessionRegistryClient {
         op: &'static str,
     ) -> Result<(
         reqwest::Response,
-        Option<xai_grok_auth::StampedBearerSuffix>,
+        Option<xai_grok_auth::StampedBearerPresent>,
     )> {
         let builder = xai_file_utils::trace_context::inject_trace_context_into_request(builder);
         let request = builder.build().context(op)?;
@@ -220,7 +220,7 @@ impl SessionRegistryClient {
     fn check_response(
         &self,
         response: reqwest::Response,
-        stamp: Option<&xai_grok_auth::StampedBearerSuffix>,
+        stamp: Option<&xai_grok_auth::StampedBearerPresent>,
         op: &str,
     ) -> anyhow::Error {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
@@ -237,8 +237,12 @@ impl SessionRegistryClient {
     /// `"session register"`).
     ///
     /// `stamp` is what the middleware put on the wire (see
-    /// [`xai_grok_auth::StampedBearerSuffix`] for why never a re-resolution).
-    fn record_401_attribution(&self, op: &str, stamp: Option<&xai_grok_auth::StampedBearerSuffix>) {
+    /// [`xai_grok_auth::StampedBearerPresent`] for why never a re-resolution).
+    fn record_401_attribution(
+        &self,
+        op: &str,
+        stamp: Option<&xai_grok_auth::StampedBearerPresent>,
+    ) {
         if let Some(manager) = self.credentials.auth_manager() {
             crate::auth::attribution::record_consumer_401(
                 manager.as_ref(),
@@ -323,7 +327,7 @@ impl SessionRegistryClient {
     }
 
     /// GET /v1/sessions/{id}/download — returns a signed GCS URL without downloading.
-    pub async fn get_download_url(
+    pub(crate) async fn get_download_url(
         &self,
         session_id: &str,
         file: &str,

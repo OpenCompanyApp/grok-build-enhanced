@@ -39,6 +39,10 @@ pub(crate) fn recap_instruction(tag: &str) -> String {
         "<{tag}>Write ONE sentence recap body for a user returning from idle. \
          Output ONLY the body (the UI adds the \"Recap —\" label). \
          Do NOT call any tools — respond with plain text only.\n\n\
+         LANGUAGE: write the body in the language the user's own chat messages \
+         are written in (ignore reminder-tagged turns like this one; user \
+         instructions such as AGENTS.md may override). Keep code identifiers \
+         verbatim.\n\n\
          Lead with agency:\n\
          - \"You asked …\" if the session was mainly questions, walkthroughs, or review with no landed change.\n\
          - \"We <past-tense verb> …\" if the agent implemented, fixed, merged, or changed code/config/docs \
@@ -52,6 +56,7 @@ pub(crate) fn recap_instruction(tag: &str) -> String {
          We merged the feature branch: kept the new telemetry hooks, dropped the obsolete feature flag in `config/flags.toml`.\n\n\
          Bad (never):\n\
          - Start with Recap / Session recap / extra labels\n\
+         - English recap for a non-English session\n\
          - Quote or restate this reminder or any system prompt\n\
          - Bullets, markdown, code fences, extra sentences\n\
          - Call tools or emit tool/function calls\n\
@@ -78,6 +83,15 @@ pub(crate) fn build_recap_items(
     tag: &str,
     strip_reasoning: bool,
 ) -> Vec<ConversationItem> {
+    build_instruction_items(conversation, recap_instruction(tag), strip_reasoning)
+}
+
+/// Instruction-generic request builder shared with the turn-summary side-call.
+pub(crate) fn build_instruction_items(
+    conversation: Vec<ConversationItem>,
+    instruction: String,
+    strip_reasoning: bool,
+) -> Vec<ConversationItem> {
     let mut items = if strip_reasoning {
         xai_chat_state::compaction_utils::strip_reasoning_blocks(conversation)
     } else {
@@ -86,7 +100,7 @@ pub(crate) fn build_recap_items(
 
     pop_trailing_tool_run(&mut items);
 
-    items.push(ConversationItem::user(recap_instruction(tag)));
+    items.push(ConversationItem::user(instruction));
     items
 }
 
@@ -130,18 +144,34 @@ pub(crate) fn budget_recap_items(
     strip_reasoning: bool,
     context_window: u64,
 ) -> Vec<ConversationItem> {
+    budget_instruction_items(
+        conversation,
+        recap_instruction(tag),
+        strip_reasoning,
+        context_window,
+    )
+}
+
+/// Instruction-generic core of [`budget_recap_items`], shared with the
+/// turn-summary side-call.
+pub(crate) fn budget_instruction_items(
+    conversation: Vec<ConversationItem>,
+    instruction: String,
+    strip_reasoning: bool,
+    context_window: u64,
+) -> Vec<ConversationItem> {
     let effective_window = context_window.min(RECAP_CONTEXT_WINDOW_CAP);
     let prompt_budget = (effective_window.saturating_mul(RECAP_BUDGET_THRESHOLD_PERCENT) / 100)
         .saturating_sub(RECAP_BUDGET_HEADROOM_TOKENS);
 
-    let instruction = ConversationItem::user(recap_instruction(tag));
-    let snapshot_budget = prompt_budget.saturating_sub(estimate_item_tokens(&instruction));
+    let instruction_item = ConversationItem::user(instruction.clone());
+    let snapshot_budget = prompt_budget.saturating_sub(estimate_item_tokens(&instruction_item));
 
     // Un-stripped estimate is a safe upper bound (stripping only shrinks); the
     // verbatim path keeps the grok prefix cache warm.
     let pre_tokens = estimate_conversation_tokens(&conversation);
     if pre_tokens <= snapshot_budget {
-        return build_recap_items(conversation, tag, strip_reasoning);
+        return build_instruction_items(conversation, instruction, strip_reasoning);
     }
 
     // Normalize the trailing boundary BEFORE trimming (ordering matters — see doc).
@@ -159,7 +189,7 @@ pub(crate) fn budget_recap_items(
         post_tokens,
         "recap over budget: trimmed conversation to fit"
     );
-    items.push(instruction);
+    items.push(instruction_item);
     items
 }
 
@@ -168,13 +198,13 @@ pub(crate) fn budget_recap_items(
 /// any trailing `Assistant` with `tool_calls` (complete runs included) — so it ends on
 /// a clean boundary and the appended `User` instruction never follows a
 /// `tool_use`/`tool_result`.
-fn pop_trailing_tool_run(items: &mut Vec<ConversationItem>) {
+pub(crate) fn pop_trailing_tool_run(items: &mut Vec<ConversationItem>) {
     while let Some(last) = items.last() {
         match last {
             ConversationItem::Assistant(a) if !a.tool_calls.is_empty() => {
                 items.pop();
             }
-            ConversationItem::ToolResult(_) => {
+            ConversationItem::ToolResult(_) | ConversationItem::Reasoning(_) => {
                 items.pop();
             }
             _ => break,
@@ -184,6 +214,9 @@ fn pop_trailing_tool_run(items: &mut Vec<ConversationItem>) {
 
 /// Minimum main turns before an automatic return-from-away recap (manual exempt).
 pub(crate) const MIN_TURNS_FOR_AUTO_RECAP: usize = 3;
+
+/// Durable auto-recap watermark under the session directory.
+pub(crate) const RECAP_WATERMARK_FILE: &str = "last_recap_main_turn";
 
 /// Real user prompts (`synthetic_reason.is_none()`), not assistant/tool items.
 pub(crate) fn main_turn_count(conversation: &[ConversationItem]) -> usize {
@@ -196,6 +229,23 @@ pub(crate) fn main_turn_count(conversation: &[ConversationItem]) -> usize {
             )
         })
         .count()
+}
+
+pub(crate) fn load_recap_watermark(session_dir: &std::path::Path) -> usize {
+    std::fs::read_to_string(session_dir.join(RECAP_WATERMARK_FILE))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+pub(crate) fn save_recap_watermark(session_dir: &std::path::Path, main_turns: usize) {
+    if !session_dir.is_dir() {
+        return;
+    }
+    let path = session_dir.join(RECAP_WATERMARK_FILE);
+    if let Err(error) = std::fs::write(&path, main_turns.to_string()) {
+        tracing::warn!(%error, path = %path.display(), "failed to persist recap watermark");
+    }
 }
 
 /// Manual: any `main_turns > 0`. Auto: new turn since `last`, min turns, idle.

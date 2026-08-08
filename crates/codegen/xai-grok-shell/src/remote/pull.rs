@@ -158,6 +158,8 @@ pub(crate) mod hydrate {
             // Credential record identities are local-only and are never
             // reconstructed from remote session metadata.
             credential_binding: None,
+            last_turn_summary: None,
+            last_turn_summary_prompt_id: None,
         };
 
         let json = serde_json::to_string_pretty(&summary)?;

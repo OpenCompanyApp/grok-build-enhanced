@@ -108,14 +108,13 @@ pub fn rate_limited_user_message(is_api_key_auth: bool) -> &'static str {
         RATE_LIMITED_USER_MESSAGE_OAUTH
     }
 }
-
 /// User-facing copy for capacity/overload failures (stream `overloaded_error`,
 /// HTTP 529, proxy-wrapped 5xx). See [`SamplingError::is_overloaded`].
 pub const OVERLOADED_USER_MESSAGE: &str = "Model is temporarily overloaded. Try again in a moment.";
 
 /// Map a `SamplingError` to an ACP `Error` for client-facing responses.
 /// This stays in xai-grok-shell because it depends on `agent_client_protocol::Error`.
-pub fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
+pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
     use reqwest::StatusCode;
     // Capacity/overload gets the same short copy on every surface. Message
     // only, `data` deliberately unset: `Display` appends JSON-encoded `data`,
@@ -215,7 +214,10 @@ pub fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
     }
 }
 
-pub fn error_data_with_status(message: String, http_status: Option<u16>) -> serde_json::Value {
+pub(crate) fn error_data_with_status(
+    message: String,
+    http_status: Option<u16>,
+) -> serde_json::Value {
     match http_status {
         Some(sc) => serde_json::json!({ "message": message, "http_status": sc }),
         None => serde_json::Value::String(message),
@@ -223,7 +225,7 @@ pub fn error_data_with_status(message: String, http_status: Option<u16>) -> serd
 }
 
 /// Terminal-failure `acp::Error.data`: max-tokens truncation carries an `error_kind` marker (the kind's stable `as_str` name); other kinds keep the legacy shape.
-pub fn terminal_error_data(
+pub(crate) fn terminal_error_data(
     message: String,
     http_status: Option<u16>,
     kind: xai_grok_sampler::SamplingErrorKind,
@@ -325,7 +327,7 @@ pub fn prompt_usage_from_error(
 /// notification from a prompt result. Rate-limit errors produce
 /// `("rate_limit", null)` so the client shows its own upgrade message;
 /// other errors produce `("error", <detail>)`.
-pub fn prompt_complete_fields(
+pub(crate) fn prompt_complete_fields(
     result: &std::result::Result<acp::StopReason, acp::Error>,
 ) -> (serde_json::Value, serde_json::Value) {
     match result {

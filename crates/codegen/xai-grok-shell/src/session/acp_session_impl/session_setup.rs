@@ -45,6 +45,18 @@ impl SessionActor {
         let bridge = self.agent.borrow().tool_bridge().clone();
         bridge.on_skill_discovery_clear().await;
         save_system_prompt(&self.session_info, &system_prompt);
+        let model_id = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|config| qualified_system_prompt_model_id(config.provider, &config.model))
+            .unwrap_or_else(|| "unknown".to_string());
+        let provenance = infer_system_prompt_provenance(
+            &system_prompt,
+            self.agent.borrow().system_prompt(),
+            model_id,
+        );
+        save_system_prompt_provenance(&self.session_info, &provenance);
         let system_message = ConversationItem::system(system_prompt);
         let mut messages = vec![system_message];
         if let Some(effects) = self.inject_baseline_skill_reminder(&mut messages).await
@@ -102,7 +114,7 @@ impl SessionActor {
     }
     pub(super) async fn build_prefix_background(&self) -> String {
         let start = std::time::Instant::now();
-        if matches!(self.mcp_strategy, McpInitStrategy::Blocking) {
+        if matches!(self.mcp_strategy.get(), McpInitStrategy::Blocking) {
             use xai_grok_agent::prompt::user_message::UserMessageTemplate;
             let mcp_wait = match self.agent.borrow().definition().user_message_template {
                 UserMessageTemplate::Default => std::time::Duration::from_secs(15),

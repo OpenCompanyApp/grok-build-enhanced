@@ -82,6 +82,7 @@ impl TrackedTask {
 
     pub(super) fn to_snapshot(&self, task_id: &str, out: SnapshotOutput) -> TaskSnapshot {
         let completed = self.completed || out.exit_code.is_some() || out.signal.is_some();
+        let output_total_bytes = out.output.len();
         TaskSnapshot {
             task_id: task_id.to_string(),
             command: self.command.clone(),
@@ -104,6 +105,7 @@ impl TrackedTask {
             description: self.description.clone(),
             // ACP tracked tasks are only registered via run_background.
             is_backgrounded: true,
+            output_total_bytes,
         }
     }
 }

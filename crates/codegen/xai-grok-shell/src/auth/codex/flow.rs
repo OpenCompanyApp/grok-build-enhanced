@@ -1,5 +1,6 @@
 use tokio_util::sync::CancellationToken;
 
+use super::policy::CodexManagedAuthPolicy;
 use super::{
     CodexAuthError, CodexAuthManager, CodexCredentialStore, CodexCredentials, CodexLogoutResult,
     CodexOAuthClient,
@@ -10,6 +11,11 @@ use super::{
 /// `device_auth = false` uses browser OAuth with PKCE and callback-state
 /// validation. `true` uses OpenAI's current device authorization flow.
 pub async fn run_codex_cli_login(device_auth: bool) -> Result<CodexCredentials, CodexAuthError> {
+    // Resolve trusted local policy before reading stored credentials or making
+    // any OAuth request. The direct adapter has no API-key login fallback.
+    let managed_policy = CodexManagedAuthPolicy::load()?;
+    managed_policy.ensure_usable()?;
+    let allowed_workspaces = managed_policy.allowed_workspaces().map(<[_]>::to_vec);
     let grok_home = crate::util::grok_home::grok_home();
     let store = CodexCredentialStore::new(&grok_home);
     let oauth = CodexOAuthClient::new();
@@ -23,10 +29,15 @@ pub async fn run_codex_cli_login(device_auth: bool) -> Result<CodexCredentials, 
             authorization.user_code()
         );
         oauth
-            .complete_device_login(authorization, &store, None, &cancellation)
+            .complete_device_login(
+                authorization,
+                &store,
+                allowed_workspaces.as_deref(),
+                &cancellation,
+            )
             .await
     } else {
-        let pending = oauth.begin_browser_login(None).await?;
+        let pending = oauth.begin_browser_login(allowed_workspaces).await?;
         println!("Open this URL to sign in to ChatGPT:");
         println!("{}", pending.authorization_url());
         if pending.open_browser().is_err() {

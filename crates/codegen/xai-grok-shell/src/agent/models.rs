@@ -331,6 +331,10 @@ struct Inner {
     xai_fetch_generation: AtomicU64,
     /// Guard to prevent overlapping retry loops.
     retry_in_flight: AtomicBool,
+    /// Set once a user explicitly selects a model. A late first xAI catalog
+    /// must not clobber that selection (including an independently discovered
+    /// Codex or Kimi model).
+    user_selected_model: AtomicBool,
     /// `allowed_models` matched nothing in the fetched catalog; the prompt path
     /// blocks rather than run on the bundled default. Set in `apply_refresh_result`.
     allowlist_excludes_all: AtomicBool,
@@ -425,6 +429,7 @@ impl ModelsManager {
                 catalog_write_gate: parking_lot::Mutex::new(()),
                 xai_fetch_generation: AtomicU64::new(1),
                 retry_in_flight: AtomicBool::new(false),
+                user_selected_model: AtomicBool::new(false),
                 allowlist_excludes_all: AtomicBool::new(false),
                 model_switch_watch: tokio::sync::watch::channel(0u64).0,
             }),
@@ -820,6 +825,13 @@ impl ModelsManager {
     }
 
     pub fn set_current_model_id(&self, id: acp::ModelId) {
+        self.inner
+            .user_selected_model
+            .store(true, Ordering::Relaxed);
+        self.set_current_model_id_internal(id);
+    }
+
+    fn set_current_model_id_internal(&self, id: acp::ModelId) {
         // Only bump the model-switch generation on a real change.
         // The pager's `/model` handler can call this with the
         // already-active id during re-resolution; bumping the counter
@@ -859,11 +871,11 @@ impl ModelsManager {
         self.inner.models.write().insert(id.into(), entry);
     }
 
-    pub fn current_reasoning_effort(&self) -> Option<ReasoningEffort> {
+    pub(crate) fn current_reasoning_effort(&self) -> Option<ReasoningEffort> {
         *self.inner.current_reasoning_effort.read()
     }
 
-    pub fn set_current_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
+    pub(crate) fn set_current_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
         *self.inner.current_reasoning_effort.write() = effort;
     }
 
@@ -1059,7 +1071,7 @@ impl ModelsManager {
             .unwrap_or(false)
     }
 
-    pub fn model_compactions_remaining(
+    pub(crate) fn model_compactions_remaining(
         &self,
         model_id: &str,
     ) -> Option<xai_grok_sampling_types::CompactionsRemaining> {
@@ -1070,7 +1082,7 @@ impl ModelsManager {
             .and_then(|e| e.info().compactions_remaining)
     }
 
-    pub fn model_compaction_at_tokens(
+    pub(crate) fn model_compaction_at_tokens(
         &self,
         model_id: &str,
     ) -> Option<xai_grok_sampling_types::CompactionAtTokens> {
@@ -1493,7 +1505,7 @@ impl ModelsManager {
         *self.inner.prefetched.write() = Some(cached.models.clone());
         self.rebuild_unlocked(&cfg, Some(cached.models));
         *self.inner.etag.write() = cached.etag;
-        if first_xai_catalog {
+        if first_xai_catalog && !self.inner.user_selected_model.load(Ordering::Relaxed) {
             self.reselect_default_model(&cfg);
         } else {
             self.reselect_current_model_if_missing(&cfg);
@@ -1751,6 +1763,19 @@ impl ModelsManager {
 
     /// Caller holds `catalog_write_gate`.
     fn clear_xai_catalog_unlocked(&self) {
+        let selected_xai_model = {
+            let current = self.inner.current_model_id.read();
+            let models = self.inner.models.read();
+            model_entry_by_id_or_slug(&models, current.0.as_ref())
+                .is_some_and(|entry| entry.info().provider == ProviderId::Xai)
+        };
+        if selected_xai_model {
+            // A new xAI identity must not inherit the prior account's explicit
+            // xAI choice. Provider-isolated selections remain untouched.
+            self.inner
+                .user_selected_model
+                .store(false, Ordering::Relaxed);
+        }
         self.inner
             .xai_fetch_generation
             .fetch_add(1, Ordering::AcqRel);
@@ -2222,7 +2247,7 @@ impl ModelsManager {
             tracing::error!("allowed_models excludes all fetched models; prompts will be blocked");
         }
 
-        if first_xai_catalog {
+        if first_xai_catalog && !self.inner.user_selected_model.load(Ordering::Relaxed) {
             self.reselect_default_model(config);
         } else {
             self.reselect_current_model_if_missing(config);
@@ -2258,7 +2283,7 @@ impl ModelsManager {
             old = %current.0, new = %new_id.0, source = %source,
             "current model not in new catalog, reselecting default"
         );
-        self.set_current_model_id(new_id);
+        self.set_current_model_id_internal(new_id);
     }
 
     /// Re-resolve the default model against the current catalog.
@@ -2277,7 +2302,7 @@ impl ModelsManager {
                 old = %current.0, new = %new_id.0, source = %source,
                 "re-resolved default model after catalog populated"
             );
-            self.set_current_model_id(new_id);
+            self.set_current_model_id_internal(new_id);
         }
     }
 }
@@ -2742,7 +2767,17 @@ fn resolve_prefetch_env(grok_com_config: Option<GrokComConfig>) -> Option<Prefet
 /// `try_ensure_fresh_auth`), pass them here to avoid re-reading stale cached
 /// credentials from disk.
 pub fn start_early_prefetch_with_auth(auth: Option<GrokAuth>) -> Option<EarlyPrefetchHandle> {
+    start_early_prefetch_with_auth_gated(auth, true)
+}
+
+fn start_early_prefetch_with_auth_gated(
+    auth: Option<GrokAuth>,
+    sync_managed: bool,
+) -> Option<EarlyPrefetchHandle> {
     let env = resolve_prefetch_env_with_auth(auth)?;
+    if sync_managed {
+        spawn_managed_config_sync_if_stale(&env.endpoints);
+    }
     spawn_prefetch_thread(env)
 }
 
@@ -2751,7 +2786,25 @@ pub fn start_early_prefetch_with_auth(auth: Option<GrokAuth>) -> Option<EarlyPre
 /// Convenience wrapper that reads cached auth from disk. Prefer
 /// `start_early_prefetch_with_auth` when you have pre-resolved credentials.
 pub fn start_early_prefetch(grok_com_config: Option<GrokComConfig>) -> Option<EarlyPrefetchHandle> {
+    start_early_prefetch_impl(grok_com_config, true)
+}
+
+/// Prefetch models and settings without managed-config sync. This is the only
+/// variant safe before the fail-closed managed-policy gate.
+pub fn start_early_prefetch_settings_only(
+    grok_com_config: Option<GrokComConfig>,
+) -> Option<EarlyPrefetchHandle> {
+    start_early_prefetch_impl(grok_com_config, false)
+}
+
+fn start_early_prefetch_impl(
+    grok_com_config: Option<GrokComConfig>,
+    sync_managed: bool,
+) -> Option<EarlyPrefetchHandle> {
     let env = resolve_prefetch_env(grok_com_config)?;
+    if sync_managed {
+        spawn_managed_config_sync_if_stale(&env.endpoints);
+    }
     spawn_prefetch_thread(env)
 }
 
@@ -2769,23 +2822,47 @@ fn spawn_prefetch_thread(env: PrefetchEnv) -> Option<EarlyPrefetchHandle> {
                     env.auth.as_ref(),
                     env.model_fetch_auth,
                 );
-                if (env.endpoints.deployment_key.is_some()
-                    || crate::managed_config::has_active_team_auth())
-                    && crate::config::is_managed_config_stale_for(
-                        &crate::managed_config::current_serving_identity(),
-                    )
-                    && crate::managed_config::is_fetch_enabled()
-                    && let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                {
-                    crate::managed_config::clear_orphan();
-                    let _ = rt.block_on(crate::managed_config::sync());
-                }
-
                 EarlyPrefetchResult { models, settings }
             }),
     )
+}
+
+/// Best-effort, bounded managed-config sync on a detached worker, off the
+/// readiness path. The steady-state interval task owns later refreshes.
+fn spawn_managed_config_sync_if_stale(endpoints: &config::EndpointsConfig) {
+    let should_sync = (endpoints.deployment_key.is_some()
+        || crate::managed_config::has_active_team_auth())
+        && crate::config::is_managed_config_stale_for(
+            &crate::managed_config::current_serving_identity(),
+        )
+        && crate::managed_config::is_fetch_enabled();
+    if !should_sync {
+        return;
+    }
+    let Some(handle) = retain_worker_thread(
+        "startup managed config sync",
+        std::thread::Builder::new()
+            .name("grok-managed-config-sync".to_owned())
+            .spawn(|| {
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                crate::managed_config::clear_orphan();
+                let _ = runtime.block_on(async {
+                    tokio::time::timeout(
+                        crate::http::STARTUP_FETCH_TIMEOUT,
+                        crate::managed_config::sync(),
+                    )
+                    .await
+                });
+            }),
+    ) else {
+        return;
+    };
+    drop(handle);
 }
 
 /// Map a model id (catalog key or routing slug) to its catalog key.

@@ -9,6 +9,18 @@ pub(super) fn prompt_mode_from_session_mode_id(session_mode_id: &acp::SessionMod
         SessionMode::Default => PromptMode::Agent,
     }
 }
+/// Inverse of [`prompt_mode_from_session_mode_id`]: the mode id a client
+/// displays for a prompt mode. Needed wherever a transition the client did not
+/// drive has to be reported back to it.
+pub(super) fn session_mode_id_from_prompt_mode(prompt_mode: PromptMode) -> acp::SessionModeId {
+    use xai_grok_tools::types::SessionMode;
+    let mode = match prompt_mode {
+        PromptMode::Plan => SessionMode::Plan,
+        PromptMode::Ask => SessionMode::Ask,
+        PromptMode::Agent => SessionMode::Default,
+    };
+    acp::SessionModeId::new(mode.as_id())
+}
 /// Pass-through twin: no toolset in this build carries a plan-gated tool.
 pub(super) fn filter_cursor_tools_by_plan_mode(
     defs: Vec<ToolDefinition>,
@@ -26,6 +38,20 @@ impl SessionActor {
     /// both configurations.
     pub(super) fn is_cursor_harness(&self) -> bool {
         false
+    }
+
+    /// Settle the mode a turn runs in, applying the prompt's declaration when
+    /// it made one. Synthetic turns inherit the session mode because their
+    /// placeholder Agent mode is not a user-authored transition.
+    pub(super) fn resolve_turn_prompt_mode(
+        &self,
+        origin: &crate::session::PromptOrigin,
+        declared: PromptMode,
+    ) -> PromptMode {
+        if !origin.is_synthetic() {
+            self.reconcile_plan_mode_with_prompt(declared);
+        }
+        *self.current_prompt_mode.lock()
     }
     pub(super) async fn handle_session_mode(&self, session_mode_id: acp::SessionModeId) {
         use xai_grok_tools::types::SessionMode;
@@ -150,6 +176,7 @@ impl SessionActor {
                 let entered = self.plan_mode.lock().enter_pending();
                 if entered {
                     self.persist_plan_mode_state();
+                    self.enqueue_current_mode_update(session_mode_id_from_prompt_mode(prompt_mode));
                 }
             }
             PromptMode::Agent | PromptMode::Ask => {
@@ -160,6 +187,7 @@ impl SessionActor {
                 if was_plan {
                     self.plan_mode.lock().user_exit(false);
                     self.persist_plan_mode_state();
+                    self.enqueue_current_mode_update(session_mode_id_from_prompt_mode(prompt_mode));
                 }
             }
         }

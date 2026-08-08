@@ -13,6 +13,7 @@ mod flow;
 mod live_web_search_tests;
 mod manager;
 mod oauth;
+mod policy;
 mod pricing;
 mod request_auth;
 mod storage;

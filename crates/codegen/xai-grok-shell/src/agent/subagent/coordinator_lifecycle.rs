@@ -535,12 +535,13 @@ impl SubagentCoordinator {
         let _ = tracker
             .child_handle
             .cmd_tx
-            .send(SessionCommand::Cancel {
+            .send(SessionCommand::Cancel(crate::session::CancelOptions {
                 cancel_subagents: true,
                 kill_background_tasks: true,
-                rewind_if_pristine: false,
-                trigger: None,
-            });
-        let _ = tracker.child_handle.cmd_tx.send(SessionCommand::Shutdown);
+                ..Default::default()
+            }));
+        let _ = tracker.child_handle.cmd_tx.send(SessionCommand::Shutdown(
+            crate::session::ShutdownKind::Graceful,
+        ));
     }
 }

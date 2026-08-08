@@ -33,6 +33,7 @@ fn test_actor_with_syncs(
 ) -> ActorGuard {
     let (tx, rx) = mpsc::unbounded_channel();
     let summary_tx = tx.downgrade();
+    let (disk_full_tx, disk_full_rx) = tokio::sync::watch::channel(false);
     let sampling_client = OaiCompatClient::new(xai_grok_sampler::SamplerConfig::default()).unwrap();
     let task = tokio::spawn(
         SessionPersistence {
@@ -54,15 +55,13 @@ fn test_actor_with_syncs(
             ),
             registry_title_sync: None,
             gateway: None,
+            disk_full_tx,
+            disk_full_notified: false,
         }
         .run(),
     );
     ActorGuard {
-        handle: PersistenceHandle {
-            tx,
-            noop: false,
-            unobserved_codex_summary: false,
-        },
+        handle: PersistenceHandle::from_parts_for_test(tx, disk_full_rx),
         task,
     }
 }
@@ -178,11 +177,7 @@ async fn closed_actor_before_dispatch_reports_not_committed() {
     };
     let (tx, rx) = mpsc::unbounded_channel();
     drop(rx);
-    let handle = PersistenceHandle {
-        tx,
-        noop: false,
-        unobserved_codex_summary: false,
-    };
+    let handle = PersistenceHandle::from_sender_for_test(tx);
 
     assert!(matches!(
         handle
@@ -200,11 +195,7 @@ async fn actor_drop_after_dispatch_reports_acknowledgement_lost() {
         cwd: "/test".into(),
     };
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let handle = PersistenceHandle {
-        tx,
-        noop: false,
-        unobserved_codex_summary: false,
-    };
+    let handle = PersistenceHandle::from_sender_for_test(tx);
     let actor = tokio::spawn(async move {
         let Some(PersistenceMsg::AppendUpdateDurablyAndAck { respond_to, .. }) = rx.recv().await
         else {
@@ -261,7 +252,11 @@ async fn actor_retries_precommit_failure_without_dropping_newer_update() {
             respond_to: first_ack,
         })
         .unwrap();
-    first_flush.await.unwrap();
+    let first_error = first_flush
+        .await
+        .unwrap()
+        .expect_err("directory at updates.jsonl must fail before commit");
+    assert_eq!(first_error.kind(), io::ErrorKind::IsADirectory);
 
     std::fs::remove_dir(&updates_path).unwrap();
     let (second_ack, second_flush) = tokio::sync::oneshot::channel();
@@ -272,7 +267,7 @@ async fn actor_retries_precommit_failure_without_dropping_newer_update() {
             respond_to: second_ack,
         })
         .unwrap();
-    second_flush.await.unwrap();
+    second_flush.await.unwrap().unwrap();
 
     let updates = storage.load_session(&info).await.unwrap().updates;
     let texts = updates
@@ -494,5 +489,95 @@ async fn durable_ack_drains_pending_update_in_fifo_order() {
         })
         .collect::<Vec<_>>();
     assert_eq!(texts, ["before", "durable"]);
+    actor.stop().await;
+}
+
+async fn flush_ack(handle: &PersistenceHandle) -> io::Result<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    handle
+        .tx
+        .send(PersistenceMsg::FlushAndAck { respond_to: tx })
+        .unwrap();
+    rx.await.unwrap()
+}
+
+async fn probe_writable(handle: &PersistenceHandle) -> io::Result<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    handle
+        .tx
+        .send(PersistenceMsg::ProbeWritable { respond_to: tx })
+        .unwrap();
+    rx.await.unwrap()
+}
+
+#[tokio::test]
+async fn successful_append_clears_disk_full_latch() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("disk-full-clear"),
+        cwd: "/test".into(),
+    };
+    let fail = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let fail_flag = fail.clone();
+    let storage = Arc::new(JsonlStorageAdapter::with_update_append_probe(
+        dir.path().to_path_buf(),
+        move |_| {
+            if fail_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(io::Error::from(io::ErrorKind::StorageFull))
+            } else {
+                Ok(())
+            }
+        },
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    let actor = test_actor(info.clone(), storage);
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::Update(neutral_update(&info, "chunk")))
+        .unwrap();
+    assert!(flush_ack(&actor.handle).await.is_err());
+    assert!(actor.handle.is_disk_full());
+
+    fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::Update(neutral_update(&info, "recovered")))
+        .unwrap();
+    assert!(flush_ack(&actor.handle).await.is_ok());
+    assert!(!actor.handle.is_disk_full());
+    actor.stop().await;
+}
+
+#[tokio::test]
+async fn successful_probe_writable_clears_disk_full_latch() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("disk-full-probe"),
+        cwd: "/test".into(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_update_append_probe(
+        dir.path().to_path_buf(),
+        |_| Err(io::Error::from(io::ErrorKind::StorageFull)),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    let actor = test_actor(info.clone(), storage);
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::Update(neutral_update(&info, "chunk")))
+        .unwrap();
+    assert!(flush_ack(&actor.handle).await.is_err());
+    assert!(actor.handle.is_disk_full());
+
+    assert!(probe_writable(&actor.handle).await.is_ok());
+    assert!(!actor.handle.is_disk_full());
     actor.stop().await;
 }

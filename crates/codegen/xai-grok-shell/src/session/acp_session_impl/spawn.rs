@@ -350,6 +350,7 @@ pub(crate) async fn spawn_session_actor(
     background_workflows_enabled: bool,
     subagents_enabled: bool,
     subagents_max_depth: u32,
+    workflow_max_concurrent_agents: usize,
     ask_user_question_enabled: bool,
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
@@ -757,13 +758,10 @@ pub(crate) async fn spawn_session_actor(
         pending_notifications: Vec::new(),
         notifications_suppressed: false,
         rewindable: false,
+        front_message_committed: false,
         nudges_used_this_session: 0,
     });
-    let mcp_strategy = match std::env::var("MCP_INIT_STRATEGY") {
-        Ok(v) if !v.trim().is_empty() => McpInitStrategy::from(v),
-        _ if startup_hints.non_interactive => McpInitStrategy::Blocking,
-        _ => McpInitStrategy::Progressive,
-    };
+    let mcp_strategy = startup_hints.resolve_mcp_strategy();
     let file_state_tracker = Arc::new(match rewind_points_path {
         Some(path) => FileStateTracker::with_lazy_source(path),
         None => FileStateTracker::new(),
@@ -1488,6 +1486,7 @@ pub(crate) async fn spawn_session_actor(
             }),
             cmd_tx.clone(),
             std::collections::HashMap::new(),
+            workflow_max_concurrent_agents,
         ),
     ));
     let (workflow_launch_tx, mut workflow_launch_rx) = tokio::sync::mpsc::unbounded_channel::<
@@ -1722,12 +1721,13 @@ pub(crate) async fn spawn_session_actor(
             gateway: gateway.clone(),
             gateway_enabled: gateway_enabled.clone(),
             persistence_tx: persistence.tx.clone(),
+            disk_full: persistence.subscribe_disk_full(),
         },
         permissions,
         tool_context,
         deny_read_globs,
         mcp_state: mcp_state.clone(),
-        mcp_strategy,
+        mcp_strategy: std::cell::Cell::new(mcp_strategy),
         initial_client_mcp_servers: initial_client_mcp_servers.clone(),
         chat_state_handle,
         unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
@@ -1744,6 +1744,8 @@ pub(crate) async fn spawn_session_actor(
         doom_loop_turn_tally: Default::default(),
         file_state_tracker,
         rewind_pending_prompt: std::sync::Mutex::new(None),
+        delivery_tools: std::cell::RefCell::new(startup_hints.delivery_tools.clone()),
+        attach_non_interactive: std::cell::Cell::new(startup_hints.non_interactive),
         startup_hints,
         forked_tool_override,
         compaction: super::compaction_config::CompactionConfig {
@@ -1916,9 +1918,16 @@ pub(crate) async fn spawn_session_actor(
         ),
         observability_bridge: obs_bridge,
         current_turn_number: std::cell::Cell::new(0),
-        last_recap_main_turn: std::cell::Cell::new(0),
+        last_recap_main_turn: std::cell::Cell::new(
+            crate::session::helpers::session_recap::load_recap_watermark(
+                &crate::session::persistence::session_dir(&session_info),
+            ),
+        ),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
+        turn_summary_task: std::cell::RefCell::new(None),
+        turn_summary_generation: std::cell::Cell::new(0),
+        turn_summary_enabled: effective_config.is_turn_summary_enabled(),
         session_turn_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
         turn_stream_drained: parking_lot::Mutex::new(None),
@@ -2402,6 +2411,7 @@ pub(crate) async fn spawn_session_on_thread(
     background_workflows_enabled: bool,
     subagents_enabled: bool,
     subagents_max_depth: u32,
+    workflow_max_concurrent_agents: usize,
     ask_user_question_enabled: bool,
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
@@ -2571,6 +2581,7 @@ pub(crate) async fn spawn_session_on_thread(
                         background_workflows_enabled,
                         subagents_enabled,
                         subagents_max_depth,
+                        workflow_max_concurrent_agents,
                         ask_user_question_enabled,
                         client_hooks,
                         prompt_display_cwd,

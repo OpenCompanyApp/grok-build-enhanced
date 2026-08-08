@@ -14,10 +14,13 @@ use tokio_util::sync::CancellationToken;
 mod enrichment;
 #[path = "manager/lock.rs"]
 pub(crate) mod lock;
+#[path = "manager/remedy.rs"]
+mod remedy;
 #[path = "manager/sleep_gate.rs"]
 mod sleep_gate;
 
 use lock::try_lock_auth_file_async;
+pub(crate) use remedy::{AuthRemedy, SilentRefresh};
 use sleep_gate::{InFlightGuard, SleepGate};
 
 use crate::util::dual_clock::DualClock;
@@ -203,6 +206,9 @@ pub struct AuthManager {
     /// Per-process `manual_auth` KPI debounce, shared by all recoveries on this
     /// manager so repeated 401s on the most-recent dead credential emit once.
     manual_auth: crate::auth::recovery::ManualAuthTracker,
+    /// First-party env key may advertise after initialize probe (default true).
+    /// Lives here (not on `MvpAgent`) so the probe verdict is auth-owned.
+    first_party_env_api_key_ok: std::sync::atomic::AtomicBool,
     /// When the current unbroken run of dark-wake refresh deferrals began, on
     /// two clocks (see [`DualClock`]); `None` outside such a run. Bounds the
     /// deferral to [`sleep_gate::DARK_WAKE_DEFER_MAX`] so a machine stuck
@@ -438,6 +444,7 @@ impl AuthManager {
             power_listener_started: std::sync::atomic::AtomicBool::new(false),
             power_listener: parking_lot::Mutex::new(None),
             manual_auth: Default::default(),
+            first_party_env_api_key_ok: std::sync::atomic::AtomicBool::new(true),
             dark_wake_defer_since: parking_lot::RwLock::new(None),
             #[cfg(test)]
             dark_wake_override: parking_lot::Mutex::new(None),
@@ -446,6 +453,18 @@ impl AuthManager {
             #[cfg(test)]
             persist_error_override: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Whether initialize's first-party env-key probe still allows advertising.
+    pub(crate) fn first_party_env_api_key_ok(&self) -> bool {
+        self.first_party_env_api_key_ok
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Record initialize probe result for cached-token fallthrough advertise.
+    pub(crate) fn set_first_party_env_api_key_ok(&self, ok: bool) {
+        self.first_party_env_api_key_ok
+            .store(ok, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Clear the disk-loaded token if it violates the team pin (startup only;
@@ -1376,6 +1395,7 @@ impl AuthManager {
         // Snapshot inner ONCE for dispatch atomicity (closes a TOCTOU
         // where a concurrent `clear()` raced `token_type()` + `inner.read()`).
         let snapshot: Option<GrokAuth> = self.with_inner_read(|inner| inner.cloned());
+        let snapshot_key = snapshot.as_ref().map(|auth| auth.key.clone());
         let token_type = TokenType::from_auth(snapshot.as_ref());
         tracing::Span::current().record("token_type", tracing::field::debug(token_type));
 
@@ -1408,7 +1428,7 @@ impl AuthManager {
             // preferred_method=api_key forbids automatic OIDC mint.
             if !self.grok_com_config.blocks_automatic_oidc()
                 && self.is_devbox_environment()
-                && let Ok(auth) = self.try_devbox_recovery().await
+                && let Ok(auth) = self.try_devbox_recovery(snapshot_key.as_deref()).await
             {
                 return Ok(auth);
             }
@@ -1483,7 +1503,7 @@ impl AuthManager {
         if result.is_err()
             && !self.grok_com_config.blocks_automatic_oidc()
             && self.is_devbox_environment()
-            && let Ok(auth) = self.try_devbox_recovery().await
+            && let Ok(auth) = self.try_devbox_recovery(snapshot_key.as_deref()).await
         {
             return Ok(auth);
         }
@@ -1514,7 +1534,10 @@ impl AuthManager {
     ///
     /// Fail-closed under `preferred_method=api_key` (no automatic OIDC mint),
     /// including direct callers such as sampler 401 recovery.
-    pub(crate) async fn try_devbox_recovery(self: &Arc<Self>) -> Result<GrokAuth, AuthError> {
+    pub(crate) async fn try_devbox_recovery(
+        self: &Arc<Self>,
+        unusable: Option<&str>,
+    ) -> Result<GrokAuth, AuthError> {
         if self.grok_com_config.blocks_automatic_oidc() {
             tracing::debug!(
                 "auth: devbox recovery skipped (preferred_method=api_key blocks automatic OIDC)"
@@ -1529,8 +1552,13 @@ impl AuthManager {
 
         let _guard = self.refresh_lock.lock().await;
 
-        // Double-check: another task may have recovered while we waited.
-        if let Some(auth) = self.current() {
+        // Double-check: another task may have recovered while we waited. The
+        // exact credential the caller already knows is rejected cannot count
+        // as recovery. It is compared only in memory and never logged.
+        if let Some(auth) = self
+            .current()
+            .filter(|auth| unusable != Some(auth.key.as_str()))
+        {
             return Ok(auth);
         }
 
@@ -2183,7 +2211,7 @@ impl AuthManager {
         // Sticky IdP rejection of the credential a refresh would send:
         // no retry can fix it.
         if let Some(AuthError::Refresh(RefreshTokenError::Permanent(e))) = self.permanent_failure()
-            && e.reason.is_sticky()
+            && e.reason.blocks_unattended_retry()
         {
             return true;
         }
@@ -2199,6 +2227,11 @@ impl AuthManager {
             .read_disk_auth_silent()
             .is_some_and(|a| a.refresh_token.is_some());
         !(mem_refreshable || disk_refreshable)
+    }
+
+    fn is_external_provider_refresh_authority(&self) -> bool {
+        self.grok_com_config.auth_provider_command.is_some()
+            && self.token_type() == TokenType::ExternalBinary
     }
 
     /// `true` iff a [`TokenRefresher`] is wired in. `false` for static-key

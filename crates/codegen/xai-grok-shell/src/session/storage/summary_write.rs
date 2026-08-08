@@ -95,6 +95,8 @@ pub(crate) struct SummaryPatch {
     /// automatic LLM title generation so it never clobbers a title the user
     /// set via `/rename`. Ignored when `generated_title` is also set.
     pub generated_title_if_absent: Option<String>,
+    /// Outer `None` leaves the fields unchanged; inner `None` clears them.
+    pub last_turn_summary: Option<Option<(String, String)>>,
     pub cwd_switch_bookkeeping_generation: Option<u64>,
 }
 
@@ -182,6 +184,11 @@ impl Summary {
                 self.title_is_manual = false;
                 absent_title_applied = true;
             }
+        }
+        if let Some(last_turn_summary) = &patch.last_turn_summary {
+            let (text, prompt_id) = last_turn_summary.clone().unzip();
+            self.last_turn_summary = text;
+            self.last_turn_summary_prompt_id = prompt_id;
         }
         self.updated_at = now;
         absent_title_applied

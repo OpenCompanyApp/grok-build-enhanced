@@ -465,6 +465,30 @@ impl SessionActor {
         auto_compact_threshold_percent: u8,
     ) -> Result<acp::ModelId, acp::Error> {
         let previous_sampling_config = self.chat_state_handle.get_sampling_config().await;
+        let persisted_system_prompt = match load_system_prompt(&self.session_info) {
+            Some(prompt) => Some(prompt),
+            None => self
+                .chat_state_handle
+                .get_conversation()
+                .await
+                .into_iter()
+                .find_map(|item| match item {
+                    ConversationItem::System(system) => Some(system.content.to_string()),
+                    _ => None,
+                }),
+        };
+        let previous_model_id = previous_sampling_config
+            .as_ref()
+            .map(|config| qualified_system_prompt_model_id(config.provider, &config.model))
+            .unwrap_or_else(|| "unknown".to_string());
+        let prompt_provenance =
+            load_system_prompt_provenance(&self.session_info).unwrap_or_else(|| {
+                infer_system_prompt_provenance(
+                    persisted_system_prompt.as_deref().unwrap_or_default(),
+                    self.agent.borrow().system_prompt(),
+                    previous_model_id,
+                )
+            });
         if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
             && previous_sampling_config.as_ref().is_some_and(|previous| {
                 previous.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
@@ -642,28 +666,60 @@ impl SessionActor {
         self.invalidate_model_auth_memo();
         self.signals_handle()
             .record_model_usage(&sampling_config.model);
-        if apply_prompt_override && !skip_prompt_rewrite {
+        if apply_prompt_override
+            && !skip_prompt_rewrite
+            && !matches!(&prompt_provenance, SystemPromptProvenance::Custom)
+        {
             let mut conversation = self.chat_state_handle.get_conversation().await;
+            let mut rendered_prompt = None;
             for item in conversation.iter_mut() {
                 if let ConversationItem::System(sys) = item {
-                    if use_concise {
-                        sys.content = std::sync::Arc::<str>::from(
-                            xai_grok_agent::prompt::template::COMPACT_SYSTEM_PROMPT,
-                        );
+                    let prompt = if use_concise {
+                        xai_grok_agent::prompt::template::COMPACT_SYSTEM_PROMPT.to_owned()
                     } else {
-                        sys.content =
-                            std::sync::Arc::<str>::from(self.agent.borrow().system_prompt());
-                    }
+                        self.agent.borrow().system_prompt().to_owned()
+                    };
+                    rendered_prompt = Some(prompt.clone());
+                    sys.content = std::sync::Arc::<str>::from(prompt);
                     break;
                 }
             }
             self.chat_state_handle.replace_conversation(conversation);
+            if let Some(rendered_prompt) = rendered_prompt {
+                save_system_prompt(&self.session_info, &rendered_prompt);
+                save_system_prompt_provenance(
+                    &self.session_info,
+                    &SystemPromptProvenance::Model {
+                        model_id: model_id.0.to_string(),
+                    },
+                );
+            }
+        } else if apply_prompt_override
+            && !skip_prompt_rewrite
+            && matches!(&prompt_provenance, SystemPromptProvenance::Custom)
+        {
+            tracing::info!(
+                session_id = % self.session_info.id.0,
+                model_id = % model_id.0,
+                "handle_set_session_model: preserving custom system prompt"
+            );
         } else if !apply_prompt_override {
             tracing::info!(
                 session_id = % self.session_info.id.0, model_id = % model_id.0,
                 "handle_set_session_model: skipping prompt override (apply_prompt_override=false)"
             );
         } else {
+            if matches!(&prompt_provenance, SystemPromptProvenance::Model { .. }) {
+                // A preceding zero-turn harness rebuild already installed the
+                // new model-owned text. Advance only its provenance here;
+                // custom prompts never reach this branch mutation.
+                save_system_prompt_provenance(
+                    &self.session_info,
+                    &SystemPromptProvenance::Model {
+                        model_id: model_id.0.to_string(),
+                    },
+                );
+            }
             tracing::info!(
                 session_id = % self.session_info.id.0, model_id = % model_id.0,
                 "handle_set_session_model: skipping prompt rewrite (just rebuilt harness)"
@@ -975,6 +1031,32 @@ impl SessionActor {
                     .data("rebuild_agent: turn in flight, refusing to rebuild harness"));
             }
         }
+        let previous_sampling_config = self.chat_state_handle.get_sampling_config().await;
+        let previous_model_id = previous_sampling_config
+            .as_ref()
+            .map(|config| qualified_system_prompt_model_id(config.provider, &config.model))
+            .unwrap_or_else(|| "unknown".to_string());
+        let persisted_system_prompt = match load_system_prompt(&self.session_info) {
+            Some(prompt) => prompt,
+            None => self
+                .chat_state_handle
+                .get_conversation()
+                .await
+                .into_iter()
+                .find_map(|item| match item {
+                    ConversationItem::System(system) => Some(system.content.to_string()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| self.agent.borrow().system_prompt().to_owned()),
+        };
+        let prompt_provenance =
+            load_system_prompt_provenance(&self.session_info).unwrap_or_else(|| {
+                infer_system_prompt_provenance(
+                    &persisted_system_prompt,
+                    self.agent.borrow().system_prompt(),
+                    previous_model_id,
+                )
+            });
         let new_agent_name = definition.name.clone();
         tracing::info!(
             session_id = % self.session_info.id.0, new_agent_type = % new_agent_name,
@@ -994,7 +1076,13 @@ impl SessionActor {
                     "rebuild_agent: build failed for agent_type={new_agent_name}: {e}"
                 ))
             })?;
-        let new_system_prompt = new_agent.system_prompt().to_string();
+        let generated_system_prompt = new_agent.system_prompt().to_string();
+        let effective_system_prompt =
+            if matches!(&prompt_provenance, SystemPromptProvenance::Custom) {
+                persisted_system_prompt
+            } else {
+                generated_system_prompt
+            };
         let mut new_prompt_context = new_agent.prompt_context().clone();
         new_prompt_context.normalize_for_persistence();
         if let Some(handle) = self.compaction.prefire.take_handle() {
@@ -1078,7 +1166,7 @@ impl SessionActor {
         let new_user_prefix = self.build_user_message_prefix().await;
         {
             let mut conversation = self.chat_state_handle.get_conversation().await;
-            let _ = replace_or_insert_system_head(&mut conversation, &new_system_prompt);
+            let _ = replace_or_insert_system_head(&mut conversation, &effective_system_prompt);
             let drop_startup_skill_reminder = false;
             Self::rewrite_zero_turn_prefix(
                 &mut conversation,
@@ -1098,7 +1186,8 @@ impl SessionActor {
             self.chat_state_handle.replace_conversation(conversation);
         }
         save_prompt_context(&self.session_info, &new_prompt_context);
-        save_system_prompt(&self.session_info, &new_system_prompt);
+        save_system_prompt(&self.session_info, &effective_system_prompt);
+        save_system_prompt_provenance(&self.session_info, &prompt_provenance);
         let snapshot = self.chat_state_handle.get_conversation().await;
         persist_chat_history_jsonl_sync(&self.session_info, &snapshot);
         self.mcp_reminder_dirty
@@ -1138,6 +1227,7 @@ impl SessionActor {
             return;
         };
         save_system_prompt(&self.session_info, &system_prompt);
+        save_system_prompt_provenance(&self.session_info, &SystemPromptProvenance::Custom);
         if changed {
             tracing::info!(
                 session_id = % self.session_info.id.0, prompt_len = system_prompt.len(),

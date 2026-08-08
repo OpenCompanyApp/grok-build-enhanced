@@ -386,7 +386,7 @@ fn intersect_catalog(
     Ok(models)
 }
 
-pub fn cache_path(grok_home: &Path) -> PathBuf {
+pub(super) fn cache_path(grok_home: &Path) -> PathBuf {
     grok_home.join("cache").join(CACHE_FILE)
 }
 

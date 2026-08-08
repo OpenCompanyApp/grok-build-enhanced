@@ -6,6 +6,8 @@ impl SessionActor {
         self: &Arc<Self>,
         action: BuiltinAction,
     ) -> PromptTurnResult {
+        // Builtin turns carry no user message, so send-now may cancel immediately.
+        self.mark_front_message_committed().await;
         xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::SlashCommandUsed {
             command: action.command_name().to_string(),
             args_provided: action.args_provided(),

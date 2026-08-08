@@ -16,7 +16,7 @@ const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(1000);
 /// reload's own reads schedule the next reload, a ~1/sec self-sustaining loop.
 /// Dropping `Access` is safe: writes still emit `Modify`/`Create` and chmod
 /// emits `Modify(Metadata)`; only reads are `Access`-only.
-pub struct AccessFilteredWatcher(notify::RecommendedWatcher);
+pub(crate) struct AccessFilteredWatcher(notify::RecommendedWatcher);
 
 impl notify::Watcher for AccessFilteredWatcher {
     fn new<F: notify::EventHandler>(
@@ -622,7 +622,7 @@ pub struct ProjectDiscoveryWatcher {
 }
 
 impl ProjectDiscoveryWatcher {
-    pub fn start(cwd: &Path) -> Option<(Self, mpsc::UnboundedReceiver<DiscoveryChange>)> {
+    pub(crate) fn start(cwd: &Path) -> Option<(Self, mpsc::UnboundedReceiver<DiscoveryChange>)> {
         let project_root = crate::session::workflow::registry::project_root(cwd);
         let project_grok = project_root.join(".grok");
         let (tx, rx) = mpsc::unbounded_channel();

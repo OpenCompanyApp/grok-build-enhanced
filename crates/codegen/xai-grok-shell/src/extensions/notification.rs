@@ -600,6 +600,13 @@ pub enum SessionUpdate {
     /// forever; on receipt the pager clears it. Never emitted for an automatic
     /// recap (those show no spinner).
     SessionRecapUnavailable,
+    /// Display-only summary of the most recently completed foreground turn.
+    /// Persisted in `summary.json`; delivered transiently to attached clients.
+    LastTurnSummary {
+        summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_id: Option<String>,
+    },
     /// A compaction checkpoint marker written to `updates.jsonl`.
     ///
     /// This is **persist-only** — it is never sent to the gateway/UI. It records
@@ -1139,7 +1146,8 @@ pub enum RetryState {
     Retrying {
         /// Current retry attempt number (1-indexed)
         attempt: u32,
-        /// Maximum number of retries allowed
+        /// Maximum number of retries allowed. Zero with the fixed Codex
+        /// reconnect reason is the unbounded connection-retry sentinel.
         max_retries: u32,
         /// Human-readable reason for the retry
         reason: String,
@@ -2538,6 +2546,35 @@ mod tests {
     }
 
     #[test]
+    fn acp_context_usage_includes_cache_reads_and_cache_writes() {
+        let ledger = xai_chat_state::UsageLedger {
+            totals: xai_chat_state::UsageTotals {
+                // Full prompt identity: 73 uncached + 20 read + 7 written.
+                input_tokens: 100,
+                output_tokens: 10,
+                cached_read_tokens: 20,
+                cache_creation_tokens: 7,
+                model_calls: 1,
+                ..Default::default()
+            },
+            main_loop_model_calls: 1,
+            ..Default::default()
+        };
+        let usage = PromptUsage::from(&ledger);
+        let acp = serde_json::to_value(&usage).unwrap();
+        assert_eq!(acp["inputTokens"], 100);
+        assert_eq!(acp["cachedReadTokens"], 20);
+        assert_eq!(acp["cacheCreationTokens"], 7);
+
+        let mut headless = serde_json::json!({});
+        project_result_usage(&mut headless, &usage);
+        assert_eq!(headless["usage"]["input_tokens"], 73);
+        assert_eq!(headless["usage"]["cache_read_input_tokens"], 20);
+        assert_eq!(headless["usage"]["cache_creation_input_tokens"], 7);
+        assert_eq!(headless["usage"]["total_tokens"], 110);
+    }
+
+    #[test]
     fn turn_completed_missing_required_fields_fail_to_deserialize() {
         let missing_prompt_id = r#"{"sessionUpdate": "turn_completed", "stop_reason": "end_turn"}"#;
         assert!(serde_json::from_str::<SessionUpdate>(missing_prompt_id).is_err());
@@ -2545,3 +2582,5 @@ mod tests {
         assert!(serde_json::from_str::<SessionUpdate>(missing_stop_reason).is_err());
     }
 }
+pub const DISK_FULL_ERROR_TYPE: &str = "disk_full";
+pub const DISK_FULL_USER_MESSAGE: &str = "Out of disk space. Free some space and try again.";

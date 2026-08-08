@@ -67,12 +67,11 @@ async fn fetch_user_info(
 /// tier is found, does a best-effort JWT refresh and returns
 /// `Some(UnblockResult)`. Returns `None` if no qualifying subscription
 /// exists or the request fails.
-#[tracing::instrument(name = "paywall_check", skip_all, fields(user_id = %user_id))]
+#[tracing::instrument(name = "paywall_check", skip_all)]
 pub(crate) async fn single_check(
     auth_manager: Arc<AuthManager>,
     proxy_base_url: &str,
     alpha_test_key: Option<&str>,
-    user_id: &str,
 ) -> Option<UnblockResult> {
     let user_url = format!("{}/user?include=subscription", proxy_base_url);
     let http_client = crate::http::shared_client();
@@ -91,7 +90,7 @@ pub(crate) async fn single_check(
             xai_grok_telemetry::unified_log::warn(
                 "paywall_check_error",
                 None,
-                Some(serde_json::json!({ "user_id": user_id, "kind": kind })),
+                Some(serde_json::json!({ "kind": kind })),
             );
             return None;
         }
@@ -100,7 +99,6 @@ pub(crate) async fn single_check(
         "paywall_check_result",
         None,
         Some(serde_json::json!({
-            "user_id": user_id,
             "subscription_tier": user_info.subscription_tier,
         })),
     );
@@ -115,7 +113,6 @@ pub(crate) async fn single_check(
         "paywall_check_subscription_detected",
         None,
         Some(serde_json::json!({
-            "user_id": user_id,
             "new_tier": new_tier,
         })),
     );
@@ -127,7 +124,6 @@ pub(crate) async fn single_check(
             "paywall_check_error",
             None,
             Some(serde_json::json!({
-                "user_id": user_id,
                 "kind": "refresh_failed",
                 "detail": e.to_string(),
             })),
@@ -136,7 +132,7 @@ pub(crate) async fn single_check(
     xai_grok_telemetry::unified_log::info(
         "paywall_check_unblocked",
         None,
-        Some(serde_json::json!({ "user_id": user_id, "new_tier": new_tier })),
+        Some(serde_json::json!({ "new_tier": new_tier })),
     );
     Some(UnblockResult { new_tier })
 }

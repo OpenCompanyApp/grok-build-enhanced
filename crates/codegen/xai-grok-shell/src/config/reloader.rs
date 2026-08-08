@@ -122,7 +122,7 @@ fn openai_codex_auth_fingerprint(
 /// Runs on `tokio::spawn` (`Send`). Receives raw [`ConfigChangeEvent`]s from
 /// the file watcher, diffs against last-known state, and sends [`ConfigUpdate`]
 /// messages to the agent via an `mpsc` channel.
-pub struct ConfigReloader {
+pub(crate) struct ConfigReloader {
     last_auth_key_hash: u64,
     /// OpenAI Codex identity is tracked independently from xAI's key hash so
     /// either provider can change without disturbing the other.
@@ -145,7 +145,7 @@ pub struct ConfigReloader {
 }
 
 impl ConfigReloader {
-    pub fn new(
+    pub(crate) fn new(
         grok_home: PathBuf,
         initial_auth_key_hash: u64,
         initial_config: toml::Value,
@@ -174,7 +174,7 @@ impl ConfigReloader {
     }
 
     /// Main loop. Batches all events from each debounce tick before processing.
-    pub async fn run(
+    pub(crate) async fn run(
         mut self,
         mut events: mpsc::UnboundedReceiver<ConfigChangeEvent>,
         cancel: CancellationToken,

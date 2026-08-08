@@ -1,9 +1,8 @@
+use super::is_xai_oauth2_issuer;
 use chrono::{DateTime, Duration, Utc};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
-
-use super::is_xai_oauth2_issuer;
 
 pub(crate) const TOKEN_TTL: Duration = Duration::days(30);
 const DEFAULT_EARLY_INVALIDATION_SECS: u64 = 300; // 5 minutes
@@ -12,7 +11,7 @@ const DEFAULT_EARLY_INVALIDATION_SECS: u64 = 300; // 5 minutes
 pub(super) const LEGACY_SCOPE: &str = "https://accounts.x.ai/sign-in";
 
 /// auth.json scope key for plain API key auth (desktop login, `grok login --api-key`).
-pub const API_KEY_SCOPE: &str = "xai::api_key";
+pub(super) const API_KEY_SCOPE: &str = "xai::api_key";
 
 const BLOCKED_REASON_NO_LOGS: &str = "BLOCKED_REASON_NO_LOGS";
 const BLOCKED_REASON_NO_LOGS_MODERATED: &str = "BLOCKED_REASON_NO_LOGS_MODERATED";
@@ -154,6 +153,19 @@ impl GrokAuth {
         self.is_xai_auth() || self.auth_mode == AuthMode::WebLogin
     }
 
+    /// Whether this credential can access `supported_in_api: false` models.
+    ///
+    /// Session logins (WebLogin, OIDC — including enterprise issuers) always
+    /// qualify; external-provider credentials qualify only when first-party
+    /// (`is_xai_auth`), matching the built-in devbox login they replace.
+    /// Plain API keys never do.
+    pub(crate) fn is_session_auth(&self) -> bool {
+        match self.auth_mode {
+            AuthMode::WebLogin | AuthMode::Oidc => true,
+            AuthMode::External => self.is_xai_auth(),
+            AuthMode::ApiKey => false,
+        }
+    }
     pub fn is_team_principal(&self) -> bool {
         self.principal_type.as_deref() == Some(TEAM_PRINCIPAL_TYPE) && self.team_id.is_some()
     }
@@ -169,7 +181,7 @@ impl GrokAuth {
     /// retention. Use this for trace-upload and research-data gates.
     /// Product analytics (`telemetry_enabled`) and user-facing sync
     /// features should use `is_zdr_team()` directly.
-    pub fn is_data_collection_disabled(&self) -> bool {
+    pub(crate) fn is_data_collection_disabled(&self) -> bool {
         self.is_zdr_team() || self.coding_data_retention_opt_out
     }
 
@@ -229,7 +241,7 @@ impl GrokAuth {
     /// ```ignore
     /// GrokAuth { key: "my-key".into(), ..GrokAuth::test_default() }
     /// ```
-    pub fn test_default() -> Self {
+    pub(crate) fn test_default() -> Self {
         Self {
             key: "test-key".into(),
             user_id: "test-user".into(),

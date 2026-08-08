@@ -41,7 +41,7 @@ pub struct InstallOutcome {
 /// Classify an install source as local (filesystem) vs git (remote) without
 /// installing — used for telemetry `install_kind` on the failure path, where no
 /// [`InstallOutcome`] is available.
-pub fn install_source_is_local(source: &str, cwd: &Path) -> bool {
+pub(crate) fn install_source_is_local(source: &str, cwd: &Path) -> bool {
     matches!(
         git_install::parse_install_source(source, cwd),
         git_install::InstallSource::Local { .. }
@@ -345,7 +345,7 @@ pub fn update_plugins(name: Option<&str>) -> Result<Vec<RepoUpdateOutcome>, Upda
     update_plugins_by_selector(name.map(|name| PluginUpdateSelector::PluginName(name.to_string())))
 }
 
-pub fn update_plugins_by_selector(
+pub(crate) fn update_plugins_by_selector(
     selector: Option<PluginUpdateSelector>,
 ) -> Result<Vec<RepoUpdateOutcome>, UpdateError> {
     let mut registry = InstallRegistry::load();
@@ -712,7 +712,7 @@ pub fn marketplace_require_sha() -> bool {
 }
 
 /// Marketplace sources from config.toml + settings JSON, unfiltered.
-pub fn load_marketplace_sources() -> Vec<MarketplaceSource> {
+pub(crate) fn load_marketplace_sources() -> Vec<MarketplaceSource> {
     let config = crate::config::load_effective_config()
         .ok()
         .unwrap_or(toml::Value::Table(toml::map::Map::new()));
@@ -724,7 +724,7 @@ pub fn load_marketplace_sources() -> Vec<MarketplaceSource> {
 /// Like [`load_marketplace_sources`] but drops git sources blocked by the
 /// managed `marketplace_allowlist`. Install paths must use this so policy
 /// cannot be bypassed.
-pub fn load_filtered_marketplace_sources() -> Vec<MarketplaceSource> {
+pub(crate) fn load_filtered_marketplace_sources() -> Vec<MarketplaceSource> {
     let allowlist =
         &xai_grok_workspace::permission::resolution::managed_settings().marketplace_allowlist;
     filter_sources_by_allowlist(load_marketplace_sources(), allowlist)

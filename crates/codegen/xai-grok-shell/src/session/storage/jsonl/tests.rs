@@ -2889,6 +2889,8 @@ fn write_test_summary(
         sandbox_profile: None,
         reasoning_effort: None,
         comp_hash: None,
+        last_turn_summary: None,
+        last_turn_summary_prompt_id: None,
         credential_binding: None,
     };
     let json = serde_json::to_vec_pretty(&summary).unwrap();

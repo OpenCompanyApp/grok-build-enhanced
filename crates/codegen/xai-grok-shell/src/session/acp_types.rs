@@ -616,6 +616,27 @@ pub struct StartupHints {
     /// holds the parent's System and overwriting it would bust the cache prefix.
     #[serde(default)]
     pub preserve_inherited_system: bool,
+    /// Tool names (as exposed to the model) that deliver user-visible output.
+    ///
+    /// Some headless clients never display the model's plain-text response and
+    /// can only deliver through MCP tools. Keeping this explicit avoids telling
+    /// those sessions to finish in plain text while their delivery server is
+    /// still connecting. Empty preserves the ordinary ACP/stdio behavior.
+    #[serde(default)]
+    pub delivery_tools: Vec<String>,
+}
+
+impl StartupHints {
+    /// Resolve MCP initialization consistently for both actor creation and a
+    /// later resident-session attachment.
+    pub(crate) fn resolve_mcp_strategy(&self) -> crate::session::mcp_servers::McpInitStrategy {
+        use crate::session::mcp_servers::McpInitStrategy;
+        match std::env::var("MCP_INIT_STRATEGY") {
+            Ok(value) if !value.trim().is_empty() => McpInitStrategy::from(value),
+            _ if self.non_interactive => McpInitStrategy::Blocking,
+            _ => McpInitStrategy::Progressive,
+        }
+    }
 }
 
 #[cfg(test)]

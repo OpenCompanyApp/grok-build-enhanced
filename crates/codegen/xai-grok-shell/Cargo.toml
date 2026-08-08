@@ -7,12 +7,13 @@ edition.workspace = true
 [features]
 default = []
 unstable = []
+dhat-heap = ["dep:dhat"]
 test-support = []
 local-workspace = []
-dhat-heap = ["dep:dhat"]
 default-bazel = [
+    "local-workspace",
     "test-support",
-    ]
+]
 
 [dependencies]
 dunce = { workspace = true }
@@ -242,6 +243,10 @@ required-features = ["test-support"]
 
 [[test]]
 name = "test_session_load_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_fork_copy_memory"
 required-features = ["test-support"]
 
 [[test]]

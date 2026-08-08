@@ -212,11 +212,11 @@ fn validate_models(models: Vec<KimiCodeModel>) -> Result<Vec<KimiCodeModel>, Kim
     Ok(validated)
 }
 
-pub fn cache_path(grok_home: &Path) -> PathBuf {
+pub(super) fn cache_path(grok_home: &Path) -> PathBuf {
     grok_home.join("cache").join(CACHE_FILE)
 }
 
-pub fn save_cache(
+pub(super) fn save_cache(
     grok_home: &Path,
     credentials: &KimiCodeCredentials,
     models: &[KimiCodeModel],
@@ -277,7 +277,7 @@ fn save_cache_for_credential_id(
     Ok(())
 }
 
-pub fn remove_cache(grok_home: &Path) -> Result<(), KimiCodeAuthError> {
+pub(super) fn remove_cache(grok_home: &Path) -> Result<(), KimiCodeAuthError> {
     match std::fs::remove_file(cache_path(grok_home)) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),

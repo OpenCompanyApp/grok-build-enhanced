@@ -4,6 +4,7 @@ use std::path::Path;
 use chrono::Utc;
 use parking_lot::RwLock;
 
+use super::policy::CodexManagedAuthPolicy;
 use super::{CodexAuthError, CodexCredentialStore, CodexCredentials, CodexOAuthClient};
 
 /// Live, provider-scoped owner of one Grok Build Codex credential record.
@@ -15,6 +16,7 @@ use super::{CodexAuthError, CodexCredentialStore, CodexCredentials, CodexOAuthCl
 pub struct CodexAuthManager {
     store: CodexCredentialStore,
     oauth: CodexOAuthClient,
+    managed_policy: CodexManagedAuthPolicy,
     current: RwLock<Option<CodexCredentials>>,
     refresh_gate: tokio::sync::Mutex<()>,
 }
@@ -52,10 +54,21 @@ impl CodexAuthManager {
         store: CodexCredentialStore,
         oauth: CodexOAuthClient,
     ) -> Result<Self, CodexAuthError> {
-        let current = store.load()?;
+        let policy = CodexManagedAuthPolicy::load()?;
+        Self::with_oauth_and_policy(store, oauth, policy)
+    }
+
+    fn with_oauth_and_policy(
+        store: CodexCredentialStore,
+        oauth: CodexOAuthClient,
+        managed_policy: CodexManagedAuthPolicy,
+    ) -> Result<Self, CodexAuthError> {
+        managed_policy.ensure_usable()?;
+        let current = store.load_with_policy(&managed_policy)?;
         Ok(Self {
             store,
             oauth,
+            managed_policy,
             current: RwLock::new(current),
             refresh_gate: tokio::sync::Mutex::new(()),
         })
@@ -66,7 +79,7 @@ impl CodexAuthManager {
         store: CodexCredentialStore,
         oauth: CodexOAuthClient,
     ) -> Result<Self, CodexAuthError> {
-        Self::with_oauth(store, oauth)
+        Self::with_oauth_and_policy(store, oauth, CodexManagedAuthPolicy::unrestricted())
     }
 
     pub fn store(&self) -> &CodexCredentialStore {
@@ -84,7 +97,7 @@ impl CodexAuthManager {
     /// process logout/account switch fails closed immediately rather than
     /// continuing to send an old bearer token until it expires.
     pub fn current_verified(&self) -> Result<CodexCredentials, CodexAuthError> {
-        let disk = self.store.load()?.ok_or(CodexAuthError::NotLoggedIn)?;
+        let disk = self.load_allowed()?.ok_or(CodexAuthError::NotLoggedIn)?;
         if let Some(cached) = self.current() {
             if disk.credential_id() != cached.credential_id()
                 || disk.revision < cached.revision
@@ -101,9 +114,13 @@ impl CodexAuthManager {
     /// Active request recovery uses the identity-preserving refresh path below
     /// instead, so a sibling login cannot silently change a running session.
     pub fn reload(&self) -> Result<Option<CodexCredentials>, CodexAuthError> {
-        let disk = self.store.load()?;
+        let disk = self.load_allowed()?;
         *self.current.write() = disk.clone();
         Ok(disk)
+    }
+
+    fn load_allowed(&self) -> Result<Option<CodexCredentials>, CodexAuthError> {
+        self.store.load_with_policy(&self.managed_policy)
     }
 
     pub(crate) async fn lock_catalog_identity(
@@ -139,7 +156,7 @@ impl CodexAuthManager {
             return Err(CodexAuthError::AccountChanged);
         }
         let provider_lock = self.store.acquire_provider_lock().await?;
-        let disk = self.store.load()?.ok_or(CodexAuthError::NotLoggedIn)?;
+        let disk = self.load_allowed()?.ok_or(CodexAuthError::NotLoggedIn)?;
         if disk.credential_binding() != *expected {
             return Err(CodexAuthError::AccountChanged);
         }
@@ -172,7 +189,7 @@ impl CodexAuthManager {
         }
 
         let provider_lock = self.store.acquire_provider_lock().await?;
-        let disk = self.store.load()?.ok_or(CodexAuthError::NotLoggedIn)?;
+        let disk = self.load_allowed()?.ok_or(CodexAuthError::NotLoggedIn)?;
         let actual = disk.credential_binding();
         if !expected.same_record(&actual) || actual.generation < expected.generation {
             return Err(CodexAuthError::AccountChanged);
@@ -221,7 +238,7 @@ impl CodexAuthManager {
 
         let _in_process = self.refresh_gate.lock().await;
         let _cross_process = self.store.acquire_provider_lock().await?;
-        let disk = self.store.load()?.ok_or(CodexAuthError::NotLoggedIn)?;
+        let disk = self.load_allowed()?.ok_or(CodexAuthError::NotLoggedIn)?;
 
         if disk.credential_id() != rejected_record || disk.revision < rejected.generation {
             return Err(CodexAuthError::AccountChanged);
@@ -245,7 +262,11 @@ impl CodexAuthManager {
         }
 
         let tokens = self.oauth.refresh_tokens(disk.refresh_token()).await?;
-        let refreshed = CodexCredentials::from_token_response(tokens, Some(&disk), None)?;
+        let refreshed = CodexCredentials::from_token_response(
+            tokens,
+            Some(&disk),
+            self.managed_policy.allowed_workspaces(),
+        )?;
         self.store.save_locked(refreshed.clone()).await?;
         *self.current.write() = Some(refreshed.clone());
         Ok(true)
@@ -257,7 +278,7 @@ impl CodexAuthManager {
     ) -> Result<CodexCredentials, CodexAuthError> {
         let _in_process = self.refresh_gate.lock().await;
         let _cross_process = self.store.acquire_provider_lock().await?;
-        let disk = self.store.load()?.ok_or(CodexAuthError::NotLoggedIn)?;
+        let disk = self.load_allowed()?.ok_or(CodexAuthError::NotLoggedIn)?;
 
         if disk.credential_id() != expected.credential_id()
             || disk.revision < expected.revision
@@ -271,7 +292,11 @@ impl CodexAuthManager {
         }
 
         let tokens = self.oauth.refresh_tokens(disk.refresh_token()).await?;
-        let refreshed = CodexCredentials::from_token_response(tokens, Some(&disk), None)?;
+        let refreshed = CodexCredentials::from_token_response(
+            tokens,
+            Some(&disk),
+            self.managed_policy.allowed_workspaces(),
+        )?;
         self.store.save_locked(refreshed.clone()).await?;
         *self.current.write() = Some(refreshed.clone());
         Ok(refreshed)
@@ -426,6 +451,48 @@ mod tests {
             CodexAuthManager::for_test(store, CodexOAuthClient::for_test(issuer)).unwrap(),
         );
         (dir, manager)
+    }
+
+    #[test]
+    fn unusable_managed_policy_fails_before_reading_the_credential_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodexCredentialStore::from_auth_path(dir.path().join("auth.json"));
+        std::fs::write(store.auth_path(), b"credential-secret-canary:not-json").unwrap();
+        let error = CodexAuthManager::with_oauth_and_policy(
+            store,
+            CodexOAuthClient::new(),
+            CodexManagedAuthPolicy::for_test_denied(),
+        )
+        .expect_err("API-only/empty managed policy must fail closed");
+        assert!(matches!(error, CodexAuthError::ManagedPolicyDenied));
+        assert!(!error.to_string().contains("credential-secret-canary"));
+    }
+
+    #[tokio::test]
+    async fn disallowed_stored_workspace_never_reaches_oauth_refresh() {
+        let (issuer, state, server) = mock_oauth("managed-account").await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodexCredentialStore::from_auth_path(dir.path().join("auth.json"));
+        store
+            .save(credentials_for_test(
+                "personal-account",
+                "refresh-secret",
+                Utc::now() - Duration::minutes(1),
+            ))
+            .await
+            .unwrap();
+
+        let error = CodexAuthManager::with_oauth_and_policy(
+            store,
+            CodexOAuthClient::for_test(issuer),
+            CodexManagedAuthPolicy::for_test_workspaces(["managed-account"]),
+        )
+        .expect_err("stored workspace must be rejected before manager hydration");
+        assert!(matches!(error, CodexAuthError::WorkspaceNotAllowed));
+        assert_eq!(state.token_calls.load(Ordering::SeqCst), 0);
+        assert!(!error.to_string().contains("personal-account"));
+
+        server.abort();
     }
 
     #[tokio::test]

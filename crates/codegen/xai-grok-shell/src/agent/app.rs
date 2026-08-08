@@ -37,10 +37,9 @@ pub fn apply_otel_config(auth_manager: &AuthManager, grok_com_config: &GrokComCo
     suppress_otel();
     let has_session = auth_manager.current().is_some() || auth_manager.read_disk_auth().is_some();
     if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
+        channel: crate::agent::otel_gate::resolved_policy_channel(),
         has_session,
-        has_api_key_env: crate::agent::auth_method::has_xai_api_key_env(),
         session_pending: crate::agent::otel_gate::is_session_pending(has_session, grok_com_config),
-        remote_fetch_enabled: crate::util::config::resolve_remote_fetch_enabled(),
     }) {
         crate::agent::otel_gate::open_at_startup();
     }
@@ -2341,7 +2340,7 @@ mod tests {
         let cancel_for_actor = cancel.clone();
         let actor = tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
-                if matches!(cmd, crate::session::SessionCommand::Shutdown) {
+                if matches!(cmd, crate::session::SessionCommand::Shutdown(_)) {
                     assert!(
                         !cancel_for_actor.is_cancelled(),
                         "session flush must happen BEFORE the leader is cancelled"
