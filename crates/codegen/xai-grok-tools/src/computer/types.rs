@@ -211,7 +211,13 @@ pub struct TaskSnapshot {
     pub end_time: Option<std::time::SystemTime>,
     pub output: String,
     pub output_file: PathBuf,
+    /// `output` may not be the whole output: read `output_file` for the rest.
+    /// Says the copy is partial, not how it came to be.
     pub truncated: bool,
+    /// Total bytes the task has written, when the source tracks it. `output`
+    /// may hold only part of that; zero means unknown.
+    #[serde(default)]
+    pub output_total_bytes: usize,
     pub exit_code: Option<i32>,
     pub signal: Option<String>,
     pub completed: bool,
@@ -261,6 +267,17 @@ impl TaskSnapshot {
     /// backing work).
     pub fn is_outstanding(&self) -> bool {
         !self.completed
+    }
+
+    /// The output on hand, and the size of the output it came from. Readers
+    /// take the size from here so the unknown-total case is handled once.
+    pub fn output_view(&self) -> crate::util::truncate::PartialOutput<'_> {
+        let total = if self.output_total_bytes == 0 {
+            self.output.len()
+        } else {
+            self.output_total_bytes
+        };
+        crate::util::truncate::PartialOutput::part_of(&self.output, total)
     }
 
     /// Incomplete and backgrounded — tray/`tasks_snapshot` predicate (not FG in-flight).
@@ -411,6 +428,7 @@ mod tests {
             output: String::new(),
             output_file: PathBuf::from("/tmp/task-1.log"),
             truncated: false,
+            output_total_bytes: 0,
             exit_code: None,
             signal: None,
             completed: false,

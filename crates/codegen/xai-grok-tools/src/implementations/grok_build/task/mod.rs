@@ -14,6 +14,7 @@
 //! - `SubagentForegroundWait` — host wait-window guard factory (optional)
 //! - `TaskModelValidator` — validates explicit model slugs before spawn
 
+pub mod admission;
 pub mod backend;
 pub mod coordinator;
 mod coordinator_state;
@@ -27,7 +28,7 @@ use self::types::*;
 use crate::types::output::ToolOutput;
 use crate::types::requirements::{Expr, ToolRequirement};
 #[allow(unused_imports)]
-use crate::types::resources::SharedResources;
+use crate::types::resources::{SessionFolder, SharedResources};
 use crate::types::tool::{ToolKind, ToolNamespace};
 use regex::Regex;
 use xai_tool_types::{SubagentCompletedOutput, SubagentIsolationMode, TaskToolInput};
@@ -40,6 +41,99 @@ pub fn effective_max_subagent_depth(resources: &crate::types::resources::Resourc
         .get::<MaxSubagentDepth>()
         .map(|d| d.0)
         .unwrap_or(MAX_SUBAGENT_DEPTH)
+}
+
+fn user_text_from_json(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|block| {
+                block
+                    .get("text")
+                    .and_then(|text| text.as_str())
+                    .map(str::to_owned)
+                    .or_else(|| block.as_str().map(str::to_owned))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn normalize_user_ask(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Some(start) = text.find("<user_query>") {
+        let after = &text[start + "<user_query>".len()..];
+        let body = after.split("</user_query>").next().unwrap_or(after).trim();
+        return (!body.is_empty()).then(|| body.to_owned());
+    }
+    if text.starts_with("<system")
+        || text.starts_with("<user_info>")
+        || text.starts_with("<git_status>")
+        || text.starts_with("<open_and_recently")
+    {
+        return None;
+    }
+    Some(text.to_owned())
+}
+
+/// Recent real parent user asks from `chat_history.jsonl`, oldest to newest.
+async fn recent_user_asks(resources: &SharedResources) -> Vec<String> {
+    let folder = {
+        let guard = resources.lock().await;
+        guard.get::<SessionFolder>().map(|folder| folder.0.clone())
+    };
+    let Some(folder) = folder else {
+        return Vec::new();
+    };
+    let Ok(text) = tokio::fs::read_to_string(folder.join("chat_history.jsonl")).await else {
+        return Vec::new();
+    };
+    let mut asks = Vec::new();
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let kind = value
+            .get("type")
+            .or_else(|| value.get("role"))
+            .and_then(|kind| kind.as_str())
+            .unwrap_or("");
+        if kind != "user"
+            || value
+                .get("synthetic_reason")
+                .is_some_and(|reason| !reason.is_null())
+        {
+            continue;
+        }
+        if let Some(ask) = value
+            .get("content")
+            .map(user_text_from_json)
+            .as_deref()
+            .and_then(normalize_user_ask)
+        {
+            asks.push(ask);
+        }
+    }
+    const KEEP: usize = 12;
+    if asks.len() > KEEP {
+        asks.split_off(asks.len() - KEEP)
+    } else {
+        asks
+    }
+}
+
+async fn detect_continue_parent_work(
+    resources: &SharedResources,
+    description: &str,
+    prompt: &str,
+) -> bool {
+    let asks = recent_user_asks(resources).await;
+    xai_tool_types::should_continue_parent_work(&asks, description, prompt)
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -448,12 +542,15 @@ impl xai_tool_runtime::Tool for TaskTool {
                 .await
                 .unwrap_or_else(|| "get_task_output".to_string());
 
+            let continue_parent =
+                detect_continue_parent_work(&resources, &input.description, &input.prompt).await;
             return Ok(ToolOutput::Text(
                 xai_tool_types::format_subagent_started_background(
                     &id,
                     &input.subagent_type,
                     &input.description,
                     &task_output_name,
+                    continue_parent,
                 )
                 .into(),
             ));

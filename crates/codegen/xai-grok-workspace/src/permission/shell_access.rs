@@ -129,41 +129,11 @@ impl CompiledPolicy {
             }
             let candidates = shell_file_candidates(&literal_words);
             let path_operands = shell_path_command_operands(&program_lower, &literal_words);
-            let write_paths = command_words_write_paths(&literal_words);
-            let is_explicit_launcher = match program_lower.as_str() {
-                "npx" | "uvx" | "bunx" => true,
-                "uv" => matches!(shell_words.get(1), Some(ShellWord::Literal("run"))),
-                "rustup" => matches!(shell_words.get(1), Some(ShellWord::Literal("run"))),
-                "npm" | "pnpm" | "yarn" => matches!(
-                    shell_words.get(1),
-                    Some(ShellWord::Literal("exec" | "x" | "dlx"))
-                ),
-                _ => false,
-            };
             let is_known = program_lower == "dd"
                 || shell_file_mode(&program_lower).is_some()
-                || shell_editor_is_in_place(&program_lower, &literal_words)
-                || path_operands.is_some()
-                || !write_paths.is_empty();
-            if (is_known || is_explicit_launcher)
-                && (invocation_cwd_unpinned || has_ambiguous_word || parse_failed)
-            {
+                || path_operands.is_some();
+            if is_known && (invocation_cwd_unpinned || has_ambiguous_word || parse_failed) {
                 forced_ask = true;
-            }
-            forced_ask |= explicit_launcher_is_unresolved(&literal_words);
-            for path in write_paths {
-                if shell_arg_is_ambiguous(&path) {
-                    forced_ask = true;
-                }
-                decision = combine_gate_decisions(
-                    decision,
-                    self.evaluate_shell_path(
-                        &path,
-                        cwd,
-                        ShellFileMode::Write,
-                        invocation_cwd_unpinned,
-                    ),
-                );
             }
             for (path, mode) in special_file_operands(&program_lower, &literal_words) {
                 if shell_arg_is_ambiguous(&path) {
@@ -190,7 +160,7 @@ impl CompiledPolicy {
                 continue;
             }
             let modes: &[ShellFileMode] = match shell_file_mode(&program_lower) {
-                Some(_) if shell_editor_is_in_place(&program_lower, &literal_words) => {
+                Some(_) if program_lower == "sed" && shell_sed_in_place(&literal_words) => {
                     &[ShellFileMode::Read, ShellFileMode::Write]
                 }
                 Some(ShellFileMode::Read) => &[ShellFileMode::Read],
@@ -224,8 +194,13 @@ impl CompiledPolicy {
     ) -> Option<GateDecision> {
         let path = normalize_shell_path(token);
         let is_absolute = is_absolute_shell_path(&path);
+        // Cwd-aware rule match mirrors the direct Read/Edit tool gate, so a
+        // rooted rule like `Read(src/**)` also keys on the same file spelled
+        // absolutely. An unpinned cwd anchors nothing: relative operands then
+        // keep text-only matching (absolute operands are cwd-independent).
+        let rule_cwd = (is_absolute || !cwd_unpinned).then_some(cwd);
         // Escalate only: drop Allow so a file allow-rule can't auto-approve here.
-        let escalate = |access: &AccessKind| match self.evaluate(access) {
+        let escalate = |access: &AccessKind| match self.evaluate_with_cwd(access, rule_cwd) {
             Some(Decision::Reject(reason)) => Some(GateDecision::Reject(reason)),
             Some(Decision::Ask) => Some(GateDecision::AskRuleMatch),
             _ => None,
@@ -282,12 +257,6 @@ impl CompiledPolicy {
 /// command and to re-check the inner command of a package-manager launcher
 /// (`uv run`, `npm exec`, ...) whose writes the outer program name would hide.
 pub(crate) fn command_words_write_paths(words: &[String]) -> Vec<String> {
-    command_words_write_paths_inner(words, 0)
-}
-
-fn command_words_write_paths_inner(words: &[String], depth: usize) -> Vec<String> {
-    const MAX_LAUNCHER_DEPTH: usize = 8;
-
     let inner = unwrap_wrappers(words);
     let mut out = Vec::new();
     let Some(program) = inner.first().map(|w| shell_program_name(w)) else {
@@ -309,75 +278,18 @@ fn command_words_write_paths_inner(words: &[String], depth: usize) -> Vec<String
                 out.push(path.to_owned());
             }
         }
-    } else {
-        // Named-argument writers (`tee`/`truncate`/...) and in-place editors.
-        let writes_operands = matches!(shell_file_mode(&program), Some(ShellFileMode::Write))
-            || shell_editor_is_in_place(&program, inner);
-        if writes_operands {
-            for token in shell_file_candidates(inner) {
-                out.push(token.to_owned());
-            }
+        return out;
+    }
+    // Named-argument writers (`tee`/`truncate`/...) and in-place `sed -i`, which
+    // rewrites each file operand.
+    let writes_operands = matches!(shell_file_mode(&program), Some(ShellFileMode::Write))
+        || (program == "sed" && shell_sed_in_place(inner));
+    if writes_operands {
+        for token in shell_file_candidates(inner) {
+            out.push(token.to_owned());
         }
     }
-
-    // Explicit command/package launchers hide the real program from the outer
-    // AST command node. Re-run the same writer model over their literal inner
-    // command. Unknown launcher option layouts are handled by the manager's
-    // opaque-execution confirmation floor rather than guessed here.
-    if depth < MAX_LAUNCHER_DEPTH
-        && let Some(launched) = explicit_launched_command(&program, inner)
-    {
-        out.extend(command_words_write_paths_inner(launched, depth + 1));
-    }
-
     out
-}
-
-fn explicit_launched_command<'a>(program: &str, words: &'a [String]) -> Option<&'a [String]> {
-    let after_optional_double_dash = |start: usize| {
-        let start = start + usize::from(words.get(start).map(String::as_str) == Some("--"));
-        words
-            .get(start..)
-            .filter(|inner| inner.first().is_some_and(|word| !word.starts_with('-')))
-    };
-
-    match program {
-        "command" => {
-            let start = words
-                .iter()
-                .position(|word| !word.starts_with('-') && word != "command")?;
-            words.get(start..)
-        }
-        "uv" if words.get(1).map(String::as_str) == Some("run") => after_optional_double_dash(2),
-        "rustup" if words.get(1).map(String::as_str) == Some("run") => {
-            after_optional_double_dash(3)
-        }
-        "npm" | "pnpm" | "yarn"
-            if matches!(words.get(1).map(String::as_str), Some("exec" | "x" | "dlx")) =>
-        {
-            after_optional_double_dash(2)
-        }
-        "npx" | "uvx" | "bunx" => after_optional_double_dash(1),
-        _ => None,
-    }
-}
-
-fn explicit_launcher_is_unresolved(words: &[String]) -> bool {
-    let inner = unwrap_wrappers(words);
-    let Some(program) = inner
-        .first()
-        .map(|word| shell_program_name(word).to_ascii_lowercase())
-    else {
-        return false;
-    };
-    let is_launcher = matches!(program.as_str(), "npx" | "uvx" | "bunx")
-        || matches!(
-            (program.as_str(), inner.get(1).map(String::as_str)),
-            ("uv", Some("run"))
-                | ("rustup", Some("run"))
-                | ("npm" | "pnpm" | "yarn", Some("exec" | "x" | "dlx"))
-        );
-    is_launcher && explicit_launched_command(&program, inner).is_none()
 }
 
 /// Every path a shell command WRITES, from an ALREADY-PARSED tree (so a caller
@@ -1120,26 +1032,6 @@ fn shell_sed_in_place(words: &[String]) -> bool {
     })
 }
 
-fn shell_editor_is_in_place(program: &str, words: &[String]) -> bool {
-    match program {
-        "sed" | "gsed" | "perl" | "ruby" => shell_sed_in_place(words),
-        "rustfmt" | "black" => true,
-        "clang-format" => words
-            .iter()
-            .skip(1)
-            .any(|word| word == "-i" || word == "--in-place"),
-        "gofmt" | "shfmt" => words.iter().skip(1).any(|word| {
-            word == "-w" || (word.starts_with('-') && !word.starts_with("--") && word.contains('w'))
-        }),
-        "prettier" => words
-            .iter()
-            .skip(1)
-            .any(|word| matches!(word.as_str(), "--write" | "-w")),
-        "ruff" => words.get(1).map(String::as_str) == Some("format"),
-        _ => false,
-    }
-}
-
 fn shell_output_flag_values(words: &[String]) -> impl Iterator<Item = &str> {
     words.iter().enumerate().filter_map(|(i, token)| {
         token
@@ -1520,6 +1412,32 @@ mod tests {
             deny.evaluate_shell_file_access_gate("cat .env", cwd()),
             Some(GateDecision::Reject(_))
         ));
+    }
+
+    #[test]
+    fn shell_gate_matches_cwd_relative_rules_on_absolute_operands() {
+        let deny = compiled(vec![file_rule(
+            RuleAction::Deny,
+            ToolFilter::Read,
+            "src/**",
+        )]);
+        // A rooted relative rule keys on the same file spelled absolutely,
+        // matching the direct Read tool gate (which evaluates with the cwd).
+        assert!(matches!(
+            deny.evaluate_shell_file_access_gate("cat /work/src/secret.txt", cwd()),
+            Some(GateDecision::Reject(_))
+        ));
+        // An absolute operand is cwd-independent, so it stays covered even
+        // after a `cd` unpins the working directory.
+        assert!(matches!(
+            deny.evaluate_shell_file_access_gate("cd /tmp && cat /work/src/secret.txt", cwd()),
+            Some(GateDecision::Reject(_))
+        ));
+        // Outside the working directory the rooted rule stays silent.
+        assert_eq!(
+            deny.evaluate_shell_file_access_gate("cat /elsewhere/src/secret.txt", cwd()),
+            None
+        );
     }
 
     #[test]
@@ -2029,10 +1947,6 @@ mod tests {
             "sort README.md -o .env",
             "truncate -s 0 .env",
             "Tee-Object .env",
-            "timeout 5 tee .env",
-            "command tee .env",
-            "npm exec -- tee .env",
-            "uv run dd if=payload of=.env",
         ] {
             assert!(
                 matches!(

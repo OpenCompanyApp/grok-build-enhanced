@@ -100,6 +100,18 @@ pub struct SubagentRequest {
     pub cancel_token: CancellationToken,
 }
 
+impl SubagentRequest {
+    pub fn from_scheduler_loop(&self) -> bool {
+        self.runtime_overrides.loop_task_id.is_some()
+    }
+
+    /// The caller blocks on the foreground await budget (neither backgrounded
+    /// nor awaiting to completion).
+    pub fn awaits_in_foreground(&self) -> bool {
+        !self.run_in_background && !self.await_to_completion
+    }
+}
+
 /// Spawn command envelope owned by the coordinator mailbox.
 #[derive(Educe)]
 #[educe(Debug)]
@@ -168,12 +180,7 @@ pub struct SubagentRuntimeOverrides {
     /// (implementer vs explorer). `None` for every non-goal spawn ⇒ the parent
     /// agent decides the flavor (unchanged behavior).
     pub harness_agent_type: Option<String>,
-    /// Optional character cap for coordinator-retained and parent-projected
-    /// completion output. Scheduler loop children set this to bound recurring
-    /// state; ordinary task requests inherit the unbounded behavior.
     pub completion_output_cap: Option<usize>,
-    /// Logical depth assigned to the child. Scheduler loop iterations use root
-    /// depth so their role can still invoke the normal one-level subagent path.
     pub spawn_depth: Option<u32>,
     pub output_token_budget: Option<u64>,
     pub output_schema: Option<serde_json::Value>,
@@ -671,6 +678,8 @@ pub struct SubagentRegistryCounts {
     pub pending: usize,
     pub active: usize,
     pub completed: usize,
+    /// Spawns parked at the session's concurrent limit, not yet started.
+    pub queued: usize,
 }
 
 #[derive(Educe)]

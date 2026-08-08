@@ -92,25 +92,61 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Text on hand, and the size of the output it came from. The two differ when
+/// the caller holds only part of a larger output and the reader still needs
+/// the real size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartialOutput<'a> {
+    text: &'a str,
+    total_bytes: usize,
+}
+
+impl<'a> PartialOutput<'a> {
+    pub fn whole(text: &'a str) -> Self {
+        Self {
+            text,
+            total_bytes: text.len(),
+        }
+    }
+
+    /// Part of an output of `total_bytes`.
+    pub fn part_of(text: &'a str, total_bytes: usize) -> Self {
+        Self {
+            text,
+            total_bytes: total_bytes.max(text.len()),
+        }
+    }
+
+    pub fn text(&self) -> &'a str {
+        self.text
+    }
+
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+}
+
 /// Truncate output to a UTF-8-safe preview plus a model-visible footer.
 ///
 /// The cap decides whether truncation happens. When triggered, the returned
 /// value contains the first `preview_bytes` bytes snapped to a char boundary
 /// followed by `[Output truncated - <N> bytes total...]`.
 pub fn truncate_with_preview(
-    output: &str,
+    output: PartialOutput<'_>,
     max_bytes: usize,
     preview_bytes: usize,
     footer_hint: Option<&str>,
 ) -> (String, bool) {
-    if output.len() <= max_bytes {
-        return (output.to_string(), false);
+    let PartialOutput { text, total_bytes } = output;
+    let whole = total_bytes <= text.len();
+    if whole && text.len() <= max_bytes {
+        return (text.to_string(), false);
     }
 
-    let preview = truncate_str(output, preview_bytes.min(output.len()));
+    let preview = truncate_str(text, preview_bytes.min(text.len()));
     let footer = match footer_hint {
-        Some(hint) => format!("[Output truncated - {} bytes total. {hint}]", output.len()),
-        None => format!("[Output truncated - {} bytes total]", output.len()),
+        Some(hint) => format!("[Output truncated - {total_bytes} bytes total. {hint}]"),
+        None => format!("[Output truncated - {total_bytes} bytes total]"),
     };
     (format!("{preview}\n\n{footer}"), true)
 }
@@ -197,14 +233,19 @@ pub fn estimate_chars(s: u64) -> u64 {
     xai_token_estimation::estimate_chars(s)
 }
 
-pub fn format_bytes(bytes: usize) -> String {
-    if bytes >= 1_000_000 {
-        format!("{:.1}MB", bytes as f64 / 1_000_000.0)
-    } else if bytes >= 1_000 {
-        format!("{:.1}KB", bytes as f64 / 1_000.0)
-    } else {
-        format!("{}B", bytes)
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
     }
+    const UNITS: &[&str] = &["KB", "MB", "GB", "TB", "PB"];
+    let mut value = bytes as f64 / 1024.0;
+    for unit in UNITS {
+        if value < 1023.95 {
+            return format!("{value:.1} {unit}");
+        }
+        value /= 1024.0;
+    }
+    format!("{value:.1} EB")
 }
 
 /// Apply soft-wrapping to every line in a multi-line string.
@@ -225,6 +266,9 @@ pub fn soft_wrap_lines(text: &str, wrap_width: usize) -> String {
     }
     result
 }
+
+/// Separator between the retained head and tail of a truncated output.
+pub(crate) const FRONT_BACK_TRUNCATION_MARKER: &str = "\n\n... (output truncated) ...\n\n";
 
 /// Truncate a string keeping the first half and last half of the character
 /// budget, inserting a separator in the middle.
@@ -252,7 +296,7 @@ pub fn truncate_front_and_back(s: &str, max_chars: usize) -> (String, bool) {
                 .unwrap_or(0)
         }
     };
-    let ellipsis = "\n\n... (output truncated) ...\n\n";
+    let ellipsis = FRONT_BACK_TRUNCATION_MARKER;
     let mut result = String::with_capacity(front_end + ellipsis.len() + (s.len() - back_start));
     result.push_str(&s[..front_end]);
     result.push_str(ellipsis);
@@ -505,7 +549,7 @@ mod tests {
 
     #[test]
     fn truncate_with_preview_short_output_unchanged() {
-        let (result, truncated) = truncate_with_preview("hello", 10, 5, None);
+        let (result, truncated) = truncate_with_preview(PartialOutput::whole("hello"), 10, 5, None);
         assert_eq!(result, "hello");
         assert!(!truncated);
     }
@@ -513,7 +557,8 @@ mod tests {
     #[test]
     fn truncate_with_preview_caps_large_output() {
         let output = "x".repeat(5_000_000);
-        let (result, truncated) = truncate_with_preview(&output, 4_000, 2_000, None);
+        let (result, truncated) =
+            truncate_with_preview(PartialOutput::whole(&output), 4_000, 2_000, None);
 
         assert!(truncated);
         assert!(result.len() < 2_200, "result was {} bytes", result.len());
@@ -524,7 +569,8 @@ mod tests {
     #[test]
     fn truncate_with_preview_utf8_boundary() {
         let output = "😀".repeat(1_500);
-        let (result, truncated) = truncate_with_preview(&output, 4_000, 2_001, None);
+        let (result, truncated) =
+            truncate_with_preview(PartialOutput::whole(&output), 4_000, 2_001, None);
 
         assert!(truncated);
         assert!(result.starts_with(&"😀".repeat(500)));
@@ -535,7 +581,7 @@ mod tests {
     fn truncate_with_preview_with_footer_hint() {
         let output = "x".repeat(10_000);
         let (result, truncated) = truncate_with_preview(
-            &output,
+            PartialOutput::whole(&output),
             4_000,
             2_000,
             Some("Use read_file for full content"),
@@ -548,11 +594,31 @@ mod tests {
     #[test]
     fn truncate_with_preview_without_footer_hint() {
         let output = "x".repeat(10_000);
-        let (result, truncated) = truncate_with_preview(&output, 4_000, 2_000, None);
+        let (result, truncated) =
+            truncate_with_preview(PartialOutput::whole(&output), 4_000, 2_000, None);
 
         assert!(truncated);
         assert!(result.contains("[Output truncated - 10000 bytes total]"));
         assert!(!result.contains("full content"));
+    }
+
+    #[test]
+    fn a_partial_copy_always_states_the_real_size() {
+        let (result, truncated) = truncate_with_preview(
+            PartialOutput::part_of("held", 5_000_000),
+            4_000,
+            2_000,
+            Some("Use read_file for full content"),
+        );
+        assert!(truncated);
+        assert!(result.contains("5000000 bytes total"), "{result}");
+        assert!(result.contains("held"), "{result}");
+
+        let held = "x".repeat(10_000);
+        let (result, truncated) =
+            truncate_with_preview(PartialOutput::part_of(&held, 5_000_000), 4_000, 2_000, None);
+        assert!(truncated);
+        assert!(result.contains("5000000 bytes total"), "{result}");
     }
 
     // ---- soft_wrap_lines ----

@@ -1391,6 +1391,11 @@ pub struct MCPOutput {
     pub is_timeout: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_error: bool,
+    /// Images lifted from MCP data URIs before output truncation. This field
+    /// must survive the dynamic-tool JSON boundary so the session layer can
+    /// turn each capture into a multimodal content part.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extracted_images: Vec<crate::util::base64_images::ExtractedImage>,
 }
 impl MCPOutput {
     pub fn okay_output(tool_name: String, server_name: String, output: String) -> Self {
@@ -1402,6 +1407,7 @@ impl MCPOutput {
             auth_retry_attempted: false,
             is_timeout: false,
             is_error: false,
+            extracted_images: Vec::new(),
         }
     }
     pub fn errored(tool_name: String, server_name: String, error: String) -> Self {
@@ -1413,6 +1419,7 @@ impl MCPOutput {
             auth_retry_attempted: false,
             is_timeout: false,
             is_error: true,
+            extracted_images: Vec::new(),
         }
     }
     pub fn output(&self) -> &MCPOutputDetails {
@@ -1435,8 +1442,8 @@ impl xai_tool_runtime::ToolOutput for BashOutput {
         let mut stdout = String::from_utf8_lossy(&self.output).into_owned();
         let mut extra = serde_json::Map::new();
         if self.truncated {
-            let shown = crate::util::truncate::format_bytes(self.output.len());
-            let total = crate::util::truncate::format_bytes(self.total_bytes);
+            let shown = crate::util::truncate::format_bytes(self.output.len() as u64);
+            let total = crate::util::truncate::format_bytes(self.total_bytes as u64);
             stdout.push_str(&format!(
                 "\n[truncated: showing first/last {shown} of {total} - full output at: {}]",
                 self.output_file
@@ -1495,6 +1502,36 @@ mod tests {
     /// Serialize a ToolOutput to JSON value
     fn to_json(output: ToolOutput) -> serde_json::Value {
         serde_json::to_value(&output).unwrap()
+    }
+
+    #[test]
+    fn mcp_extracted_images_survive_dynamic_tool_json_roundtrip() {
+        let payload = "A".repeat(50_000);
+        let mut mcp = MCPOutput::okay_output(
+            "browser_screenshot".into(),
+            "browser-use".into(),
+            crate::util::base64_images::IMAGE_CONTENT_PLACEHOLDER.into(),
+        );
+        mcp.extracted_images = vec![crate::util::base64_images::ExtractedImage {
+            data: payload.clone(),
+            mime_type: "image/png".into(),
+        }];
+
+        let encoded = serde_json::to_value(ToolOutput::MCP(mcp)).unwrap();
+        let decoded: ToolOutput = serde_json::from_value(encoded).unwrap();
+        let ToolOutput::MCP(decoded) = decoded else {
+            panic!("expected MCP output");
+        };
+        assert_eq!(decoded.extracted_images.len(), 1);
+        assert_eq!(decoded.extracted_images[0].data, payload);
+        assert_eq!(decoded.extracted_images[0].mime_type, "image/png");
+    }
+
+    #[test]
+    fn empty_mcp_extracted_images_are_omitted_from_json() {
+        let mcp = MCPOutput::okay_output("tool".into(), "server".into(), "plain".into());
+        let encoded = serde_json::to_value(mcp).unwrap();
+        assert!(encoded.get("extracted_images").is_none());
     }
     fn empty_file_content(offset: Option<usize>, total_lines: usize) -> FileContent {
         FileContent {

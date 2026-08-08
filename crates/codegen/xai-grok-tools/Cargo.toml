@@ -11,10 +11,12 @@ arc-swap = { workspace = true }
 dirs = { workspace = true }
 derive_more = { workspace = true, features = ["from", "try_into"] }
 dunce = { workspace = true }
+encoding_rs = { version = "0.8.35", optional = true }
 fs2 = { workspace = true }
 educe = { workspace = true, features = ["Debug"] }
 async-openai = { workspace = true }
 xai-tty-utils = { workspace = true }
+xai-grok-auth = { workspace = true }
 xai-grok-config = { path = "../xai-grok-config" }
 xai-grok-provider-http = { path = "../xai-grok-provider-http" }
 xai-grok-tools-api = { path = "../xai-grok-tools-api" }
@@ -31,6 +33,7 @@ ignore = { workspace = true }
 infer = { workspace = true }
 globset = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
+kamadak-exif = { version = "0.5", optional = true }
 pdf_oxide = { workspace = true }
 # PPTX text extraction (implementations/read_file/pptx.rs). Deliberately NOT
 # `workspace = true`: the workspace `zip` pin has default features on, which
@@ -73,6 +76,7 @@ tokio = { workspace = true, features = [
 tokio-util = { workspace = true, features = ["compat"] }
 tonic = { workspace = true }
 tracing = { workspace = true }
+unicode-normalization = { version = "0.1", optional = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
 wildmatch = "2"
@@ -102,6 +106,7 @@ windows = { workspace = true }
 
 [dev-dependencies]
 dirs = { workspace = true }
+pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 wiremock = { workspace = true }
@@ -110,6 +115,7 @@ xai-test-utils = { workspace = true }
 [build-dependencies]
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 flate2 = { workspace = true }
+sha2 = { workspace = true }
 tar = { workspace = true }
 
 [lints]

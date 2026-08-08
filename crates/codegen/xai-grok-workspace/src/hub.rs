@@ -120,6 +120,15 @@ impl ReadyPublisher {
             diag.set_disconnected();
         }
     }
+
+    fn terminal_close(&self, code: u16) {
+        if let Some(path) = &self.ready_file {
+            let _ = std::fs::remove_file(path);
+        }
+        if let Some(diag) = &self.diag {
+            diag.set_terminal_close(code);
+        }
+    }
 }
 impl std::fmt::Debug for HubConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -284,9 +293,11 @@ impl HubHandle {
             });
             let on_connect = Arc::clone(&publisher);
             let on_disconnect = Arc::clone(&publisher);
+            let on_terminal_close = Arc::clone(&publisher);
             server_builder = server_builder
                 .on_connect(move || on_connect.connected())
                 .on_disconnect(move || on_disconnect.disconnected())
+                .on_terminal_close(move |code| on_terminal_close.terminal_close(code))
                 .on_reconnect_settled(move || publisher.connected());
         }
         if let Some(ref id) = config.server_id {
@@ -1118,6 +1129,7 @@ mod tests {
             output: String::new(),
             output_file: std::path::PathBuf::from("/tmp/x.log"),
             truncated: false,
+            output_total_bytes: 0,
             exit_code: Some(0),
             signal: None,
             completed: true,

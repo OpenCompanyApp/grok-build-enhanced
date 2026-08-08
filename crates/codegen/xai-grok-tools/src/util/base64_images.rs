@@ -20,6 +20,10 @@ pub struct ExtractionResult {
     pub images: Vec<ExtractedImage>,
 }
 
+/// In-text stand-in for a captured data-URI image. Keep in lockstep with
+/// extract and tool-layer writers.
+pub const IMAGE_CONTENT_PLACEHOLDER: &str = "[image content will be provided separately]";
+
 /// Skip tiny decorative icons (favicons, spacer GIFs).
 const MIN_PAYLOAD_LEN: usize = 1024;
 

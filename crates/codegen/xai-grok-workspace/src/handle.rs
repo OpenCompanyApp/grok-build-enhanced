@@ -2916,6 +2916,7 @@ impl WorkspaceHandle {
         drop(sessions);
         session.abort_system_notify_forwarder();
         session.shutdown_terminal_backend();
+        session.shutdown_browser_service();
         session.cancel_hunk_tracker();
         self.shared.tool_defs_last_emit.remove(session_id);
         Ok(())

@@ -84,6 +84,8 @@ struct ReadyBody {
     error_class: Option<ErrorClass>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_close_code: Option<u16>,
 }
 
 /// Response body for `/statusz`: the `/ready` fields plus debug extras.
@@ -102,6 +104,7 @@ struct Inner {
     shutting_down: bool,
     error_class: Option<ErrorClass>,
     error_detail: Option<String>,
+    last_close_code: Option<u16>,
 }
 
 impl Inner {
@@ -130,21 +133,25 @@ impl DiagHandle {
                 shutting_down: false,
                 error_class: None,
                 error_detail: None,
+                last_close_code: None,
             })),
         }
     }
 
     /// Initial hello completed, or a reconnect's serve replay settled.
-    /// No-op after [`Self::set_shutting_down`] or [`Self::set_failed`].
+    /// No-op after [`Self::set_shutting_down`] or [`Self::set_failed`], and
+    /// while a terminal close code is latched. Terminal closes do not
+    /// reconnect on this handle.
     pub fn set_connected(&self) {
         let mut inner = self.lock();
-        if inner.shutting_down || inner.is_failed() {
+        if inner.shutting_down || inner.is_failed() || inner.last_close_code.is_some() {
             return;
         }
         inner.state = DiagState::Connected;
         let now = now_ms();
         inner.connected_at.get_or_insert(now);
         inner.state_changed_at = now;
+        inner.last_close_code = None;
     }
 
     /// Server socket dropped. No-op after [`Self::set_failed`].
@@ -154,6 +161,18 @@ impl DiagHandle {
             return;
         }
         inner.state = DiagState::Disconnected;
+        inner.state_changed_at = now_ms();
+    }
+
+    /// Hub sent a terminal close (4100-4199). Latches disconnected and records
+    /// the code on `/ready`; the later disconnect callback must not clear it.
+    pub fn set_terminal_close(&self, code: u16) {
+        let mut inner = self.lock();
+        if inner.is_failed() {
+            return;
+        }
+        inner.state = DiagState::Disconnected;
+        inner.last_close_code = Some(code);
         inner.state_changed_at = now_ms();
     }
 
@@ -180,6 +199,7 @@ impl DiagHandle {
         inner.state = DiagState::Failed;
         inner.error_class = Some(error_class);
         inner.error_detail = Some(truncate_error_detail(error_detail.into()));
+        inner.last_close_code = None;
         inner.state_changed_at = now_ms();
     }
 
@@ -203,6 +223,9 @@ impl DiagHandle {
             } else {
                 None
             },
+            last_close_code: matches!(inner.state, DiagState::Disconnected)
+                .then_some(inner.last_close_code)
+                .flatten(),
         }
     }
 
@@ -422,6 +445,7 @@ mod tests {
         assert_eq!(body["launch_id"], "nonce-1");
         assert_eq!(body["state"], "starting");
         assert_eq!(body["connected_at"], Value::Null);
+        assert!(body.get("last_close_code").is_none());
     }
 
     #[tokio::test]
@@ -443,6 +467,7 @@ mod tests {
         let (status, disconnected) = get_json(port, "/ready").await;
         assert_eq!(status, 503);
         assert_eq!(disconnected["state"], "disconnected");
+        assert!(disconnected.get("last_close_code").is_none());
         assert_eq!(
             disconnected["connected_at"], connected["connected_at"],
             "connected_at is frozen at first connect and echoed on disconnect"
@@ -476,6 +501,35 @@ mod tests {
         assert_eq!(status, 503);
         assert_eq!(body["state"], "disconnected");
         assert!(handle.is_shutting_down());
+    }
+
+    #[tokio::test]
+    async fn terminal_close_code_survives_stale_settle_and_disconnect() {
+        let handle = DiagHandle::new(None);
+        let bound = serve(DiagListener::Tcp(0), handle.clone(), None)
+            .await
+            .expect("bind");
+        let port = bound.port.expect("tcp port");
+
+        handle.set_connected();
+        handle.set_terminal_close(4103);
+        handle.set_connected();
+        handle.set_disconnected();
+
+        let (status, body) = get_json(port, "/ready").await;
+        assert_eq!(status, 503);
+        assert_eq!(body["state"], "disconnected");
+        assert_eq!(body["last_close_code"], 4103);
+    }
+
+    #[test]
+    fn failure_clears_terminal_close_code() {
+        let handle = DiagHandle::new(None);
+        handle.set_terminal_close(4103);
+        assert_eq!(handle.ready_body().last_close_code, Some(4103));
+        handle.set_failed(ErrorClass::Unknown, "late failure");
+        assert_eq!(handle.ready_body().state, DiagState::Failed);
+        assert!(handle.ready_body().last_close_code.is_none());
     }
 
     #[tokio::test]
