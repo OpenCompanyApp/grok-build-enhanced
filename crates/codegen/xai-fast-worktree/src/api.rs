@@ -1462,7 +1462,9 @@ pub(crate) fn register_worktree(
 #[cfg(feature = "metadata")]
 fn unregister_worktree(worktree_path: &std::path::Path) {
     if let Ok(db) = crate::db::WorktreeDb::open_default() {
-        let _ = db.unregister_by_path(worktree_path);
+        let path =
+            dunce::canonicalize(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
+        let _ = db.unregister_by_path(&path);
     }
 }
 

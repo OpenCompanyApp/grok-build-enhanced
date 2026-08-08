@@ -70,8 +70,10 @@ opentelemetry_sdk = { workspace = true, features = [
     "experimental_metrics_periodicreader_with_async_runtime",
     "rt-tokio-current-thread",
 ] }
-opentelemetry-otlp = { workspace = true }
+opentelemetry-otlp = { workspace = true, features = ["tls-aws-lc"] }
 opentelemetry-http = { workspace = true }
+webpki-roots = "0.26"
+base64 = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
 async-trait = { workspace = true }
@@ -83,6 +85,8 @@ tracing-opentelemetry = { workspace = true }
 # Pre-main unified-log redirect for this crate's own test binary.
 ctor = "0.4"
 tonic = { workspace = true, features = ["transport"] }
+rcgen = { version = "0.13", features = ["pem"] }
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
 # In-memory log/metric exporters for the external-stream wire-shape tests.
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 # In-process OTLP collector fixture (tests/external_otlp.rs).

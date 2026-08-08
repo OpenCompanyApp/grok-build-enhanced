@@ -7,46 +7,26 @@ use reqwest::{Request, Response, StatusCode, header::HeaderValue};
 use reqwest_middleware::{Error, Middleware, Next};
 
 use crate::AuthCredentialProvider;
-
-/// Tail fragment (last [`STAMPED_BEARER_SUFFIX_LEN`] chars) of the bearer
-/// this middleware stamped, recorded into the request's `http::Extensions`
-/// at stamp time. 401-attribution sites read it back via
+/// Non-secret marker that this middleware stamped a bearer, recorded into the
+/// request's `http::Extensions` at stamp time. 401-attribution sites read it back via
 /// [`execute_with_stamp`] instead of re-resolving at record time, which
 /// races with the refresh the 401 itself triggers. Absent ⇒ nothing was
 /// stamped; a retry overwrites it, so it always describes the attempt whose
-/// response the caller holds. Only the tail crosses this boundary — JWT
-/// heads are a shared constant, and the tail is safe for sinks to log.
+/// response the caller holds. No token-derived data crosses this boundary.
 #[derive(Clone, Debug)]
-pub struct StampedBearerSuffix(pub String);
-
-/// Length of [`StampedBearerSuffix`]. Matches `token_suffix` in
-/// xai-grok-shell (the comparison site for 401 attribution).
-const STAMPED_BEARER_SUFFIX_LEN: usize = 12;
-
-/// Last [`STAMPED_BEARER_SUFFIX_LEN`] chars, counting chars from the end
-/// so a non-ASCII credential cannot cause a byte-boundary panic.
-fn bearer_suffix(token: &str) -> &str {
-    match token
-        .char_indices()
-        .rev()
-        .nth(STAMPED_BEARER_SUFFIX_LEN - 1)
-    {
-        Some((i, _)) => &token[i..],
-        None => token,
-    }
-}
+pub struct StampedBearerPresent;
 
 /// Execute `req` on a middleware-wrapped client and return the response
-/// together with the [`StampedBearerSuffix`] the auth middleware recorded
+/// together with the [`StampedBearerPresent`] marker the auth middleware recorded
 /// (if it stamped anything). The one blessed way for 401-attribution
 /// call sites to learn what was actually sent on the wire.
 pub async fn execute_with_stamp(
     client: &reqwest_middleware::ClientWithMiddleware,
     req: Request,
-) -> reqwest_middleware::Result<(Response, Option<StampedBearerSuffix>)> {
+) -> reqwest_middleware::Result<(Response, Option<StampedBearerPresent>)> {
     let mut ext = http::Extensions::new();
     let resp = client.execute_with_extensions(req, &mut ext).await?;
-    Ok((resp, ext.get::<StampedBearerSuffix>().cloned()))
+    Ok((resp, ext.get::<StampedBearerPresent>().cloned()))
 }
 
 pub struct AuthRetryMiddleware {
@@ -68,7 +48,7 @@ fn apply_auth_header(req: &mut Request, token: &str, extensions: &mut http::Exte
         Ok(val) => {
             req.headers_mut()
                 .insert(reqwest::header::AUTHORIZATION, val);
-            extensions.insert(StampedBearerSuffix(bearer_suffix(token).to_string()));
+            extensions.insert(StampedBearerPresent);
         }
         Err(e) => {
             tracing::warn!(error = %e, "auth retry: failed to build Authorization header");
@@ -346,18 +326,6 @@ mod tests {
         assert_eq!(resp.status(), 401);
         assert!(stamp.is_none(), "no credential must mean no stamp");
         m.assert_async().await;
-    }
-
-    #[test]
-    fn bearer_suffix_takes_char_safe_tail() {
-        assert_eq!(
-            bearer_suffix("eyJ0eXAiOiJh.head.tail-distinct"),
-            "ail-distinct"
-        );
-        assert_eq!(bearer_suffix("short"), "short");
-        assert_eq!(bearer_suffix(""), "");
-        // 13 multi-byte chars: a byte-index cut would land mid-char.
-        assert_eq!(bearer_suffix("ééééééééééééé"), "éééééééééééé");
     }
 
     #[tokio::test]

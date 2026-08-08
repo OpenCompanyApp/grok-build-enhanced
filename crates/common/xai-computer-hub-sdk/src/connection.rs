@@ -377,6 +377,9 @@ pub type ReconnectCallback = Box<dyn Fn(ReconnectEvent) + Send + Sync + 'static>
 /// Boxed disconnect callback, fired when the live socket drops (before a
 /// reconnect attempt) and on a terminal close.
 pub type DisconnectCallback = Box<dyn Fn() + Send + Sync + 'static>;
+/// Fired with the WebSocket close code for terminal 4100–4199 closes, before
+/// the ordinary disconnect callback.
+pub type TerminalCloseCallback = Box<dyn Fn(u16) + Send + Sync + 'static>;
 /// Boxed connect callback, fired once on the initial successful connect
 /// after the writer keepalive loop has entered (so `/ready` cannot race
 /// the first ping) and before the reader actor task spawns. It therefore
@@ -423,6 +426,7 @@ pub struct ConnectionConfig {
     /// Optional disconnect callback, fired when the live socket drops or the
     /// server sends a terminal close.
     pub on_disconnect: Option<Arc<DisconnectCallback>>,
+    pub on_terminal_close: Option<Arc<TerminalCloseCallback>>,
     /// Optional connect callback, fired once on the initial successful connect
     /// after the writer task enters its loop (happens-before reader start).
     /// The first keepalive may still be in flight or one scheduler quanta away.
@@ -478,6 +482,7 @@ struct HubConnectionInner {
     credential: Arc<dyn AuthProvider>,
     on_reconnect: Option<Arc<ReconnectCallback>>,
     on_disconnect: Option<Arc<DisconnectCallback>>,
+    on_terminal_close: Option<Arc<TerminalCloseCallback>>,
     server_id: Option<xai_tool_protocol::ServerId>,
     server_description: Option<String>,
     server_metadata: Option<serde_json::Value>,
@@ -586,6 +591,7 @@ impl HubConnection {
             credential: config.credential,
             on_reconnect: config.on_reconnect.clone(),
             on_disconnect: config.on_disconnect.clone(),
+            on_terminal_close: config.on_terminal_close.clone(),
             server_id: config.server_id,
             server_description: config.server_description,
             server_metadata: config.server_metadata,
@@ -1390,6 +1396,12 @@ fn fire_on_disconnect(inner: &HubConnectionInner) {
         cb();
     }
 }
+
+fn fire_on_terminal_close(inner: &HubConnectionInner, code: u16) {
+    if let Some(callback) = &inner.on_terminal_close {
+        callback(code);
+    }
+}
 /// Reader half of the split actor: owns the stream, routes inbound
 /// frames, and drives reconnect. Never touches the sink — it asks the
 /// writer task to `Pause`/`Resume` instead.
@@ -1421,6 +1433,7 @@ async fn run_reader_actor(
             ConnectedExit::Stop => break,
             ConnectedExit::TerminalClose(code) => {
                 info!(code, url = %url, "server sent terminal close; not reconnecting");
+                fire_on_terminal_close(inner.as_ref(), code);
                 fire_on_disconnect(inner.as_ref());
                 inner.demux.drain_waiters_with(|| {
                     ClientError::Closed(format!("server terminal close (code {code})"))
@@ -2946,6 +2959,7 @@ mod tests {
             credential,
             on_reconnect: None,
             on_disconnect: None,
+            on_terminal_close: None,
             server_id: None,
             server_description: None,
             server_metadata: None,
@@ -3314,6 +3328,7 @@ mod tests {
             kind: ConnectionKind::ToolServer,
             on_reconnect: None,
             on_disconnect: None,
+            on_terminal_close: None,
             on_connect: None,
             server_id: None,
             server_description: None,

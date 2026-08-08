@@ -40,6 +40,14 @@ use crate::types::RequestId;
 /// to detect dead streams before the user gives up).
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 
+/// A missing network can outlast the ordinary stream retry budget. Codex
+/// sampling therefore keeps a separate, unbounded connection-only schedule;
+/// timeouts, request-body failures, and interrupted SSE streams still use the
+/// normal bounded policy below.
+const CODEX_INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
+const CODEX_MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+const CODEX_RECONNECTING_MESSAGE: &str = "Reconnecting... waiting for network";
+
 /// Result type for the `submit_and_collect` oneshot. Carries the rich
 /// `SamplingError` so callers can inspect retryability, status code,
 /// etc., without losing information through the
@@ -132,6 +140,11 @@ pub(crate) async fn run_request_task(
 
     let mut request = request;
     let mut retry_count: u32 = 0;
+    // This counter never debits `retry_count`: once the network returns, the
+    // request must retain its complete bounded budget for incomplete streams,
+    // timeouts, rate limits, and other retryable failures.
+    let mut codex_connection_retry_count: u32 = 0;
+    let mut codex_connection_retry_delay = CODEX_INITIAL_CONNECTION_RETRY_DELAY;
     // Provider auth recovery is a separate, exactly-once budget. It must not
     // consume the transport retry budget and must use this client's pinned
     // request-auth manager rather than constructing a new credential owner.
@@ -185,7 +198,11 @@ pub(crate) async fn run_request_task(
                 response,
                 mut metrics,
             } => {
-                metrics.attempts = retry_count + doom_retry_count + provider_auth_retry_count + 1;
+                metrics.attempts = retry_count
+                    .saturating_add(doom_retry_count)
+                    .saturating_add(provider_auth_retry_count)
+                    .saturating_add(codex_connection_retry_count)
+                    .saturating_add(1);
                 if let Some(policy) = doom_policy {
                     let confident = policy.confident_triggers(&response.doom_loop_signals);
                     if !confident.is_empty() {
@@ -305,6 +322,25 @@ pub(crate) async fn run_request_task(
                     send_completion(&mut completion_tx, Err(clone_error(&error)));
                     return request_id;
                 }
+                match maybe_wait_for_codex_connection(
+                    &error,
+                    &config,
+                    output_observed.load(Ordering::Relaxed),
+                    &mut codex_connection_retry_count,
+                    &mut codex_connection_retry_delay,
+                    &event_tx,
+                    &request_id,
+                    &cancel_token,
+                )
+                .await
+                {
+                    CodexConnectionRetry::Retry => continue,
+                    CodexConnectionRetry::Cancelled => {
+                        handle_cancellation(&event_tx, &request_id, &mut completion_tx);
+                        return request_id;
+                    }
+                    CodexConnectionRetry::NotApplicable => {}
+                }
                 if maybe_recover_provider_auth(
                     &error,
                     &client,
@@ -343,6 +379,25 @@ pub(crate) async fn run_request_task(
                 return request_id;
             }
             AttemptOutcome::InitFailed { error } => {
+                match maybe_wait_for_codex_connection(
+                    &error,
+                    &config,
+                    output_observed.load(Ordering::Relaxed),
+                    &mut codex_connection_retry_count,
+                    &mut codex_connection_retry_delay,
+                    &event_tx,
+                    &request_id,
+                    &cancel_token,
+                )
+                .await
+                {
+                    CodexConnectionRetry::Retry => continue,
+                    CodexConnectionRetry::Cancelled => {
+                        handle_cancellation(&event_tx, &request_id, &mut completion_tx);
+                        return request_id;
+                    }
+                    CodexConnectionRetry::NotApplicable => {}
+                }
                 if maybe_recover_provider_auth(
                     &error,
                     &client,
@@ -378,6 +433,61 @@ pub(crate) async fn run_request_task(
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexConnectionRetry {
+    NotApplicable,
+    Retry,
+    Cancelled,
+}
+
+/// Wait for a Codex connection-only failure without consuming the normal
+/// transport retry budget. The provider and error-kind checks are deliberately
+/// narrow: this policy must never turn an xAI, Kimi, OpenCode, or custom
+/// endpoint failure into an unbounded request, nor replay model-visible output.
+#[allow(clippy::too_many_arguments)]
+async fn maybe_wait_for_codex_connection(
+    err: &SamplingError,
+    config: &SamplerConfig,
+    model_visible_output_observed: bool,
+    retry_count: &mut u32,
+    retry_delay: &mut Duration,
+    event_tx: &mpsc::UnboundedSender<SamplingEvent>,
+    request_id: &RequestId,
+    cancel_token: &CancellationToken,
+) -> CodexConnectionRetry {
+    if !config.provider.is_openai_codex()
+        || model_visible_output_observed
+        || !err.is_connection_failure()
+    {
+        return CodexConnectionRetry::NotApplicable;
+    }
+
+    *retry_count = retry_count.saturating_add(1);
+    let delay = *retry_delay;
+    let failure_kind = SamplingErrorInfo::from(err).kind;
+    tracing::warn!(
+        target: crate::sampling_log::TARGET,
+        provider = "openai_codex",
+        failure_kind = failure_kind.as_str(),
+        reconnect_attempt = *retry_count,
+        retry_delay_secs = delay.as_secs(),
+        "sampling connection unavailable; waiting to reconnect"
+    );
+    emit_codex_reconnecting(event_tx, request_id, *retry_count, failure_kind);
+
+    if !sleep_or_cancel(delay, cancel_token).await {
+        return CodexConnectionRetry::Cancelled;
+    }
+    *retry_delay = next_codex_connection_retry_delay(delay);
+    CodexConnectionRetry::Retry
+}
+
+fn next_codex_connection_retry_delay(current: Duration) -> Duration {
+    current
+        .saturating_mul(2)
+        .min(CODEX_MAX_CONNECTION_RETRY_DELAY)
 }
 
 /// Recover an OpenAI Codex 401 through the exact request-auth instance that
@@ -994,6 +1104,27 @@ fn emit_retrying(
     });
 }
 
+fn emit_codex_reconnecting(
+    event_tx: &mpsc::UnboundedSender<SamplingEvent>,
+    request_id: &RequestId,
+    attempt: u32,
+    kind: SamplingErrorKind,
+) {
+    // `max_retries == 0` is the wire sentinel for this unbounded,
+    // connection-only schedule. The fixed reason is intentional: a reqwest
+    // connection error may retain its request URL, so neither ACP nor
+    // telemetry receives the underlying transport string.
+    let _ = event_tx.send(SamplingEvent::Retrying {
+        request_id: request_id.clone(),
+        attempt,
+        max_retries: 0,
+        kind,
+        reason: CODEX_RECONNECTING_MESSAGE.to_string(),
+        doom_loop_triggers: None,
+        doom_loop_aborted_at_chunk: None,
+    });
+}
+
 fn handle_cancellation(
     event_tx: &mpsc::UnboundedSender<SamplingEvent>,
     request_id: &RequestId,
@@ -1494,6 +1625,156 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn codex_connection_failure_reconnects_outside_bounded_budget_until_cancelled() {
+        // Reserve and release a loopback port so the initial request gets a
+        // deterministic connection-refused error without involving DNS or an
+        // external service.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let recoveries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut config = SamplerConfig::openai_codex("gpt-5-codex");
+        config.base_url = format!("http://{address}");
+        // A zero ordinary budget proves the reconnect path does not consume
+        // or depend on the bounded transport counter.
+        config.max_retries = Some(0);
+        config.request_auth = Some(std::sync::Arc::new(CountingRequestAuth::new(
+            std::sync::Arc::clone(&recoveries),
+        )));
+
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (completion_tx, mut completion_rx) = oneshot::channel();
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(run_request_task(
+            RequestId::from("codex-network-reconnect"),
+            ConversationRequest::default(),
+            config,
+            CodexTurnStateStore::default(),
+            RetryPolicy::default(),
+            event_tx,
+            task_cancel,
+            Some(completion_tx),
+        ));
+
+        let reconnect = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(event) = event_rx.recv().await
+                    && matches!(event, SamplingEvent::Retrying { .. })
+                {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("connection refusal must promptly enter reconnect state");
+        assert!(matches!(
+            reconnect,
+            SamplingEvent::Retrying {
+                attempt: 1,
+                max_retries: 0,
+                reason,
+                doom_loop_triggers: None,
+                doom_loop_aborted_at_chunk: None,
+                ..
+            } if reason == CODEX_RECONNECTING_MESSAGE
+        ));
+        assert!(
+            matches!(
+                completion_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "an unavailable network must not terminally exhaust the turn"
+        );
+
+        cancel.cancel();
+        task.await.expect("request task joins after cancellation");
+        completion_rx
+            .await
+            .expect("cancellation must report completion")
+            .expect_err("cancelled reconnect must not succeed");
+        assert_eq!(
+            recoveries.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "network recovery must not rotate provider credentials"
+        );
+    }
+
+    #[tokio::test]
+    async fn sustained_connection_retry_is_codex_only_and_never_replays_output() {
+        use xai_grok_sampling_types::ProviderId;
+        use xai_grok_sampling_types::error::RedactedTransportKind;
+
+        let connect = SamplingError::RedactedTransport {
+            provider: ProviderId::OpenAiCodex,
+            kind: RedactedTransportKind::Connect,
+            retryable: true,
+            likely_body_rejected: false,
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let request_id = RequestId::from("connection-scope");
+
+        for provider in [
+            ProviderId::Xai,
+            ProviderId::KimiCode,
+            ProviderId::OpenCodeGo,
+            ProviderId::Custom,
+        ] {
+            let mut config = SamplerConfig::default();
+            config.provider = provider;
+            let mut count = 0;
+            let mut delay = CODEX_INITIAL_CONNECTION_RETRY_DELAY;
+            assert_eq!(
+                maybe_wait_for_codex_connection(
+                    &connect,
+                    &config,
+                    false,
+                    &mut count,
+                    &mut delay,
+                    &event_tx,
+                    &request_id,
+                    &CancellationToken::new(),
+                )
+                .await,
+                CodexConnectionRetry::NotApplicable,
+                "{provider} must retain its bounded provider policy"
+            );
+        }
+
+        let config = SamplerConfig::openai_codex("gpt-5-codex");
+        let mut count = 0;
+        let mut delay = CODEX_INITIAL_CONNECTION_RETRY_DELAY;
+        assert_eq!(
+            maybe_wait_for_codex_connection(
+                &connect,
+                &config,
+                true,
+                &mut count,
+                &mut delay,
+                &event_tx,
+                &request_id,
+                &CancellationToken::new(),
+            )
+            .await,
+            CodexConnectionRetry::NotApplicable,
+            "model-visible output must never be replayed"
+        );
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn codex_connection_retry_delay_doubles_and_caps_at_one_minute() {
+        let mut delay = CODEX_INITIAL_CONNECTION_RETRY_DELAY;
+        let mut observed = Vec::new();
+        for _ in 0..6 {
+            observed.push(delay.as_secs());
+            delay = next_codex_connection_retry_delay(delay);
+        }
+        assert_eq!(observed, [5, 10, 20, 40, 60, 60]);
     }
 
     #[tokio::test]

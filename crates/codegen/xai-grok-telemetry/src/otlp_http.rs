@@ -47,16 +47,34 @@ impl HttpClient for BlockingOtlpClient {
 /// thread avoids the "no reactor" panic for every caller.
 pub(crate) fn build_blocking_client(
     timeout: std::time::Duration,
+    extra_ca_pem_files: &[&str],
 ) -> Result<BlockingOtlpClient, String> {
+    let mut extra_roots = Vec::new();
+    for path in extra_ca_pem_files {
+        let pem = std::fs::read(path)
+            .map_err(|e| format!("reading OTEL_EXPORTER_OTLP_CERTIFICATE {path:?}: {e}"))?;
+        let certs = reqwest::Certificate::from_pem_bundle(&pem)
+            .map_err(|e| format!("parsing OTEL_EXPORTER_OTLP_CERTIFICATE {path:?}: {e}"))?;
+        if certs.is_empty() {
+            return Err(format!(
+                "OTEL_EXPORTER_OTLP_CERTIFICATE {path:?} contains no certificates"
+            ));
+        }
+        extra_roots.extend(certs);
+    }
     std::thread::Builder::new()
         .name("otlp-client-build".into())
         .spawn(move || {
-            xai_grok_provider_http::with_extra_root_certificates_blocking(
+            let mut builder = xai_grok_provider_http::with_extra_root_certificates_blocking(
                 reqwest::blocking::Client::builder().timeout(timeout),
-            )
-            .build()
-            .map(BlockingOtlpClient)
-            .map_err(|e| format!("building blocking OTLP HTTP client: {e}"))
+            );
+            for cert in extra_roots {
+                builder = builder.add_root_certificate(cert);
+            }
+            builder
+                .build()
+                .map(BlockingOtlpClient)
+                .map_err(|e| format!("building blocking OTLP HTTP client: {e}"))
         })
         .map_err(|e| format!("spawning OTLP client builder thread: {e}"))?
         .join()
@@ -72,7 +90,30 @@ mod tests {
     /// with no system CA store.
     #[test]
     fn blocking_otlp_client_builds_with_embedded_roots() {
-        build_blocking_client(std::time::Duration::from_secs(5))
+        build_blocking_client(std::time::Duration::from_secs(5), &[])
             .expect("client with embedded webpki roots must build on any host");
+    }
+
+    #[test]
+    fn blocking_otlp_client_fails_closed_on_missing_ca_file() {
+        let err = build_blocking_client(
+            std::time::Duration::from_secs(5),
+            &["/nonexistent/corp-ca.pem"],
+        )
+        .expect_err("missing CA bundle must fail construction");
+        assert!(err.contains("OTEL_EXPORTER_OTLP_CERTIFICATE"), "{err}");
+    }
+
+    #[test]
+    fn blocking_otlp_client_fails_closed_on_empty_ca_bundle() {
+        let file = tempfile::NamedTempFile::new().expect("temp CA file");
+        std::fs::write(file.path(), "# readable, but no PEM certificate blocks\n")
+            .expect("write empty bundle");
+        let err = build_blocking_client(
+            std::time::Duration::from_secs(5),
+            &[file.path().to_str().expect("utf-8 path")],
+        )
+        .expect_err("certificate-less bundle must fail construction");
+        assert!(err.contains("no certificates"), "{err}");
     }
 }

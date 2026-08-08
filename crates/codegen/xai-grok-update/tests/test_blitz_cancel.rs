@@ -289,7 +289,12 @@ async fn smoke_test_rejects_garbage_and_keeps_previous_good() {
     server.set_mode(Mode::Garbage);
     let base = server.uri();
     let result = install_internal_from_base(Some("0.1.181"), &cfg, &base).await;
-    assert!(result.is_err(), "garbage artifact must not install");
+    let error = result.expect_err("garbage artifact must not install");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("failed to run") || message.contains("could not start"),
+        "smoke failure should identify its cause, got: {message}"
+    );
 
     let new_binary = home
         .join("downloads")

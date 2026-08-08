@@ -859,6 +859,10 @@ pub struct RemoteSettings {
     /// Optional remote kill-switch; shell defaults ON when unset (set `false` to disable).
     #[serde(default)]
     pub session_recap: Option<bool>,
+    /// Enables the per-turn dashboard summary. Optional remote kill-switch;
+    /// shell defaults ON when unset.
+    #[serde(default)]
+    pub turn_summary: Option<bool>,
     /// Enables the `ask_user_question` tool. Optional remote kill-switch:
     /// `Some(false)` strips the tool; `Some(true)` or absent → the shell
     /// default (ON). Feature-flagged via remote settings.
@@ -1003,6 +1007,13 @@ pub struct RemoteSettings {
     /// Max subagent nesting depth (`grok_build_settings.subagents_max_depth`).
     #[serde(default)]
     pub subagents_max_depth: Option<u32>,
+    #[serde(default)]
+    pub subagents_max_concurrent: Option<u32>,
+    /// `"queue"` or `"fail"`.
+    #[serde(default)]
+    pub subagents_limit_behavior: Option<String>,
+    #[serde(default)]
+    pub workflow_max_concurrent_agents: Option<u32>,
     /// Global system-prompt identity label. Per-model override wins; see
     /// `resolve_system_prompt_label`.
     #[serde(default)]

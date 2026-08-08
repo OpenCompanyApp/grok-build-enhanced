@@ -6,13 +6,15 @@ edition.workspace = true
 description = "Actor-based sampling/inference layer for xAI grok (HTTP streaming + retry, no shell coupling)"
 
 [features]
-# Allows downstream crate tests to route Codex requests to a loopback mock.
-# Production builds keep the exact ChatGPT endpoint allowlist enforced.
+# Allows downstream crate tests to route subscription-provider requests to a
+# loopback mock. Production builds keep the exact provider endpoint allowlists.
 test-support = []
 
 [dependencies]
 # Internal
 xai-grok-provider-http = { path = "../xai-grok-provider-http" }
+xai-grok-auth = { workspace = true }
+xai-grok-extra-ca = { path = "../xai-grok-extra-ca" }
 xai-grok-sampling-types = { path = "../xai-grok-sampling-types" }
 xai-grok-version = { workspace = true }
 

@@ -45,7 +45,7 @@ use crate::auth::{AuthCredential, AuthProvider};
 use crate::cancel::CancelRegistry;
 use crate::connection::{
     ConnectCallback, ConnectionTuning, DisconnectCallback, HubConnection, ReconnectCallback,
-    ReconnectEvent,
+    ReconnectEvent, TerminalCloseCallback,
 };
 use crate::connection_borrow::ConnectionBorrow;
 use crate::demux::InboundFrame;
@@ -221,6 +221,7 @@ pub struct ToolServerBuilder {
     /// precede server session re-serve.
     on_reconnect_settled: Option<Arc<ReconnectSettledCallback>>,
     on_disconnect: Option<Arc<DisconnectCallback>>,
+    on_terminal_close: Option<Arc<TerminalCloseCallback>>,
     on_connect: Option<Arc<ConnectCallback>>,
     metadata: Option<serde_json::Value>,
     server_id: Option<xai_tool_protocol::ServerId>,
@@ -395,6 +396,16 @@ impl ToolServerBuilder {
         self
     }
 
+    /// Called before `on_disconnect` when the hub sends a terminal 4100–4199
+    /// close. The code lets owners settle durable state before shutdown.
+    pub fn on_terminal_close<F>(mut self, cb: F) -> Self
+    where
+        F: Fn(u16) + Send + Sync + 'static,
+    {
+        self.on_terminal_close = Some(Arc::new(Box::new(cb) as TerminalCloseCallback));
+        self
+    }
+
     /// Optional callback fired once on the initial successful connect, after
     /// the writer task enters its loop and before the reader actor starts.
     /// The first keepalive may still be in flight.
@@ -493,6 +504,15 @@ impl ToolServerBuilder {
             }
         }));
 
+        let user_on_terminal_close = self.on_terminal_close;
+        let epoch_for_terminal_close = Arc::clone(&disconnect_epoch);
+        let combined_terminal_close: Arc<TerminalCloseCallback> = Arc::new(Box::new(move |code| {
+            epoch_for_terminal_close.fetch_add(1, Ordering::Release);
+            if let Some(ref callback) = user_on_terminal_close {
+                callback(code);
+            }
+        }));
+
         let tuning = ConnectionTuning {
             ws_ping_interval: self.ws_ping_interval,
             ws_liveness_deadline: self.ws_liveness_deadline,
@@ -506,6 +526,7 @@ impl ToolServerBuilder {
             Some(combined_reconnect),
             Some(combined_disconnect),
             self.on_connect,
+            Some(combined_terminal_close),
             self.server_id,
             self.server_description,
             self.metadata,

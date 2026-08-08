@@ -7,6 +7,12 @@ use crate::db::{
     WorktreeKind, WorktreeRecord, WorktreeStatus, id_from_path, now_epoch_secs, repo_name_from_path,
 };
 
+pub const WORKTREES_DIR: &str = "worktrees";
+pub const WORKTREE_POOL_DIR: &str = "worktree_pool";
+/// Depth of a worktree below its managed root: `<root>/<repo>/<worktree>`.
+/// The filesystem scanner and disk-usage bucketing must agree on this.
+pub const WORKTREE_DEPTH: usize = 2;
+
 #[derive(Debug)]
 pub struct DiscoveredWorktree {
     pub path: PathBuf,
@@ -58,6 +64,7 @@ fn detect_source_repo(worktree_path: &Path) -> Option<PathBuf> {
 }
 
 fn scan_two_level_dir(base_dir: &Path, kind: WorktreeKind, report: &mut DiscoveryReport) {
+    const _: () = assert!(WORKTREE_DEPTH == 2, "this scan is written for depth 2");
     let Ok(outer_entries) = std::fs::read_dir(base_dir) else {
         return;
     };
@@ -95,12 +102,12 @@ fn scan_two_level_dir(base_dir: &Path, kind: WorktreeKind, report: &mut Discover
 pub fn discover_worktrees(grok_home: &Path) -> DiscoveryReport {
     let mut report = DiscoveryReport::default();
     scan_two_level_dir(
-        &grok_home.join("worktrees"),
+        &grok_home.join(WORKTREES_DIR),
         WorktreeKind::Session,
         &mut report,
     );
     scan_two_level_dir(
-        &grok_home.join("worktree_pool"),
+        &grok_home.join(WORKTREE_POOL_DIR),
         WorktreeKind::Pool,
         &mut report,
     );
@@ -125,11 +132,13 @@ impl DiscoveredWorktree {
             .unwrap_or_else(|| "unknown".to_string());
         let source_repo = self.source_repo.unwrap_or_else(|| PathBuf::from("unknown"));
         let created_at = fs_creation_time(&self.path);
+        // Match `WorktreeDb::get`, which looks up by canonical path.
+        let path = dunce::canonicalize(&self.path).unwrap_or(self.path);
 
         WorktreeRecord {
-            id: id_from_path(&self.path),
-            path: self.path,
-            source_repo,
+            id: id_from_path(&path),
+            path,
+            source_repo: dunce::canonicalize(&source_repo).unwrap_or(source_repo),
             repo_name,
             kind: self.kind,
             creation_mode: self.creation_mode.to_owned(),
@@ -152,18 +161,22 @@ pub struct RebuildReport {
     pub already_tracked: u64,
 }
 
-fn managed_worktree_roots(grok_home: &Path) -> [PathBuf; 2] {
-    [grok_home.join("worktrees"), grok_home.join("worktree_pool")]
-        .map(|root| dunce::canonicalize(&root).unwrap_or(root))
+pub fn managed_worktree_roots(grok_home: &Path) -> [PathBuf; 2] {
+    [
+        grok_home.join(WORKTREES_DIR),
+        grok_home.join(WORKTREE_POOL_DIR),
+    ]
+    .map(|root| dunce::canonicalize(&root).unwrap_or(root))
 }
 
 /// True when `path` is under a managed root (`worktrees/` or `worktree_pool/`).
 /// Prefer already-canonical `path`; roots are canonicalized inside.
 pub fn path_under_managed_worktree_roots(path: &Path, grok_home: &Path) -> bool {
-    path_under_roots(path, &managed_worktree_roots(grok_home))
+    path_under_worktree_roots(path, &managed_worktree_roots(grok_home))
 }
 
-fn path_under_roots(path: &Path, roots: &[PathBuf]) -> bool {
+/// True when `path` is under (or is) one of `roots`, both already canonical.
+pub fn path_under_worktree_roots(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
@@ -182,7 +195,7 @@ pub fn rebuild_worktree_db(
     for mut wt in discovery.found {
         let path = dunce::canonicalize(&wt.path).unwrap_or_else(|_| wt.path.clone());
         // Refuse symlink escape outside managed roots.
-        if !path_under_roots(&path, &roots) {
+        if !path_under_worktree_roots(&path, &roots) {
             tracing::warn!(
                 path = %path.display(),
                 "rebuild skipped path outside grok worktrees/worktree_pool"

@@ -562,6 +562,51 @@ async fn install_internal_from_bases_falls_back_to_secondary_when_primary_fails(
 
 #[tokio::test]
 #[serial]
+async fn install_internal_from_bases_does_not_fallback_on_smoke_failure() {
+    // A --version failure belongs to the versioned artifact, not the release
+    // host. The secondary Enhanced release base must therefore remain idle.
+    let _ = test_home();
+    reset_home();
+    let platform = host_platform();
+
+    let primary = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/stable"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("0.1.181"))
+        .mount(&primary)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/grok-0.1.181-{platform}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"#!/bin/sh\nexit 1\n".to_vec()))
+        .mount(&primary)
+        .await;
+
+    let fallback = MockServer::start().await;
+    let cfg = make_config("stable");
+    let err = install_internal_from_bases(
+        Some("0.1.181"),
+        &cfg,
+        &[primary.uri().as_str(), fallback.uri().as_str()],
+    )
+    .await
+    .expect_err("a non-zero smoke test must reject the artifact");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("failed to run") || message.contains("exited"),
+        "expected a specific smoke-test failure, got: {message}"
+    );
+    assert!(
+        fallback
+            .received_requests()
+            .await
+            .expect("request recording enabled")
+            .is_empty(),
+        "artifact smoke failure must not trigger a fallback-base request"
+    );
+}
+
+#[tokio::test]
+#[serial]
 async fn install_internal_from_bases_uses_primary_when_it_works() {
     // Both bases work; the install must use the primary (first one) and
     // never touch the fallback. Verified by tearing down the fallback

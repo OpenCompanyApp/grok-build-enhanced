@@ -306,7 +306,13 @@ pub(crate) fn bwrap_reexec_command_ex(
     if is_inside_bwrap() {
         return None;
     }
-    let self_exe = std::env::current_exe().ok()?;
+    let self_exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("error: could not resolve current executable for sandbox re-exec: {error}");
+            return None;
+        }
+    };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut cmd = std::process::Command::new("bwrap");
     cmd.arg("--cap-drop").arg("ALL");
@@ -439,6 +445,12 @@ pub fn requires_read_deny(profile: &ProfileName, workspace: &Path) -> bool {
 pub fn requires_read_deny(_profile: &ProfileName, _workspace: &Path) -> bool {
     false
 }
+/// A failed profile resolution must refuse startup whenever either deny
+/// mechanism is required. Proceeding with an empty plan would fail open.
+#[cfg(all(feature = "enforce", target_os = "linux"))]
+fn resolve_failure_must_refuse(profile: &ProfileName, workspace: &Path) -> bool {
+    requires_hook_write_deny(profile, workspace) || requires_read_deny(profile, workspace)
+}
 /// A profile's resolved bwrap deny plan.
 #[cfg(target_os = "linux")]
 struct BwrapDenyPlan {
@@ -461,7 +473,7 @@ fn bwrap_deny_plan(profile: &ProfileName, workspace: &Path) -> Option<BwrapDenyP
         match profile.resolve_profile(workspace, &config) {
             Ok(r) => Some(r),
             Err(e) => {
-                if requires_hook_write_deny(profile, workspace) {
+                if resolve_failure_must_refuse(profile, workspace) {
                     eprintln!("error: sandbox profile resolve failed: {e}");
                     return None;
                 }
@@ -487,6 +499,7 @@ fn bwrap_deny_plan(profile: &ProfileName, workspace: &Path) -> Option<BwrapDenyP
         None
     };
     if needs_hooks && hook_plan.is_none() {
+        eprintln!("error: hook write-deny is required but no plan was prepared");
         return None;
     }
     let (exact, globs) = deny::partition_deny_entries(&entries);
@@ -498,13 +511,14 @@ fn bwrap_deny_plan(profile: &ProfileName, workspace: &Path) -> Option<BwrapDenyP
             "sandbox deny globs are enforced best-effort on Linux (expanded at launch); \
              files matching them that are created later are NOT covered"
         );
-        deny_read.extend(deny::expand_deny_globs(
-            workspace,
-            &globs,
-            deny::DENY_GLOB_MAX_DEPTH,
-            deny::DENY_GLOB_MAX_MATCHES,
-            deny::DENY_GLOB_MAX_ENTRIES,
-        )?);
+        match deny::expand_deny_globs(workspace, &globs, deny::DENY_GLOB_CAPS) {
+            Ok(paths) => deny_read.extend(paths),
+            Err(reason) => {
+                tracing::error!(%reason, "sandbox deny-glob expansion failed; refusing to start");
+                eprintln!("error: sandbox deny glob could not be enforced on Linux: {reason}");
+                return None;
+            }
+        }
     }
     Some(BwrapDenyPlan {
         deny_write_optional,
@@ -545,6 +559,9 @@ pub fn bwrap_reexec_for_profile(
     profile: &ProfileName,
     workspace: &Path,
 ) -> Option<std::process::Command> {
+    if is_inside_bwrap() {
+        return None;
+    }
     let BwrapDenyPlan {
         deny_write_optional,
         hook_plan,

@@ -437,6 +437,21 @@ pub enum MetricIncrement {
         error_category: String,
         model: String,
     },
+    /// `grok_code.startup.timeout` (`stuck_in` is a closed phase label).
+    StartupTimeout { stuck_in: String, auth_mode: String },
+    /// `grok_code.startup.phase_duration` in milliseconds.
+    StartupPhaseDuration {
+        phase: String,
+        duration_ms: u64,
+        outcome: String,
+        auth_mode: String,
+    },
+    /// `grok_code.startup.total` in milliseconds.
+    StartupTotal {
+        duration_ms: u64,
+        outcome: String,
+        auth_mode: String,
+    },
 }
 
 /// Curated external representation of one telemetry event: an optional log
@@ -498,6 +513,9 @@ pub(crate) const METRIC_TURN_COUNT: &str = "grok_code.turn.count";
 pub(crate) const METRIC_TOOL_DECISION: &str = "grok_code.tool.decision";
 pub(crate) const METRIC_TOOL_USAGE: &str = "grok_code.tool.usage";
 pub(crate) const METRIC_ERROR_COUNT: &str = "grok_code.error.count";
+pub(crate) const METRIC_STARTUP_PHASE_DURATION: &str = "grok_code.startup.phase_duration";
+pub(crate) const METRIC_STARTUP_TIMEOUT: &str = "grok_code.startup.timeout";
+pub(crate) const METRIC_STARTUP_TOTAL: &str = "grok_code.startup.total";
 
 /// Every attribute key that may appear on a metric data point: the
 /// instrument-specific keys plus the per-increment identity/cardinality keys.
@@ -513,6 +531,9 @@ pub(crate) const METRIC_ALLOWED_ATTR_KEYS: &[&str] = &[
     "access_kind",
     "permission_mode",
     "error_category",
+    "phase",
+    "stuck_in",
+    "auth_mode",
     "session.id",
     "app.version",
     "user.id",
@@ -774,6 +795,38 @@ pub fn map_session_end(ev: &events::SessionEnded) -> Option<ExternalRecord> {
     )
 }
 
+/// `AgentConnect` maps only to bounded startup metrics; it emits no external
+/// log record and carries no path, command, credential, or account detail.
+pub fn map_agent_connect(ev: &events::AgentConnect) -> Option<ExternalRecord> {
+    let mut record = ExternalRecord::default();
+    for (phase, duration_ms) in &ev.phase_durations_ms {
+        record = record.metric(MetricIncrement::StartupPhaseDuration {
+            phase: phase.clone(),
+            duration_ms: *duration_ms,
+            outcome: ev.outcome.label().to_owned(),
+            auth_mode: ev.auth_mode.label().to_owned(),
+        });
+    }
+    if ev.outcome == crate::startup::StartupOutcome::Timeout {
+        record = record.metric(MetricIncrement::StartupTimeout {
+            stuck_in: ev.stuck_in.clone().unwrap_or_else(|| "unknown".to_owned()),
+            auth_mode: ev.auth_mode.label().to_owned(),
+        });
+    }
+    Some(record)
+}
+
+/// `StartupComplete` maps to a single end-to-end histogram sample.
+pub fn map_startup_complete(ev: &events::StartupComplete) -> Option<ExternalRecord> {
+    Some(
+        ExternalRecord::default().metric(MetricIncrement::StartupTotal {
+            duration_ms: ev.total_ms,
+            outcome: ev.outcome.label().to_owned(),
+            auth_mode: ev.auth_mode.label().to_owned(),
+        }),
+    )
+}
+
 /// `PromptSubmitted` → `grok_code.user_prompt`. Prompt text rides the
 /// `UserPrompts` gate (60 KB cap applied at emit time).
 pub fn map_user_prompt(ev: &events::PromptSubmitted) -> Option<ExternalRecord> {
@@ -1015,7 +1068,7 @@ pub fn map_yolo_toggled(ev: &events::YoloToggled) -> Option<ExternalRecord> {
 }
 
 /// `SkillDispatched` → `grok_code.skill_activated`. Skill names are
-/// details-gated; only the source category exports by default.
+/// details-gated; source and trigger export by default.
 pub fn map_skill_activated(ev: &events::SkillDispatched) -> Option<ExternalRecord> {
     Some(
         ExternalRecord::event(ExternalEventName::SkillActivated)
@@ -1027,6 +1080,7 @@ pub fn map_skill_activated(ev: &events::SkillDispatched) -> Option<ExternalRecor
                     "local"
                 },
             )
+            .attr(ExternalKey::Trigger, <&'static str>::from(ev.trigger))
             .gated(
                 ExternalKey::SkillName,
                 Gate::ToolDetails,

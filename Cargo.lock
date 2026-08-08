@@ -5695,6 +5695,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kamadak-exif"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef4fc70d0ab7e5b6bafa30216a6b48705ea964cdfc29c050f2412295eba58077"
+dependencies = [
+ "mutate_once",
+]
+
+[[package]]
 name = "kanal"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6349,6 +6358,12 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
+
+[[package]]
+name = "mutate_once"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13d2233c9842d08cfe13f9eac96e207ca6a2ea10b80259ebe8ad0268be27d2af"
 
 [[package]]
 name = "ndk"
@@ -8004,6 +8019,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-reflect"
+version = "0.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01b80ea363c31af2de2b92e3c07ed1156628f7838c4afb4df75ee78a37fedbd1"
+dependencies = [
+ "prost",
+ "prost-types",
+]
+
+[[package]]
 name = "prost-types"
 version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8358,6 +8383,19 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rcgen"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "yasna",
 ]
 
 [[package]]
@@ -13319,6 +13357,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "xai-grok-extra-ca"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.24",
+ "rustls",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "xai-grok-hooks"
 version = "0.1.0"
 dependencies = [
@@ -13372,6 +13420,7 @@ dependencies = [
  "syntect",
  "textwrap",
  "two-face",
+ "unicode-segmentation",
  "unicode-width 0.2.0",
  "url",
  "xai-grok-markdown-core",
@@ -13544,6 +13593,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "wait-timeout",
+ "walkdir",
  "windows-sys 0.59.0",
  "xai-acp-lib",
  "xai-crash-handler",
@@ -13777,6 +13827,8 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "xai-grok-auth",
+ "xai-grok-extra-ca",
  "xai-grok-provider-http",
  "xai-grok-sampling-types",
  "xai-grok-test-support",
@@ -13797,6 +13849,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
+ "xai-circuit-breaker",
  "xai-grok-compaction",
  "xai-grok-tools",
  "xai-grok-version",
@@ -14083,6 +14136,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "bytes",
  "chrono",
  "ctor",
@@ -14100,7 +14154,9 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "prost",
+ "rcgen",
  "reqwest 0.12.24",
+ "rustls",
  "sentry",
  "serde",
  "serde_json",
@@ -14116,6 +14172,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "webpki-roots 0.26.11",
  "whoami",
  "xai-file-utils",
  "xai-grok-auth",
@@ -14172,6 +14229,7 @@ dependencies = [
  "dirs 5.0.1",
  "dunce",
  "educe",
+ "encoding_rs",
  "flate2",
  "fs2",
  "futures",
@@ -14182,11 +14240,13 @@ dependencies = [
  "image",
  "indexmap",
  "infer 0.19.0",
+ "kamadak-exif",
  "libc",
  "minijinja",
  "nix 0.30.1",
  "parking_lot",
  "pdf_oxide",
+ "pretty_assertions",
  "pulldown-cmark",
  "quick-xml 0.38.3",
  "regex",
@@ -14197,6 +14257,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_yaml",
+ "sha2 0.10.9",
  "shellexpand",
  "similar",
  "strip-ansi-escapes",
@@ -14209,6 +14270,7 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "url",
  "uuid",
  "which",
@@ -14218,6 +14280,7 @@ dependencies = [
  "xai-computer-hub-core",
  "xai-computer-hub-sdk",
  "xai-file-utils",
+ "xai-grok-auth",
  "xai-grok-config",
  "xai-grok-env",
  "xai-grok-provider-http",
@@ -14358,6 +14421,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "wait-timeout",
  "windows 0.61.3",
  "xai-acp-lib",
  "xai-codebase-graph",
@@ -14482,6 +14546,7 @@ dependencies = [
  "anyhow",
  "pbjson-build",
  "prost-build",
+ "prost-reflect",
  "tempfile",
  "tonic-prost-build",
 ]
@@ -14700,6 +14765,15 @@ name = "yansi"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
+ "time",
+]
 
 [[package]]
 name = "yoke"

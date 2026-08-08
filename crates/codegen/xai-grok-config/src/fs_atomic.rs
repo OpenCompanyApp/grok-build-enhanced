@@ -7,7 +7,7 @@ use std::path::Path;
 /// name is unique per writer (pid + counter) and `create_new`, so concurrent
 /// writers don't collide. `mode` (unix only) is applied at temp-file creation, so
 /// the final file never exists with looser permissions.
-pub(crate) fn write_atomically(
+pub fn write_atomically(
     final_path: &Path,
     contents: &str,
     mode: Option<u32>,
@@ -40,4 +40,38 @@ pub(crate) fn write_atomically(
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_atomic_writer_replaces_complete_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        write_atomically(&path, "first", None).unwrap();
+        write_atomically(&path, "second", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        let leftovers = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path() != path)
+            .count();
+        assert_eq!(leftovers, 0, "successful writes must leave no temp files");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn requested_owner_only_mode_is_applied_before_publish() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private.toml");
+        write_atomically(&path, "secret = true", Some(0o600)).unwrap();
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }

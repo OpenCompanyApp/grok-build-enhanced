@@ -1,9 +1,11 @@
 //! [`RetryPolicy`] — maps a non-2xx HTTP status code to a [`Disposition`],
 //! consolidating the scattered "what should I do with this response" logic.
 //!
-//! Two named presets:
+//! Three named presets:
 //! - [`RetryPolicy::server`] — server-side preset: retry on 429 or any 5xx;
 //!   all other non-2xx are terminal.
+//! - [`RetryPolicy::edge_client`] — [`RetryPolicy::server`] for clients whose
+//!   requests cross the Cloudflare edge, minus the origin-TLS codes.
 //! - [`RetryPolicy::client_storage`] — client upload/storage preset:
 //!   400/403/404 terminal-drop, 401 auth-refresh-once, everything else retried.
 
@@ -61,13 +63,26 @@ impl RetryPolicy {
         }
     }
 
+    /// Client preset for requests that cross the Cloudflare edge: the same
+    /// 429 + any 5xx rule as [`Self::server`], minus the origin-TLS codes
+    /// (525 handshake failed, 526 invalid certificate). Those failures cannot
+    /// clear through request retry.
+    pub const fn edge_client() -> Self {
+        Self {
+            retryable: &[429],
+            auth_refresh: &[],
+            terminal: &[525, 526],
+            default: Disposition::Terminal,
+        }
+    }
+
     /// Client storage/upload preset: 400/403/404 terminal-drop, 401
     /// auth-refresh-once, everything else (429, 5xx, unlisted 4xx) retried.
     pub const fn client_storage() -> Self {
         Self {
             retryable: &[],
             auth_refresh: &[401],
-            terminal: &[400, 403, 404],
+            terminal: &[400, 403, 404, 525, 526],
             default: Disposition::Retryable,
         }
     }
@@ -90,9 +105,20 @@ mod tests {
     }
 
     #[test]
+    fn edge_client_retries_transient_edge_codes_but_not_origin_tls() {
+        let policy = RetryPolicy::edge_client();
+        for code in [429, 500, 520, 521, 522, 523, 524, 529, 530] {
+            assert!(policy.should_retry(code), "expected {code} to retry");
+        }
+        for code in [525, 526] {
+            assert_eq!(policy.classify(code), Some(Disposition::Terminal));
+        }
+    }
+
+    #[test]
     fn client_storage_classify() {
         let policy = RetryPolicy::client_storage();
-        for code in [400, 403, 404] {
+        for code in [400, 403, 404, 525, 526] {
             assert_eq!(policy.classify(code), Some(Disposition::Terminal));
         }
         assert_eq!(policy.classify(401), Some(Disposition::AuthRefresh));

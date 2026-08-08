@@ -670,6 +670,15 @@ fn tool_decision_snapshot() {
             source: Some("user_reject".into()),
             subagent_session_id: None,
             subagent_type: None,
+            manager_prompt_attempted: None,
+            prompt_outcome: None,
+            decision_reason: None,
+            classifier_source: None,
+            classifier_verdict: None,
+            security_findings: None,
+            classifier_latency_ms: None,
+            auto_denials_consecutive: None,
+            auto_denials_total: None,
         },
     );
     let events = exported_events(&stream);
@@ -694,11 +703,13 @@ fn skill_activated_name_gated() {
         &events::SkillDispatched {
             skill_name: "internal-deploy-runbook".into(),
             plugin_source: None,
+            trigger: events::SkillTrigger::SlashCommand,
         },
     );
     let events = exported_events(&stream);
     let ev = &events[0];
     assert_eq!(attr(ev, "skill_source").as_deref(), Some("local"));
+    assert_eq!(attr(ev, "trigger").as_deref(), Some("slash_command"));
     assert_eq!(attr(ev, "skill.name"), None);
     assert!(!format!("{events:?}").contains("internal-deploy-runbook"));
 }

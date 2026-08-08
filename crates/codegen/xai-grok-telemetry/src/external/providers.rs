@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use http::{HeaderMap, HeaderName, HeaderValue};
 use opentelemetry_otlp::{
-    Protocol, WithExportConfig, WithHttpConfig, WithTonicConfig, tonic_types::metadata::MetadataMap,
+    Protocol, WithExportConfig, WithHttpConfig, WithTonicConfig,
+    tonic_types::metadata::MetadataMap,
+    tonic_types::transport::{Certificate, ClientTlsConfig},
 };
 use opentelemetry_sdk::logs::{
     BatchConfig, BatchConfigBuilder, BatchLogProcessor as ThreadBatchLogProcessor,
@@ -254,6 +256,79 @@ pub(crate) struct BuiltProviders {
     pub meter_provider: Option<SdkMeterProvider>,
 }
 
+pub(crate) fn pem_contains_certificate(pem: &[u8]) -> bool {
+    const MARKER: &[u8] = b"-----BEGIN CERTIFICATE-----";
+    pem.windows(MARKER.len()).any(|window| window == MARKER)
+}
+
+fn ders_to_pem_bundle(ders: &[Vec<u8>]) -> Option<String> {
+    use base64::Engine as _;
+    if ders.is_empty() {
+        return None;
+    }
+    let mut pem = String::new();
+    for der in ders {
+        pem.push_str("-----BEGIN CERTIFICATE-----\n");
+        pem.push_str(&base64::engine::general_purpose::STANDARD.encode(der));
+        pem.push_str("\n-----END CERTIFICATE-----\n");
+    }
+    Some(pem)
+}
+
+fn grpc_tls_candidates(
+    endpoint: &str,
+    ca_certificate_path: Option<&str>,
+) -> BuildResult<Vec<Option<ClientTlsConfig>>> {
+    let is_https = endpoint
+        .parse::<http::Uri>()
+        .ok()
+        .and_then(|uri| uri.scheme().cloned())
+        .is_some_and(|scheme| scheme == http::uri::Scheme::HTTPS);
+    if !is_https {
+        return Ok(vec![None]);
+    }
+    let mut base =
+        ClientTlsConfig::new().trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    if let Some(extra_pem) = ders_to_pem_bundle(xai_grok_provider_http::extra_root_ders()) {
+        base = base.ca_certificate(Certificate::from_pem(extra_pem));
+    }
+    let base = match ca_certificate_path {
+        Some(path) => {
+            let pem = std::fs::read(path).map_err(|e| {
+                opentelemetry_otlp::ExporterBuildError::InternalFailure(format!(
+                    "reading OTEL_EXPORTER_OTLP_CERTIFICATE {path:?}: {e}"
+                ))
+            })?;
+            if !pem_contains_certificate(&pem) {
+                return Err(opentelemetry_otlp::ExporterBuildError::InternalFailure(
+                    format!("OTEL_EXPORTER_OTLP_CERTIFICATE {path:?} contains no certificates"),
+                ));
+            }
+            base.ca_certificate(Certificate::from_pem(pem))
+        }
+        None => base,
+    };
+    Ok(vec![Some(base.clone().with_native_roots()), Some(base)])
+}
+
+fn build_with_tls_fallback<T>(
+    candidates: Vec<Option<ClientTlsConfig>>,
+    mut build: impl FnMut(Option<ClientTlsConfig>) -> BuildResult<T>,
+) -> BuildResult<T> {
+    debug_assert!(!candidates.is_empty());
+    let mut last_err = None;
+    for candidate in candidates {
+        match build(candidate) {
+            Ok(exporter) => return Ok(exporter),
+            Err(e) => {
+                tracing::debug!(error = %e, "external otel: gRPC exporter TLS candidate failed");
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.expect("at least one TLS candidate is always supplied"))
+}
+
 enum OtlpExportTransport<'a> {
     HttpProtobuf(&'a crate::otlp_http::BlockingOtlpClient),
     Grpc(&'a DedicatedRuntime),
@@ -293,13 +368,20 @@ impl OtlpExportFactory for OtlpLogExporterBuilder<'_> {
                 let endpoint = self.cfg.logs_endpoint.clone();
                 let timeout = self.cfg.timeout;
                 let metadata = customer_metadata(&self.cfg.logs_headers);
+                let tls_candidates =
+                    grpc_tls_candidates(&endpoint, self.cfg.logs_ca_certificate.as_deref())?;
                 runtime.run(move || {
-                    opentelemetry_otlp::LogExporter::builder()
-                        .with_tonic()
-                        .with_endpoint(endpoint)
-                        .with_timeout(timeout)
-                        .with_metadata(metadata)
-                        .build()
+                    build_with_tls_fallback(tls_candidates, |tls| {
+                        let mut builder = opentelemetry_otlp::LogExporter::builder()
+                            .with_tonic()
+                            .with_endpoint(endpoint.clone())
+                            .with_timeout(timeout)
+                            .with_metadata(metadata.clone());
+                        if let Some(tls) = tls {
+                            builder = builder.with_tls_config(tls);
+                        }
+                        builder.build()
+                    })
                 })
             }
         }
@@ -333,14 +415,21 @@ impl OtlpExportFactory for OtlpMetricExporterBuilder<'_> {
                 let timeout = self.cfg.timeout;
                 let metadata = customer_metadata(&self.cfg.metrics_headers);
                 let temporality = self.temporality;
+                let tls_candidates =
+                    grpc_tls_candidates(&endpoint, self.cfg.metrics_ca_certificate.as_deref())?;
                 runtime.run(move || {
-                    opentelemetry_otlp::MetricExporter::builder()
-                        .with_tonic()
-                        .with_endpoint(endpoint)
-                        .with_timeout(timeout)
-                        .with_metadata(metadata)
-                        .with_temporality(temporality)
-                        .build()
+                    build_with_tls_fallback(tls_candidates, |tls| {
+                        let mut builder = opentelemetry_otlp::MetricExporter::builder()
+                            .with_tonic()
+                            .with_endpoint(endpoint.clone())
+                            .with_timeout(timeout)
+                            .with_metadata(metadata.clone())
+                            .with_temporality(temporality);
+                        if let Some(tls) = tls {
+                            builder = builder.with_tls_config(tls);
+                        }
+                        builder.build()
+                    })
                 })
             }
         }
@@ -473,7 +562,21 @@ pub(crate) fn build(
         && (cfg.logs_exporter == ExporterSelection::Otlp
             || cfg.metrics_exporter == ExporterSelection::Otlp);
     let http_client = needs_http_client
-        .then(|| crate::otlp_http::build_blocking_client(cfg.timeout))
+        .then(|| {
+            let mut ca_files: Vec<&str> = [
+                (cfg.logs_exporter == ExporterSelection::Otlp)
+                    .then_some(cfg.logs_ca_certificate.as_deref())
+                    .flatten(),
+                (cfg.metrics_exporter == ExporterSelection::Otlp)
+                    .then_some(cfg.metrics_ca_certificate.as_deref())
+                    .flatten(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            ca_files.dedup();
+            crate::otlp_http::build_blocking_client(cfg.timeout, &ca_files)
+        })
         .transpose()
         .map_err(opentelemetry_otlp::ExporterBuildError::InternalFailure)?;
 
@@ -590,6 +693,57 @@ mod tests {
                 .map(String::as_str),
             Some("Bearer customer")
         );
+    }
+
+    #[test]
+    fn grpc_tls_candidates_plain_http_has_no_tls() {
+        let candidates = grpc_tls_candidates("http://localhost:4317", None).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].is_none());
+    }
+
+    #[test]
+    fn grpc_tls_candidates_https_tries_native_then_embedded_roots() {
+        let candidates = grpc_tls_candidates("https://collector.corp.example:4317", None).unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(Option::is_some));
+    }
+
+    #[test]
+    fn grpc_tls_candidates_fail_closed_on_empty_ca_file() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "# no certificate blocks\n").unwrap();
+        let err = grpc_tls_candidates(
+            "https://collector.corp.example:4317",
+            Some(file.path().to_str().unwrap()),
+        )
+        .expect_err("certificate-less bundle must fail exporter construction");
+        assert!(err.to_string().contains("no certificates"), "{err}");
+    }
+
+    #[test]
+    fn pem_certificate_detection() {
+        assert!(pem_contains_certificate(
+            b"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
+        ));
+        assert!(!pem_contains_certificate(b""));
+        assert!(!pem_contains_certificate(
+            b"-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n"
+        ));
+    }
+
+    #[test]
+    fn ders_to_pem_bundle_roundtrips() {
+        assert!(ders_to_pem_bundle(&[]).is_none());
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["localhost".into()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let der = cert.der().to_vec();
+        let pem = ders_to_pem_bundle(&[der.clone(), der]).unwrap();
+        let parsed = reqwest::Certificate::from_pem_bundle(pem.as_bytes()).unwrap();
+        assert_eq!(parsed.len(), 2);
     }
 
     #[test]

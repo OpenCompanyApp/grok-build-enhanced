@@ -97,6 +97,9 @@ pub enum SamplingEvent {
     Retrying {
         request_id: RequestId,
         attempt: u32,
+        /// Maximum bounded retries. A value of zero paired with the fixed
+        /// `Reconnecting... waiting for network` reason denotes Codex's
+        /// unbounded, connection-only reconnect schedule.
         max_retries: u32,
         /// Typed retry class so consumers never have to sniff `reason`
         /// (e.g. the shell's doom-loop recovery counter).

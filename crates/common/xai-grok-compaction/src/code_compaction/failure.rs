@@ -230,6 +230,9 @@ mod tests {
             "Request entity too large",
             "Too many tokens",
             "Token limit exceeded",
+            "Failed to start sampling: [conversation] Current message (1000000 tokens) exceeds budget (500000 tokens)",
+            "compact failed: API error (status 400 Bad Request): invalid-argument: Failed to start sampling: [conversation] Current message (1000000 tokens) exceeds budget (500000 tokens)",
+            "Current message (600000) exceeds budget (500000)",
         ] {
             assert!(is_context_length_error(message), "should match: {message}");
         }

@@ -39,6 +39,9 @@
 use std::collections::HashMap;
 use std::io;
 
+mod process_resources;
+pub use process_resources::{ProcessResources, sample_process_memory, sample_process_resources};
+
 mod process_scope;
 pub use process_scope::{ProcessScope, global_process_scope};
 
@@ -284,6 +287,18 @@ pub fn kill_current_process_on_parent_death() -> io::Result<()> {
 // Process group lifecycle
 // ---------------------------------------------------------------------------
 
+pub const KILL_REAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+pub async fn reap_killed_bounded(
+    child: &mut tokio::process::Child,
+    bound: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    match tokio::time::timeout(bound, child.wait()).await {
+        Ok(result) => result.ok(),
+        Err(_) => None,
+    }
+}
+
 /// Configure a command so the spawned child becomes the leader of a new
 /// process group.
 pub fn new_process_group(cmd: &mut tokio::process::Command) {
@@ -491,6 +506,30 @@ impl ProcessGroup {
         }
     }
 
+    /// Whether any process still exists in this group. `None` where the
+    /// platform cannot say (Windows, `EPERM`); treat it as alive.
+    ///
+    /// Over-reports, never under-reports: an unreaped zombie is still a
+    /// process, so it counts as live. Filtering zombies out would let a
+    /// reaped leader with a live descendant look empty.
+    pub fn has_live_members(&self) -> Option<bool> {
+        #[cfg(unix)]
+        {
+            let Some(leader) = self.leader else {
+                return Some(false);
+            };
+            match nix::sys::signal::killpg(nix::unistd::Pid::from_raw(leader.get() as i32), None) {
+                Ok(()) => Some(true),
+                Err(nix::errno::Errno::ESRCH) => Some(false),
+                Err(_) => None,
+            }
+        }
+        #[cfg(windows)]
+        {
+            None
+        }
+    }
+
     /// Ask an interactive shell to hang up. Its job-control children each live
     /// in their own process group, which no `killpg` here reaches, but a shell
     /// forwards the hangup to them before it exits.
@@ -580,6 +619,20 @@ pub const GIT_AUTH_SUPPRESSION_ENVS: [(&str, &str); 4] = [
 ///
 /// Respects `GIT_BIN_PATH` for hermetic git in Bazel test sandboxes.
 pub fn git_command() -> std::process::Command {
+    let mut cmd = git_command_base();
+    cmd.arg("--no-optional-locks");
+    cmd
+}
+
+/// Git command with auth/LFS/SSH prompt suppression that permits repository
+/// locking for operations which update local refs or object state.
+///
+/// Respects `GIT_BIN_PATH` for hermetic git in Bazel test sandboxes.
+pub fn git_command_locking() -> std::process::Command {
+    git_command_base()
+}
+
+fn git_command_base() -> std::process::Command {
     let mut hermetic_exec_path: Option<std::path::PathBuf> = None;
     let git = match std::env::var("GIT_BIN_PATH") {
         Ok(p) => {
@@ -611,7 +664,6 @@ pub fn git_command() -> std::process::Command {
     if let Some(exec_path) = hermetic_exec_path {
         cmd.env("GIT_EXEC_PATH", exec_path);
     }
-    cmd.arg("--no-optional-locks");
     cmd
 }
 
@@ -824,6 +876,29 @@ mod tests {
     fn kill_on_parent_death_std_does_not_panic() {
         let mut cmd = std::process::Command::new("echo");
         kill_on_parent_death_std(&mut cmd);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn has_live_members_tracks_the_group_emptying() {
+        let mut group = ProcessGroup::new().expect("group");
+        assert_eq!(group.has_live_members(), Some(false));
+
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("1000")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        detach_std_command(&mut cmd);
+        #[allow(clippy::disallowed_methods)] // test: exercises ProcessGroup directly
+        let mut child = cmd.spawn().expect("spawn sleeper");
+        group.attach_std(&child).expect("attach");
+        assert_eq!(group.has_live_members(), Some(true));
+
+        group.kill().expect("kill group");
+        // Required: an unreaped zombie still reports live.
+        child.wait().expect("reap sleeper");
+        assert_eq!(group.has_live_members(), Some(false));
     }
 
     /// Debug builds enforce the top-of-doc caveat that arming and spawning

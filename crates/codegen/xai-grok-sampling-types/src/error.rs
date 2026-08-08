@@ -7,8 +7,10 @@ use std::fmt;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use xai_circuit_breaker::RetryPolicy;
 
 use crate::provider::{CredentialBinding, ProviderId};
+use crate::provider_error::{parse_provider_error, parse_provider_error_str};
 
 pub type Result<T> = std::result::Result<T, SamplingError>;
 
@@ -370,6 +372,21 @@ impl SamplingError {
         }
     }
 
+    /// True only for a transport failure while establishing the connection.
+    /// Timeouts, body/request failures, status responses, and SSE failures are
+    /// deliberately excluded so sustained reconnect policy cannot consume or
+    /// bypass the ordinary retry budget for a different failure class.
+    pub fn is_connection_failure(&self) -> bool {
+        match self {
+            Self::Http(error) => error.is_connect(),
+            Self::RedactedTransport {
+                kind: RedactedTransportKind::Connect,
+                ..
+            } => true,
+            _ => false,
+        }
+    }
+
     /// The server rejected the request because the conversation history
     /// contains `encrypted_content` from a different model family that the
     /// current model cannot decrypt. Never retryable — the user must start
@@ -414,13 +431,13 @@ impl SamplingError {
                 if *should_retry == Some(false) {
                     return false;
                 }
-                matches!(
-                    status.as_u16(),
-                    408 | 409 | 429 | 500 | 502 | 503 | 504 | 520 | 529
-                )
+                is_retryable_api_status(*status)
             }
             SamplingError::EventStreamError(_) => true,
-            SamplingError::StreamError { error_type, .. } => error_type != "usage_limit_reached",
+            SamplingError::StreamError {
+                error_type,
+                message,
+            } => stream_error_is_retryable(error_type, message),
             SamplingError::IdleTimeout { .. } => false,
             SamplingError::EmptyResponse { .. } => true,
             SamplingError::MaxTokensTruncation => false,
@@ -553,7 +570,9 @@ fn try_parse_error(data: &str) -> Option<(String, String)> {
     None
 }
 
-const MAX_PROVIDER_ERROR_CHARS: usize = 2_048;
+/// Maximum characters of structured provider error text surfaced to a user.
+/// Provider bodies are untrusted and can otherwise create unbounded banners.
+pub const MAX_USER_ERROR_BODY_CHARS: usize = 280;
 const EMPTY_PROVIDER_ERROR: &str = "provider returned an empty error response";
 const HTML_PROVIDER_ERROR: &str = "provider returned an HTML error response";
 
@@ -573,7 +592,7 @@ fn sanitize_provider_error_text(raw: &str) -> String {
         return HTML_PROVIDER_ERROR.to_owned();
     }
 
-    let mut output = String::with_capacity(trimmed.len().min(MAX_PROVIDER_ERROR_CHARS));
+    let mut output = String::with_capacity(trimmed.len().min(MAX_USER_ERROR_BODY_CHARS));
     let mut output_chars = 0;
     let mut pending_space = false;
     let mut truncated = false;
@@ -583,7 +602,7 @@ fn sanitize_provider_error_text(raw: &str) -> String {
             continue;
         }
         if pending_space {
-            if output_chars >= MAX_PROVIDER_ERROR_CHARS {
+            if output_chars >= MAX_USER_ERROR_BODY_CHARS {
                 truncated = true;
                 break;
             }
@@ -591,7 +610,7 @@ fn sanitize_provider_error_text(raw: &str) -> String {
             output_chars += 1;
             pending_space = false;
         }
-        if output_chars >= MAX_PROVIDER_ERROR_CHARS {
+        if output_chars >= MAX_USER_ERROR_BODY_CHARS {
             truncated = true;
             break;
         }
@@ -614,7 +633,16 @@ fn sanitize_provider_error_text(raw: &str) -> String {
 }
 
 fn structured_error_message(bytes: &[u8]) -> Option<String> {
-    if let Some((error_type, message)) = std::str::from_utf8(bytes).ok().and_then(try_parse_error) {
+    let rigid = std::str::from_utf8(bytes).ok().and_then(try_parse_error);
+    if let Some((error_type, message)) = &rigid
+        && message != "unknown error"
+    {
+        if let Some(inner) = parse_provider_error_str(message)
+            && inner.message != *message
+            && !inner.message_is_markup()
+        {
+            return Some(sanitize_provider_error_text(&inner.display_message()));
+        }
         let message = sanitize_provider_error_text(&message);
         if error_type == "unknown" || error_type == "server_error" {
             return Some(message);
@@ -624,7 +652,12 @@ fn structured_error_message(bytes: &[u8]) -> Option<String> {
             sanitize_provider_error_text(&error_type)
         )));
     }
-    None
+    if let Some(parsed) = parse_provider_error(bytes)
+        && !parsed.message_is_markup()
+    {
+        return Some(sanitize_provider_error_text(&parsed.display_message()));
+    }
+    rigid.map(|(_, message)| sanitize_provider_error_text(&message))
 }
 
 /// Parse only a structured provider error envelope. Arbitrary HTML or text
@@ -638,9 +671,15 @@ pub fn status_user_message(status: StatusCode) -> String {
         code @ 502..=504 => {
             format!("Grok is temporarily unavailable. Please try again in a moment. (HTTP {code}).")
         }
-        code @ 520..=524 => format!(
+        code @ 529 => {
+            format!("Grok is temporarily overloaded. Please try again in a moment. (HTTP {code}).")
+        }
+        code @ 520..=524 | code @ 530 => format!(
             "Connection to Grok timed out or was interrupted. Please try again. (HTTP {code})."
         ),
+        code @ 525 | code @ 526 => {
+            format!("Secure connection to Grok failed. (HTTP {code}).")
+        }
         code if status.is_server_error() => {
             format!("Something went wrong on the server (HTTP {code}).")
         }
@@ -653,9 +692,15 @@ pub fn user_facing_api_error_message(status: StatusCode, bytes: &[u8]) -> String
 }
 
 pub fn try_parse_stream_error(data: &str) -> Option<SamplingError> {
-    let (error_type, message) = try_parse_error(data)?;
-    let error_type = sanitize_provider_error_text(&error_type);
-    let message = sanitize_provider_error_text(&message);
+    let parsed = parse_provider_error_str(data)?;
+    let error_type = sanitize_provider_error_text(
+        parsed
+            .slug()
+            .or(parsed.kind.as_deref())
+            .or(parsed.code.as_deref())
+            .unwrap_or("server_error"),
+    );
+    let message = sanitize_provider_error_text(&parsed.display_message());
     tracing::warn!(error_type, message, "Server-side stream error");
     Some(SamplingError::StreamError {
         error_type,
@@ -669,7 +714,7 @@ pub fn try_parse_stream_error_redacted(
     data: &str,
     provider: crate::ProviderId,
 ) -> Option<SamplingError> {
-    try_parse_error(data)?;
+    parse_provider_error_str(data)?;
     tracing::warn!(
         provider = %provider,
         data_len = data.len(),
@@ -691,6 +736,12 @@ pub fn is_context_length_error(message: &str) -> bool {
     message.contains("current message") && message.contains("exceeds budget")
 }
 
+/// Whether an HTTP status is transient at the client-facing edge. This uses
+/// the shared 429/any-5xx contract with explicit origin-TLS vetoes.
+pub fn is_retryable_api_status(status: StatusCode) -> bool {
+    RetryPolicy::edge_client().should_retry(status.as_u16())
+}
+
 /// Decide whether a [`reqwest::Error`] is worth retrying.
 pub fn is_retryable_reqwest(err: &reqwest::Error) -> bool {
     if err.is_timeout() || err.is_connect() {
@@ -698,10 +749,7 @@ pub fn is_retryable_reqwest(err: &reqwest::Error) -> bool {
     }
 
     if err.is_status() {
-        return matches!(
-            err.status(),
-            Some(status) if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS
-        );
+        return err.status().is_some_and(is_retryable_api_status);
     }
 
     if err.is_request() || err.is_body() {
@@ -716,6 +764,74 @@ pub fn is_retryable_reqwest(err: &reqwest::Error) -> bool {
 fn message_looks_overloaded(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     m.contains("overloaded") || m.contains("service_unavailable_error")
+}
+
+/// Provider-neutral retry classification for structured midstream failures.
+/// Typed permanent failures veto before the bounded message is inspected, so
+/// an invalid-request response cannot become retryable merely by quoting words
+/// such as "timeout" or "overloaded" from user content.
+fn stream_error_is_retryable(error_type: &str, message: &str) -> bool {
+    let kind = error_type.trim().to_ascii_lowercase();
+    let permanent = [
+        "usage_limit",
+        "invalid_request",
+        "authentication",
+        "unauthorized",
+        "permission",
+        "forbidden",
+        "billing",
+        "context_length",
+        "content_policy",
+    ];
+    if permanent.iter().any(|needle| kind.contains(needle)) {
+        return false;
+    }
+
+    if matches!(kind.as_str(), "429" | "500" | "502" | "503" | "504" | "524")
+        || [
+            "rate_limit",
+            "overload",
+            "service_unavailable",
+            "internal_server",
+            "server_error",
+            "provider_error",
+            "resource_exhausted",
+            "retryable",
+            "transient",
+            "throttl",
+            "connection_error",
+            "timeout_error",
+        ]
+        .iter()
+        .any(|needle| kind.contains(needle))
+    {
+        return true;
+    }
+
+    // Only generic envelopes consult prose. Specific, unrecognized types are
+    // fail-closed; their message may contain reflected request/user content.
+    if !matches!(kind.as_str(), "" | "error" | "unknown" | "server_error") {
+        return false;
+    }
+    let text = message.to_ascii_lowercase();
+    [
+        "rate limit",
+        "too many requests",
+        "overloaded",
+        "service unavailable",
+        "internal server error",
+        "provider error",
+        "resource exhausted",
+        "retry after",
+        "connection reset",
+        "connection refused",
+        "dns lookup",
+        "socket hang up",
+        "timed out",
+        "timeout",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
 }
 
 #[cfg(test)]
@@ -966,6 +1082,110 @@ mod tests {
     }
 
     #[test]
+    fn connection_failure_is_narrow_and_provider_safe() {
+        let connect = SamplingError::RedactedTransport {
+            provider: ProviderId::OpenAiCodex,
+            kind: RedactedTransportKind::Connect,
+            retryable: true,
+            likely_body_rejected: false,
+        };
+        assert!(connect.is_connection_failure());
+
+        for kind in [
+            RedactedTransportKind::Timeout,
+            RedactedTransportKind::Body,
+            RedactedTransportKind::Request,
+            RedactedTransportKind::Status,
+            RedactedTransportKind::Other,
+        ] {
+            let error = SamplingError::RedactedTransport {
+                provider: ProviderId::KimiCode,
+                kind,
+                retryable: true,
+                likely_body_rejected: false,
+            };
+            assert!(
+                !error.is_connection_failure(),
+                "unexpected connect: {kind:?}"
+            );
+        }
+        assert!(
+            !SamplingError::EventStreamError("connection reset".into()).is_connection_failure()
+        );
+        assert!(!SamplingError::IdleTimeout { elapsed_secs: 30 }.is_connection_failure());
+    }
+
+    #[test]
+    fn shared_edge_status_policy_retries_transient_failures_and_vetoes_tls() {
+        for code in [429, 500, 502, 503, 504, 520, 524, 529, 530] {
+            assert!(
+                is_retryable_api_status(StatusCode::from_u16(code).unwrap()),
+                "HTTP {code} should retry"
+            );
+        }
+        for code in [400, 401, 403, 404, 525, 526] {
+            assert!(
+                !is_retryable_api_status(StatusCode::from_u16(code).unwrap()),
+                "HTTP {code} should be terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn structured_stream_retry_patterns_are_bounded_by_typed_vetoes() {
+        for (kind, message) in [
+            ("429", "rate limited"),
+            ("rate_limit_error", "too many requests"),
+            ("overloaded_error", "overloaded"),
+            ("service_unavailable_error", "try later"),
+            ("internal_server_error", "internal"),
+            ("provider_error", "upstream failed"),
+            ("resource_exhausted", "retry after 2s"),
+            ("connection_error", "socket hang up"),
+            ("timeout_error", "timed out"),
+            ("error", "DNS lookup failed"),
+        ] {
+            assert!(
+                stream_error_is_retryable(kind, message),
+                "expected retry for {kind}: {message}"
+            );
+        }
+
+        for (kind, message) in [
+            ("usage_limit_reached", "rate limit"),
+            ("invalid_request_error", "user text says connection reset"),
+            ("authentication_error", "service unavailable"),
+            ("permission_error", "overloaded"),
+            ("billing_error", "retry after payment"),
+            ("context_length_exceeded", "internal server error"),
+            ("tool_error", "the tool printed timeout"),
+        ] {
+            assert!(
+                !stream_error_is_retryable(kind, message),
+                "false-positive retry for {kind}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_and_double_encoded_provider_errors_are_preserved_without_markup() {
+        let nested = br#"{"error":"{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"}"#;
+        assert_eq!(parse_error_bytes(nested), "overloaded_error: Overloaded");
+
+        let midstream = try_parse_stream_error(std::str::from_utf8(nested).unwrap())
+            .expect("structured stream error");
+        assert!(matches!(
+            midstream,
+            SamplingError::StreamError { ref error_type, ref message }
+                if error_type == "overloaded_error" && message == "overloaded_error: Overloaded"
+        ));
+
+        let html = br#"{"error":"<html><body>credential-canary</body></html>"}"#;
+        assert_eq!(parse_error_bytes(html), HTML_PROVIDER_ERROR);
+        assert!(!parse_error_bytes(html).contains("credential-canary"));
+    }
+
+    #[test]
     fn usage_limit_stream_error_is_terminal_but_other_stream_errors_remain_retryable() {
         let usage_limit = SamplingError::StreamError {
             error_type: "usage_limit_reached".into(),
@@ -1049,10 +1269,10 @@ mod tests {
     fn provider_error_text_is_bounded_and_control_neutral() {
         let body = format!(
             r#"{{"error":{{"type":"server_error","message":"{}\n\u0000tail"}}}}"#,
-            "x".repeat(MAX_PROVIDER_ERROR_CHARS * 2)
+            "x".repeat(MAX_USER_ERROR_BODY_CHARS * 2)
         );
         let message = parse_error_bytes(body.as_bytes());
-        assert!(message.chars().count() <= MAX_PROVIDER_ERROR_CHARS + 1);
+        assert!(message.chars().count() <= MAX_USER_ERROR_BODY_CHARS + 1);
         assert!(message.ends_with('…'));
         assert!(!message.contains('\n'));
         assert!(!message.contains('\0'));

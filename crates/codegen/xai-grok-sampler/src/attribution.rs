@@ -1,4 +1,4 @@
-//! 401 attribution callback hook for the sampling client.
+//! 401 attribution hook for the sampling client.
 //!
 //! Every 401 response site can optionally emit an attribution event without
 //! exposing request credentials to telemetry code.
@@ -14,21 +14,9 @@
 
 use std::sync::Arc;
 
-/// A logical 401-emitting site inside the sampling client. The string
-/// identifier ends up in the consumer field of the attribution event
-/// so downstream queries can break down 401s by API path.
-///
-/// # Scope: sampler endpoints only
-///
-/// This enum enumerates the six HTTP endpoints owned by
-/// `SamplingClient` (chat completions, responses, messages -- each in
-/// streaming and non-streaming form). It does *not* cover image
-/// generation, video generation, web search, or embedding -- those
-/// tools live in `xai-grok-tools`
-/// (`crates/codegen/xai-grok-tools/src/implementations/`), have their
-/// own HTTP clients that do not flow through `SamplingClient`, and
-/// hook into the `xai_grok_tools::ApiKeyProvider` trait rather than
-/// this enum.
+/// A 401-emitting site in [`crate::SamplingClient`]; its string identifier
+/// becomes the `consumer` field so queries can break 401s down by API path.
+/// Sampler endpoints only — tool clients use `xai_grok_tools::ToolConsumer`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SamplingConsumer {
     /// `chat_completion_stream`: OpenAI-compatible streaming OpenAI Chat Completions API.
