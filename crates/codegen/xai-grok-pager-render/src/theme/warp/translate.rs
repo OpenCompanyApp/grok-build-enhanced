@@ -70,7 +70,6 @@ pub fn translate_pinned(data: &WarpThemeData) -> TranslatedWarpTheme {
     theme.fuzzy_accent = accent.to_color();
     theme.accent_plan = yellow;
     theme.accent_verify = magenta;
-    theme.accent_feedback = cyan;
     theme.accent_remember = green;
     theme.selection_border = accent.to_color();
     theme.hover_border = ensure_contrast(blend(bg, accent, 0.72), bg, 3.0, fg).to_color();

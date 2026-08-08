@@ -12,6 +12,7 @@
 
 pub mod cache;
 pub mod color_support;
+pub mod env_appearance;
 mod grokday;
 mod groknight;
 pub mod md_style;
@@ -230,8 +231,6 @@ impl Theme {
             accent_plan: q(self.accent_plan),
 
             accent_verify: q(self.accent_verify),
-
-            accent_feedback: q(self.accent_feedback),
 
             accent_remember: q(self.accent_remember),
 
@@ -669,7 +668,6 @@ impl Theme {
             // `accent_running` used for subagents). ANSI16 has no
             // separate teal slot, so the truecolor teal accents
             // (feedback, model) fold onto cyan here.
-            accent_feedback: cyan,
             accent_model: cyan,
             running: cyan,
             // Yellow family — warning text, plan-mode gold, shell
@@ -905,7 +903,6 @@ mod tests {
         // lives here.
         use ratatui::style::Color;
         let t = Theme::groknight().ansi16_chrome_overrides(true);
-        assert_eq!(t.accent_feedback, Color::LightCyan);
         assert_eq!(t.accent_model, Color::LightCyan);
         assert_eq!(t.running, Color::LightCyan);
     }

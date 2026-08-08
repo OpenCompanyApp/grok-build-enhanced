@@ -2338,10 +2338,6 @@ fn format_session_info_session_auth_ignores_api_key_env() {
     let info = make_session_info("auto", None, 1000, 10000);
     let text = format_session_info(&info, None, false, false, true);
     assert!(text.contains("Auth method: OAuth"), "{text}");
-    assert!(
-            text.contains("Manage account and credits: https://grok.com/?_s=billing"),
-            "{text}"
-        );
     assert!(!text.contains("Also present: XAI_API_KEY"), "{text}");
     assert!(!text.contains("console.x.ai"), "{text}");
     assert!(!text.contains("grok login"), "{text}");
@@ -2353,24 +2349,16 @@ fn format_session_info_api_key_without_env() {
     assert!(text.contains("Auth method: API key\n"), "{text}");
     assert!(!text.contains("XAI_API_KEY"), "{text}");
     assert!(
-            text.contains("Manage account and credits: console.x.ai"),
-            "{text}"
-        );
-    assert!(
             text.contains("Run `grok login` to use your SuperGrok subscription instead."),
             "{text}"
         );
     assert!(!text.contains("grok.com"), "{text}");
 }
 #[test]
-fn format_session_info_api_key_auth_notes_console_billing() {
+fn format_session_info_api_key_auth_notes_login_option() {
     let info = make_session_info("auto", None, 1000, 10000);
     let text = format_session_info(&info, None, false, true, true);
     assert!(text.contains("Auth method: API key (XAI_API_KEY)"), "{text}");
-    assert!(
-            text.contains("Manage account and credits: console.x.ai"),
-            "{text}"
-        );
     assert!(
             text.contains("Run `grok login` to use your SuperGrok subscription instead."),
             "{text}"
@@ -2379,14 +2367,10 @@ fn format_session_info_api_key_auth_notes_console_billing() {
     assert!(!text.contains("grok.com"), "{text}");
 }
 #[test]
-fn format_session_info_session_only_manage_at_grok_com() {
+fn format_session_info_session_only_has_no_api_key_guidance() {
     let info = make_session_info("auto", None, 1000, 10000);
     let text = format_session_info(&info, None, false, false, false);
     assert!(text.contains("Auth method: OAuth"), "{text}");
-    assert!(
-            text.contains("Manage account and credits: https://grok.com/?_s=billing"),
-            "{text}"
-        );
     assert!(!text.contains("Also present: XAI_API_KEY"), "{text}");
     assert!(!text.contains("console.x.ai"), "{text}");
     assert!(!text.contains("grok login"), "{text}");
@@ -2543,6 +2527,7 @@ fn session_picker_entry_maps_to_dormant_roster_row() {
         branch: None,
         repo_name: "repo-app".to_string(),
         worktree_label: Some("wt".to_string()),
+        last_turn_summary: Some("Fixed the parser".to_string()),
         card_detail: None,
     };
     let roster = session_picker_entry_to_roster(&entry);
@@ -2552,6 +2537,7 @@ fn session_picker_entry_maps_to_dormant_roster_row() {
     assert!(roster.is_worktree, "worktree_label present → is_worktree");
     assert_eq!(roster.model_id.as_deref(), Some("grok-4"));
     assert_eq!(roster.activity, RosterActivity::Dormant);
+    assert_eq!(roster.last_turn_summary.as_deref(), Some("Fixed the parser"));
     assert!(!roster.resident);
     assert_eq!(roster.last_change_unix_ms, updated.timestamp_millis());
     assert_eq!(roster.origin.kind, "local");

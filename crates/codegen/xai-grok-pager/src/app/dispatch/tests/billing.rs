@@ -58,6 +58,7 @@ fn dispatch_billing(
             silent,
             subscription_tier,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
+            nonce: 0,
         }),
         app,
     );
@@ -515,6 +516,7 @@ fn complete_session_usage(
             agent_id: AgentId(0),
             session_id: session_id.to_string().into(),
             usage: Box::new(usage),
+            nonce: 0,
         }),
         app,
     )
@@ -526,6 +528,7 @@ fn fail_session_usage(app: &mut AppView, session_id: &str, error: &str) -> Vec<E
             agent_id: AgentId(0),
             session_id: session_id.to_string().into(),
             error: error.into(),
+            nonce: 0,
         }),
         app,
     )
@@ -534,6 +537,7 @@ fn fail_session_usage(app: &mut AppView, session_id: &str, error: &str) -> Vec<E
 #[test]
 fn show_usage_schedules_session_fetch_only() {
     let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
     assert!(is_session_usage_fetch(&dispatch(
         Action::ShowUsage,
         &mut app
@@ -549,6 +553,7 @@ fn show_usage_schedules_session_fetch_only() {
 #[test]
 fn show_usage_without_session_still_surfaces_credits() {
     let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
     app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;
     let before = agent_scrollback_len(&app);
     let effects = dispatch(Action::ShowUsage, &mut app);
@@ -597,6 +602,7 @@ fn manage_billing_gates_on_consumer_billing_surface() {
 #[test]
 fn session_usage_complete_pushes_block_and_chains_billing() {
     let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
     let before = agent_scrollback_len(&app);
     let usage = xai_grok_shell::extensions::notification::PromptUsage {
         totals: xai_grok_shell::extensions::notification::PromptUsageModel {
@@ -626,6 +632,7 @@ fn session_usage_complete_pushes_block_and_chains_billing() {
 #[test]
 fn session_usage_complete_no_billing_when_surface_hidden() {
     let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
     app.usage_visible = false;
     let before = agent_scrollback_len(&app);
     let effects = complete_session_usage(&mut app, "test-session", Default::default());
@@ -637,6 +644,7 @@ fn session_usage_complete_no_billing_when_surface_hidden() {
 #[test]
 fn session_usage_complete_redirect_after_session_block() {
     let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
     app.usage_billing_redirect_url = Some("https://billing.example.com/me".into());
     // Dispatch defers the redirect until after the session block.
     let before = agent_scrollback_len(&app);
@@ -675,6 +683,7 @@ fn session_usage_complete_drops_stale_session() {
 #[test]
 fn session_usage_failed_pushes_error_and_chains_billing() {
     let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
     let before = agent_scrollback_len(&app);
     let effects = fail_session_usage(&mut app, "test-session", "boom");
     assert_eq!(agent_scrollback_len(&app), before + 1);
@@ -836,6 +845,7 @@ fn billing_fetched_stores_autotopup_on_app_and_agent() {
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Resolved(autotopup),
+            nonce: 0,
         }),
         &mut app,
     );
@@ -868,6 +878,7 @@ fn billing_fetched_unchanged_autotopup_keeps_cached_rule() {
             silent: true,
             subscription_tier: None,
             autotopup: resolved,
+            nonce: 0,
         }),
         &mut app,
     );
@@ -882,6 +893,7 @@ fn billing_fetched_unchanged_autotopup_keeps_cached_rule() {
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
+            nonce: 0,
         }),
         &mut app,
     );
@@ -913,6 +925,7 @@ fn billing_fetched_cleared_autotopup_resets_cache() {
                     max_amount_cents: None,
                 },
             ),
+            nonce: 0,
         }),
         &mut app,
     );
@@ -928,6 +941,7 @@ fn billing_fetched_cleared_autotopup_resets_cache() {
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Cleared,
+            nonce: 0,
         }),
         &mut app,
     );
@@ -970,6 +984,7 @@ fn billing_error_silent_does_not_push_scrollback() {
             agent_id: AgentId(0),
             error: "network timeout".into(),
             silent: true,
+            nonce: 0,
         }),
         &mut app,
     );
@@ -993,6 +1008,7 @@ fn billing_error_non_silent_pushes_error_message() {
             agent_id: AgentId(0),
             error: "service unavailable".into(),
             silent: false,
+            nonce: 0,
         }),
         &mut app,
     );

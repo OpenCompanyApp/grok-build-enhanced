@@ -82,7 +82,7 @@ Leave the current session and return to the welcome screen. Alias: `/welcome`.
 
 ### `/delete`
 
-Delete the current session's history and return to the welcome screen. Confirms first.
+Delete the current session's history. Confirms first. Returns to the welcome screen, or to the dashboard when you opened the session from the dashboard.
 
 To delete a session you are not in, open `/resume` or the welcome session list and press `d` then `y`. On the dashboard, press `Ctrl+X` twice or click `[✗]`.
 
@@ -313,7 +313,7 @@ Kick off a background research workflow. It plans a bounded set of questions, ga
 
 The command returns right away — follow progress in `/workflows`, and the final report appears in the conversation on its own.
 
-Model-launched workflows may set `agent_budget` on the `workflow` tool. It's an absolute cumulative cap on logical child-agent calls: every `agent()` call and every item in a `parallel()` panel spends one slot, while schema-correction retries don't. The default is 128, explicit values run 1–1,024, and a panel that would cross the remaining budget is rejected before any of its children launch. `budget()` reports the cap as `total`, admitted calls as `spent`, `reserved` (always zero), and `remaining`. Named slash launches use the default budget.
+Model-launched workflows may set `agent_budget` on the `workflow` tool. It's an absolute cumulative cap on logical child-agent calls: every `agent()` call and every item in a `parallel()` panel spends one slot, while schema-correction retries don't. The default is 128, explicit values run 1–1,024, and a panel that would cross the remaining budget is rejected before any of its children launch. Separately, a host-configured cap (32 by default) bounds how many children run at a time per run; larger panels queue and still act as a barrier. `budget()` reports the cap as `total`, admitted calls as `spent`, `reserved` (always zero), and `remaining`. Named slash launches use the default budget.
 
 ### `/workflow`
 
@@ -345,10 +345,11 @@ Switch the TUI color theme. Alias: `/t`.
 
 ### `/feedback [message]`
 
-Report an issue or send feedback.
+Report an issue or send feedback. A message sends immediately. With none, a pane opens for a longer report: `Enter` sends, `Esc` discards.
 
 ```
 /feedback Something isn't working correctly
+/feedback
 ```
 
 ### `/btw`
@@ -466,7 +467,7 @@ Skills from plugins work the same way. When two skills share a name across scope
 /user:commit       # User-scoped skill
 ```
 
-Built-in commands always win over a skill with the same name. Name a skill "compact" and `/compact` still runs the built-in — but `/local:compact` invokes the skill.
+Built-in commands always win the bare name. Name a skill "compact" and `/compact` still runs the built-in — the skill stays available as `/local:compact` (or `/acme:compact` for a plugin). Both appear in the slash menu: the built-in is tagged `built-in` and the skill is tagged `skill · local` / `skill · acme`.
 
 ---
 

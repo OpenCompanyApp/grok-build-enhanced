@@ -49,6 +49,9 @@ pub struct RosterEntry {
     #[serde(default)]
     pub yolo: bool,
     pub activity: RosterActivity,
+    /// Ultra-short summary of the most recent successful turn.
+    #[serde(default)]
+    pub last_turn_summary: Option<String>,
     #[serde(default)]
     pub resident: bool,
     #[serde(default)]
@@ -114,6 +117,7 @@ mod tests {
             reasoning_effort: None,
             yolo: true,
             activity: agent::RosterActivity::Working,
+            last_turn_summary: None,
             resident: true,
             last_change_unix_ms: 1_725_000_000_123,
             origin: agent::RosterOrigin::Local,

@@ -167,6 +167,8 @@ pub const BG_TASK_MAX_STDOUT: usize = 10 * 1024 * 1024;
 /// How long to wait for a kill response before auto-clearing `pending_kill`
 /// so the user can retry. Applied to both bg tasks and subagents.
 pub const PENDING_KILL_TIMEOUT_SECS: u64 = 10;
+/// Prefix baked into monitor commands by older backends and reparented monitors.
+pub const MONITOR_PREFIX: &str = "[monitor] ";
 /// Status of a background task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BgTaskStatus {
@@ -277,6 +279,78 @@ impl BgTaskState {
             self.truncated = true;
         }
         self.stdout_line_count = self.stdout.lines().count();
+    }
+
+    /// Build a terminal tombstone when completion races ahead of backgrounding.
+    pub fn tombstone_from_snapshot(
+        snapshot: &xai_grok_tools::types::TaskSnapshot,
+        status: BgTaskStatus,
+        description: Option<String>,
+        restored_from_replay: bool,
+    ) -> Self {
+        let is_monitor = matches!(
+            snapshot.kind,
+            xai_grok_tools::computer::types::TaskKind::Monitor
+        ) || snapshot
+            .display_command
+            .as_deref()
+            .is_some_and(|display| display.starts_with(MONITOR_PREFIX));
+        let mut tombstone = Self {
+            task_id: snapshot.task_id.clone(),
+            tool_call_id: String::new(),
+            command: snapshot.command.clone(),
+            description,
+            cwd: snapshot.cwd.clone(),
+            output_file: snapshot.output_file.to_string_lossy().into_owned(),
+            status,
+            start_time: snapshot.start_time,
+            end_time: Some(snapshot.end_time.unwrap_or_else(SystemTime::now)),
+            exit_code: snapshot.exit_code,
+            signal: snapshot.signal.clone(),
+            stdout: String::new(),
+            stdout_line_count: 0,
+            truncated: snapshot.truncated,
+            pending_kill: false,
+            kill_requested_at: None,
+            scrollback_entry_id: None,
+            is_monitor,
+            restored_from_replay,
+        };
+        if !snapshot.output.is_empty() {
+            let end = crate::render::line_utils::floor_char_boundary(
+                &snapshot.output,
+                BG_TASK_MAX_STDOUT,
+            );
+            tombstone.set_stdout(snapshot.output[..end].to_string());
+            if end < snapshot.output.len() {
+                tombstone.truncated = true;
+            }
+        }
+        tombstone
+    }
+
+    /// Fold a late background notification into an already-terminal tombstone.
+    pub fn absorb_late_backgrounded(&mut self, fresh: BgTaskState, entry_id: Option<EntryId>) {
+        self.tool_call_id = fresh.tool_call_id;
+        if self.command.trim().is_empty() {
+            self.command = fresh.command;
+        }
+        if self
+            .description
+            .as_ref()
+            .is_none_or(|d| d.trim().is_empty())
+        {
+            self.description = fresh.description;
+        }
+        self.is_monitor |= fresh.is_monitor;
+        if self.stdout.is_empty() && !fresh.stdout.is_empty() {
+            self.stdout = fresh.stdout;
+            self.stdout_line_count = fresh.stdout_line_count;
+            self.truncated |= fresh.truncated;
+        }
+        if self.scrollback_entry_id.is_none() {
+            self.scrollback_entry_id = entry_id;
+        }
     }
 }
 /// State for a scheduled (loop) task, displayed in the tasks pane.
@@ -610,6 +684,14 @@ impl AgentState {
         }
     }
 }
+/// A model switch stashed until an ACP session id is available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredModelSwitch {
+    pub model_id: acp::ModelId,
+    pub effort: Option<ReasoningEffort>,
+    /// Displayed model at stash time, used as the rollback target on failure.
+    pub prev_model_id: Option<acp::ModelId>,
+}
 /// Per-agent business logic (ACP session, models, state).
 ///
 /// External code should use the facade methods (`handle_update`,
@@ -711,7 +793,7 @@ pub struct AgentSession {
     /// applies live remote switches and updates this field to match.
     pub user_model_preference: Option<acp::ModelId>,
     /// `/model X [effort]` issued before the session was ready, applied on SessionCreated.
-    pub deferred_model_switch: Option<(acp::ModelId, Option<ReasoningEffort>)>,
+    pub deferred_model_switch: Option<DeferredModelSwitch>,
     /// Central bg task state, keyed by task_id.
     pub bg_tasks: BTreeMap<String, BgTaskState>,
     /// Correlation map: tool_call_id → task_id.

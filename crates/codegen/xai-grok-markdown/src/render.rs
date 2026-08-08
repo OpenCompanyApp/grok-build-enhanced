@@ -1620,6 +1620,118 @@ mod tests {
         );
     }
 
+    fn reconstruct_table_cells(lines: &[String]) -> Vec<Vec<String>> {
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let mut current: Option<Vec<String>> = None;
+        for line in lines {
+            if let Some(inner) = line
+                .strip_prefix('│')
+                .and_then(|line| line.strip_suffix('│'))
+            {
+                let cells: Vec<&str> = inner.split('│').collect();
+                let row = current.get_or_insert_with(|| vec![String::new(); cells.len()]);
+                for (cell, fragment) in row.iter_mut().zip(cells) {
+                    cell.push_str(fragment.trim());
+                }
+            } else if let Some(row) = current.take() {
+                rows.push(row);
+            }
+        }
+        if let Some(row) = current {
+            rows.push(row);
+        }
+        rows
+    }
+
+    #[test]
+    fn table_unbreakable_tokens_reflow_within_width() {
+        use unicode_width::UnicodeWidthStr;
+
+        let markdown = "| Alpha | Bravo | Ident | DeptName | RoleName | Amount |\n\
+                        |---|---|---|---|---|---|\n\
+                        | LongalphaToken | TokenTwo | ID-AA1001 | EngineeringOps | ManagerRole | $145,000 |\n\n";
+        for width in [50usize, 40, 30] {
+            let mut buffers = crate::MarkdownBuffers::new();
+            let (output, _) = crate::render_markdown_ratatui_with_buffers_width(
+                markdown,
+                test_style::STYLE,
+                true,
+                &mut buffers,
+                None,
+                Some(width),
+            );
+            let lines = lines_to_text(&output.lines);
+            for line in &lines {
+                assert!(line.width() <= width, "{line:?} exceeds {width}");
+                assert!(
+                    matches!(line.trim_end().chars().last(), Some('│' | '┐' | '┘' | '┤')),
+                    "table lost its right border: {line:?}"
+                );
+            }
+            let rows = reconstruct_table_cells(&lines);
+            assert_eq!(
+                rows[1],
+                [
+                    "LongalphaToken",
+                    "TokenTwo",
+                    "ID-AA1001",
+                    "EngineeringOps",
+                    "ManagerRole",
+                    "$145,000",
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn table_hard_split_preserves_graphemes() {
+        use unicode_segmentation::UnicodeSegmentation;
+        use unicode_width::UnicodeWidthStr;
+
+        for text in ["你好世界⚠\u{FE0F}", "编码测试👩\u{200D}🚀"] {
+            let width = text
+                .graphemes(true)
+                .map(|grapheme| grapheme.width())
+                .max()
+                .unwrap_or(0)
+                .max(4);
+            let lines = crate::parse::MarkdownParser::wrap_cell_text(text, width);
+            assert!(lines.len() > 1);
+            assert!(lines.iter().all(|line| line.width() <= width));
+            assert_eq!(lines.concat(), text);
+        }
+    }
+
+    #[test]
+    fn repeated_link_and_plain_fragments_keep_separate_styles() {
+        let markdown = "| A |\n|---|\n| x [aaaa](https://example.com)aa |\n\n";
+        let mut buffers = crate::MarkdownBuffers::new();
+        let (output, _) = crate::render_markdown_ratatui_with_buffers_width(
+            markdown,
+            test_style::STYLE,
+            true,
+            &mut buffers,
+            None,
+            Some(6),
+        );
+        let links: Vec<_> = output
+            .hyperlinks
+            .iter()
+            .filter(|link| link.url == "https://example.com")
+            .collect();
+        assert_eq!(links.len(), 2, "plain trailing fragment must not be linked");
+        assert_eq!(links[0].id, links[1].id);
+
+        let last_link_line = links.iter().map(|link| link.line_index).max().unwrap();
+        let plain_line = &output.lines[last_link_line + 1];
+        let plain = plain_line
+            .spans
+            .iter()
+            .find(|span| span.content.trim() == "aa")
+            .expect("trailing plain fragment");
+        assert_eq!(plain.style, ratatui::style::Style::default());
+    }
+
     /// Table source map: rendered line numbers must not exceed the table's
     /// actual source line count, and must map to the correct source lines.
     #[test]

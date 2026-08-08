@@ -378,6 +378,7 @@ pub(super) fn handle_billing_fetched(
     silent: bool,
     subscription_tier: Option<String>,
     autotopup: crate::views::credit_bar::AutoTopupFetch,
+    nonce: u64,
 ) -> Vec<Effect> {
     // Parse/transport failures route to `BillingError`, so a `None`
     // balance here means the response carried no billing config. Clear
@@ -404,11 +405,29 @@ pub(super) fn handle_billing_fetched(
     }
     // Render the `/usage` summary from the now-current cached rule.
     let summary_topup = app.auto_topup.clone();
+    let tier_now = app.subscription_tier.clone();
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         // Gateway/chat-kind: do not attach Build coding credits.
         let mut topup = agent.auto_topup.clone();
         apply_auto_topup(&mut topup, &autotopup);
         agent.apply_credit_balance(balance.clone(), topup);
+        if let Some(state) = super::status::usage_modal_state_mut(agent)
+            && state.fetch_nonce == nonce
+        {
+            state.billing_loading = false;
+            state.billing_error = None;
+            state.ctx.subscription_tier = tier_now;
+            state.provider_usage_text = match (&codex_usage, &kimi_usage) {
+                (Some(usage), _) => Some(crate::views::credit_bar::format_codex_usage_summary(
+                    usage,
+                    codex_api_equivalent_cost.as_ref(),
+                )),
+                (None, Some(usage)) => {
+                    Some(crate::views::credit_bar::format_kimi_usage_summary(usage))
+                }
+                (None, None) => None,
+            };
+        }
         if !silent && !agent.chat_kind {
             let msg = match (&codex_usage, &kimi_usage, &balance) {
                 (Some(usage), _, _) => crate::views::credit_bar::format_codex_usage_summary(
@@ -570,6 +589,7 @@ pub(super) fn handle_credit_limit_recheck_complete(
         agent_id,
         session_id: agent.session.session_id.clone(),
         silent: true,
+        nonce: 0,
     });
     note_peek_page_flip(app, agent_id, drain.page_flip_entry);
     drain.effects

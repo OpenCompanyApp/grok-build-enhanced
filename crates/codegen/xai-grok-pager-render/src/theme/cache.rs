@@ -10,6 +10,7 @@
 //! via `Effect::PersistSetting` from the dispatcher. This module is a
 //! pager-side in-memory cache + resolution layer only.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -344,7 +345,7 @@ pub fn apply_auto_mapping_preview(
 /// Called once at startup. Returns the concrete `ThemeKind` (never `Auto`).
 ///
 /// Precedence:
-/// 1. Environment variable (`GROK_THEME`)
+/// 1. Environment variable (`GROK_THEME` / `LC_GROK_THEME`)
 /// 2. Config file (`[ui].theme`)
 /// 3. Default: `GrokNight`
 #[must_use]
@@ -364,7 +365,10 @@ fn resolve_initial_resolved_inner(osc11_fallback: bool) -> ResolvedTheme {
     } else {
         system_appearance::detect()
     };
-    match load_raw_theme_from_disk() {
+    let configured = env_theme_name()
+        .map(str::to_owned)
+        .or_else(load_raw_theme_from_disk);
+    match configured {
         Some(raw) => match ThemeSelection::from_name(&raw) {
             Some(ThemeSelection::Auto) => {
                 set_auto_mode(true);
@@ -395,6 +399,32 @@ fn resolve_initial_resolved_inner(osc11_fallback: bool) -> ResolvedTheme {
             )
         }
     }
+}
+
+fn env_theme_name() -> Option<&'static str> {
+    // The collected environment is owned locally, so expose an owned value
+    // through a tiny process cache. Theme environment is immutable for the
+    // lifetime of a pager process.
+    static ENV_THEME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    ENV_THEME
+        .get_or_init(|| env_theme_name_from(&crate::host::collect_unicode_env()).map(str::to_owned))
+        .as_deref()
+}
+
+fn env_theme_name_from(env: &HashMap<String, String>) -> Option<&str> {
+    for key in ["GROK_THEME", "LC_GROK_THEME"] {
+        let Some(raw) = env
+            .get(key)
+            .map(String::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if ThemeSelection::from_name(raw).is_some() {
+            return Some(raw);
+        }
+    }
+    None
 }
 
 /// Inner resolution logic, factored out for testability.

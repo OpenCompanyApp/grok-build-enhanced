@@ -44,6 +44,12 @@ grok doctor --json  # machine-readable report
 
 The command reports the terminal, multiplexer, **color level**, **available themes**, and clipboard routes Grok detected, then lists any issues and how to fix them. When color is below truecolor, it explains how to unlock the truecolor-only themes (TokyoNight, RosePineMoon, OscuraMidnight) — or notes that Terminal.app is inherently 256-color. The aliases `/terminal-check` and `/terminal-info` run the same command.
 
+Doctor can persist four tmux repairs: `terminal.tmux-clipboard`,
+`terminal.dcs-passthrough`, `terminal.tmux-extended-keys`, and
+`terminal.tmux-truecolor`. The truecolor repair appends
+`set -as terminal-features ",*:RGB"` to the persistent config on the host
+running the tmux server.
+
 ---
 
 ## Detected Terminals
@@ -82,6 +88,15 @@ Detection has these limitations:
 **Fix**: Apply the two settings above, then restart Grok.
 
 **Verify**: Run `/doctor`. Expect `color truecolor` and `themes all`. If `color` is `256` or `basic`, the issues section has the unlock fix.
+
+Inside tmux there are two separate questions: what color Grok emits, and what
+color survives the multiplexer. The `color` line answers the first. When the
+attached client is not marked `RGB`, tmux rewrites 24-bit colors to the nearest
+color advertised by the outer terminal's terminfo, which can make themes look
+washed out even when `color` reads `truecolor`. Doctor reports this as
+`terminal.tmux-truecolor`. Reload the tmux config, then detach and reattach:
+the server reads the option on reload, while a client fixes its color depth at
+attach time.
 
 ### Problem: Clipboard problems
 

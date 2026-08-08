@@ -125,6 +125,19 @@ pub fn needs_scrollbar(total_lines: u16, viewport_lines: u16) -> bool {
     total_lines > viewport_lines
 }
 
+/// Mouse grab zone for a scrollbar: its track plus one column of slop on
+/// either side. A thumb drawn flush against a modal border reads as a
+/// two-column target, especially in Terminal.app and over SSH.
+pub fn scrollbar_grab_zone(track: Rect) -> Rect {
+    let x = track.x.saturating_sub(SCROLLBAR_GAP_COLS);
+    Rect {
+        x,
+        y: track.y,
+        width: (track.x - x).saturating_add(track.width).saturating_add(1),
+        height: track.height,
+    }
+}
+
 /// Whether the view is at the bottom (following mode position).
 #[allow(dead_code)] // Useful helper, kept for future use
 pub fn is_at_bottom(total_lines: u16, viewport_lines: u16, offset: u16) -> bool {
@@ -217,53 +230,25 @@ pub fn render_scrollbar(
     offset: u16,
     is_following: bool,
 ) {
-    if SCROLLBARS_HIDDEN.load(Ordering::Relaxed) {
-        return;
-    }
-
-    let Some(scrollbar_area) = scrollbar_area else {
-        return;
-    };
-
-    if scrollbar_area.width == 0 || scrollbar_area.height == 0 {
-        return;
-    }
-
-    if !needs_scrollbar(total_lines, viewport_lines) {
-        return;
-    }
-
-    let lengths = ScrollLengths {
-        content_len: total_lines as usize,
-        viewport_len: viewport_lines as usize,
-    };
-
-    let scrollbar = ScrollBar::vertical(lengths).offset(offset as usize);
-
-    // Render into ratatui-core scratch buffer
-    let core_area = CoreRect {
-        x: scrollbar_area.x,
-        y: scrollbar_area.y,
-        width: scrollbar_area.width,
-        height: scrollbar_area.height,
-    };
-    let mut scratch = CoreBuffer::empty(core_area);
-    (&scrollbar).render(core_area, &mut scratch);
-
-    // Copy to ratatui buffer with follow-aware styling
     let (track_style, thumb_style) = scrollbar_styles(is_following);
-    for row in 0..scrollbar_area.height {
-        let x = scrollbar_area.x;
-        let y = scrollbar_area.y + row;
-        let src = &scratch[(x, y)];
-        let dst = &mut buf[(x, y)];
-        if src.symbol() == " " {
-            dst.set_symbol(" ");
-            dst.set_style(track_style);
-        } else {
-            dst.set_symbol("\u{2588}");
-            dst.set_style(thumb_style);
-        }
+    render_scrollbar_styled(
+        buf,
+        scrollbar_area,
+        total_lines,
+        viewport_lines,
+        offset,
+        track_style,
+        thumb_style,
+    );
+}
+
+/// Terminal.app does not stretch a foreground-only full-block glyph over the
+/// cell's line-gap pixels. Filling the background with the thumb foreground
+/// prevents a striped, dark-bar scrollbar.
+fn thumb_fill_style(thumb_style: Style) -> Style {
+    match thumb_style.fg {
+        Some(fg) => thumb_style.bg(fg),
+        None => thumb_style,
     }
 }
 
@@ -331,7 +316,8 @@ pub fn render_scrollbar_styled(
     let mut scratch = CoreBuffer::empty(core_area);
     (&scrollbar).render(core_area, &mut scratch);
 
-    // Copy to ratatui buffer with custom styling
+    // Copy to ratatui buffer with custom styling.
+    let thumb_fill = thumb_fill_style(thumb_style);
     for row in 0..scrollbar_area.height {
         let x = scrollbar_area.x;
         let y = scrollbar_area.y + row;
@@ -342,7 +328,7 @@ pub fn render_scrollbar_styled(
             dst.set_style(track_style);
         } else {
             dst.set_symbol("\u{2588}");
-            dst.set_style(thumb_style);
+            dst.set_style(thumb_fill);
         }
     }
 }
@@ -396,6 +382,17 @@ mod tests {
         let (content, scrollbar) = maybe_split_for_scrollbar(area, 5);
         assert_eq!(content.width, 40); // Full width
         assert!(scrollbar.is_none());
+    }
+
+    #[test]
+    fn scrollbar_grab_zone_includes_gap_track_and_border() {
+        let zone = scrollbar_grab_zone(Rect::new(39, 2, 1, 10));
+        assert_eq!(zone, Rect::new(38, 2, 3, 10));
+        assert!(zone.contains((38, 2).into()));
+        assert!(zone.contains((39, 11).into()));
+        assert!(zone.contains((40, 5).into()));
+        assert!(!zone.contains((37, 5).into()));
+        assert!(!zone.contains((41, 5).into()));
     }
 
     #[test]
@@ -471,6 +468,28 @@ mod tests {
         if crate::theme::color_support::get().has_256() {
             assert_ne!(following_style.bg, not_following_style.bg);
         }
+    }
+
+    #[test]
+    fn thumb_cells_fill_their_background() {
+        let area = Rect::new(0, 0, 10, 10);
+        let (_, scrollbar_area) = split_area_for_scrollbar(area);
+        let sb = scrollbar_area.unwrap();
+        let track = Style::new().bg(Color::Black);
+        let thumb = Style::new().fg(Color::White).bg(Color::Black);
+        let mut buf = Buffer::empty(area);
+
+        render_scrollbar_styled(&mut buf, scrollbar_area, 100, 10, 50, track, thumb);
+
+        let mut thumb_cells = 0;
+        for y in 0..sb.height {
+            let cell = &buf[(sb.x, sb.y + y)];
+            if cell.symbol() == "\u{2588}" {
+                thumb_cells += 1;
+                assert_eq!(cell.style().bg, cell.style().fg);
+            }
+        }
+        assert!(thumb_cells > 0);
     }
 
     #[test]

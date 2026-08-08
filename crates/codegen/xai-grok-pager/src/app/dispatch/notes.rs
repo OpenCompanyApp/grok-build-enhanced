@@ -7,7 +7,9 @@ use crate::app::agent_view::{AgentView, PromptInputMode};
 use crate::app::app_view::{ActiveView, AppView};
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::{SessionEvent, ToolCallBlock};
+use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
 use std::sync::atomic::{AtomicU64, Ordering};
+use xai_grok_tools::implementations::grok_build::ask_user_question::Question;
 
 /// Monotonic counter for correlating async rewrite responses with the modal
 /// that requested them. Prevents stale results from populating a different
@@ -18,13 +20,67 @@ fn next_rewrite_nonce() -> u64 {
     REWRITE_NONCE.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Enter feedback mode: visual change to prompt bar (teal accent, pencil prefix).
-/// No side effects — the user types feedback text and presses Enter to send.
-pub(super) fn dispatch_enter_feedback_mode(app: &mut AppView) -> Vec<Effect> {
-    with_active_agent(app, |agent| {
-        agent.prompt_input_mode = PromptInputMode::Feedback;
-        agent.prompt.set_text("");
-    });
+pub(crate) const FEEDBACK_QUESTION_LABEL: &str = "How can we improve Grok Build?";
+const NO_SESSION_NOTICE: &str = "No active session";
+
+fn feedback_notice(app: &mut AppView, message: &str) {
+    if app.screen_mode.is_minimal() {
+        with_active_agent(app, |agent| {
+            agent
+                .scrollback
+                .push_block(RenderBlock::system(message.to_owned()));
+        });
+    } else {
+        app.show_toast(message);
+    }
+}
+
+fn feedback_pane_blocked(agent: &AgentView) -> Option<&'static str> {
+    if agent.active_subagent.is_some() {
+        Some("Close the subagent view before sending feedback")
+    } else if agent.question_view.is_some() {
+        Some("Finish answering the current question first")
+    } else if !agent.no_input_overlay_pending()
+        || agent.key_owner() != crate::app::agent_view::KeyOwner::Pane
+    {
+        Some("Close or answer what's open before sending feedback")
+    } else if agent.session.session_id.is_none() {
+        Some(NO_SESSION_NOTICE)
+    } else {
+        None
+    }
+}
+
+/// Open the dedicated freeform report pane for bare `/feedback`.
+pub(super) fn dispatch_open_feedback_pane(app: &mut AppView) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let blocked = app.agents.get(&id).and_then(feedback_pane_blocked);
+    if let Some(message) = blocked {
+        feedback_notice(app, message);
+        return vec![];
+    }
+
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let question = Question {
+        question: FEEDBACK_QUESTION_LABEL.to_owned(),
+        options: vec![],
+        multi_select: Some(false),
+        id: None,
+    };
+    let stashed = agent.prompt.stash();
+    let mut state = QuestionViewState::new(
+        format!("feedback-{}", uuid::Uuid::new_v4()),
+        vec![question],
+        stashed,
+    )
+    .with_local_kind(LocalQuestionKind::Feedback);
+    let freeform = state.activate_freeform_input();
+    agent.prompt.set_text_preserving(&freeform);
+    agent.question_view = Some(state);
     vec![]
 }
 
@@ -48,8 +104,6 @@ pub(super) fn dispatch_send_feedback(app: &mut AppView, text: String) -> Vec<Eff
         return vec![];
     };
 
-    agent.prompt_input_mode = PromptInputMode::Normal;
-    agent.prompt.set_text("");
     // Submitting feedback retires any edit-contextual ephemeral tip.
     agent.ephemeral_tip.clear_on_submit();
 
@@ -64,7 +118,7 @@ pub(super) fn dispatch_send_feedback(app: &mut AppView, text: String) -> Vec<Eff
     let Some(session_id) = agent.session.session_id.clone() else {
         agent
             .scrollback
-            .push_block(RenderBlock::system("No active session.".to_string()));
+            .push_block(RenderBlock::system(NO_SESSION_NOTICE.to_string()));
         return vec![];
     };
 

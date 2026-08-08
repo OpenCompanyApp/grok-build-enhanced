@@ -168,6 +168,78 @@ pub(super) fn scrollback_has_recent_context_too_large(
     false
 }
 
+/// True if the trailing session/system run already contains the dedicated
+/// disk-full banner, so terminal failure handling can suppress duplicates.
+pub(crate) fn scrollback_has_recent_disk_full(
+    scrollback: &crate::scrollback::state::ScrollbackState,
+) -> bool {
+    for idx in (0..scrollback.len()).rev() {
+        match scrollback.entry(idx).map(|entry| &entry.block) {
+            Some(RenderBlock::SessionEvent(event)) => {
+                if matches!(event.event, SessionEvent::DiskFull) {
+                    return true;
+                }
+            }
+            Some(RenderBlock::System(_)) => {}
+            _ => break,
+        }
+    }
+    false
+}
+
+/// True when the trailing session/system run already contains a dedicated
+/// terminal error banner that replaces the generic `TurnFailed` marker.
+pub(in crate::app) fn scrollback_has_recent_error_banner(
+    scrollback: &crate::scrollback::state::ScrollbackState,
+) -> bool {
+    for idx in (0..scrollback.len()).rev() {
+        match scrollback.entry(idx).map(|entry| &entry.block) {
+            Some(RenderBlock::SessionEvent(event)) => {
+                if matches!(
+                    event.event,
+                    SessionEvent::ReAuthRequired
+                        | SessionEvent::ContextTooLarge
+                        | SessionEvent::DiskFull
+                        | SessionEvent::RequestFailed { .. }
+                ) {
+                    return true;
+                }
+            }
+            Some(RenderBlock::System(_)) => {}
+            _ => break,
+        }
+    }
+    false
+}
+
+/// True if the trailing run already has a formatted request-failure banner.
+pub(super) fn scrollback_has_recent_request_failed(
+    scrollback: &crate::scrollback::state::ScrollbackState,
+) -> bool {
+    trailing_session_events(scrollback)
+        .any(|(_, ev)| matches!(ev, SessionEvent::RequestFailed { .. }))
+}
+
+/// The trailing run of session events, newest first, skipping interleaved
+/// system messages and stopping at the first substantive block.
+pub(super) fn trailing_session_events(
+    scrollback: &crate::scrollback::state::ScrollbackState,
+) -> impl Iterator<Item = (usize, &SessionEvent)> {
+    (0..scrollback.len())
+        .rev()
+        .map(|idx| (idx, scrollback.entry(idx).map(|entry| &entry.block)))
+        .take_while(|(_, block)| {
+            matches!(
+                block,
+                Some(RenderBlock::SessionEvent(_) | RenderBlock::System(_))
+            )
+        })
+        .filter_map(|(idx, block)| match block {
+            Some(RenderBlock::SessionEvent(event)) => Some((idx, &event.event)),
+            _ => None,
+        })
+}
+
 /// Strip the trailing run of auth-error blocks — the `ReAuthRequired`
 /// prompt plus any stale `RetryFailed` / `TurnFailed` — from an agent's
 /// scrollback. Called after a successful mid-session re-auth so the prompt

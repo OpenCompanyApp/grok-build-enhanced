@@ -17,6 +17,7 @@ pub mod kitty_keyboard;
 pub mod overlay;
 pub(crate) mod probe;
 pub mod term_version;
+pub mod tmux;
 pub mod tmux_probe;
 pub mod xtversion;
 
@@ -34,6 +35,7 @@ pub use kitty_keyboard::{
     negotiated_kitty_flags, set_pushed_kitty_flags, take_kitty_flags_pushed,
 };
 pub use term_version::{TermVersion, TermVersionSource};
+pub use tmux::{passthrough_available, should_wrap_osc11, tmux_passthrough, tmux_passthrough_str};
 
 #[cfg(test)]
 mod test;

@@ -193,6 +193,10 @@ impl AgentView {
             None
         };
         pav.send_approved();
+        // The shell's confirming default-mode update is asynchronous; clear
+        // the effective badge immediately so a lost update cannot leave the
+        // TUI stuck showing plan mode after approval.
+        self.plan_mode_pending = Some(false);
         self.latest_inline_plan_content = None;
         self.plan_next_comment_id = pav.next_comment_id;
         self.prompt.restore(pav.stashed_prompt);

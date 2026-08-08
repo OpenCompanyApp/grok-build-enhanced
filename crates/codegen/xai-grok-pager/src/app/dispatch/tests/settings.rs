@@ -1504,6 +1504,10 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "combine_queued_prompts" => {
             let _ = dispatch(Action::SetCombineQueuedPrompts(true), app);
         }
+        "confirm_before_rewind" => {
+            let next = !app.current_ui.confirm_before_rewind_enabled();
+            let _ = dispatch(Action::SetConfirmBeforeRewind(next), app);
+        }
         "simple_mode" => {
             let _ = dispatch(Action::SetSimpleMode(false), app);
         }

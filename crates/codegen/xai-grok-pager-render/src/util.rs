@@ -3,8 +3,18 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub use xai_grok_config::grok_home;
+pub use xai_grok_tools::util::format_bytes;
+
+/// A closed stdout (`grok du | head`) is a clean stop, not a failure.
+pub fn ignore_broken_pipe(result: std::io::Result<()>) -> std::io::Result<()> {
+    match result {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
+}
 
 /// Path to `$GROK_HOME/pager.toml`.
 pub fn pager_toml_path() -> PathBuf {
@@ -19,8 +29,9 @@ pub fn display_grok_home_prefix() -> String {
     display_grok_home_prefix_for(&grok_home())
 }
 
-fn display_grok_home_prefix_for(home: &Path) -> String {
-    if home == xai_grok_config::default_grok_home() {
+pub fn display_grok_home_prefix_for(home: &Path) -> String {
+    let default = xai_grok_config::default_grok_home();
+    if home == default || home == dunce::canonicalize(&default).unwrap_or(default) {
         "~/.grok".to_string()
     } else {
         "$GROK_HOME".to_string()
@@ -206,6 +217,64 @@ pub fn parse_schedule_interval_secs(human: &str) -> Option<u64> {
     Some(n * secs_per)
 }
 
+pub fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+/// Compact `N ago` age relative to `now`; future timestamps saturate to
+/// `0s ago`.
+pub fn format_age(created_at: i64, now: i64) -> String {
+    let delta = now.saturating_sub(created_at).max(0);
+    if delta < 60 {
+        format!("{delta}s ago")
+    } else if delta < 3600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86400 {
+        format!("{}h ago", delta / 3600)
+    } else {
+        format!("{}d ago", delta / 86400)
+    }
+}
+
+/// Truncate to at most `max_width` display columns (CJK counts two), ending
+/// with `…` when cut. A zero budget yields an empty string.
+pub fn truncate_to_width(s: &str, max_width: usize) -> Cow<'_, str> {
+    if byte_offset_at_width(s, max_width) == s.len() {
+        return Cow::Borrowed(s);
+    }
+    if max_width == 0 {
+        return Cow::Borrowed("");
+    }
+    let end = byte_offset_at_width(s, max_width - 1);
+    Cow::Owned(format!("{}…", &s[..end]))
+}
+
+/// Byte offset at which display width would exceed `max_width`, or `s.len()`.
+pub fn byte_offset_at_width(s: &str, max_width: usize) -> usize {
+    let mut width = 0;
+    for (i, ch) in s.char_indices() {
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + char_width > max_width {
+            return i;
+        }
+        width += char_width;
+    }
+    s.len()
+}
+
+/// Left-align `s` in `width` display columns. Rust's string formatting pads
+/// by character count, which misaligns rows containing wide glyphs.
+pub fn pad_to_width(s: &str, width: usize) -> String {
+    let pad = width.saturating_sub(s.width());
+    let mut out = String::with_capacity(s.len() + pad);
+    out.push_str(s);
+    out.extend(std::iter::repeat_n(' ', pad));
+    out
+}
+
 /// Group a count's digits with commas for display: `1234567` → `"1,234,567"`.
 pub fn group_thousands(n: u64) -> String {
     let digits = n.to_string();
@@ -222,6 +291,24 @@ pub fn group_thousands(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn width_helpers_handle_cjk() {
+        assert_eq!(truncate_to_width("hello world", 5).as_ref(), "hell…");
+        assert_eq!(truncate_to_width("日本語ラベル", 5).as_ref(), "日本…");
+        assert_eq!(truncate_to_width("hello", 0).as_ref(), "");
+        assert_eq!(pad_to_width("日本", 6), "日本  ");
+    }
+
+    #[test]
+    fn format_age_uses_compact_buckets() {
+        let now = 1_000_000;
+        assert_eq!(format_age(now - 30, now), "30s ago");
+        assert_eq!(format_age(now - 120, now), "2m ago");
+        assert_eq!(format_age(now - 7200, now), "2h ago");
+        assert_eq!(format_age(now - 172_800, now), "2d ago");
+        assert_eq!(format_age(now + 60, now), "0s ago");
+    }
 
     #[test]
     fn group_thousands_inserts_separators() {

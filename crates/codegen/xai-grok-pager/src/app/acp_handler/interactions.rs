@@ -83,9 +83,9 @@ pub(crate) fn handle_ask_user_question(
                 LocalQuestionKind::CreditLimitUpsell { .. } => "credit-limit upsell",
                 LocalQuestionKind::FreeUsageUpsell { .. } => "SuperGrok upsell",
                 LocalQuestionKind::AgentTypeMismatch { .. } => "model switch",
-                LocalQuestionKind::ProjectSelect { .. } => "project select",
                 LocalQuestionKind::DoctorFix { .. } => "/doctor fix",
                 LocalQuestionKind::DeleteCurrentSession => "/delete",
+                LocalQuestionKind::Feedback => "/feedback",
             };
             let message = if matches!(kind, LocalQuestionKind::DoctorFix { .. }) {
                 "/doctor fix was cancelled because another question opened.".to_owned()

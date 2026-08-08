@@ -738,19 +738,22 @@ fn session_failed_orphan_on_welcome_with_survivor_uses_startup_warning() {
     );
 }
 #[test]
-fn switch_model_without_session_does_nothing() {
+fn switch_model_without_session_stages_preference() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
     let effects = dispatch(
         Action::SwitchModel {
-            model_id,
+            model_id: model_id.clone(),
             effort: None,
         },
         &mut app,
     );
-    assert!(effects.is_empty());
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::PersistPreferredModel { model_id: persisted, .. }] if persisted == &model_id
+    ));
     assert!(!app.agents[&id].session.model_switch_pending);
 }
 #[test]
@@ -925,10 +928,17 @@ fn switch_model_deferred_when_no_session_id() {
         },
         &mut app,
     );
-    assert!(effects.is_empty());
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::PersistPreferredModel { model_id: persisted, .. }] if persisted == &model_id
+    ));
     assert_eq!(
         app.agents[&id].session.deferred_model_switch,
-        Some((model_id, None))
+        Some(crate::app::agent::DeferredModelSwitch {
+            model_id,
+            effort: None,
+            prev_model_id: None,
+        })
     );
     assert!(!app.agents[&id].session.model_switch_pending);
 }
@@ -943,7 +953,11 @@ fn deferred_model_switch_applied_on_session_created() {
         .get_mut(&id)
         .unwrap()
         .session
-        .deferred_model_switch = Some((model_id.clone(), None));
+        .deferred_model_switch = Some(crate::app::agent::DeferredModelSwitch {
+        model_id: model_id.clone(),
+        effort: None,
+        prev_model_id: None,
+    });
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SessionCreated {
             agent_id: id,
@@ -981,7 +995,11 @@ fn deferred_model_switch_applied_on_worktree_session_created() {
         .get_mut(&id)
         .unwrap()
         .session
-        .deferred_model_switch = Some((model_id.clone(), None));
+        .deferred_model_switch = Some(crate::app::agent::DeferredModelSwitch {
+        model_id: model_id.clone(),
+        effort: None,
+        prev_model_id: None,
+    });
     let session_id: acp::SessionId = "wt-session".into();
     let effects = dispatch(
         Action::TaskComplete(TaskResult::WorktreeSessionCreated {
@@ -1806,58 +1824,6 @@ fn entry_title_falls_back_to_short_session_id_when_no_prompt() {
     assert_eq!(title, "session abcdef01");
 }
 #[test]
-fn new_session_defers_create_session_for_non_project_dir() {
-    let mut app = project_picker_app();
-    let effects = dispatch(Action::NewSession, &mut app);
-    assert!(app.agents.contains_key(&AgentId(0)));
-    assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::CreateSession { .. })),
-    );
-}
-#[test]
-fn new_session_creates_session_for_project_dir() {
-    let mut app = test_app();
-    app.project_picker_shown = false;
-    app.cwd = PathBuf::from("/Users/someone/my-project");
-    let effects = dispatch(Action::NewSession, &mut app);
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CreateSession { .. })),
-    );
-}
-#[tokio::test]
-async fn project_selected_creates_session_and_sends_prompt() {
-    let mut app = project_picker_app();
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    let dir = std::env::temp_dir();
-    let selected = dunce::canonicalize(&dir).unwrap_or(dir);
-    let effects = dispatch(
-        Action::ProjectSelected {
-            path: selected.clone(),
-            stashed_prompt: "hello".into(),
-            disable_picker: false,
-        },
-        &mut app,
-    );
-    assert_eq!(app.agents[&id].session.cwd, selected);
-    assert_eq!(app.cwd, selected);
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::SetWorkingDir { path } if path == &selected))
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CreateSession { cwd, .. } if cwd == &selected))
-    );
-    assert_eq!(app.agents[&id].session.queue_len(), 1);
-}
-#[test]
 fn bg_task_killed_no_op_for_unknown_session() {
     let mut app = two_agent_app_with_bg_task();
     let effects = dispatch(
@@ -1986,11 +1952,10 @@ fn cycle_mode_pre_session_clears_stale_yolo_under_pin() {
     );
 }
 /// Pre-session (welcome screen / fresh tab): Shift+Tab must cycle the
-/// mode locally (optimistic pending + deferred ACP push) AND kick off
-/// session creation — without emitting duplicate CreateSession effects
-/// on repeated presses.
+/// mode locally (optimistic pending + deferred ACP push) without forcing
+/// session creation before the user submits work.
 #[test]
-fn dispatch_cycle_mode_pre_session_cycles_locally_and_creates_session() {
+fn dispatch_cycle_mode_pre_session_cycles_locally_and_defers_session_mode() {
     let mut app = test_app_with_agent();
     app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;
     let effects = dispatch(Action::CycleMode, &mut app);
@@ -2006,10 +1971,8 @@ fn dispatch_cycle_mode_pre_session_cycles_locally_and_creates_session() {
         "Plan must be deferred to SessionCreated"
     );
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CreateSession { .. })),
-        "first press must create the session, got {effects:?}"
+        effects.is_empty(),
+        "Plan does not need persistence yet: {effects:?}"
     );
     let effects = dispatch(Action::CycleMode, &mut app);
     let agent = &app.agents[&AgentId(0)];
@@ -2611,6 +2574,7 @@ mod welcome_workspace_mode {
             branch: None,
             repo_name: String::new(),
             worktree_label: None,
+            last_turn_summary: None,
             card_detail: None,
         }]);
         let effects = dispatch(Action::PickSession(0), &mut app);
@@ -2656,6 +2620,7 @@ mod welcome_workspace_mode {
             branch: None,
             repo_name: String::new(),
             worktree_label: None,
+            last_turn_summary: None,
             card_detail: None,
         }]);
         let effects = dispatch(Action::PickSession(0), &mut app);
@@ -2715,6 +2680,7 @@ mod welcome_workspace_mode {
             branch: None,
             repo_name: String::new(),
             worktree_label: None,
+            last_turn_summary: None,
             card_detail: None,
         }]);
         let _ = dispatch(Action::PickSessionInWorktree(0), &mut app);
@@ -2752,6 +2718,7 @@ mod welcome_workspace_mode {
             branch: None,
             repo_name: String::new(),
             worktree_label: None,
+            last_turn_summary: None,
             card_detail: None,
         }]);
         let effects = dispatch(Action::PickSessionInWorktree(0), &mut app);
@@ -2796,6 +2763,7 @@ mod welcome_workspace_mode {
             branch: None,
             repo_name: String::new(),
             worktree_label: None,
+            last_turn_summary: None,
             card_detail: None,
         }]);
         let effects = dispatch(Action::PickSessionInWorktree(0), &mut app);
@@ -2839,6 +2807,7 @@ mod welcome_workspace_mode {
             branch: None,
             repo_name: String::new(),
             worktree_label: None,
+            last_turn_summary: None,
             card_detail: None,
         }]);
         let effects = dispatch(Action::PickSession(0), &mut app);
@@ -2885,6 +2854,7 @@ mod welcome_workspace_mode {
             branch: None,
             repo_name: String::new(),
             worktree_label: None,
+            last_turn_summary: None,
             card_detail: None,
         }]);
         let effects = dispatch(Action::PickSession(0), &mut app);
@@ -2958,6 +2928,7 @@ mod welcome_workspace_mode {
             branch: None,
             repo_name: String::new(),
             worktree_label: None,
+            last_turn_summary: None,
             card_detail: None,
         }]);
         let effects = dispatch(Action::PickSession(0), &mut app);
@@ -3031,6 +3002,7 @@ mod welcome_workspace_mode {
             branch: None,
             repo_name: String::new(),
             worktree_label: None,
+            last_turn_summary: None,
             card_detail: None,
         }]);
         let effects = dispatch(Action::PickSession(0), &mut app);

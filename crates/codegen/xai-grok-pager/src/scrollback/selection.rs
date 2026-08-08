@@ -82,6 +82,9 @@ pub struct RenderOutput {
     pub inline_media: Vec<crate::scrollback::render::InlineMediaPlacement>,
     /// Mermaid diagram affordance rows to paint + register click hit-rects for.
     pub diagram_affordances: Vec<crate::scrollback::render::DiagramAffordancePlacement>,
+    /// Screen row, relative to the scrollback area, of the pinned header's
+    /// gap row. The response-top arrow renders on this exact row.
+    pub sticky_gap_row: Option<u16>,
 }
 
 /// Scroll information for scrollbar rendering.
@@ -106,12 +109,7 @@ impl RenderOutput {
     pub fn with_selection_box(selection_box: SelectionBox) -> Self {
         Self {
             selection_box: Some(selection_box),
-            scroll_info: None,
-            selected_entry_area: None,
-            selection_model: ResolvedSelectionModel::default(),
-            link_overlay: Default::default(),
-            inline_media: Vec::new(),
-            diagram_affordances: Vec::new(),
+            ..Self::default()
         }
     }
 

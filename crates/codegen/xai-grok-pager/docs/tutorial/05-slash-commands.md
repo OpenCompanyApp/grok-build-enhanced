@@ -20,8 +20,8 @@ Two of those deserve a second look:
 - **`/compact`** takes an optional hint: `/compact keep the auth details`.
   Check context usage anytime with `/context` — Grok also auto-compacts
   when the window fills up.
-- **`/rewind`** (or **`/undo`**) restores actual file snapshots taken at each
-  prompt, not just the chat.
+- **`/rewind`** (or **`/undo`**) rewinds the conversation to an earlier
+  turn, dropping later turns (file changes are left as-is).
 
 ## The command palette
 

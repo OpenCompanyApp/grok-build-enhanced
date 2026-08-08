@@ -174,6 +174,9 @@ pub struct PromptStyle {
     /// When `Some(text)`, uses this instead of the default `"Build anything"`.
     /// Used for feedback mode (`"Type your feedback..."`).
     pub placeholder_override: Option<&'static str>,
+    /// The main composer hides the empty placeholder on focus; dedicated
+    /// report panes can opt in to keep their prompt visible while focused.
+    pub placeholder_when_focused: bool,
     /// Compact mode (currently unused for info_block sizing).
     pub compact: bool,
     /// Show the accent line (`┃`) on the left edge of the chrome.
@@ -234,6 +237,7 @@ impl Default for PromptStyle {
             accent_color_override: None,
             border_color_override: None,
             prefix_override: None,
+            placeholder_when_focused: false,
             placeholder_override: None,
             compact: false,
             show_accent_line: false,
@@ -268,6 +272,7 @@ impl PromptStyle {
             accent_color_override: None,
             border_color_override: None,
             prefix_override: None,
+            placeholder_when_focused: false,
             placeholder_override: None,
             compact: false,
             show_accent_line: false,
@@ -306,6 +311,7 @@ pub struct PromptFlag<'a> {
 }
 
 /// Optional info line rendered below the prompt text.
+#[derive(Default)]
 pub struct PromptInfo<'a> {
     /// Primary label to display on the info line (left side).
     pub model_name: &'a str,
@@ -318,6 +324,15 @@ pub struct PromptInfo<'a> {
     /// When true the warning uses the yellow warning color (<=5% left);
     /// when false it uses dim grey text (5-10% left).
     pub usage_warning_critical: bool,
+}
+
+impl PromptInfo<'_> {
+    pub fn is_blank(&self) -> bool {
+        self.model_name.is_empty()
+            && self.flags.is_empty()
+            && !self.multiline
+            && self.usage_warning.is_none()
+    }
 }
 
 /// Live voice-capture overlay for the prompt.
@@ -3180,17 +3195,19 @@ impl PromptWidget {
             false
         };
 
-        // Placeholder text when empty and unfocused
+        // Placeholder text when empty (unfocused, or opted in while focused).
         if self.textarea.text().is_empty()
             && ta_area.width > 0
-            && !style.focused
+            && (!style.focused || style.placeholder_when_focused)
             && !voice_interim_shown
         {
             let placeholder = style.placeholder_override.unwrap_or("Build anything");
+            let truncated =
+                crate::render::line_utils::truncate_str(placeholder, ta_area.width as usize);
             buf.set_string(
                 ta_area.x,
                 ta_area.y,
-                placeholder,
+                &truncated,
                 Style::default().fg(theme.gray).bg(bg),
             );
         }

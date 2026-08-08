@@ -90,6 +90,7 @@ default = [
 default-bazel = [
     "jemalloc",
     "sandbox-enforce",
+    "local-workspace",
     ]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
 local-workspace = ["xai-grok-pager/local-workspace"]

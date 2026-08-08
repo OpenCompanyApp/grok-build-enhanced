@@ -19,6 +19,12 @@ use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 impl AgentView {
+    /// Apply a live turn-summary mutation and invalidate older disk hydrates.
+    pub(crate) fn set_last_turn_summary(&mut self, summary: Option<String>) {
+        self.last_turn_summary = summary;
+        self.last_turn_summary_gen = self.last_turn_summary_gen.wrapping_add(1);
+    }
+
     /// Bind this view to a root session id, resetting the per-session
     /// reconnect cursor and both dedup highwaters (ACP + xAI) when the id
     /// actually changes — all three are meaningless against another session's
@@ -100,6 +106,10 @@ impl AgentView {
             unexpected_replay_drops: 0,
             replayed_terminal_prompts: HashSet::new(),
             failed_wake_marker_for: None,
+            finished_wake_prompts: HashSet::new(),
+            running_wake_turn: None,
+            pending_cancel_resend: None,
+            front_message_committed: true,
             active_pane: ActivePane::Prompt,
             permission_stashed_pane: None,
             end_work_announced: false,
@@ -202,6 +212,7 @@ impl AgentView {
             hit_plan_button: Default::default(),
             hit_plan_approval_status: Default::default(),
             hit_follow_indicator: Default::default(),
+            hit_response_top_indicator: Default::default(),
             hit_cwd: Default::default(),
             hit_cancel_button: Default::default(),
             hit_watching_cue: Default::default(),
@@ -270,6 +281,7 @@ impl AgentView {
             deferred_session_mode: None,
             pending_extensions_fetch: false,
             in_dashboard_overlay: false,
+            overlay_can_cycle: false,
             mcp_init_progress: None,
             acp_synced_generation: 0,
             hovered_permission_item: None,
@@ -277,6 +289,7 @@ impl AgentView {
             permission_queue: VecDeque::new(),
             next_perm_req_id: 0,
             permission_stashed_prompt: None,
+            permission_pattern_edit: None,
             plan_approval_view: None,
             latest_inline_plan_content: None,
             plan_comments: Vec::new(),
@@ -315,6 +328,8 @@ impl AgentView {
             pending_recap_entry: None,
             display_name: None,
             generated_session_title: None,
+            last_turn_summary: None,
+            last_turn_summary_gen: 0,
             pending_effects: Vec::new(),
             paste_probe_in_flight: 0,
             deferred_send: None,
@@ -399,9 +414,13 @@ impl AgentView {
         self.session.loading_replay = true;
         self.replayed_terminal_prompts.clear();
         self.unexpected_replay_drops = 0;
+        self.running_wake_turn = None;
+        self.finished_wake_prompts.clear();
+        self.pending_cancel_resend = None;
         self.pending_stop_hooks = None;
         self.end_work_announced = false;
         self.clear_send_now_expectation();
+        self.front_message_committed = true;
         self.optimistic_queue_ids.clear();
         self.send_now_awaiting_confirm = None;
         self.send_now_painted_blocks.clear();
@@ -492,6 +511,8 @@ impl AgentView {
         {
             self.expect_send_now_cancel = None;
         }
+        self.front_message_committed = false;
+        self.pending_cancel_resend = None;
         self.session.start_turn(&mut self.scrollback);
     }
     /// Adopt the in-flight turn another client is driving, conveyed by the
@@ -501,6 +522,7 @@ impl AgentView {
     pub(crate) fn adopt_running_prompt(&mut self, prompt_id: String) {
         self.start_turn_boundary(Some(&prompt_id));
         self.session.tracker.clear_user_echo_skip();
+        self.front_message_committed = true;
         self.session.current_prompt_id = Some(prompt_id.clone());
         self.turn_started_at = Some(Instant::now());
         self.scrollback.enable_follow_with_preserve();
@@ -557,6 +579,77 @@ impl AgentView {
         crate::app::acp_handler::should_adopt_running_prompt(prompt_id)
             && !self.replayed_terminal_prompts.contains(prompt_id)
             && !self.is_rewound_prompt(prompt_id)
+    }
+    /// Wake turn in flight (streaming or cancelling) while the pane is idle.
+    pub(crate) fn wake_turn_active(&self) -> bool {
+        self.session.state.is_idle() && self.running_wake_turn.is_some()
+    }
+    /// Wake cancel sent and still waiting on its terminal. Pane stays idle.
+    pub(crate) fn wake_turn_cancelling(&self) -> bool {
+        self.session.state.is_idle()
+            && self
+                .running_wake_turn
+                .as_ref()
+                .is_some_and(|wake| wake.cancel_sent)
+    }
+    /// Single setter for [`RunningWakeTurn`]. No-op unless the pane is idle
+    /// and not replaying; keeps an in-flight cancel marker for the same id.
+    pub(crate) fn note_streaming_wake_turn(&mut self, prompt_id: &str) {
+        if !self.session.state.is_idle() || self.session.loading_replay {
+            return;
+        }
+        if self.finished_wake_prompts.contains(prompt_id) {
+            return;
+        }
+        if self
+            .running_wake_turn
+            .as_ref()
+            .is_some_and(|wake| wake.prompt_id == prompt_id)
+        {
+            return;
+        }
+        self.running_wake_turn = Some(super::RunningWakeTurn {
+            prompt_id: prompt_id.to_string(),
+            cancel_sent: false,
+        });
+    }
+    /// Local turn, running `/compact`, or streaming wake not yet asked to stop.
+    pub(crate) fn stoppable_activity_running(&self) -> bool {
+        self.session.state.is_turn_running()
+            || self.session.state.is_compact_running()
+            || (self.wake_turn_active() && !self.wake_turn_cancelling())
+    }
+    /// Local or wake cancel still in flight.
+    pub(crate) fn any_cancel_pending(&self) -> bool {
+        self.session.state.is_cancelling() || self.wake_turn_cancelling()
+    }
+    /// Mark the wake cancel sent. No-op without a wake turn.
+    pub(crate) fn mark_wake_cancel_sent(&mut self) {
+        if let Some(wake) = self.running_wake_turn.as_mut() {
+            wake.cancel_sent = true;
+        }
+    }
+    /// Overlay stop: stamp the dashboard trigger if something stoppable is running.
+    pub(crate) fn arm_dashboard_stop(&mut self) -> bool {
+        if self.stoppable_activity_running() {
+            self.cancel_trigger_hint = Some(crate::app::actions::CancelTrigger::DashboardStop);
+            true
+        } else {
+            false
+        }
+    }
+    /// Status-row chrome for a wake turn, or `None` when a local turn owns it.
+    pub(crate) fn wake_display_state(&self) -> Option<&'static crate::app::agent::AgentState> {
+        if !self.session.state.is_idle() {
+            return None;
+        }
+        self.running_wake_turn.as_ref().map(|wake| {
+            if wake.cancel_sent {
+                &crate::app::agent::AgentState::TurnCancelling
+            } else {
+                &crate::app::agent::AgentState::TurnRunning
+            }
+        })
     }
     /// Finalize a reconnect-reload window and, iff the running prompt is
     /// adoptable, adopt it. Returns whether the window finalized.

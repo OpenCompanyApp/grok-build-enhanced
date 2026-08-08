@@ -34,6 +34,7 @@ const ALL_SETTINGS_EXERCISED: &[&str] = &[
     "show_timeline",
     "page_flip_on_send",
     "combine_queued_prompts",
+    "confirm_before_rewind",
     "simple_mode",
     "vim_mode",
     "remember_tool_approvals",
@@ -225,6 +226,12 @@ fn assert_set_bool_action(outcome: SettingsKeyOutcome, key: &str, expected: bool
                 "SetCombineQueuedPrompts value differs from expected"
             )
         }
+        ("confirm_before_rewind", Action::SetConfirmBeforeRewind(b)) => {
+            assert_eq!(
+                b, expected,
+                "SetConfirmBeforeRewind value differs from expected"
+            )
+        }
         ("simple_mode", Action::SetSimpleMode(b)) => {
             assert_eq!(b, expected, "SetSimpleMode value differs from expected")
         }
@@ -408,6 +415,15 @@ fn space_on_combine_queued_prompts_dispatches_typed_setter() {
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
     let default_on = UiConfig::default().combine_queued_prompts.unwrap_or(false);
     assert_set_bool_action(outcome, "combine_queued_prompts", !default_on);
+}
+
+#[test]
+fn space_on_confirm_before_rewind_dispatches_typed_setter() {
+    let mut state = make_state();
+    navigate_to(&mut state, "confirm_before_rewind");
+    let outcome = handle_settings_key(&mut state, &press(KeyCode::Char(' ')));
+    let default_on = UiConfig::default().confirm_before_rewind_enabled();
+    assert_set_bool_action(outcome, "confirm_before_rewind", !default_on);
 }
 
 #[test]
@@ -672,6 +688,21 @@ fn mouse_click_on_combine_queued_prompts_indicator_toggles_in_one_click() {
     );
     let default_on = UiConfig::default().combine_queued_prompts.unwrap_or(false);
     assert_set_bool_action(outcome, "combine_queued_prompts", !default_on);
+}
+
+#[test]
+fn mouse_click_on_confirm_before_rewind_indicator_toggles_in_one_click() {
+    let mut state = make_state();
+    synth_rects(&mut state);
+    let row_y = row_idx_for(&state, "confirm_before_rewind") as u16;
+    let outcome = handle_settings_mouse(
+        &mut state,
+        MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        72,
+        row_y,
+    );
+    let default_on = UiConfig::default().confirm_before_rewind_enabled();
+    assert_set_bool_action(outcome, "confirm_before_rewind", !default_on);
 }
 
 /// Value-column click toggles `remember_tool_approvals` in one click.
@@ -1805,6 +1836,7 @@ fn registry_kind_membership_through_pr_14() {
             "show_timestamps",
             "page_flip_on_send",
             "combine_queued_prompts",
+            "confirm_before_rewind",
             "simple_mode",
             "vim_mode",
             "remember_tool_approvals",
@@ -1955,6 +1987,7 @@ fn defaults_round_trip_through_registry() {
             "show_timeline" => SettingValue::Bool(false),
             "page_flip_on_send" => SettingValue::Bool(true),
             "combine_queued_prompts" => SettingValue::Bool(false),
+            "confirm_before_rewind" => SettingValue::Bool(true),
             "simple_mode" => SettingValue::Bool(true),
             "vim_mode" => SettingValue::Bool(false),
             "remember_tool_approvals" => SettingValue::Bool(false),

@@ -1051,7 +1051,11 @@ fn agent_type_mismatch_with_effort_stashes_deferred_switch() {
         let agent = &app.agents[&new_aid];
         assert_eq!(
             agent.session.deferred_model_switch,
-            Some((model_id, effort)),
+            Some(crate::app::agent::DeferredModelSwitch {
+                model_id,
+                effort,
+                prev_model_id: None,
+            }),
             "effort override must be stashed for the shell via deferred_model_switch",
         );
     } else {
@@ -1067,7 +1071,11 @@ fn deferred_model_switch_still_works_for_cli_override() {
     let id = AgentId(0);
     assert_eq!(
         app.agents[&id].session.deferred_model_switch,
-        Some((cli_model, None)),
+        Some(crate::app::agent::DeferredModelSwitch {
+            model_id: cli_model,
+            effort: None,
+            prev_model_id: None,
+        }),
         "CLI -m override must still populate deferred_model_switch",
     );
 }
@@ -1483,7 +1491,7 @@ fn deferred_switch_overwritten_by_second_switch() {
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     dispatch(
         Action::SwitchModel {
-            model_id: model_a,
+            model_id: model_a.clone(),
             effort: None,
         },
         &mut app,
@@ -1497,8 +1505,57 @@ fn deferred_switch_overwritten_by_second_switch() {
     );
     assert_eq!(
         app.agents[&id].session.deferred_model_switch,
-        Some((model_b, None))
+        Some(crate::app::agent::DeferredModelSwitch {
+            model_id: model_b.clone(),
+            effort: None,
+            prev_model_id: Some(model_a),
+        })
     );
+}
+#[test]
+fn deferred_switch_updates_display_and_persists() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("model-b"));
+    app.agents.get_mut(&id).unwrap().session.session_id = None;
+
+    let effects = dispatch(
+        Action::SwitchModel {
+            model_id: model_id.clone(),
+            effort: None,
+        },
+        &mut app,
+    );
+
+    let agent = &app.agents[&id];
+    assert_eq!(
+        agent.session.models.current,
+        Some(model_id.clone()),
+        "pre-session pick must update the displayed model immediately"
+    );
+    assert_eq!(
+        agent.session.deferred_model_switch,
+        Some(crate::app::agent::DeferredModelSwitch {
+            model_id: model_id.clone(),
+            effort: None,
+            prev_model_id: None,
+        }),
+        "the switch must still round-trip once the session exists"
+    );
+    assert!(!agent.session.model_switch_pending);
+    assert!(matches!(
+        &effects[..],
+        [Effect::PersistPreferredModel { model_id: persisted, .. }] if persisted == &model_id
+    ));
+
+    let effects = dispatch(
+        Action::SwitchModel {
+            model_id,
+            effort: None,
+        },
+        &mut app,
+    );
+    assert!(effects.is_empty(), "an unchanged pick must not re-persist");
 }
 #[test]
 fn request_bundle_status_emits_effect() {

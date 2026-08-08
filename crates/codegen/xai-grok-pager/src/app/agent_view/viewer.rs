@@ -415,6 +415,50 @@ impl AgentView {
         let is_plan_preview =
             viewer.kind == crate::views::file_search::line_viewer::LineViewerKind::PlanPreview;
 
+        // The scrollbar owns its whole press/drag/release gesture, including
+        // clicks in the adjacent border column. Route it before modal buttons,
+        // plan gutter selection, or click-to-comment can claim the event.
+        let scrollbar_owns_gesture = match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                viewer.list_state.scrollbar_hit(mouse.column, mouse.row)
+            }
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => {
+                viewer.list_state.is_scrollbar_dragging()
+            }
+            _ => false,
+        };
+        if scrollbar_owns_gesture {
+            viewer.list_state.handle_mouse_event(
+                mouse.kind,
+                mouse.column,
+                mouse.row,
+                popup_area.unwrap_or_default(),
+                &viewer.lines,
+            );
+            if is_plan_preview {
+                viewer.plan_mut().gutter_drag_start = None;
+                viewer.plan_mut().gutter_drag_end = None;
+            }
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                let was_commenting = self
+                    .plan_approval_view
+                    .as_ref()
+                    .is_some_and(|pav| pav.focus == PlanApprovalFocus::Commenting);
+                if let Some(ref mut pav) = self.plan_approval_view {
+                    pav.focus = PlanApprovalFocus::Preview;
+                    if was_commenting {
+                        pav.commenting_range = None;
+                        pav.editing_comment_id = None;
+                        pav.stashed_feedback_prompt = None;
+                    }
+                }
+                if was_commenting {
+                    self.prompt.set_text("");
+                }
+            }
+            return InputOutcome::Changed;
+        }
+
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 // Click on close button -> cancel.

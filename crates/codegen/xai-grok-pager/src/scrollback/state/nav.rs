@@ -350,6 +350,25 @@ impl ScrollbackState {
         false
     }
 
+    /// Whether the answer currently being read has its response anchor above
+    /// the viewport. This cache-only estimate drives the clickable ▲ mirror
+    /// of `prev_response` under the pinned prompt header.
+    pub fn has_response_top_above(&self) -> bool {
+        let Some(turn) = self
+            .active_turn_for_viewport()
+            .and_then(|t| self.turns.get(t))
+        else {
+            return false;
+        };
+        let Some(idx) = response_anchor_in_range(&self.entries, turn.range()) else {
+            return false;
+        };
+        self.visible_entry_range().contains(&idx)
+            && self
+                .entry_top_estimate(idx)
+                .is_some_and(|estimate| estimate < self.scroll_offset)
+    }
+
     /// Set status of the last turn.
     pub fn set_last_turn_status(&mut self, status: TurnStatus) {
         if let Some(turn) = self.turns.last_mut() {
@@ -2182,5 +2201,27 @@ mod tests {
             delta <= state.viewport_height as usize,
             "viewport jumped {delta} rows after select_next (page offset was {offset_after_page})"
         );
+    }
+
+    #[test]
+    fn response_top_above_tracks_the_answer_being_read() {
+        let mut state = ScrollbackState::new();
+        state.push_block(user_block("Q1"));
+        state.push_block(tall_agent_block());
+        state.prepare_layout(80, 6);
+        assert!(state.has_response_top_above());
+        assert!(state.prev_response());
+        assert_eq!(state.selected(), Some(1));
+        assert!(!state.has_response_top_above());
+    }
+
+    #[test]
+    fn response_top_above_is_false_for_short_answers_and_without_layout() {
+        let mut state = ScrollbackState::new();
+        state.push_block(user_block("Q1"));
+        state.push_block(agent_block("short answer"));
+        assert!(!state.has_response_top_above());
+        state.prepare_layout(80, 20);
+        assert!(!state.has_response_top_above());
     }
 }

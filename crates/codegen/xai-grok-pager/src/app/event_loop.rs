@@ -1207,7 +1207,6 @@ pub(crate) async fn run(
         user_config.as_ref(),
         managed_config.as_ref(),
     );
-    app.project_picker_disabled = hints.project_picker_disabled;
     // Per-tip contextual hints resolve from `[ui.contextual_hints]` (loaded into
     // `app.current_ui` further below) + the remote tier; the resolve + prompt
     // propagation happen after `current_ui` is hydrated.
@@ -2287,6 +2286,11 @@ pub(crate) async fn run(
 
             _ = animation_tick => {
                 animation_tick_at = None;
+                if let Some(resends) = dispatch::reconcile_overdue_cancels(&mut app)
+                    && process_effects(resends, &mut tasks, &mut app, &progress_tx)
+                {
+                    break;
+                }
                 // Lost-response recovery: finish any turn whose
                 // `prompt_complete` broadcast outlived the grace window
                 // without its `session/prompt` RPC response arriving
@@ -2321,6 +2325,7 @@ pub(crate) async fn run(
                             .get(&id)
                             .and_then(|agent| agent.session.session_id.clone()),
                         silent: true,
+                        nonce: 0,
                     }];
                     if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
                         break;
@@ -3798,6 +3803,45 @@ pub(crate) fn welcome_history_build_bypass_consume(
     })
 }
 
+/// Consume id-keyed code-restore suppression on a matching `LoadSession` or
+/// worktree resume. Leaves `app.restore_code` unchanged for other loads.
+pub(crate) fn take_load_restore_code(
+    app: &mut AppView,
+    effs: &[super::actions::Effect],
+) -> Option<bool> {
+    let Some(target) = app.suppress_code_restore_once.clone() else {
+        return app.restore_code;
+    };
+    let hit_load = effs.iter().any(|e| match e {
+        super::actions::Effect::LoadSession { session_id, .. } => session_id == &target,
+        _ => false,
+    });
+    let hit_worktree = effs.iter().any(|e| match e {
+        super::actions::Effect::CreateWorktreeSession {
+            load_session_id: Some(sid),
+            ..
+        } => sid == &target,
+        _ => false,
+    });
+    if hit_load {
+        app.suppress_code_restore_once = None;
+        return Some(false);
+    }
+    if hit_worktree {
+        // Peek only: worktree resume sends restoreCode:false, then
+        // WorktreeForked retargets suppress to the child LoadSession.
+        return Some(false);
+    }
+    app.restore_code
+}
+
+/// If one-shot code-restore suppression is armed for `from`, retarget it to `to`.
+pub(crate) fn retarget_suppress_code_restore(app: &mut AppView, from: &str, to: impl Into<String>) {
+    if app.suppress_code_restore_once.as_deref() == Some(from) {
+        app.suppress_code_restore_once = Some(to.into());
+    }
+}
+
 /// Shared [`SessionFlags`] builder (interactive loop + leader-cluster).
 pub(crate) fn session_flags_for_effects(
     app: &mut AppView,
@@ -3808,7 +3852,7 @@ pub(crate) fn session_flags_for_effects(
         plan_mode: app.plan_mode,
         subagents: app.subagents,
         ask_user: app.ask_user,
-        restore_code: app.restore_code,
+        restore_code: take_load_restore_code(app, effs),
         agent_override: app.agent_override.clone(),
         yolo_mode: app.default_yolo,
         auto_mode: super::dispatch::effective_auto(

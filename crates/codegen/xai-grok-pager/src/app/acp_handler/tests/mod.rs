@@ -1840,6 +1840,7 @@ pub(super) fn task_completed_notif(
                 start_time: std::time::SystemTime::now(),
                 end_time: Some(std::time::SystemTime::now()),
                 output: String::new(),
+                output_total_bytes: 0,
                 output_file: "/tmp/out.log".into(),
                 truncated: false,
                 exit_code,

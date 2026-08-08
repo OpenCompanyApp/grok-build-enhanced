@@ -8,6 +8,14 @@ pub mod meta;
 pub mod model_state;
 pub mod spawn;
 pub mod tracker;
+mod version_mismatch;
+
+pub(crate) use version_mismatch::{is_version_mismatch_banner, version_mismatch_banner};
+
+use xai_grok_telemetry::startup;
+pub use xai_grok_telemetry::startup::{
+    AgentKind, Owner, StartupOutcome, StartupPhase, StartupTimer,
+};
 
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
@@ -158,6 +166,7 @@ pub struct ConnectFlags {
 /// This is the main entry point for establishing an ACP connection.
 /// After this returns, the agent is ready to create sessions and receive prompts.
 pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<AcpConnection> {
+    startup::enter(StartupPhase::LoadConfig);
     // Load agent config from disk
     let raw_config = xai_grok_shell::config::load_effective_config()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
@@ -204,6 +213,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
     let voice_models = spawned.voice_models.clone();
     let (tx, rx) = (spawned.channel.tx, spawned.channel.rx);
 
+    startup::enter(StartupPhase::AcpInitialize);
     // Initialize
     let (
         models,
@@ -219,6 +229,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
     let (needs_login, login_label, login_method_id, auth_start_mode) =
         startup_auth_metadata(&auth_methods);
 
+    startup::enter(StartupPhase::EagerAuth);
     let (needs_login, login_label, login_method_id, auth_start_mode, auth_meta) =
         bounded_eager_auth(
             &tx,
@@ -274,6 +285,9 @@ pub async fn connect_via_leader(
 
     apply_config_writes(&flags);
 
+    startup::enter(StartupPhase::LoadConfig);
+    // The leader path never runs the managed-policy sync in this process.
+    startup::set_auth_mode(xai_grok_shell::managed_config::classify_auth_mode());
     let mut agent_config = AgentConfig::new_from_toml_cfg(raw_config)
         .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
     // resolve_telemetry_mode reads remote_settings.
@@ -296,6 +310,7 @@ pub async fn connect_via_leader(
         fs_write: flags.fs_write,
     };
 
+    startup::enter(StartupPhase::LeaderConnect);
     let conn = connect_or_spawn(
         client_type,
         ClientMode::Stdio,
@@ -320,6 +335,7 @@ pub async fn connect_via_leader(
     )?;
     let (tx, rx) = (bridge.channel.tx, bridge.channel.rx);
 
+    startup::enter(StartupPhase::AcpInitialize);
     let (
         models,
         is_grok_shell,
@@ -333,6 +349,7 @@ pub async fn connect_via_leader(
     let (needs_login, login_label, login_method_id, auth_start_mode) =
         startup_auth_metadata(&auth_methods);
 
+    startup::enter(StartupPhase::EagerAuth);
     let (needs_login, login_label, login_method_id, auth_start_mode, auth_meta) =
         bounded_eager_auth(
             &tx,

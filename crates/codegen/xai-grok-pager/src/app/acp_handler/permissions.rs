@@ -430,11 +430,99 @@ fn cancel_permission(perm: xai_acp_lib::AcpArgs<acp::RequestPermissionRequest>) 
         .ok();
 }
 
-/// Live auto recap arrived while the agent is busy (turn or command in
-/// flight) — drop so it cannot land under newer output. Manual `/recap` and
-/// history replay always apply.
-pub(super) fn should_drop_late_auto_recap(auto: bool, is_replay: bool, agent_idle: bool) -> bool {
-    auto && !is_replay && !agent_idle
+/// Drop live auto recap that would land between turns. Manual `/recap` and
+/// replay always apply.
+pub(super) fn should_drop_late_auto_recap(
+    auto: bool,
+    is_replay: bool,
+    agent: &crate::app::agent_view::AgentView,
+) -> bool {
+    auto && !is_replay && !cli_is_idle_for_recap(agent)
+}
+
+fn cli_is_idle_for_recap(agent: &crate::app::agent_view::AgentView) -> bool {
+    use crate::app::agent::BgTaskStatus;
+
+    if !agent.session.state.is_idle()
+        || agent.session.in_flight_prompt.is_some()
+        || agent.has_held_user_queue()
+        || agent
+            .subagent_sessions
+            .values()
+            .any(|session| !session.finished)
+        || agent
+            .session
+            .bg_tasks
+            .values()
+            .any(|task| task.status == BgTaskStatus::Running && !task.is_monitor)
+        || scrollback_waiting_on_user_turn(&agent.scrollback)
+    {
+        return false;
+    }
+    true
+}
+
+fn scrollback_waiting_on_user_turn(scrollback: &crate::scrollback::state::ScrollbackState) -> bool {
+    use crate::scrollback::block::RenderBlock;
+
+    for idx in (0..scrollback.len()).rev() {
+        let Some(entry) = scrollback.get(idx) else {
+            continue;
+        };
+        if entry.block.is_user_prompt() {
+            return true;
+        }
+        if let RenderBlock::SessionEvent(block) = &entry.block
+            && session_event_settles_turn(&block.event)
+        {
+            return false;
+        }
+    }
+    false
+}
+
+fn session_event_settles_turn(event: &crate::scrollback::blocks::SessionEvent) -> bool {
+    use crate::scrollback::blocks::SessionEvent;
+    matches!(
+        event,
+        SessionEvent::TurnCompleted { .. }
+            | SessionEvent::TurnCancelled { .. }
+            | SessionEvent::TurnFailed { .. }
+            | SessionEvent::ReAuthRequired
+            | SessionEvent::ContextTooLarge
+            | SessionEvent::DiskFull
+            | SessionEvent::CompactionFailed { .. }
+            | SessionEvent::RetryFailed { .. }
+    )
+}
+
+pub(super) fn should_drop_duplicate_auto_recap(
+    auto: bool,
+    is_replay: bool,
+    scrollback: &crate::scrollback::state::ScrollbackState,
+) -> bool {
+    auto && !is_replay && scrollback_has_recap_since_last_user(scrollback)
+}
+
+fn scrollback_has_recap_since_last_user(
+    scrollback: &crate::scrollback::state::ScrollbackState,
+) -> bool {
+    use crate::scrollback::block::RenderBlock;
+    use crate::scrollback::blocks::SessionEvent;
+
+    let mut recap_since_user = false;
+    for (_, entry) in scrollback.iter_entries() {
+        if entry.block.is_user_prompt() {
+            recap_since_user = false;
+            continue;
+        }
+        if let RenderBlock::SessionEvent(block) = &entry.block
+            && matches!(block.event, SessionEvent::Recap { .. })
+        {
+            recap_since_user = true;
+        }
+    }
+    recap_since_user
 }
 
 /// Land a `SessionRecap` block: fill a manual `/recap`'s in-flight loading

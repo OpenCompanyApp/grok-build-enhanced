@@ -20,6 +20,15 @@ use crate::views::picker::{PickerEntry, PickerField, PickerRow, PickerState};
 /// they don't collide with fuzzy-entry indices.
 pub const CONTENT_EXPAND_OFFSET: usize = 100_000;
 
+/// Session id accepted by free-text Enter when there is no selectable row.
+/// Only a trimmed UUID is loadable; arbitrary pasted text must never start a
+/// session load and strand the picker in a loading state.
+pub fn session_id_for_direct_load(query: &str) -> Option<&str> {
+    let query = query.trim();
+    uuid::Uuid::try_parse(query).ok()?;
+    Some(query)
+}
+
 /// Derive a short repo display name from a CWD path.
 ///
 /// Uses the last 2 normal path components joined by `-`. For paths with
@@ -1098,6 +1107,7 @@ mod tests {
             branch: None,
             repo_name: repo.into(),
             worktree_label: None,
+            last_turn_summary: None,
             card_detail: None,
         }
     }
@@ -1729,5 +1739,15 @@ mod tests {
             map[1],
             Some(PickerItem::Fuzzy { original_index: 0 })
         ));
+    }
+
+    #[test]
+    fn direct_load_accepts_only_a_single_uuid() {
+        let sid = "019fb61a-85a5-7ba0-a4ec-24647dca1893";
+        assert_eq!(session_id_for_direct_load(sid), Some(sid));
+        assert_eq!(session_id_for_direct_load(&format!("  {sid}  ")), Some(sid));
+        assert_eq!(session_id_for_direct_load("pasted garbage!!!"), None);
+        assert_eq!(session_id_for_direct_load("hello\nworld"), None);
+        assert_eq!(session_id_for_direct_load(&format!("{sid}\nextra")), None);
     }
 }

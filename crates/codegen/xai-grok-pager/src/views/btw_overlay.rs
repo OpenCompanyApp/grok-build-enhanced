@@ -146,22 +146,51 @@ fn line_plain_text(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
+/// Wrap an error message to `content_width` columns, capped at `max_lines`
+/// with an ellipsis on the last line when cut. The caller passes the rows it
+/// can actually paint, so the truncation marker lands on a visible row even
+/// when the layout hands the panel a shorter rect than it asked for.
+fn wrapped_error_lines(error: &str, content_width: usize, max_lines: usize) -> Vec<String> {
+    if content_width == 0 {
+        return vec![String::new()];
+    }
+    let mut lines: Vec<String> = textwrap::wrap(error.trim(), content_width)
+        .into_iter()
+        .map(|line| line.into_owned())
+        .collect();
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        if let Some(last) = lines.last_mut() {
+            // Make room: a full-width last line + '…' would exceed
+            // `content_width` and the renderer would cut the ellipsis off.
+            while last.width() >= content_width {
+                last.pop();
+            }
+            last.push('\u{2026}');
+        }
+    }
+    lines
+}
+
 /// Compute the desired height of the btw inline panel.
 ///
 /// Returns 0 when there is nothing to show (state is `None`).
-/// Loading / Error = 3 rows (top border + 1 body + bottom border).
-/// Done = 2 (borders) + min(wrapped response lines, DONE_MAX_BODY_LINES).
+/// Loading = 3 rows (top border + 1 body + bottom border).
+/// Done / Error = 2 (borders) + min(wrapped lines, DONE_MAX_BODY_LINES).
 ///
-/// `content_width` is the available width for body text (panel width minus
-/// border and padding — typically `inner_width - 4`).
-pub fn btw_panel_height(state: Option<&BtwOverlayState>, content_width: u16) -> u16 {
+/// `panel_width` is the full panel width (`render_btw_panel`'s `area.width`);
+/// body text gets `panel_width - 4` (border + padding), matching the render.
+pub fn btw_panel_height(state: Option<&BtwOverlayState>, panel_width: u16) -> u16 {
+    let content_width = panel_width.saturating_sub(4) as usize;
     match state {
         None => 0,
-        Some(BtwOverlayState::Loading { .. } | BtwOverlayState::Error { .. }) => 3,
+        Some(BtwOverlayState::Loading { .. }) => 3,
+        Some(BtwOverlayState::Error { error, .. }) => {
+            2 + wrapped_error_lines(error, content_width, DONE_MAX_BODY_LINES as usize).len() as u16
+        }
         Some(BtwOverlayState::Done { content, .. }) => {
-            let cw = content_width.saturating_sub(4) as usize; // border + pad
-            let total = if cw > 0 {
-                content.with_wrapped_lines(cw, |w| w.lines.len())
+            let total = if content_width > 0 {
+                content.with_wrapped_lines(content_width, |w| w.lines.len())
             } else {
                 1
             };
@@ -438,24 +467,18 @@ pub fn render_btw_panel(
         }
         BtwOverlayState::Error { error, .. } => {
             let error_style = Style::default().fg(theme.accent_error).bg(bg);
-            let msg = if error.width() > content_width {
-                let mut s = String::new();
-                let mut w = 0;
-                for ch in error.chars() {
-                    let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                    if w + cw + 1 > content_width {
-                        break;
-                    }
-                    s.push(ch);
-                    w += cw;
-                }
-                s.push('\u{2026}');
-                s
-            } else {
-                error.clone()
-            };
-            let line = Line::from(Span::styled(msg, error_style));
-            buf.set_line(content_x, body_y, &line, content_width as u16);
+            // Cap at the rows this rect can paint: the minimal renderer can
+            // hand the panel a shorter rect than requested, and the ellipsis
+            // must land on a row the user can see.
+            let max_rows =
+                (area.height.saturating_sub(2) as usize).min(DONE_MAX_BODY_LINES as usize);
+            for (idx, text) in wrapped_error_lines(error, content_width, max_rows)
+                .into_iter()
+                .enumerate()
+            {
+                let line = Line::from(Span::styled(text, error_style));
+                buf.set_line(content_x, body_y + idx as u16, &line, content_width as u16);
+            }
         }
     }
 }
@@ -578,6 +601,90 @@ mod tests {
         let model = render_with_model(&state, 40, 4);
         assert!(model.ranges.is_empty());
         assert!(model.visible_blocks.is_empty());
+    }
+
+    #[test]
+    fn error_state_wraps_long_message_across_rows() {
+        let error = "Rate limited (429) — you've hit the rate limit for your \
+                     plan. Try again later or upgrade for higher limits.";
+        let state = BtwOverlayState::Error {
+            question: "q".to_string(),
+            error: error.to_string(),
+        };
+        let height = btw_panel_height(Some(&state), 40);
+        assert!(height > 3, "long error must grow the panel, got {height}");
+
+        let buf = render_to_buffer(&state, 40, height);
+        let body: String = (1..height - 1).map(|y| row_text(&buf, 40, y)).collect();
+        assert!(
+            body.contains("upgrade for higher limits"),
+            "tail lost: {body}"
+        );
+        assert!(!body.contains('\u{2026}'), "no ellipsis when fully shown");
+    }
+
+    #[test]
+    fn error_panel_height_stays_compact_for_short_error() {
+        let state = BtwOverlayState::Error {
+            question: "q".to_string(),
+            error: "boom".to_string(),
+        };
+        assert_eq!(btw_panel_height(Some(&state), 40), 3);
+        let buf = render_to_buffer(&state, 40, 3);
+        assert!(row_text(&buf, 40, 1).contains("boom"));
+    }
+
+    #[test]
+    fn error_body_caps_at_max_lines_with_ellipsis() {
+        let max = DONE_MAX_BODY_LINES as usize;
+        let error = "word ".repeat(400);
+        let lines = wrapped_error_lines(&error, 36, max);
+        assert_eq!(lines.len(), max);
+        assert!(lines.last().unwrap().ends_with('\u{2026}'));
+        for line in &lines {
+            assert!(line.width() <= 36, "line exceeds width: {line:?}");
+        }
+
+        let exact = vec!["x".repeat(36); max + 1].join(" ");
+        let lines = wrapped_error_lines(&exact, 36, max);
+        assert_eq!(lines.last().unwrap().width(), 36);
+        assert!(lines.last().unwrap().ends_with('\u{2026}'));
+
+        let cjk = "字".repeat(18 * (max + 1));
+        let lines = wrapped_error_lines(&cjk, 36, max);
+        assert!(lines.last().unwrap().ends_with('\u{2026}'));
+        assert!(lines.last().unwrap().width() <= 36);
+    }
+
+    #[test]
+    fn error_wrap_keeps_paragraphs_and_breaks_long_tokens() {
+        let error = "first paragraph\n\nhttps://example.com/very/long/path/that/cannot/fit/in/one/panel/row";
+        let lines = wrapped_error_lines(error, 20, DONE_MAX_BODY_LINES as usize);
+        assert!(lines.contains(&String::new()), "blank paragraph gap kept");
+        for line in &lines {
+            assert!(line.width() <= 20, "line exceeds width: {line:?}");
+        }
+        assert!(lines.len() > 3, "URL must break across rows");
+    }
+
+    #[test]
+    fn error_render_clamps_to_short_rect() {
+        let state = BtwOverlayState::Error {
+            question: "q".to_string(),
+            error: "word ".repeat(100),
+        };
+        assert!(btw_panel_height(Some(&state), 40) > 5);
+        let buf = render_to_buffer(&state, 40, 5);
+        let last_body = row_text(&buf, 40, 3);
+        assert!(last_body.contains("word"), "last body row used");
+        assert!(
+            last_body.contains('\u{2026}'),
+            "cut body must end in an ellipsis: {last_body}"
+        );
+        assert!(
+            row_text(&buf, 40, 4).contains('╰'),
+            "bottom border must survive the clamp"
+        );
     }
 
     #[test]

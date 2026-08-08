@@ -1151,7 +1151,7 @@ pub(super) mod paste_key_tests {
     }
     /// Build a `PermissionViewState` already in FollowupInput focus —
     /// enough for the dispatcher's permission-followup paste arm.
-    pub(in crate::app::agent_view) fn make_followup_permission_state()
+    pub(crate) fn make_followup_permission_state()
     -> crate::views::permission_view::PermissionViewState {
         let (response_tx, _rx) = tokio::sync::oneshot::channel();
         let request = agent_client_protocol::RequestPermissionRequest::new(
@@ -1187,7 +1187,7 @@ pub(super) mod paste_key_tests {
     }
     /// Build a minimal `PlanApprovalViewState` — enough for the
     /// dispatcher's plan-approval-view paste arm.
-    pub(in crate::app::agent_view) fn make_plan_approval_view_state()
+    pub(crate) fn make_plan_approval_view_state()
     -> crate::views::plan_approval_view::PlanApprovalViewState {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let request = crate::views::plan_approval_view::ExitPlanModeExtRequest {
@@ -2073,6 +2073,7 @@ pub(super) mod paste_key_tests {
             false,
             crate::app::agent_view::BannerSlotParams::none(),
             &bundle,
+            false,
             false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),

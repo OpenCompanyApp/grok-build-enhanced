@@ -538,6 +538,32 @@ mod tests {
     }
 
     #[test]
+    fn six_column_table_at_width_30_keeps_right_border() {
+        use unicode_width::UnicodeWidthStr;
+
+        let markdown = "| Alpha | Bravo | Ident | DeptName | RoleName | Amount |\n\
+                        |---|---|---|---|---|---|\n\
+                        | LongalphaToken | TokenTwo | ID-AA1001 | EngineeringOps | ManagerRole | $145,000 |\n";
+        let width = 30;
+        let output = MarkdownContent::new(markdown).output(width);
+        assert!(output.lines.len() >= 5);
+
+        for (index, line) in output.lines.iter().enumerate() {
+            let text: String = line
+                .content
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(text.width(), width, "table line {index}: {text:?}");
+            assert!(
+                matches!(text.trim_end().chars().last(), Some('│' | '┐' | '┘' | '┤')),
+                "table line {index} lost its right border: {text:?}"
+            );
+        }
+    }
+
+    #[test]
     fn empty_content_returns_placeholder() {
         let md = MarkdownContent::streaming();
         let out = md.output(80);

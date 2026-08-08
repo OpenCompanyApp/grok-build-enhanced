@@ -30,7 +30,7 @@ impl SlashCommand for FeedbackCommand {
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         let trimmed = args.trim();
         if trimmed.is_empty() {
-            CommandResult::Action(Action::EnterFeedbackMode)
+            CommandResult::Action(Action::OpenFeedbackPane)
         } else {
             CommandResult::Action(Action::SendFeedback(trimmed.to_string()))
         }

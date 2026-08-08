@@ -969,6 +969,7 @@ fn show_usage_on_welcome_screen_is_noop() {
 fn show_usage_with_redirect_url_fetches_session_only() {
     // Redirect link is deferred until SessionUsageComplete (see billing tests).
     let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
     app.usage_billing_redirect_url = Some("https://billing.example.com/me".to_string());
     let before = agent_scrollback_len(&app);
     let effects = dispatch(Action::ShowUsage, &mut app);
@@ -985,6 +986,7 @@ fn show_usage_with_redirect_url_fetches_session_only() {
 #[test]
 fn show_usage_codex_session_ignores_xai_redirect_after_session_usage() {
     let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
     app.usage_billing_redirect_url = Some("https://billing.example.com/me".to_string());
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     agent.session.models.current = Some(agent_client_protocol::ModelId::new(
@@ -1002,6 +1004,7 @@ fn show_usage_codex_session_ignores_xai_redirect_after_session_usage() {
             agent_id: AgentId(0),
             session_id: "test-session".into(),
             usage: Box::default(),
+            nonce: 0,
         }),
         &mut app,
     );

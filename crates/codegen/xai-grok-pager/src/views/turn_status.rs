@@ -704,6 +704,14 @@ fn compute_activity(
             "Compacting…".to_string(),
             false,
         ),
+        // `max_retries == 0` is the sampler's unbounded reconnect sentinel,
+        // not a literal zero-attempt retry budget. Keep the provider-safe
+        // fixed status and never render the transport's raw failure/URL.
+        (AgentState::TurnRunning, Some(TurnActivity::Retrying { max_retries: 0, .. })) => (
+            Style::default().fg(theme.warning),
+            "Reconnecting… waiting for network".to_string(),
+            false,
+        ),
         (AgentState::TurnRunning, Some(TurnActivity::Retrying { attempt, .. })) => (
             Style::default().fg(theme.warning),
             format!("Retrying (attempt {attempt})…"),
@@ -1001,6 +1009,21 @@ mod tests {
         // label — the view leaves it as `None` rather than Waiting(Model).
         let (_, label, _) = compute_activity(&theme, &AgentState::TurnRunning, &None, true, false);
         assert_eq!(label, "Running…");
+    }
+
+    #[test]
+    fn unbounded_retry_sentinel_renders_provider_safe_reconnect_status() {
+        let theme = Theme::current();
+        let activity = Some(TurnActivity::Retrying {
+            attempt: 12,
+            max_retries: 0,
+            reason: "transport failed for https://secret-provider.example/v1".into(),
+        });
+        let (_, label, _) =
+            compute_activity(&theme, &AgentState::TurnRunning, &activity, false, false);
+        assert_eq!(label, "Reconnecting… waiting for network");
+        assert!(!label.contains("attempt"));
+        assert!(!label.contains("http"));
     }
 
     #[test]

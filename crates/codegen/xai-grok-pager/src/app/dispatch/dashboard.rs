@@ -17,7 +17,7 @@ use super::session::modal::dispatch_sessions_confirm_close;
 use super::turn::dispatch_cancel_turn;
 use super::voice::{merge_prompt_with_voice_interim, voice_stop_on_submit};
 use crate::app::actions::{Action, Effect};
-use crate::app::agent::AgentId;
+use crate::app::agent::{AgentId, DeferredModelSwitch};
 use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView, DashboardReturn, TrustState};
 use agent_client_protocol as acp;
@@ -519,10 +519,8 @@ pub(super) fn dispatch_dashboard_overlay_stop(app: &mut AppView) -> Vec<Effect> 
     let Some(id) = app.dashboard.as_ref().and_then(|d| d.attached_agent) else {
         return vec![];
     };
-    if app
-        .agents
-        .get(&id)
-        .is_some_and(|a| a.session.state.is_turn_running() || a.session.state.is_compact_running())
+    if let Some(agent) = app.agents.get_mut(&id)
+        && agent.arm_dashboard_stop()
     {
         return dispatch_cancel_turn(app);
     }
@@ -811,11 +809,9 @@ pub(super) fn dispatch_dashboard_open_location_picker(app: &mut AppView) -> Vec<
     }
 
     let cwd = app.cwd.clone();
-    // Same pattern as `open_project_question` — the recent-dirs source is
-    // async; block the current runtime thread briefly to collect it.
+    // The recent-dirs source is async; block the current runtime thread briefly to collect it.
     let recent = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(crate::project_picker::sources::collect_recent_dirs(10))
+        tokio::runtime::Handle::current().block_on(crate::recent_dirs::collect_recent_dirs(10))
     });
 
     // Worktree label index (root path → label), built once and reused to
@@ -829,17 +825,14 @@ pub(super) fn dispatch_dashboard_open_location_picker(app: &mut AppView) -> Vec<
     let mut candidates: Vec<LocationCandidate> = Vec::new();
     candidates.push(LocationCandidate {
         label: location_picker_label(&cwd),
-        detail: format!(
-            "{}  (current)",
-            crate::project_picker::sources::display_path(&cwd)
-        ),
+        detail: format!("{}  (current)", crate::recent_dirs::display_path(&cwd)),
         worktree: worktree_label(&cwd),
         path: cwd.clone(),
     });
     for (path, ts) in recent.into_iter().filter(|(p, _)| p != &cwd) {
         let detail = format!(
             "{}  ({})",
-            crate::project_picker::sources::display_path(&path),
+            crate::recent_dirs::display_path(&path),
             crate::views::session_title::format_relative_time(
                 (chrono::Utc::now() - ts).to_std().unwrap_or_default()
             ),
@@ -902,7 +895,7 @@ pub(super) fn dispatch_dashboard_change_location(app: &mut AppView, input: Strin
     );
 
     let changed = app.cwd != path;
-    let display = crate::project_picker::sources::display_path(&path);
+    let display = crate::recent_dirs::display_path(&path);
     app.cwd = path.clone();
     // Keep the git-repo flag in sync with the new cwd (it's otherwise only
     // computed at startup). Worktree dispatch reads it.
@@ -1198,10 +1191,7 @@ pub(super) fn dispatch_dashboard_dispatch(
         });
     let (prompt_text, mut pasted_images, chip_elements) = prompt_state.into_submission();
     log_dashboard_launched("prompt");
-    let saved_shown = app.project_picker_shown;
-    app.project_picker_shown = true;
     let (new_id, effects) = dispatch_new_session_inner_with_id(app, model_id);
-    app.project_picker_shown = saved_shown;
     let policy_block = app.yolo_policy_block;
     if let Some(agent) = app.agents.get_mut(&new_id) {
         agent.session.enqueue_prompt(prompt_text);
@@ -1594,7 +1584,11 @@ pub(super) fn apply_pending_dispatch_config(
         // deferred switch when an explicit effort must be pushed. Setting it
         // (or clearing to `None`) also overrides any CLI `-m` default so the
         // dashboard's `/model` choice wins.
-        agent.session.deferred_model_switch = m.effort.map(|e| (m.id.clone(), Some(e)));
+        agent.session.deferred_model_switch = m.effort.map(|e| DeferredModelSwitch {
+            model_id: m.id.clone(),
+            effort: Some(e),
+            prev_model_id: None,
+        });
     }
     match pending_mode {
         DashboardDispatchMode::Normal => {
@@ -2019,13 +2013,21 @@ fn stop_top_level_activity(agent: &mut crate::app::agent_view::AgentView) -> Opt
 
     // Turn / background work need a session id to reach the backend.
     if let Some(session_id) = session_id {
-        if !agent.session.state.is_idle() {
-            effects.push(Effect::CancelTurn {
-                session_id: session_id.clone(),
-                cancel_subagents: true,
-                trigger: None,
-                rewind_if_pristine: false,
-            });
+        if !agent.session.state.is_idle() || agent.wake_turn_active() {
+            if agent.session.state.is_compact_running() {
+                agent.session.cancel_compact_command();
+            } else if agent.running_wake_turn.is_some() {
+                agent.mark_wake_cancel_sent();
+            } else if agent.session.state.is_turn_running() {
+                agent.session.cancel_turn(&mut agent.scrollback);
+            }
+            agent.cancel_trigger_hint = Some(crate::app::actions::CancelTrigger::DashboardStop);
+            effects.push(super::turn::emit_cancel_turn(
+                agent,
+                session_id.clone(),
+                true,
+                false,
+            ));
         }
         let running: Vec<String> = agent
             .session
@@ -2367,41 +2369,11 @@ pub(super) fn dispatch_dashboard_permission_select(
         return vec![];
     };
 
-    let meta = if let Some(scope) = perm
-        .mcp_scope
-        .as_ref()
-        .filter(|_| option_id.0.as_ref() == "allow-always-mcp")
-    {
-        let selection = match scope.selected {
-            crate::views::permission_view::McpScope::Tool => {
-                xai_grok_workspace::permission::McpScopeSelection::Tool {
-                    tool_name: scope.tool_name.clone(),
-                }
-            }
-            crate::views::permission_view::McpScope::Server => match &scope.server_prefix {
-                Some(prefix) => xai_grok_workspace::permission::McpScopeSelection::Server {
-                    server: prefix.clone(),
-                },
-                None => xai_grok_workspace::permission::McpScopeSelection::Tool {
-                    tool_name: scope.tool_name.clone(),
-                },
-            },
-        };
-        serde_json::to_value(selection)
-            .ok()
-            .and_then(|v| v.as_object().cloned())
-    } else if let Some(ref h) = perm.bash_highlights
-        && perm.bash_selection_count > 0
-    {
-        let parts: Vec<String> = h.highlighted_words[..perm.bash_selection_count].to_vec();
-        serde_json::to_value(xai_grok_workspace::permission::BashCommandSelectedTerms {
-            command_parts: parts,
-        })
-        .ok()
-        .and_then(|v| v.as_object().cloned())
-    } else {
-        None
-    };
+    // Use the same scoped-selection/glob metadata path as the main agent
+    // surface so answering through dashboard peek cannot drop an edited
+    // always-allow pattern.
+    let edited_pattern = super::permissions::take_edited_pattern(agent, &perm);
+    let meta = super::permissions::build_selection_meta(&perm, &option_id, edited_pattern);
 
     perm.request
         .response_tx

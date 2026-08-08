@@ -12,6 +12,7 @@ use anstyle::Style;
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, Tag, TagEnd, TextMergeWithOffset};
 use ratatui::style::Stylize as RatatuiStylize;
 use ratatui::text::{Line, Span};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::buffers::{
     CodeBlockMeta, Highlight, LinkTarget, MarkdownBuffers, Replace, StyledCell, TableHyperlink,
@@ -1598,10 +1599,12 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
 
             if total_content > content_budget && total_content > 0 {
                 // Compute per-column minimum widths: the longest unbreakable
-                // word across all cells in each column.  The word separator
-                // determines what counts as unbreakable (e.g. "Catherine",
-                // "$145,000", "EMP-1001").
+                // word across all cells in each column. The word separator
+                // determines what counts as unbreakable.
                 let mut min_col_widths: Vec<usize> = vec![1; num_cols];
+                // The widest single grapheme is the narrowest width at which
+                // a column can reflow without dropping content.
+                let mut hard_floors: Vec<usize> = vec![0; num_cols];
                 for row in &all_rows {
                     for (col, cell) in row.iter().enumerate() {
                         if col >= num_cols {
@@ -1612,31 +1615,47 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                             let w = unicode_display_width(word.word);
                             min_col_widths[col] = min_col_widths[col].max(w);
                         }
+                        if !text.is_empty()
+                            && let Some(floor) = hard_floors.get_mut(col)
+                        {
+                            let widest_grapheme = text
+                                .graphemes(true)
+                                .map(unicode_display_width)
+                                .max()
+                                .unwrap_or(0);
+                            *floor = (*floor).max(widest_grapheme.max(1));
+                        }
                     }
                 }
 
-                // Start every column at its minimum, then distribute the
-                // remaining budget proportionally to how much extra width
-                // each column wants (natural − minimum).  This guarantees
-                // the total never exceeds the budget while respecting mins.
                 let min_total: usize = min_col_widths.iter().sum();
-                let extra_budget = content_budget.saturating_sub(min_total);
+                let hard_total: usize = hard_floors.iter().sum();
 
-                // How much each column *wants* above its minimum.
-                let extra_wants: Vec<usize> = col_widths
+                // When word minimums do not fit, grow from grapheme floors so
+                // unbreakable tokens reflow inside cells instead of pushing
+                // the table beyond its width budget.
+                let (base_widths, target_widths) =
+                    if min_total > content_budget && hard_total <= content_budget {
+                        (hard_floors, min_col_widths)
+                    } else {
+                        (min_col_widths, col_widths.clone())
+                    };
+                let base_total: usize = base_widths.iter().sum();
+                let extra_budget = content_budget.saturating_sub(base_total);
+
+                let extra_wants: Vec<usize> = target_widths
                     .iter()
-                    .enumerate()
-                    .map(|(i, &w)| w.saturating_sub(min_col_widths[i]))
+                    .zip(&base_widths)
+                    .map(|(&target, &base)| target.saturating_sub(base))
                     .collect();
                 let total_extra_want: usize = extra_wants.iter().sum();
 
-                let mut new_widths = min_col_widths.clone();
+                let mut new_widths = base_widths.clone();
                 if total_extra_want > 0 && extra_budget > 0 {
-                    // Distribute proportionally.
-                    for (i, &want) in extra_wants.iter().enumerate() {
+                    for (width, &want) in new_widths.iter_mut().zip(&extra_wants) {
                         let share = (want as f64 * extra_budget as f64 / total_extra_want as f64)
                             .floor() as usize;
-                        new_widths[i] += share;
+                        *width += share;
                     }
 
                     // Hand out any remaining columns (from floor rounding)
@@ -1645,19 +1664,23 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                     let mut remaining = content_budget.saturating_sub(used);
                     if remaining > 0 {
                         let mut indices: Vec<usize> = (0..num_cols).collect();
-                        // Sort by unmet want descending.
-                        indices.sort_by(|&a, &b| {
-                            let unmet_a = col_widths[a].saturating_sub(new_widths[a]);
-                            let unmet_b = col_widths[b].saturating_sub(new_widths[b]);
-                            unmet_b.cmp(&unmet_a)
-                        });
+                        let unmet = |i: usize| {
+                            target_widths
+                                .get(i)
+                                .copied()
+                                .unwrap_or(0)
+                                .saturating_sub(new_widths.get(i).copied().unwrap_or(0))
+                        };
+                        indices.sort_by(|&a, &b| unmet(b).cmp(&unmet(a)));
                         for &idx in &indices {
                             if remaining == 0 {
                                 break;
                             }
-                            // Don't grow beyond original natural width.
-                            if new_widths[idx] < col_widths[idx] {
-                                new_widths[idx] += 1;
+                            let target = target_widths.get(idx).copied().unwrap_or(0);
+                            if let Some(width) = new_widths.get_mut(idx)
+                                && *width < target
+                            {
+                                *width += 1;
                                 remaining -= 1;
                             }
                         }
@@ -1801,14 +1824,14 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         }
     }
 
-    /// Word-wrap a cell's plain text into lines of at most `width` display columns.
-    /// Returns a Vec of Strings, one per visual line.
+    /// Word-wrap a cell's plain text into lines of at most `width` display
+    /// columns. Never returns an empty vector.
     ///
     /// Delegates to `textwrap::wrap` with a custom word separator that allows
     /// line breaks after spaces, punctuation, and symbol characters — but never
-    /// mid-word.  If a single word is wider than `width` it overflows rather
-    /// than being chopped.
-    fn wrap_cell_text(text: &str, width: usize) -> Vec<String> {
+    /// mid-word. A single word wider than `width` is then hard-split on
+    /// grapheme boundaries so no visual line exceeds the column width.
+    pub(crate) fn wrap_cell_text(text: &str, width: usize) -> Vec<String> {
         if width == 0 {
             return vec![String::new()];
         }
@@ -1817,10 +1840,33 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
             .word_separator(textwrap::WordSeparator::Custom(cell_word_separator))
             .break_words(false);
         let wrapped = textwrap::wrap(text, opts);
-        if wrapped.is_empty() {
+        let mut lines: Vec<String> = Vec::with_capacity(wrapped.len());
+        for wrapped_line in wrapped {
+            let line = wrapped_line.into_owned();
+            if unicode_display_width(&line) <= width {
+                lines.push(line);
+                continue;
+            }
+
+            let mut piece = String::new();
+            let mut piece_width = 0usize;
+            for grapheme in line.graphemes(true) {
+                let grapheme_width = unicode_display_width(grapheme);
+                if piece_width > 0 && piece_width.saturating_add(grapheme_width) > width {
+                    lines.push(std::mem::take(&mut piece));
+                    piece_width = 0;
+                }
+                piece.push_str(grapheme);
+                piece_width = piece_width.saturating_add(grapheme_width);
+            }
+            if !piece.is_empty() {
+                lines.push(piece);
+            }
+        }
+        if lines.is_empty() {
             vec![String::new()]
         } else {
-            wrapped.into_iter().map(|cow| cow.into_owned()).collect()
+            lines
         }
     }
 
@@ -1856,6 +1902,9 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         let mut all_plains = Vec::with_capacity(num_visual_lines);
         let mut all_styled = Vec::with_capacity(num_visual_lines);
         let mut all_links: Vec<TableHyperlink> = Vec::new();
+        // Per-column source cursors keep repeated wrapped fragments from
+        // re-matching earlier bytes and inheriting the wrong style/link.
+        let mut source_cursors: Vec<usize> = vec![0; col_widths.len()];
 
         for vis_line in 0..num_visual_lines {
             let mut plain = String::new();
@@ -1906,19 +1955,19 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                         // Find the byte offset of this visual line within the full
                         // cell plain text, then emit styled spans covering that range.
                         let full_text = cell.plain_text();
-                        // Sum of all previous visual lines' lengths + spaces between
-                        // them gives our start offset in the full plain text.
-                        let prev_len: usize = (0..vis_line)
-                            .map(|vl| wrapped_cells[i].get(vl).map(|s| s.len()).unwrap_or(0))
-                            .sum();
-                        // Wrapped-line byte lengths may not land on a char boundary.
-                        let prev_len = floor_char_boundary(&full_text, prev_len);
-                        // Account for spaces consumed by textwrap between lines
-                        let line_start = full_text[prev_len..]
-                            .find(cell_line_text)
-                            .map(|off| prev_len + off)
-                            .unwrap_or(prev_len);
+                        let cursor = floor_char_boundary(
+                            &full_text,
+                            source_cursors.get(i).copied().unwrap_or(0),
+                        );
+                        let line_start = full_text
+                            .get(cursor..)
+                            .and_then(|rest| rest.find(cell_line_text))
+                            .map(|offset| cursor + offset)
+                            .unwrap_or(cursor);
                         let line_end = (line_start + cell_line_text.len()).min(full_text.len());
+                        if let Some(next_cursor) = source_cursors.get_mut(i) {
+                            *next_cursor = line_end;
+                        }
 
                         // Walk the cell's spans, emitting the slice that overlaps
                         // [line_start..line_end].
@@ -1935,7 +1984,9 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                                 continue;
                             }
 
-                            let slice = &full_text[start..end];
+                            let Some(slice) = full_text.get(start..end) else {
+                                continue;
+                            };
                             if slice.is_empty() {
                                 continue;
                             }
