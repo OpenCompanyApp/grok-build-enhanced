@@ -1,134 +1,400 @@
 {
   "schema_version": 1,
-  "campaign": "2026-08-07-upstream-parity",
+  "campaign": "2026-08-11-upstream-refresh-audit",
   "inventory": {
-    "count": 106,
-    "sha256": "074ffa6780df9abb9b2ba1cb26c58dc541815fc4661e73d6df108890af68c04e"
+    "count": 23,
+    "sha256": "1c7079f515c0abce166e1904bdb0049d42b1e1ac676f08cf5b872a4198d86f90"
   },
   "target_sources": {
-    "grok-build-upstream": "afbc0fb710320c7add294c2106d447ecc3e3af2e",
-    "openai-codex": "8e4b10446eed7bafb39d8a469f9be25a41f4864f",
-    "opencode": "284214c78d32a09fd9c729bdefc07be50f74eb40",
-    "kimi-code": "437a1b8ba1b7e0f6662bdadc669564fdc58c3f5a",
+    "grok-build-upstream": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+    "openai-codex": "f2a6f2585c327251e6be647e47a3ba3e127ccff3",
+    "opencode": "0d927ba03f36d7f87e3cdb2b6c1f34c44913a099",
+    "opencode-codex-auth": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
+    "oh-my-pi": "d3b22a0db6a4a0e2ef272a880e38286e0c466dc9",
+    "warp-themes": "82e51dcf9b47912d551107748ba3297a21b2eff3",
+    "kimi-code": "619564dcf9ee10a3cfbf7ecbc764c6b9b63fc91b",
     "kimi-cli": "cbc15c076d17f70fec9f89c90c0502e68657f505",
-    "oh-my-pi": "0e8142ad0e3189b5b51b49fd3434354683ba1b01",
-    "codexbar": "22b24b885693e890af52df15c29f7ca024904c74",
-    "models-dev": "ac01bd90859928691e2e8e65df5cf390ffb1539e",
-    "exa-mcp-server": "394f9210ed16d3e25d328e1e6db285824caedc04"
+    "zai-sdk-python": "ca5109c0aa9bf173839be391b4b14aeadf9a9bf9",
+    "zai-coding-plugins": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254",
+    "glm-5": "25206af860c4ac10f6411c597c574f9b1c00e53c",
+    "codexbar": "e5528d452d4f82cbd7e327246b9044e9c51d64e1",
+    "zai-usage-helper": "54cd1f33a703c417f2492ee1f21f22b3633a43c4",
+    "models-dev": "1d0f9ba5a49e916ff2dc97b23fbc76820ab258b3",
+    "exa-mcp-server": "e64c11f2d3b4400ffbda8ccdd9658a450cc9d270"
   },
   "obligations": [
-    {"id":"GB-A422-001","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"not applicable","state":"closed","behavior":"Internal local-workspace CLI and acknowledgement metadata remain outside the public fork artifact.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-002","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"not applicable","state":"closed","behavior":"Internal Sandbox/local welcome selection remains outside the public feature graph.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-003","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"not applicable","state":"closed","behavior":"The unpublished own-mode gateway supervisor is not invented in Enhanced.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-004","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Session registry and resource reconciliation stay bounded across churn and shutdown.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-005","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Credential provenance records only sent, missing, or unknown without secret values.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-006","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Authentication recovery remains bounded and suspension-aware.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-007","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Current context-overflow wording is classified for compaction recovery.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-008","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Overload and 529 retry signals honor explicit retry vetoes.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-009","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Cancellation reaches every supported compaction path.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-010","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"already equivalent","state":"closed","behavior":"Equality-reminder wording matches the shared contract.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-011","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"already equivalent","state":"closed","behavior":"Subagent-completion reminder wording matches the shared contract.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-012","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Wait-task timeout configuration is bounded and schema-consistent.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-013","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Project skill changes refresh without watcher startup races.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-014","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Completed PTY children are reaped without blocking.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-015","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"TLS diagnostics retain nested operating-system causes without secrets.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-016","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Login failures are typed and structurally redacted.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-017","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Workspace activity and idle transitions remain race-safe.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-018","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Computer-hub request timing is request-scoped and liveness-aware.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-019","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Permission checks protect .grok configuration edits.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-020","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Dashboard session deletion preserves confirmation and active-session guards.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-021","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Ended sessions retain coherent last-activity projection.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-022","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Shortcut help shows the active Ctrl+. binding.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-023","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Elapsed UI duration uses a monotonic dual-clock projection.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-024","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Typed workspace and RPC errors preserve stable kinds.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-025","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"already equivalent","state":"closed","behavior":"Ordinary upstream usage details remain visible.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-026","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"not applicable","state":"closed","behavior":"Internal PI-only file-descriptor build plumbing is outside the Cargo graph.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-027","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"not applicable","state":"closed","behavior":"Managed xAI service internals remain outside fork runtime scope.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A422-028","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"not applicable","state":"closed","behavior":"Enhanced retains ownership of version, changelog, generated-root, and release metadata.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-
-    {"id":"GB-780D-001","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Dashboard and welcome session deletion obey complete idle/current lifecycle semantics.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-002","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Shortcut help covers prompt history and conversation search.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-003","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"tmux reduced-color diagnosis and repair are available.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-004","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Side-question overload failures receive the bounded retry behavior.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-005","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Session sharing retains the upstream safety disablement.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-006","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Stop and Ctrl+C cancel active compaction through the current command schema.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-007","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Automatic recap projection is de-duplicated.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-008","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Background wait timeout descriptions and execution ceilings agree.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-009","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Fast background tasks transition promptly to completed state.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-010","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"The plan-mode indicator clears after plan approval.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-011","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Plan-preview scrollbar dragging is supported.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-780D-012","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Additional inference context-limit errors trigger compaction recovery.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-
-    {"id":"GB-E547-001","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Always-allow bash glob patterns support free-form editing.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-002","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Long answers expose a jump-to-response-top affordance.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-003","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Auto mode recognizes the expanded safe read-only git and append operations.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-004","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Plan Mermaid previews retain open and copy controls.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-005","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Dead gateway sockets are detected and recovered.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-006","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Tab navigation remains inside blocking question cards.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-007","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Resume picker rejects pasted non-session garbage.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-008","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Background completion messages remain bounded.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-009","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Plan scrollbar border clicks and Terminal.app stripes render correctly.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-010","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Expired external authentication enters interactive recovery.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-011","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Side questions reuse the parent cached prefix safely.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-E547-012","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Doctor and theme startup avoid redundant tmux probing when no server exists.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-
-    {"id":"GB-ED6D-001","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Pre-session model selection updates status and menus immediately.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-ED6D-002","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"The changes panel refreshes after an agent commit.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-ED6D-003","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Background completion reports full log size, captured prefix, and read hint.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-ED6D-004","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"GitHub export explains unsupported old hibernated sessions clearly.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-
-    {"id":"GB-A558-001","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Generated protobuf Debug output redacts annotated secrets.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A558-002","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Environment, OSC, and tmux appearance resolution select terminal-native themes.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A558-003","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Input-key ownership and prompt queue reordering are centralized and lossless.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A558-004","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Provider errors are structured, bounded, neutralized, and share edge retry policy.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A558-005","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"First-party xAI environment keys are probed before login advertisement.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A558-006","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Session close, delete, attach, replica finalization, and drain budgets settle safely.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A558-007","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Side calls, summaries, recap reconciliation, and disk-full errors persist safely.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A558-008","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"MCP expired-config re-enable and managed-server reconciliation are complete.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A558-009","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Auto-mode findings and repository restore-fetch workflow are preserved.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-A558-010","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Markdown, selection, tmux notification, remote pull, and worktree polish are retained.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-
-    {"id":"GB-3934-001","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Dashboard summaries, grouped extensions and skills, navigation, and session lifecycle polish are current.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-002","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Large MCP image results survive rendering and repaired disabled servers reappear.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-003","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Background reminders, lossless reorderable queues, cancel suppression, and task admission are bounded.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-004","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Restored-child resume, transcript-free reattach, close, and remote restore policies settle correctly.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-005","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Large-session forks stay memory-bounded and session search uses split local indexes.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-006","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Default-branch detection and large or shallow repository restore are bounded.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-007","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Startup avoids stray project prompts and validates xAI keys before advertisement.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-008","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Plan review preserves model controls and accurate resumed or transitioned mode indicators.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-009","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Bare feedback opens a dedicated pane and preserves composer mode through submission.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-010","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Theme, cards, markdown tables, selection, syntax, and terminal reset rendering match upstream behavior.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-011","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Blocking-card keys, slash selection, dashboard gating, and skill collision provenance are unambiguous.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-012","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Permission scripts, centralized classifications, reasons, and decision analytics are complete.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-013","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Provider error banners, server retry, and side-question wrapping remain clean and bounded.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-014","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Previous-turn answer summaries and recap reconciliation remain busy and new-turn safe.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-015","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Rewind is conversation-only and supports persisted confirmation preference.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-016","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"ACP version mismatch and reconnect or close settling provide guided recovery.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-017","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"grok disk-usage provides filesystem-aware text and JSON diagnostics with safe guidance.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-3934-018","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Startup phase, timeout, and permission telemetry preserve ordinary upstream policy.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-
-    {"id":"GB-AFBC-001","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"The three-page usage modal handles cache writes and rejects stale session or nonce updates.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-AFBC-002","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Memory trace grouping, filtering, and context projections match the 1.0 surface.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-AFBC-003","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Attach-policy startup hints and MCP connecting reminders propagate on new and resident sessions.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-AFBC-004","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Git ODB and GitGate serialize repository access and default untracked inclusion safely.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-AFBC-005","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Computer-hub clients, borrowed connections, pools, harnesses, and servers settle explicit close.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-AFBC-006","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"adopt","state":"closed","behavior":"Downloaded updates must pass a bounded grok --version smoke test before replacement or fallback.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-AFBC-007","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"not applicable","state":"closed","behavior":"The upstream Chrome E2E addition is an empty ignored test scaffold with no runtime behavior.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"GB-AFBC-008","source_id":"grok-build-upstream","source_revision":"afbc0fb710320c7add294c2106d447ecc3e3af2e","classification":"not applicable","state":"closed","behavior":"Upstream 1.0 versions, changelogs, and SOURCE_REV remain fork-owned release metadata.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-
-    {"id":"CDX-7A0E-AUTH","source_id":"openai-codex","source_revision":"8e4b10446eed7bafb39d8a469f9be25a41f4864f","classification":"adopt","state":"offline-qualified","behavior":"Managed Codex login methods and workspace allowlists fail closed before credential hydration or network access.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"CDX-964A-PROVENANCE","source_id":"openai-codex","source_revision":"8e4b10446eed7bafb39d8a469f9be25a41f4864f","classification":"adopt","state":"offline-qualified","behavior":"Codex base-instruction provenance is retained in the compatible session audit seam.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"CDX-5A0D-RECONNECT","source_id":"openai-codex","source_revision":"8e4b10446eed7bafb39d8a469f9be25a41f4864f","classification":"adopt","state":"offline-qualified","behavior":"Pre-output Codex connection failures reconnect indefinitely with capped backoff outside the normal retry budget.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"CDX-62B7-TRACE","source_id":"openai-codex","source_revision":"8e4b10446eed7bafb39d8a469f9be25a41f4864f","classification":"already equivalent","state":"offline-qualified","behavior":"Payload trace diagnostics are structurally redacted and bounded.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"CDX-8E4B-SCOPE","source_id":"openai-codex","source_revision":"8e4b10446eed7bafb39d8a469f9be25a41f4864f","classification":"not applicable","state":"closed","behavior":"Plugin-host, replacement app-server, code-mode, and Codex-only sandbox architecture remains outside the direct adapter scope.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"OC-DEF7-RETRY","source_id":"opencode","source_revision":"284214c78d32a09fd9c729bdefc07be50f74eb40","classification":"adopt","state":"offline-qualified","behavior":"OpenCode-compatible transient retry patterns and structured mid-stream errors use the shared typed policy.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"OC-DEF7-USAGE","source_id":"opencode","source_revision":"284214c78d32a09fd9c729bdefc07be50f74eb40","classification":"adopt","state":"offline-qualified","behavior":"ACP usage includes prompt cache writes without double-counting headless token buckets.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"OC-2842-SCOPE","source_id":"opencode","source_revision":"284214c78d32a09fd9c729bdefc07be50f74eb40","classification":"not applicable","state":"closed","behavior":"The remaining OpenCode delta is app architecture outside the interoperability surface.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"KIMI-437A-MCP","source_id":"kimi-code","source_revision":"437a1b8ba1b7e0f6662bdadc669564fdc58c3f5a","classification":"not applicable","state":"closed","behavior":"The latest Kimi change is a global MCP authentication probe and does not change the direct provider wire contract.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"KIMI-CBC1-LEGACY","source_id":"kimi-cli","source_revision":"cbc15c076d17f70fec9f89c90c0502e68657f505","classification":"not applicable","state":"closed","behavior":"Legacy Kimi CLI changes add no normative behavior beyond the first-party Kimi Code adapter reference.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"OMP-0E81-SCOPE","source_id":"oh-my-pi","source_revision":"0e8142ad0e3189b5b51b49fd3434354683ba1b01","classification":"not applicable","state":"closed","behavior":"Wayland portal, token hashline, and handoff application changes remain non-normative harness inspiration.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"CODEXBAR-22B-SCOPE","source_id":"codexbar","source_revision":"22b24b885693e890af52df15c29f7ca024904c74","classification":"not applicable","state":"closed","behavior":"CodexBar remains Z.AI usage research and creates no runtime provider claim.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"MODELS-AC01-SCOPE","source_id":"models-dev","source_revision":"ac01bd90859928691e2e8e65df5cf390ffb1539e","classification":"not applicable","state":"closed","behavior":"Third-party Kimi catalog metadata does not override authenticated first-party discovery.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]},
-    {"id":"EXA-394F-SCOPE","source_id":"exa-mcp-server","source_revision":"394f9210ed16d3e25d328e1e6db285824caedc04","classification":"not applicable","state":"closed","behavior":"The Exa delta is documentation and plugin metadata with no hosted MCP wire change.","closure_evidence":["raw-path:docs/upstream-refresh-2026-08-07-afbc.md"]}
+    {
+      "id": "GB-8A14-LANDING",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Land and validate the sixteen preserved-surface behaviors from the 8a14 snapshot.",
+      "closure_evidence": [],
+      "owner": "Grok parity campaign",
+      "impact": "The validated Enhanced candidate still lacks the prior snapshot's preserved-surface fixes.",
+      "acceptance_criteria": "Commit thematic changes and pass focused session, ACP, headless, hook, MCP, TUI, workspace, binary and strict ownership checks.",
+      "intended_tests": [
+        "8a14 focused behavior suites",
+        "cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The coherent implementation remains uncommitted and unvalidated in a separate isolated worktree.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-WORKTREE",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Preserve sticky standalone-worktree identity when live dashboard probing is incomplete.",
+      "closure_evidence": [],
+      "owner": "TUI/session parity",
+      "impact": "Dashboard branch labeling can lose known worktree identity.",
+      "acceptance_criteria": "Port OR-merge semantics and dashboard regressions.",
+      "intended_tests": [
+        "dashboard standalone-worktree tests"
+      ],
+      "blocker": "Depends on landing the 8a14 worktree/session base.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-PORTABILITY",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Keep hook write-deny and child-network code correct on non-Linux targets.",
+      "closure_evidence": [],
+      "owner": "Sandbox parity",
+      "impact": "Non-Linux builds or diagnostics may diverge.",
+      "acceptance_criteria": "Pass Linux and non-Linux compile/tests without weakening hook identity checks.",
+      "intended_tests": [
+        "sandbox platform cfg tests",
+        "cross-target cargo check"
+      ],
+      "blocker": "Platform cfg changes must be reconciled with Enhanced sandbox policy.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-INPUT",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Make Home and End operate on logical lines across soft-wrapped input.",
+      "closure_evidence": [],
+      "owner": "TUI input parity",
+      "impact": "Soft-wrapped prompt navigation can jump to visual rather than logical boundaries.",
+      "acceptance_criteria": "Port textarea behavior and soft-wrap tests.",
+      "intended_tests": [
+        "xai-ratatui-textarea soft-wrap Home/End test"
+      ],
+      "blocker": "Needs terminal-specific regression coverage.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-TITLES",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt bounded sanitized manual rename/reset, persistence, hydration, export and remote synchronization.",
+      "closure_evidence": [],
+      "owner": "Session/TUI parity",
+      "impact": "Titles can be clobbered, stale, or contain control characters.",
+      "acceptance_criteria": "Preserve scalar/byte bounds, control and bidi stripping, manual-pin metadata, FIFO persistence, reset-to-auto and version-gated remote behavior.",
+      "intended_tests": [
+        "session rename/reset unit and ACP tests",
+        "persistence/export/pull tests",
+        "rename PTY test"
+      ],
+      "blocker": "Crosses ACP, TUI, storage and authenticated remote seams and depends on the 8a14 session base.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-AGENT-BOOT",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Reclaim abandoned persistent-agent boot slots safely.",
+      "closure_evidence": [],
+      "owner": "Agent runtime parity",
+      "impact": "Dropped boot senders can strand waiters.",
+      "acceptance_criteria": "Port generation-guarded boot slots and stale-guard race handling.",
+      "intended_tests": [
+        "agent server boot-slot race tests"
+      ],
+      "blocker": "Requires leader/runtime reconciliation on top of the pending startup changes.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-RUNTIME",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Bound and prewarm blocking threads and contain EAGAIN/runtime-build failures.",
+      "closure_evidence": [],
+      "owner": "Runtime parity",
+      "impact": "Resource pressure can abort startup or detached work.",
+      "acceptance_criteria": "Port capped pools, prewarm/release and child re-exec containment.",
+      "intended_tests": [
+        "xai-tty-utils runtime tests",
+        "spawn runtime containment tests"
+      ],
+      "blocker": "Must preserve Enhanced runtime topology and platform bounds.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-WORKSPACE-RPC",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Classify RPC activity and report or gate by workspace server version without idle races.",
+      "closure_evidence": [],
+      "owner": "Workspace parity",
+      "impact": "Reads can incorrectly prevent idle or old servers can receive unsupported mutations.",
+      "acceptance_criteria": "Port activity classes, version fields, mutation stamping and idle windows.",
+      "intended_tests": [
+        "workspace RPC activity tests",
+        "workspace version-gating tests"
+      ],
+      "blocker": "Protocol changes require backward-compatible version gating.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-SESSION-EVENTS",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Preserve ordered session notifications, task results and status transitions.",
+      "closure_evidence": [],
+      "owner": "ACP/TUI parity",
+      "impact": "Users can see stale or reordered session status.",
+      "acceptance_criteria": "Port session-event, router, status and task-result behavior.",
+      "intended_tests": [
+        "pager session-event tests",
+        "pager status and task-result tests"
+      ],
+      "blocker": "Depends on the pending 8a14 event-loop integration.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-WIRE",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Preserve explicit empty summaries and unfinished-task reminders.",
+      "closure_evidence": [],
+      "owner": "Session protocol parity",
+      "impact": "Empty and omitted wire values can diverge and reminders can disappear.",
+      "acceptance_criteria": "Preserve serde round trips and reminder formatting.",
+      "intended_tests": [
+        "xai-tool-protocol frame tests",
+        "xai-interjection-core reminder tests"
+      ],
+      "blocker": "Wire semantics require backward-compatible serialization.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-INTEGRATION",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Reconcile remaining lock, documentation, test and cross-cutting integration paths.",
+      "closure_evidence": [],
+      "owner": "Grok parity campaign",
+      "impact": "Unmatched integration paths prevent an exhaustive reviewed snapshot.",
+      "acceptance_criteria": "Leave no unmatched raw path and pass formatting, focused suites, binary validation and strict ownership.",
+      "intended_tests": [
+        "cargo fmt",
+        "cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "Multiple behavior owners must land before the lock and shared seams can be accepted.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-B13-REL",
+      "source_id": "grok-build-upstream",
+      "source_revision": "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "SOURCE_REV remains fork-owned release metadata.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-11.md"
+      ]
+    },
+    {
+      "id": "CDX-F2A6-METADATA",
+      "source_id": "openai-codex",
+      "source_revision": "f2a6f2585c327251e6be647e47a3ba3e127ccff3",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Send bounded provider-owned Responses turn metadata, including sandbox mode, without reserved-key override.",
+      "closure_evidence": [],
+      "owner": "Codex adapter",
+      "impact": "Server-side policy context may be incomplete for normal turns.",
+      "acceptance_criteria": "Implement provider-scoped header/body metadata with bounds and reserved-key enforcement.",
+      "intended_tests": [
+        "Codex metadata wire test",
+        "xAI and Kimi negative metadata tests"
+      ],
+      "blocker": "Enhanced has scoped hosted-tool metadata but no equivalent normal-turn envelope.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "CDX-F2A6-SAFETY",
+      "source_id": "openai-codex",
+      "source_revision": "f2a6f2585c327251e6be647e47a3ba3e127ccff3",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Parse safety-buffering signals from the current response.metadata event shape.",
+      "closure_evidence": [],
+      "owner": "Codex adapter",
+      "impact": "Codex safety buffering may be invisible.",
+      "acceptance_criteria": "Add bounded parsing, precedence and malformed-event behavior without cross-provider handling.",
+      "intended_tests": [
+        "Codex SSE safety-buffering tests",
+        "non-Codex negative test"
+      ],
+      "blocker": "The direct sampler does not classify the nested metadata form.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "CDX-F2A6-IMAGE-LIMIT",
+      "source_id": "openai-codex",
+      "source_revision": "f2a6f2585c327251e6be647e47a3ba3e127ccff3",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Surface image-generation quota exhaustion with reset metadata.",
+      "closure_evidence": [],
+      "owner": "Codex hosted image adapter",
+      "impact": "Users receive an untyped failure for exhausted image quota.",
+      "acceptance_criteria": "Map only image_gen usage limits while retaining structural redaction.",
+      "intended_tests": [
+        "Codex image quota/reset test",
+        "other-limit and credential-redaction tests"
+      ],
+      "blocker": "Current hosted-image errors do not project the typed image_gen usage-limit outcome.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "CDX-F2A6-MODEL-HISTORY",
+      "source_id": "openai-codex",
+      "source_revision": "f2a6f2585c327251e6be647e47a3ba3e127ccff3",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Retain model identity needed when history spans model switches and compaction.",
+      "closure_evidence": [],
+      "owner": "Codex compaction",
+      "impact": "Fallback and compaction can lose model provenance.",
+      "acceptance_criteria": "Implement provider/model/credential-bound envelopes or prove equivalence across switch, persist, resume and compact.",
+      "intended_tests": [
+        "Codex model-switch persistence test",
+        "Codex compaction provenance test"
+      ],
+      "blocker": "Local raw history is not yet proven equivalent to upstream response-item envelopes.",
+      "deadline": "2026-08-18",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "OC-0D92-SCOPE",
+      "source_id": "opencode",
+      "source_revision": "0d927ba03f36d7f87e3cdb2b6c1f34c44913a099",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "The range changes DeepSeek, Muse, default-model UI and generated assets, not Codex OAuth or wire behavior.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-11.md"
+      ]
+    },
+    {
+      "id": "KIMI-6195-SCOPE",
+      "source_id": "kimi-code",
+      "source_revision": "619564dcf9ee10a3cfbf7ecbc764c6b9b63fc91b",
+      "classification": "already equivalent",
+      "state": "closed",
+      "behavior": "Per-session profile isolation is already owned locally; remaining V2 agent, TUI and KAP architecture does not change the Kimi provider contract.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-11.md"
+      ]
+    },
+    {
+      "id": "OMP-D3B2-PARITY",
+      "source_id": "oh-my-pi",
+      "source_revision": "d3b22a0db6a4a0e2ef272a880e38286e0c466dc9",
+      "classification": "already equivalent",
+      "state": "closed",
+      "behavior": "Enhanced already applies Responses Lite all_turns for opaque model IDs and catalog-driven automatic reasoning summaries; remaining harness changes are non-normative.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-11.md"
+      ]
+    },
+    {
+      "id": "GLM-2520-SCOPE",
+      "source_id": "glm-5",
+      "source_revision": "25206af860c4ac10f6411c597c574f9b1c00e53c",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "The GLM-5 change updates a documentation link in a research-only source.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-11.md"
+      ]
+    },
+    {
+      "id": "CODEXBAR-E552-SCOPE",
+      "source_id": "codexbar",
+      "source_revision": "e5528d452d4f82cbd7e327246b9044e9c51d64e1",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "CodexBar quota and application changes remain Z.AI usage research and do not authorize an Enhanced runtime provider.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-11.md"
+      ]
+    },
+    {
+      "id": "MODELS-1D0F-SCOPE",
+      "source_id": "models-dev",
+      "source_revision": "1d0f9ba5a49e916ff2dc97b23fbc76820ab258b3",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Third-party catalog additions and corrections do not override authenticated first-party catalogs.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-11.md"
+      ]
+    },
+    {
+      "id": "EXA-E64C-SCOPE",
+      "source_id": "exa-mcp-server",
+      "source_revision": "e64c11f2d3b4400ffbda8ccdd9658a450cc9d270",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "The Exa change adds openWorldHint annotations without changing request, response or credential wire behavior.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-11.md"
+      ]
+    }
   ]
 }
