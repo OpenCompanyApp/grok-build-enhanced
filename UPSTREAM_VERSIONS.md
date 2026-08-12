@@ -8,9 +8,9 @@ blindly copy upstream code.
 
 | Project | Remote and tracked ref | Last reviewed / fork baseline | Latest fetched |
 | --- | --- | --- | --- |
-| OpenAI Codex CLI | `https://github.com/openai/codex.git` `main` | [`8e4b10446eed7bafb39d8a469f9be25a41f4864f`](https://github.com/openai/codex/commit/8e4b10446eed7bafb39d8a469f9be25a41f4864f) | [`d6eefb26a6d3f610372a4ea4b8a59a2e382c731f`](https://github.com/openai/codex/commit/d6eefb26a6d3f610372a4ea4b8a59a2e382c731f) |
-| OpenCode | `https://github.com/anomalyco/opencode.git` `dev` | [`284214c78d32a09fd9c729bdefc07be50f74eb40`](https://github.com/anomalyco/opencode/commit/284214c78d32a09fd9c729bdefc07be50f74eb40) | [`39fb919a054190498f6d5b7985bde231f93ad7a6`](https://github.com/anomalyco/opencode/commit/39fb919a054190498f6d5b7985bde231f93ad7a6) |
-| models.dev | `https://github.com/sst/models.dev.git` `dev` | [`ac01bd90859928691e2e8e65df5cf390ffb1539e`](https://github.com/sst/models.dev/commit/ac01bd90859928691e2e8e65df5cf390ffb1539e) | [`40058d7627db5900ffe15c2a2533d55dff52b667`](https://github.com/sst/models.dev/commit/40058d7627db5900ffe15c2a2533d55dff52b667) |
+| OpenAI Codex CLI | `https://github.com/openai/codex.git` `main` | [`8e4b10446eed7bafb39d8a469f9be25a41f4864f`](https://github.com/openai/codex/commit/8e4b10446eed7bafb39d8a469f9be25a41f4864f) | [`3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70`](https://github.com/openai/codex/commit/3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70) |
+| OpenCode | `https://github.com/anomalyco/opencode.git` `dev` | [`284214c78d32a09fd9c729bdefc07be50f74eb40`](https://github.com/anomalyco/opencode/commit/284214c78d32a09fd9c729bdefc07be50f74eb40) | [`dab2637217f188afca5e6631f67b935723e6218a`](https://github.com/anomalyco/opencode/commit/dab2637217f188afca5e6631f67b935723e6218a) |
+| models.dev | `https://github.com/sst/models.dev.git` `dev` | [`ac01bd90859928691e2e8e65df5cf390ffb1539e`](https://github.com/sst/models.dev/commit/ac01bd90859928691e2e8e65df5cf390ffb1539e) | [`0370588c96e4eaeba4dfd5a4b387c0531302c4cc`](https://github.com/sst/models.dev/commit/0370588c96e4eaeba4dfd5a4b387c0531302c4cc) |
 | Exa MCP server | `https://github.com/exa-labs/exa-mcp-server.git` `main` | [`394f9210ed16d3e25d328e1e6db285824caedc04`](https://github.com/exa-labs/exa-mcp-server/commit/394f9210ed16d3e25d328e1e6db285824caedc04) | [`e64c11f2d3b4400ffbda8ccdd9658a450cc9d270`](https://github.com/exa-labs/exa-mcp-server/commit/e64c11f2d3b4400ffbda8ccdd9658a450cc9d270) |
 | Grok Build upstream | `https://github.com/xai-org/grok-build.git` `main` | Reviewed [`afbc0fb710320c7add294c2106d447ecc3e3af2e`](https://github.com/xai-org/grok-build/commit/afbc0fb710320c7add294c2106d447ecc3e3af2e) | [`be713136d2a69080743a3f6b3c72077057e5948f`](https://github.com/xai-org/grok-build/commit/be713136d2a69080743a3f6b3c72077057e5948f) |
 | OpenCode Codex auth reference | `https://github.com/numman-ali/opencode-openai-codex-auth.git` `main` | [`bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016`](https://github.com/numman-ali/opencode-openai-codex-auth/commit/bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016) | same |
@@ -21,10 +21,10 @@ blindly copy upstream code.
 | Z.AI Python SDK | `https://github.com/zai-org/z-ai-sdk-python.git` `main` | [`ca5109c0aa9bf173839be391b4b14aeadf9a9bf9`](https://github.com/zai-org/z-ai-sdk-python/commit/ca5109c0aa9bf173839be391b4b14aeadf9a9bf9) | same |
 | Z.AI coding plugins | `https://github.com/zai-org/zai-coding-plugins.git` `main` | [`0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254`](https://github.com/zai-org/zai-coding-plugins/commit/0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254) | same |
 | GLM-5 model reference | `https://github.com/zai-org/GLM-5.git` `main` | [`436efa09bc868a6922e307624189e7018406beb9`](https://github.com/zai-org/GLM-5/commit/436efa09bc868a6922e307624189e7018406beb9) | [`25206af860c4ac10f6411c597c574f9b1c00e53c`](https://github.com/zai-org/GLM-5/commit/25206af860c4ac10f6411c597c574f9b1c00e53c) |
-| CodexBar Z.AI usage reference | `https://github.com/steipete/CodexBar.git` `main` | [`22b24b885693e890af52df15c29f7ca024904c74`](https://github.com/steipete/CodexBar/commit/22b24b885693e890af52df15c29f7ca024904c74) | [`fc57a317cee4a8f84962c62c45e4502085f6fc79`](https://github.com/steipete/CodexBar/commit/fc57a317cee4a8f84962c62c45e4502085f6fc79) |
+| CodexBar Z.AI usage reference | `https://github.com/steipete/CodexBar.git` `main` | [`22b24b885693e890af52df15c29f7ca024904c74`](https://github.com/steipete/CodexBar/commit/22b24b885693e890af52df15c29f7ca024904c74) | [`ee29794b9a1b6020ba97e3fd2303f3c9902a616c`](https://github.com/steipete/CodexBar/commit/ee29794b9a1b6020ba97e3fd2303f3c9902a616c) |
 | Z.AI usage browser reference | `https://github.com/nniicckk6/zai-extention.git` `main` | [`54cd1f33a703c417f2492ee1f21f22b3633a43c4`](https://github.com/nniicckk6/zai-extention/commit/54cd1f33a703c417f2492ee1f21f22b3633a43c4) | same |
 
-The 2026-08-11 fetch of the tracked Z.AI Python SDK URL returned `Repository
+The 2026-08-12 fetch of the tracked Z.AI Python SDK URL returned `Repository
 not found`. Its immutable recorded pin was not changed, and no replacement
 repository identity was inferred.
 

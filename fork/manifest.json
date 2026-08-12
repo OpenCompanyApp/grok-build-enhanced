@@ -163,7 +163,7 @@
         "commit": "8e4b10446eed7bafb39d8a469f9be25a41f4864f"
       },
       "latest_fetched": {
-        "commit": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f"
+        "commit": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70"
       }
     },
     {
@@ -175,7 +175,7 @@
         "commit": "284214c78d32a09fd9c729bdefc07be50f74eb40"
       },
       "latest_fetched": {
-        "commit": "39fb919a054190498f6d5b7985bde231f93ad7a6"
+        "commit": "dab2637217f188afca5e6631f67b935723e6218a"
       }
     },
     {
@@ -295,7 +295,7 @@
         "commit": "22b24b885693e890af52df15c29f7ca024904c74"
       },
       "latest_fetched": {
-        "commit": "fc57a317cee4a8f84962c62c45e4502085f6fc79"
+        "commit": "ee29794b9a1b6020ba97e3fd2303f3c9902a616c"
       }
     },
     {
@@ -319,7 +319,7 @@
         "commit": "ac01bd90859928691e2e8e65df5cf390ffb1539e"
       },
       "latest_fetched": {
-        "commit": "40058d7627db5900ffe15c2a2533d55dff52b667"
+        "commit": "0370588c96e4eaeba4dfd5a4b387c0531302c4cc"
       }
     },
     {
@@ -4716,6 +4716,31 @@
       "integration_paths": [
         "UPSTREAM_VERSIONS.md",
         "docs/upstream-refresh-2026-08-12.md",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "august12-refresh-rerun-audit",
+      "description": "Refreezes all tracked August 12 heads, audits the incremental Codex, OpenCode, CodexBar, and models.dev changes, preserves every open adoption obligation, and records why no Reviewed pin, acknowledgement, or publication is eligible.",
+      "source_ids": [
+        "openai-codex",
+        "opencode",
+        "codexbar",
+        "models-dev"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-08-12-rerun.md",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-08-12-rerun.md",
         "fork/manifest.json",
         "fork/parity/current.json"
       ],

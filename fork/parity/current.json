@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "campaign": "2026-08-12-release-and-refresh-audit",
+  "campaign": "2026-08-12-refresh-rerun",
   "inventory": {
-    "count": 49,
-    "sha256": "4ac967ac31c9e17f0be3ef1b0ebfdb5fddab5ce4da92e8ce262f833ff117c67f"
+    "count": 53,
+    "sha256": "c96ad4de8936c8cd914e50b6f775e6729ad862d61df84ea4eef41b2313c5dadf"
   },
   "target_sources": {
     "grok-build-upstream": "be713136d2a69080743a3f6b3c72077057e5948f",
-    "openai-codex": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f",
-    "opencode": "39fb919a054190498f6d5b7985bde231f93ad7a6",
+    "openai-codex": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+    "opencode": "dab2637217f188afca5e6631f67b935723e6218a",
     "opencode-codex-auth": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
     "oh-my-pi": "06aecdd51f07e689e970ceaa180abe2be0c14bbb",
     "warp-themes": "82e51dcf9b47912d551107748ba3297a21b2eff3",
@@ -17,9 +17,9 @@
     "zai-sdk-python": "ca5109c0aa9bf173839be391b4b14aeadf9a9bf9",
     "zai-coding-plugins": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254",
     "glm-5": "25206af860c4ac10f6411c597c574f9b1c00e53c",
-    "codexbar": "fc57a317cee4a8f84962c62c45e4502085f6fc79",
+    "codexbar": "ee29794b9a1b6020ba97e3fd2303f3c9902a616c",
     "zai-usage-helper": "54cd1f33a703c417f2492ee1f21f22b3633a43c4",
-    "models-dev": "40058d7627db5900ffe15c2a2533d55dff52b667",
+    "models-dev": "0370588c96e4eaeba4dfd5a4b387c0531302c4cc",
     "exa-mcp-server": "e64c11f2d3b4400ffbda8ccdd9658a450cc9d270"
   },
   "obligations": [
@@ -246,7 +246,7 @@
     {
       "id": "CDX-F2A6-METADATA",
       "source_id": "openai-codex",
-      "source_revision": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f",
+      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Send bounded provider-owned Responses turn metadata, including sandbox mode, without reserved-key override.",
@@ -265,7 +265,7 @@
     {
       "id": "CDX-F2A6-SAFETY",
       "source_id": "openai-codex",
-      "source_revision": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f",
+      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Parse safety-buffering signals from the current response.metadata event shape.",
@@ -284,7 +284,7 @@
     {
       "id": "CDX-F2A6-IMAGE-LIMIT",
       "source_id": "openai-codex",
-      "source_revision": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f",
+      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Surface image-generation quota exhaustion with reset metadata.",
@@ -303,7 +303,7 @@
     {
       "id": "CDX-F2A6-MODEL-HISTORY",
       "source_id": "openai-codex",
-      "source_revision": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f",
+      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Retain model identity needed when history spans model switches and compaction.",
@@ -322,7 +322,7 @@
     {
       "id": "OC-0D92-SCOPE",
       "source_id": "opencode",
-      "source_revision": "39fb919a054190498f6d5b7985bde231f93ad7a6",
+      "source_revision": "dab2637217f188afca5e6631f67b935723e6218a",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The range changes DeepSeek, Muse, default-model UI and generated assets, not Codex OAuth or wire behavior.",
@@ -366,7 +366,7 @@
     {
       "id": "CODEXBAR-E552-SCOPE",
       "source_id": "codexbar",
-      "source_revision": "fc57a317cee4a8f84962c62c45e4502085f6fc79",
+      "source_revision": "ee29794b9a1b6020ba97e3fd2303f3c9902a616c",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "CodexBar quota and application changes remain Z.AI usage research and do not authorize an Enhanced runtime provider.",
@@ -377,7 +377,7 @@
     {
       "id": "MODELS-1D0F-SCOPE",
       "source_id": "models-dev",
-      "source_revision": "40058d7627db5900ffe15c2a2533d55dff52b667",
+      "source_revision": "0370588c96e4eaeba4dfd5a4b387c0531302c4cc",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Third-party catalog additions and corrections do not override authenticated first-party catalogs.",
@@ -702,7 +702,7 @@
     {
       "id": "CDX-D6EE-ROOT-TURN",
       "source_id": "openai-codex",
-      "source_revision": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f",
+      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Carry a reserved, provider-owned root_turn_id across delegated Codex requests while failing closed for ambiguous roots.",
@@ -721,7 +721,7 @@
     {
       "id": "CDX-D6EE-HARNESS-HISTORY",
       "source_id": "openai-codex",
-      "source_revision": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f",
+      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Preserve Codex harness metadata through history normalization, compaction, fork, resume, and export.",
@@ -740,7 +740,7 @@
     {
       "id": "CDX-D6EE-STORE",
       "source_id": "openai-codex",
-      "source_revision": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f",
+      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "All Codex Responses requests already send store=false, matching the new upstream invariant.",
@@ -751,7 +751,7 @@
     {
       "id": "CDX-D6EE-WORKLOAD",
       "source_id": "openai-codex",
-      "source_revision": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f",
+      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Workload-identity federation and external authentication are distinct enterprise routes and do not alter the direct ChatGPT subscription adapter.",
@@ -762,7 +762,7 @@
     {
       "id": "CDX-D6EE-SCOPE",
       "source_id": "openai-codex",
-      "source_revision": "d6eefb26a6d3f610372a4ea4b8a59a2e382c731f",
+      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "App-server, gRPC code mode, Guardian, plugin analytics, Windows sandbox, MCP OAuth registration, and TUI architecture do not alter the scoped direct provider contract.",
@@ -773,7 +773,7 @@
     {
       "id": "OC-39FB-SCOPE",
       "source_id": "opencode",
-      "source_revision": "39fb919a054190498f6d5b7985bde231f93ad7a6",
+      "source_revision": "dab2637217f188afca5e6631f67b935723e6218a",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The range changes console usage, retry jitter, Copilot PDF support, generated catalogs, and non-Codex providers; it does not change Codex OAuth or Responses wire behavior.",
@@ -806,7 +806,7 @@
     {
       "id": "CODEXBAR-FC57-SCOPE",
       "source_id": "codexbar",
-      "source_revision": "fc57a317cee4a8f84962c62c45e4502085f6fc79",
+      "source_revision": "ee29794b9a1b6020ba97e3fd2303f3c9902a616c",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Codex fork-cost caching, Azure budgets, UI layout, and release changes do not change the Z.AI research boundary.",
@@ -817,12 +817,56 @@
     {
       "id": "MODELS-4005-SCOPE",
       "source_id": "models-dev",
-      "source_revision": "40058d7627db5900ffe15c2a2533d55dff52b667",
+      "source_revision": "0370588c96e4eaeba4dfd5a4b387c0531302c4cc",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Third-party model and pricing catalog changes, including Grok 4.6 and Kimi metadata, do not override authenticated first-party provider catalogs.",
       "closure_evidence": [
         "raw-path:docs/upstream-refresh-2026-08-12.md"
+      ]
+    },
+    {
+      "id": "CDX-3D7B-SCOPE",
+      "source_id": "openai-codex",
+      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Node REPL policy metadata and active-cell layout caching belong to Codex Node REPL, app-server, and TUI surfaces; Enhanced advertises no Node REPL and preserves the Grok TUI.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-12-rerun.md"
+      ]
+    },
+    {
+      "id": "OC-DAB2-COMPACTION",
+      "source_id": "opencode",
+      "source_revision": "dab2637217f188afca5e6631f67b935723e6218a",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "OpenCode compaction prompting, message partitioning, and tail-retention defaults are replacement-harness behavior and do not alter Codex OAuth or provider wire interoperability.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-12-rerun.md"
+      ]
+    },
+    {
+      "id": "CODEXBAR-EE29-RELEASE",
+      "source_id": "codexbar",
+      "source_revision": "ee29794b9a1b6020ba97e3fd2303f3c9902a616c",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Opening the CodexBar 0.49.4 development version changes no Z.AI usage protocol or Enhanced runtime scope.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-12-rerun.md"
+      ]
+    },
+    {
+      "id": "MODELS-0370-CATALOG",
+      "source_id": "models-dev",
+      "source_revision": "0370588c96e4eaeba4dfd5a4b387c0531302c4cc",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "The added OpenRouter Liquid model entry is a third-party catalog record and does not override Enhanced's authenticated first-party provider catalogs.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-12-rerun.md"
       ]
     }
   ]
