@@ -163,7 +163,7 @@
         "commit": "8e4b10446eed7bafb39d8a469f9be25a41f4864f"
       },
       "latest_fetched": {
-        "commit": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70"
+        "commit": "6bed213411d1250686cc162feb4324975c12158a"
       }
     },
     {
@@ -175,7 +175,7 @@
         "commit": "284214c78d32a09fd9c729bdefc07be50f74eb40"
       },
       "latest_fetched": {
-        "commit": "dab2637217f188afca5e6631f67b935723e6218a"
+        "commit": "4643e65ad6334de3e4e68dedc201d5fbb828c9fe"
       }
     },
     {
@@ -187,7 +187,7 @@
         "commit": "afbc0fb710320c7add294c2106d447ecc3e3af2e"
       },
       "latest_fetched": {
-        "commit": "be713136d2a69080743a3f6b3c72077057e5948f"
+        "commit": "eb267feff13129e568df38fb6fdf0ceb65f735d6"
       }
     },
     {
@@ -211,7 +211,7 @@
         "commit": "0e8142ad0e3189b5b51b49fd3434354683ba1b01"
       },
       "latest_fetched": {
-        "commit": "06aecdd51f07e689e970ceaa180abe2be0c14bbb"
+        "commit": "ffd53ff92a6f575d499730475a73460dd7cc2eea"
       }
     },
     {
@@ -235,7 +235,7 @@
         "commit": "437a1b8ba1b7e0f6662bdadc669564fdc58c3f5a"
       },
       "latest_fetched": {
-        "commit": "719da946480261dc5b4228f522f24973d3b5bd68"
+        "commit": "d96cd037702637305422222e985139e51ff83c8c"
       }
     },
     {
@@ -295,7 +295,7 @@
         "commit": "22b24b885693e890af52df15c29f7ca024904c74"
       },
       "latest_fetched": {
-        "commit": "ee29794b9a1b6020ba97e3fd2303f3c9902a616c"
+        "commit": "24be9995fb8b182ead850f1afba3c2806085bb52"
       }
     },
     {
@@ -319,7 +319,7 @@
         "commit": "ac01bd90859928691e2e8e65df5cf390ffb1539e"
       },
       "latest_fetched": {
-        "commit": "0370588c96e4eaeba4dfd5a4b387c0531302c4cc"
+        "commit": "a25d0e1f35368f685476e30fef5101d00801fc53"
       }
     },
     {
@@ -716,7 +716,7 @@
     },
     {
       "id": "codex-catalog-compatibility-persistence",
-      "description": "Opaque authenticated Codex catalog compatibility hashes, catalog-owned reasoning summaries, provider-isolated resume compaction, and pinned GPT-5.6 context metadata.",
+      "description": "Opaque authenticated Codex catalog compatibility hashes, catalog-owned reasoning summaries, provider-isolated resume compaction, pinned GPT-5.6 context metadata, and provider-scoped parallel tool-call capability.",
       "source_ids": [
         "grok-build-upstream",
         "openai-codex"
@@ -4741,6 +4741,44 @@
       "integration_paths": [
         "UPSTREAM_VERSIONS.md",
         "docs/upstream-refresh-2026-08-12-rerun.md",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "august14-refresh-audit",
+      "description": "Pins and exhaustively classifies the August 14 tracked heads, adopts provider-scoped Codex parallel tool calls, carries every prior obligation, and records why Reviewed revisions, Grok acknowledgement, and publication remain ineligible.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode",
+        "opencode-codex-auth",
+        "oh-my-pi",
+        "warp-themes",
+        "kimi-code",
+        "kimi-cli",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper",
+        "models-dev",
+        "exa-mcp-server"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-08-14.md",
+        "docs/upstream-refresh-2026-08-14-paths.json",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-08-14.md",
+        "docs/upstream-refresh-2026-08-14-paths.json",
         "fork/manifest.json",
         "fork/parity/current.json"
       ],

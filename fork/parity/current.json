@@ -1,32 +1,32 @@
 {
   "schema_version": 1,
-  "campaign": "2026-08-12-refresh-rerun",
+  "campaign": "2026-08-14-refresh",
   "inventory": {
-    "count": 53,
-    "sha256": "c96ad4de8936c8cd914e50b6f775e6729ad862d61df84ea4eef41b2313c5dadf"
+    "count": 78,
+    "sha256": "59a952547eed1d70774da0fcc0e5dee7e3da4af83e2f94425841321bc4749aee"
   },
   "target_sources": {
-    "grok-build-upstream": "be713136d2a69080743a3f6b3c72077057e5948f",
-    "openai-codex": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
-    "opencode": "dab2637217f188afca5e6631f67b935723e6218a",
+    "grok-build-upstream": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+    "openai-codex": "6bed213411d1250686cc162feb4324975c12158a",
+    "opencode": "4643e65ad6334de3e4e68dedc201d5fbb828c9fe",
     "opencode-codex-auth": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
-    "oh-my-pi": "06aecdd51f07e689e970ceaa180abe2be0c14bbb",
+    "oh-my-pi": "ffd53ff92a6f575d499730475a73460dd7cc2eea",
     "warp-themes": "82e51dcf9b47912d551107748ba3297a21b2eff3",
-    "kimi-code": "719da946480261dc5b4228f522f24973d3b5bd68",
+    "kimi-code": "d96cd037702637305422222e985139e51ff83c8c",
     "kimi-cli": "cbc15c076d17f70fec9f89c90c0502e68657f505",
     "zai-sdk-python": "ca5109c0aa9bf173839be391b4b14aeadf9a9bf9",
     "zai-coding-plugins": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254",
     "glm-5": "25206af860c4ac10f6411c597c574f9b1c00e53c",
-    "codexbar": "ee29794b9a1b6020ba97e3fd2303f3c9902a616c",
+    "codexbar": "24be9995fb8b182ead850f1afba3c2806085bb52",
     "zai-usage-helper": "54cd1f33a703c417f2492ee1f21f22b3633a43c4",
-    "models-dev": "0370588c96e4eaeba4dfd5a4b387c0531302c4cc",
+    "models-dev": "a25d0e1f35368f685476e30fef5101d00801fc53",
     "exa-mcp-server": "e64c11f2d3b4400ffbda8ccdd9658a450cc9d270"
   },
   "obligations": [
     {
       "id": "GB-8A14-LANDING",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Land and validate the sixteen preserved-surface behaviors from the 8a14 snapshot.",
@@ -46,7 +46,7 @@
     {
       "id": "GB-B13-WORKTREE",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Preserve sticky standalone-worktree identity when live dashboard probing is incomplete.",
@@ -64,7 +64,7 @@
     {
       "id": "GB-B13-PORTABILITY",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Keep hook write-deny and child-network code correct on non-Linux targets.",
@@ -83,7 +83,7 @@
     {
       "id": "GB-B13-INPUT",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Make Home and End operate on logical lines across soft-wrapped input.",
@@ -101,7 +101,7 @@
     {
       "id": "GB-B13-TITLES",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Adopt bounded sanitized manual rename/reset, persistence, hydration, export and remote synchronization.",
@@ -121,7 +121,7 @@
     {
       "id": "GB-B13-AGENT-BOOT",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Reclaim abandoned persistent-agent boot slots safely.",
@@ -139,7 +139,7 @@
     {
       "id": "GB-B13-RUNTIME",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Bound and prewarm blocking threads and contain EAGAIN/runtime-build failures.",
@@ -158,7 +158,7 @@
     {
       "id": "GB-B13-WORKSPACE-RPC",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Classify RPC activity and report or gate by workspace server version without idle races.",
@@ -177,7 +177,7 @@
     {
       "id": "GB-B13-SESSION-EVENTS",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Preserve ordered session notifications, task results and status transitions.",
@@ -196,7 +196,7 @@
     {
       "id": "GB-B13-WIRE",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Preserve explicit empty summaries and unfinished-task reminders.",
@@ -215,7 +215,7 @@
     {
       "id": "GB-B13-INTEGRATION",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Reconcile remaining lock, documentation, test and cross-cutting integration paths.",
@@ -235,7 +235,7 @@
     {
       "id": "GB-B13-REL",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "SOURCE_REV remains fork-owned release metadata.",
@@ -246,7 +246,7 @@
     {
       "id": "CDX-F2A6-METADATA",
       "source_id": "openai-codex",
-      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Send bounded provider-owned Responses turn metadata, including sandbox mode, without reserved-key override.",
@@ -265,7 +265,7 @@
     {
       "id": "CDX-F2A6-SAFETY",
       "source_id": "openai-codex",
-      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Parse safety-buffering signals from the current response.metadata event shape.",
@@ -284,7 +284,7 @@
     {
       "id": "CDX-F2A6-IMAGE-LIMIT",
       "source_id": "openai-codex",
-      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Surface image-generation quota exhaustion with reset metadata.",
@@ -303,7 +303,7 @@
     {
       "id": "CDX-F2A6-MODEL-HISTORY",
       "source_id": "openai-codex",
-      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Retain model identity needed when history spans model switches and compaction.",
@@ -322,7 +322,7 @@
     {
       "id": "OC-0D92-SCOPE",
       "source_id": "opencode",
-      "source_revision": "dab2637217f188afca5e6631f67b935723e6218a",
+      "source_revision": "4643e65ad6334de3e4e68dedc201d5fbb828c9fe",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The range changes DeepSeek, Muse, default-model UI and generated assets, not Codex OAuth or wire behavior.",
@@ -333,7 +333,7 @@
     {
       "id": "KIMI-6195-SCOPE",
       "source_id": "kimi-code",
-      "source_revision": "719da946480261dc5b4228f522f24973d3b5bd68",
+      "source_revision": "d96cd037702637305422222e985139e51ff83c8c",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Per-session profile isolation is already owned locally; remaining V2 agent, TUI and KAP architecture does not change the Kimi provider contract.",
@@ -344,7 +344,7 @@
     {
       "id": "OMP-D3B2-PARITY",
       "source_id": "oh-my-pi",
-      "source_revision": "06aecdd51f07e689e970ceaa180abe2be0c14bbb",
+      "source_revision": "ffd53ff92a6f575d499730475a73460dd7cc2eea",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Enhanced already applies Responses Lite all_turns for opaque model IDs and catalog-driven automatic reasoning summaries; remaining harness changes are non-normative.",
@@ -366,7 +366,7 @@
     {
       "id": "CODEXBAR-E552-SCOPE",
       "source_id": "codexbar",
-      "source_revision": "ee29794b9a1b6020ba97e3fd2303f3c9902a616c",
+      "source_revision": "24be9995fb8b182ead850f1afba3c2806085bb52",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "CodexBar quota and application changes remain Z.AI usage research and do not authorize an Enhanced runtime provider.",
@@ -377,7 +377,7 @@
     {
       "id": "MODELS-1D0F-SCOPE",
       "source_id": "models-dev",
-      "source_revision": "0370588c96e4eaeba4dfd5a4b387c0531302c4cc",
+      "source_revision": "a25d0e1f35368f685476e30fef5101d00801fc53",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Third-party catalog additions and corrections do not override authenticated first-party catalogs.",
@@ -399,7 +399,7 @@
     {
       "id": "GB-BE71-REWIND-MCP",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Adopt the 1.0.1 breaking contracts: /rewind truncates conversation only with confirmation by default, and managed MCP servers are exposed only through the gateway catalog.",
@@ -418,7 +418,7 @@
     {
       "id": "GB-BE71-SUBAGENT-TOOLS",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Bound wide subagent fan-out and expose trustworthy read-only tool metadata to restricted agents.",
@@ -437,7 +437,7 @@
     {
       "id": "GB-BE71-DU-GIT",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Provide grok du and keep worktree, status, diff, plugin-git, and large-history operations bounded in CPU and memory.",
@@ -456,7 +456,7 @@
     {
       "id": "GB-BE71-SANDBOX-SKILLS",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Normalize literal sandbox grants ending in /* or /**, reject ambiguous wildcard grants, ignore broad notebook imports, and support caller-limited bundled skill advertisement.",
@@ -476,7 +476,7 @@
     {
       "id": "GB-BE71-MODALS-TRACE",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Expose usage, session-info, and context in the tabbed modal and include memory traces in grok trace exports.",
@@ -495,7 +495,7 @@
     {
       "id": "GB-BE71-VIDEO",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Support reference video voices, one-image input, 1-15 second durations, 4:3 and 3:4 ratios, and clear ZDR storage diagnostics.",
@@ -514,7 +514,7 @@
     {
       "id": "GB-BE71-UPDATER",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Preserve non-blocking update checks, channel-correct reinstall guidance, and native Apple Silicon selection through fork-owned release routes.",
@@ -534,7 +534,7 @@
     {
       "id": "GB-BE71-SLASH-SUGGEST",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Show qualified skills alongside same-named built-in commands without transient plugin suggestion flashes.",
@@ -553,7 +553,7 @@
     {
       "id": "GB-BE71-GOAL-RUNTIME",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Prevent goal evaluation timeout failures and terminate timed-out tools even when children are stuck or retain pipes.",
@@ -572,7 +572,7 @@
     {
       "id": "GB-BE71-SESSION-UX",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Preserve recap language, skill-path diagnostics, bounded envrc startup, platform-skill refresh, subagent-aware deletion, and complete bounded large-session replay.",
@@ -592,7 +592,7 @@
     {
       "id": "GB-BE71-NOTIFICATIONS",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Fire permission and plan notification hooks only when a real user-attention wait begins.",
@@ -611,7 +611,7 @@
     {
       "id": "GB-BE71-STEERING",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Preserve goal-mode Send Now, mid-turn steering provenance, and Esc keep-running semantics on the cancel panel.",
@@ -631,7 +631,7 @@
     {
       "id": "GB-BE71-SELECTION",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Finish scrollback drag selection after releases outside VS Code-family terminals and avoid history-search thread leaks.",
@@ -651,7 +651,7 @@
     {
       "id": "GB-BE71-STARTUP-STATUS",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Keep startup and update config reads bounded, render actionable startup failures, and preserve workspace presence/status/activity reporting.",
@@ -671,7 +671,7 @@
     {
       "id": "GB-BE71-SAMPLER-ERRORS",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Adopt structured xAI sampling errors, retry guidance, and cancellation-safe request task behavior without changing Codex or Kimi provider policy.",
@@ -691,7 +691,7 @@
     {
       "id": "GB-BE71-RELEASE",
       "source_id": "grok-build-upstream",
-      "source_revision": "be713136d2a69080743a3f6b3c72077057e5948f",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "SOURCE_REV, upstream 1.0.1 packaging, official installers, and official channel ownership remain inapplicable; Enhanced retains fork-owned version and release routes.",
@@ -702,7 +702,7 @@
     {
       "id": "CDX-D6EE-ROOT-TURN",
       "source_id": "openai-codex",
-      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Carry a reserved, provider-owned root_turn_id across delegated Codex requests while failing closed for ambiguous roots.",
@@ -721,7 +721,7 @@
     {
       "id": "CDX-D6EE-HARNESS-HISTORY",
       "source_id": "openai-codex",
-      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
       "classification": "temporarily deferred",
       "state": "open",
       "behavior": "Preserve Codex harness metadata through history normalization, compaction, fork, resume, and export.",
@@ -740,7 +740,7 @@
     {
       "id": "CDX-D6EE-STORE",
       "source_id": "openai-codex",
-      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "All Codex Responses requests already send store=false, matching the new upstream invariant.",
@@ -751,7 +751,7 @@
     {
       "id": "CDX-D6EE-WORKLOAD",
       "source_id": "openai-codex",
-      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Workload-identity federation and external authentication are distinct enterprise routes and do not alter the direct ChatGPT subscription adapter.",
@@ -762,7 +762,7 @@
     {
       "id": "CDX-D6EE-SCOPE",
       "source_id": "openai-codex",
-      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "App-server, gRPC code mode, Guardian, plugin analytics, Windows sandbox, MCP OAuth registration, and TUI architecture do not alter the scoped direct provider contract.",
@@ -773,7 +773,7 @@
     {
       "id": "OC-39FB-SCOPE",
       "source_id": "opencode",
-      "source_revision": "dab2637217f188afca5e6631f67b935723e6218a",
+      "source_revision": "4643e65ad6334de3e4e68dedc201d5fbb828c9fe",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The range changes console usage, retry jitter, Copilot PDF support, generated catalogs, and non-Codex providers; it does not change Codex OAuth or Responses wire behavior.",
@@ -784,7 +784,7 @@
     {
       "id": "KIMI-719D-RETRY",
       "source_id": "kimi-code",
-      "source_revision": "719da946480261dc5b4228f522f24973d3b5bd68",
+      "source_revision": "d96cd037702637305422222e985139e51ff83c8c",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Kimi's SDK-internal retry is disabled in favor of cancellable engine-owned retry; Enhanced is already equivalent because reqwest performs no hidden SDK retry and the sampler actor owns bounded retry.",
@@ -795,7 +795,7 @@
     {
       "id": "OMP-06AE-SCOPE",
       "source_id": "oh-my-pi",
-      "source_revision": "06aecdd51f07e689e970ceaa180abe2be0c14bbb",
+      "source_revision": "ffd53ff92a6f575d499730475a73460dd7cc2eea",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "External scratchpad reasoning-off controls, generic Responses chaining, tar handling, and replacement-harness changes are non-normative for Enhanced; no direct Codex subscription contract changed.",
@@ -806,7 +806,7 @@
     {
       "id": "CODEXBAR-FC57-SCOPE",
       "source_id": "codexbar",
-      "source_revision": "ee29794b9a1b6020ba97e3fd2303f3c9902a616c",
+      "source_revision": "24be9995fb8b182ead850f1afba3c2806085bb52",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Codex fork-cost caching, Azure budgets, UI layout, and release changes do not change the Z.AI research boundary.",
@@ -817,7 +817,7 @@
     {
       "id": "MODELS-4005-SCOPE",
       "source_id": "models-dev",
-      "source_revision": "0370588c96e4eaeba4dfd5a4b387c0531302c4cc",
+      "source_revision": "a25d0e1f35368f685476e30fef5101d00801fc53",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Third-party model and pricing catalog changes, including Grok 4.6 and Kimi metadata, do not override authenticated first-party provider catalogs.",
@@ -828,7 +828,7 @@
     {
       "id": "CDX-3D7B-SCOPE",
       "source_id": "openai-codex",
-      "source_revision": "3d7bb2dd2e834b4d26cf29a7c0163dd4fb5afb70",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Node REPL policy metadata and active-cell layout caching belong to Codex Node REPL, app-server, and TUI surfaces; Enhanced advertises no Node REPL and preserves the Grok TUI.",
@@ -839,7 +839,7 @@
     {
       "id": "OC-DAB2-COMPACTION",
       "source_id": "opencode",
-      "source_revision": "dab2637217f188afca5e6631f67b935723e6218a",
+      "source_revision": "4643e65ad6334de3e4e68dedc201d5fbb828c9fe",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "OpenCode compaction prompting, message partitioning, and tail-retention defaults are replacement-harness behavior and do not alter Codex OAuth or provider wire interoperability.",
@@ -850,7 +850,7 @@
     {
       "id": "CODEXBAR-EE29-RELEASE",
       "source_id": "codexbar",
-      "source_revision": "ee29794b9a1b6020ba97e3fd2303f3c9902a616c",
+      "source_revision": "24be9995fb8b182ead850f1afba3c2806085bb52",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Opening the CodexBar 0.49.4 development version changes no Z.AI usage protocol or Enhanced runtime scope.",
@@ -861,12 +861,409 @@
     {
       "id": "MODELS-0370-CATALOG",
       "source_id": "models-dev",
-      "source_revision": "0370588c96e4eaeba4dfd5a4b387c0531302c4cc",
+      "source_revision": "a25d0e1f35368f685476e30fef5101d00801fc53",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The added OpenRouter Liquid model entry is a third-party catalog record and does not override Enhanced's authenticated first-party provider catalogs.",
       "closure_evidence": [
         "raw-path:docs/upstream-refresh-2026-08-12-rerun.md"
+      ]
+    },
+    {
+      "id": "GB-EB26-SESSION-IMAGE",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt cwd-relative markdown links; session image capability capture/persistence; invalid-image healing; shared request/compaction byte budgets; and conversation-scoped image metadata.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "Resumed or compacted sessions can retain stale image state, exceed current image budgets, or resolve existing relative links differently from upstream.",
+      "acceptance_criteria": "Implement the session-state and persistence changes without changing the Enhanced session format or allowing provider metadata to cross provider identities.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-AGENT-QUEUE",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt stale-child terminalization, cancellation-safe subagent stop and reaping, UI-kill wakeups, queue/interjection semantics, late lifecycle events, wait activity, the 32-turn doom-loop default, and communication guidance.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "Subagents and queued follow-ups can remain live, be delayed, or present inconsistent lifecycle/activity state.",
+      "acceptance_criteria": "Preserve tool names and the agent loop while matching cancellation, queue, lifecycle, wakeup, activity, and turn-limit behavior in unit, ACP, and PTY coverage.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-HOOKS",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt first-stderr hook diagnostics, PreToolUse updatedInput propagation, and hook-requested turn stops.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "Hook authors do not receive the newest input mutation and cannot reliably stop a turn with upstream diagnostics.",
+      "acceptance_criteria": "Carry hook mutations and stop decisions through the existing permission/tool pipeline, redact credential-bearing values, and test command plus HTTP hooks.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-PERMISSIONS-AUTH",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt auth-straddle token-consumption hardening and failure poisoning, explicit narrow auto-permission grants, and Auto-mode user-intent context.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "A boundary failure can reuse consumed auth state, while explicit grants and user-intent security context differ from upstream.",
+      "acceptance_criteria": "Match upstream authorization behavior while keeping xAI, Codex, Kimi, and custom credentials isolated and sensitive headers redacted.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-TUI-INPUT",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt Flameshot/file image paste, unfocused drag/paste routing, startup typeahead, wrapped-word and paragraph selection, and queued-row pager editing commands.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "Terminal-native image/input and text-selection workflows differ from the current Grok UI contract.",
+      "acceptance_criteria": "Match keyboard, mouse, paste, drag, selection, queue-edit, and focus behavior across supported terminals with PTY evidence.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-TUI-STATUS",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt legacy Ctrl+4 dashboard access, display-refresh cadence, copyable and draggable session-info, tool-writing activity, free-tier/Plus upgrade UI, session-search disablement, and the bundled grok-4.6 default presentation.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "Dashboard, status, settings, session information, subscription messaging, and default-model presentation lag upstream.",
+      "acceptance_criteria": "Match observable TUI status and command behavior without replacing Enhanced branding, fork update routes, or catalog authority.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-HARNESS",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt session-root scan avoidance, post-cancel framed interjections, scheduled-task silent-expiry transcripts, plan-draft preservation, browser verification/project rules, Direct Mode retirement, and bound-session filesystem/metadata behavior.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "Session startup, cancellation recovery, scheduled runs, planning, and harness instructions can diverge on preserved surfaces.",
+      "acceptance_criteria": "Adopt the behavior inside the Grok agent/session architecture and prove TUI, headless, scheduler, and ACP parity.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-WORKSPACE",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt provisioned-mount traversal for prompt/graph/fsnotify, boundary commits for dirty trees, and Workspace EnsureBinding, MergeToMain, Push, start-from-bindings, and bound-cwd filesystem operations.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "Workspace binding, dirty-boundary, mount, and remote operation behavior can produce different repositories or filesystem scopes.",
+      "acceptance_criteria": "Implement the upstream RPC and workspace semantics with dirty-tree preservation, explicit repo binding, and path-scope tests.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-TOOLS-MCP",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt GROK_SESSION_ID tool/MCP propagation, MCP 2025-11-25, cancellable ripgrep reaping, bound toolOverrides echo, web-search domain configuration, and inline-citation suppression for backend search.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "Tools and MCP clients lack new context/protocol/config behavior and can leak child processes after cancellation.",
+      "acceptance_criteria": "Match upstream tool and MCP behavior while never exporting provider credentials or cross-provider state; test cancellation, env filtering, protocol, and domain filters.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-PROVIDER-XAI",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Adopt PromptMetadata feature unification, Responses prompt_cache_key conversation identity, image-capability metadata, grok-4.6 catalog integration, and xAI subscription/up-sell response handling.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "xAI catalog, request metadata, caching, and subscription-state behavior are behind the preserved upstream provider surface.",
+      "acceptance_criteria": "Implement only for xAI identity, preserve Codex/Kimi/custom adapter isolation, and prove exact request/catalog/subscription behavior.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-INTEGRATION",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Integrate the remaining crate graph, platform paths including USERPROFILE Grok home, tests, generated manifests, documentation, and feature wiring required by the eb267 behavior groups.",
+      "closure_evidence": [],
+      "owner": "Grok eb267 preserved-surface adoption",
+      "impact": "Partial ports can compile on one platform while omitting feature wiring or behavior on another preserved surface.",
+      "acceptance_criteria": "Land all thematic groups as reviewable commits, regenerate manifests through the documented process, retain licenses/notices, and pass cross-platform plus strict ownership validation.",
+      "intended_tests": [
+        "focused unit and PTY tests for the named surface",
+        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
+        "check_manifest.py --strict-coverage"
+      ],
+      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "GB-EB26-RELEASE",
+      "source_id": "grok-build-upstream",
+      "source_revision": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Upstream SOURCE_REV, official xAI versions, installer routes, and release-only metadata do not replace fork-owned release and update identities.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-14-paths.json"
+      ]
+    },
+    {
+      "id": "CDX-6BED-PARALLEL",
+      "source_id": "openai-codex",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
+      "classification": "adopt",
+      "state": "closed",
+      "behavior": "Send parallel_tool_calls for direct Codex subscription requests now that Codex enables it independently of model catalog metadata.",
+      "closure_evidence": [
+        "test:provider::openai_codex::responses::tests::responses_lite_rewrites_only_transport_contract",
+        "test:provider::openai_codex::responses::tests::provider_scoping_preserves_non_codex_behavior"
+      ]
+    },
+    {
+      "id": "CDX-6BED-THREAD-USAGE",
+      "source_id": "openai-codex",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Fetch and expose authoritative per-thread Codex usage totals, credits, USD, and model/reasoning/speed groups from the subscription usage endpoint.",
+      "closure_evidence": [],
+      "owner": "OpenAI Codex usage adapter",
+      "impact": "Enhanced exposes local provider-qualified token accounting but not authoritative subscription thread credits.",
+      "acceptance_criteria": "Query with the active Codex account/thread identity, isolate and redact account state, handle unsupported/failed responses, and label authoritative versus estimated values.",
+      "intended_tests": [
+        "mock authenticated thread usage query",
+        "account and thread isolation test",
+        "credential/header redaction test",
+        "status rendering test"
+      ],
+      "blocker": "No provider-isolated authoritative thread-usage client exists yet.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "CDX-6BED-CATALOG",
+      "source_id": "openai-codex",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Consume Codex model retirement/upgrade timing and catalog-supplied multi-agent instructions within the adapted Grok harness.",
+      "closure_evidence": [],
+      "owner": "OpenAI Codex catalog adapter",
+      "impact": "Model retirement guidance and server-authored multi-agent instructions are absent from the direct subscription experience.",
+      "acceptance_criteria": "Parse optional fields fail-soft, cache them under the authenticated Codex account generation, display retirement guidance, and apply instructions only to Codex turns.",
+      "intended_tests": [
+        "catalog optional metadata parse/cache tests",
+        "account generation isolation test",
+        "Codex-only harness instruction test"
+      ],
+      "blocker": "The current catalog schema does not model these fields.",
+      "deadline": "2026-08-21",
+      "target": "before the next source refresh"
+    },
+    {
+      "id": "CDX-6BED-ETAG",
+      "source_id": "openai-codex",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
+      "classification": "already equivalent",
+      "state": "closed",
+      "behavior": "Authenticated model discovery already stores provider ETags, sends conditional requests, reuses 304 caches, and isolates renewal by live credential generation.",
+      "closure_evidence": [
+        "test:remote::openai_codex_catalog::tests::etag_drives_conditional_fetch_and_304_cache_reuse",
+        "test:remote::openai_codex_catalog::tests::matching_live_etag_renews_only_the_matching_account_cache"
+      ]
+    },
+    {
+      "id": "CDX-6BED-SCOPE",
+      "source_id": "openai-codex",
+      "source_revision": "6bed213411d1250686cc162feb4324975c12158a",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Guardian V2, replacement app server/TUI, gRPC code mode, Bedrock, workload identity, Windows sandbox, plugin analytics, and SDK architecture are outside the scoped direct subscription adapter.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-14-paths.json"
+      ]
+    },
+    {
+      "id": "OC-4643-XAI-REASONING",
+      "source_id": "opencode",
+      "source_revision": "4643e65ad6334de3e4e68dedc201d5fbb828c9fe",
+      "classification": "already equivalent",
+      "state": "closed",
+      "behavior": "Enhanced accepts catalog-driven reasoning strings and maps the existing xAI Max level to the xhigh wire value while keeping Codex-only Ultra rejected for xAI.",
+      "closure_evidence": [
+        "test:provider::openai_codex::responses::tests::provider_scoping_preserves_non_codex_behavior",
+        "test:test_built_binary_e2e::headless_reasoning_efforts_payload_parses_and_legacy_effort_rides_wire"
+      ]
+    },
+    {
+      "id": "OC-4643-GO-WEB",
+      "source_id": "opencode",
+      "source_revision": "4643e65ad6334de3e4e68dedc201d5fbb828c9fe",
+      "classification": "already equivalent",
+      "state": "closed",
+      "behavior": "OpenCode Go web search is already available through the provider-independent Exa backend with fail-closed domain filtering and no provider credential reuse.",
+      "closure_evidence": [
+        "test:implementations::web_search::backends::exa::tests::projects_json_and_sse_without_provider_metadata",
+        "test:implementations::web_search::backends::exa::tests::domain_filters_fail_closed"
+      ]
+    },
+    {
+      "id": "OC-4643-SCOPE",
+      "source_id": "opencode",
+      "source_revision": "4643e65ad6334de3e4e68dedc201d5fbb828c9fe",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "OpenCode's Kimi prompt selection, Grok endpoint docs, generated catalogs, UI, release, and replacement harness changes do not supersede Grok surfaces or first-party provider contracts.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-14-paths.json"
+      ]
+    },
+    {
+      "id": "KIMI-D96C-SCOPE",
+      "source_id": "kimi-code",
+      "source_revision": "d96cd037702637305422222e985139e51ff83c8c",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Kimi agent-core-v2, swarm/session RPC, OAuth application flow, KAP marketplace, auto-title, TUI, and generated web assets do not change the experimental API-key adapter contract.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-14-paths.json"
+      ]
+    },
+    {
+      "id": "OMP-FFD5-CODEX-REF",
+      "source_id": "oh-my-pi",
+      "source_revision": "ffd53ff92a6f575d499730475a73460dd7cc2eea",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Oh My Pi's remote_compaction_v2 beta header is tied to its explicit V2 endpoint and is non-normative; it does not establish a Codex wire contract for Enhanced.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-14-paths.json"
+      ]
+    },
+    {
+      "id": "OMP-FFD5-HARNESS",
+      "source_id": "oh-my-pi",
+      "source_revision": "ffd53ff92a6f575d499730475a73460dd7cc2eea",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Static model aliases, replacement usage/cache behavior, hosted-search/PDF/LSP/DAP features, and harness/TUI changes remain non-normative evaluation material.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-14-paths.json"
+      ]
+    },
+    {
+      "id": "CODEXBAR-24BE-RESEARCH",
+      "source_id": "codexbar",
+      "source_revision": "24be9995fb8b182ead850f1afba3c2806085bb52",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "The advancing CodexBar range contains no Z.AI/GLM usage-protocol change; its Codex, Claude, Grok, OpenCode, and UI changes are outside the tracked Z.AI research surface.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-14-paths.json"
+      ]
+    },
+    {
+      "id": "MODELS-A25D-CATALOG",
+      "source_id": "models-dev",
+      "source_revision": "a25d0e1f35368f685476e30fef5101d00801fc53",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Third-party Kimi, Grok, GLM, and other catalog entries are research hints; authenticated first-party catalogs remain authoritative and no Z.AI runtime provider is established.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-14-paths.json"
       ]
     }
   ]
