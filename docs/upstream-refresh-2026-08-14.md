@@ -174,7 +174,10 @@ The isolated candidate passed:
 
 The binary check emitted only the existing warning that pager-render's
 `build.rs` appears as both its build script and the
-`warp_vendor_build_validation` integration-test target. Strict coverage must
-evaluate a committed candidate, so it is run immediately after the audit
-commit. No live-provider test is attempted because this audit neither needs nor
+`warp_vendor_build_validation` integration-test target. The committed audit
+candidate `e294761596f9c097b09219fcacc27617659bb879` also passed
+`check_manifest.py --strict-coverage`: all 110 feature path sets and all
+2,219 baseline-to-candidate downstream paths were owned, all source records
+cross-checked, and the 78-item current ledger retained 45 explicit open items.
+No live-provider test is attempted because this audit neither needs nor
 authorizes access to entitled credentials or authenticated payloads.
