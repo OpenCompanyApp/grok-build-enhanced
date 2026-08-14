@@ -127,9 +127,10 @@ fn codex_native_browsing_policy(advertised: &[&str]) -> Option<String> {
 }
 
 /// Apply the Codex Responses transport contract at the final provider JSON
-/// boundary. The stable prompt cache key belongs to every Codex Responses
-/// request; the remaining rewrite is gated by Responses Lite so Grok Build's
-/// conversation, tool registry, persistence, and execution loop remain intact.
+/// boundary. The stable prompt cache key and parallel tool-call capability
+/// belong to every Codex Responses request; the remaining rewrite is gated by
+/// Responses Lite so Grok Build's conversation, tool registry, persistence,
+/// and execution loop remain intact.
 pub(crate) fn apply_codex_responses_lite_contract(
     provider: ProviderId,
     enabled: bool,
@@ -161,6 +162,13 @@ pub(crate) fn apply_codex_responses_lite_contract(
             serde_json::Value::String(prompt_cache_key.to_string()),
         );
     }
+    // Codex enables parallel tool calls for every model prompt independently
+    // of catalog metadata. Keep the capability provider-scoped at the final
+    // JSON boundary so xAI and custom Responses requests remain unchanged.
+    root.insert(
+        "parallel_tool_calls".to_string(),
+        serde_json::Value::Bool(true),
+    );
     if !enabled {
         return Ok(());
     }
@@ -244,10 +252,6 @@ pub(crate) fn apply_codex_responses_lite_contract(
     }
     prefix.append(&mut input);
     root.insert("input".to_string(), serde_json::Value::Array(prefix));
-    root.insert(
-        "parallel_tool_calls".to_string(),
-        serde_json::Value::Bool(false),
-    );
     // Responses Lite expects the same explicit string used by the current
     // openai/codex client. Omitting this field can make `additional_tools`
     // advisory only, allowing the model to stop after a planning preamble
@@ -536,7 +540,7 @@ mod tests {
         assert!(body.get("instructions").is_none());
         assert!(body.get("temperature").is_none());
         assert_eq!(body["prompt_cache_key"], "conversation-cache-key");
-        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(body["parallel_tool_calls"], true);
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["reasoning"]["effort"], "ultra");
         assert_eq!(body["reasoning"]["context"], "all_turns");
@@ -630,7 +634,9 @@ mod tests {
         let mut non_lite = original.clone();
         apply_codex_responses_lite_contract(ProviderId::OpenAiCodex, false, None, &mut non_lite)
             .unwrap();
-        assert_eq!(non_lite, original);
+        let mut expected_non_lite = original.clone();
+        expected_non_lite["parallel_tool_calls"] = serde_json::Value::Bool(true);
+        assert_eq!(non_lite, expected_non_lite);
 
         let mut xai = original.clone();
         let error =

@@ -377,15 +377,18 @@ Normal Codex defaults include:
 - encrypted reasoning content in the requested include set;
 - removal of `temperature` from every Codex Responses request;
 - a stable `prompt_cache_key` derived from conversation ID, falling back to
-  session ID; and
+  session ID;
+- `parallel_tool_calls: true` for every Codex model prompt, independent of
+  catalog metadata; and
 - provider-specific reasoning/service-tier normalization at the final JSON
   boundary.
 
-Temperature removal and prompt-cache-key insertion happen for Codex Responses
-whether or not the selected model uses Responses Lite. The prompt cache key is
-stable across OAuth refresh, 401 recovery, request IDs, and ordinary turns in
-the same conversation. It intentionally changes with a new
-conversation/session rather than including token or account material.
+Temperature removal, prompt-cache-key insertion, and parallel tool-call
+capability happen for Codex Responses whether or not the selected model uses
+Responses Lite. The prompt cache key is stable across OAuth refresh, 401
+recovery, request IDs, and ordinary turns in the same conversation. It
+intentionally changes with a new conversation/session rather than including
+token or account material.
 
 ### Responses Lite shaping
 
@@ -397,7 +400,6 @@ additionally:
 - moves Grok function schemas into a developer `additional_tools` input item;
 - marks function schemas `strict: false`;
 - moves instructions into a developer message;
-- sets `parallel_tool_calls: false`;
 - uses `tool_choice: "auto"` only when tools exist; and
 - sets `reasoning.context: "all_turns"`.
 
