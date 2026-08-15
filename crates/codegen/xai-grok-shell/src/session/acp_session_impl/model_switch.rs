@@ -138,6 +138,7 @@ fn video_gen_config_for_provider(
         extra_headers,
         zdr_video_output_s3,
         tier_restricted,
+        zdr_restricted,
     } = configured
     else {
         return VideoGenConfig::Disabled;
@@ -153,6 +154,7 @@ fn video_gen_config_for_provider(
         extra_headers: extra_headers.clone(),
         zdr_video_output_s3: zdr_video_output_s3.clone(),
         tier_restricted: *tier_restricted,
+        zdr_restricted: *zdr_restricted,
     }
 }
 
@@ -1738,6 +1740,7 @@ mod provider_media_switch_tests {
             },
             zdr_video_output_s3: None,
             tier_restricted: true,
+            zdr_restricted: false,
         }
     }
 

@@ -25,9 +25,9 @@ pub use self::doom_loop::{
     DoomLoopSignal, DoomLoopSignalKind, is_check_event, peek_doom_loop,
 };
 pub use self::error::{
-    EmptyReason, EmptyResponseContext, ResponseModelMetadata, Result, SamplingError,
-    SentCredential, is_context_length_error, is_retryable_api_status, status_user_message,
-    user_facing_api_error_message,
+    ApiErrorCode, EmptyReason, EmptyResponseContext, INVALID_IMAGE_ERROR_CODE,
+    ResponseModelMetadata, Result, SamplingError, SentCredential, is_context_length_error,
+    is_retryable_api_status, parse_error_code, status_user_message, user_facing_api_error_message,
 };
 pub use self::kimi_code::{
     KIMI_CODE_ANTHROPIC_BETA, KIMI_CODE_ANTHROPIC_VERSION, KIMI_CODE_API_KEY_ENV,

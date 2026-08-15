@@ -2376,9 +2376,10 @@ impl MvpAgent {
             .then(|| cfg.zdr_video_output_s3.clone())
             .flatten()
             .filter(|s3| s3.is_valid());
-        if cfg.disable_zdr_incompatible_tools && zdr_video_output_s3.is_none() {
-            tracing::info!("video_gen disabled by tools.disable_zdr_incompatible_tools");
-            return VideoGenConfig::Disabled;
+        let zdr_restricted = cfg.disable_zdr_incompatible_tools
+            && zdr_video_output_s3.is_none();
+        if zdr_restricted {
+            tracing::info!("video_gen zdr-restricted by tools.disable_zdr_incompatible_tools");
         }
         let base_url = cfg.endpoints.xai_api_base_url.clone();
         let version = cfg
@@ -2394,34 +2395,13 @@ impl MvpAgent {
             alpha_test_key.as_deref(),
             &base_url,
         );
-        // Retain the complete xAI recipe even while Codex is selected. The
-        // unavailable wrapper does not expose tools or construct a client;
-        // it only lets a later xAI switch restore exact headers/ZDR/tier state.
-        let api_key = if sampling_config.provider
-            == xai_grok_sampling_types::ProviderId::OpenAiCodex
-        {
-            self.current_or_buffered_auth()
-                .filter(|auth| auth.is_xai_auth())
-                .map(|auth| auth.key)
-                .unwrap_or_default()
-        } else {
-            sampling_config.api_key.clone().unwrap_or_default()
-        };
-        let xai_config = VideoGenConfig::Enabled {
+        VideoGenConfig::Enabled {
             api_key,
             base_url,
             extra_headers: headers,
             zdr_video_output_s3: zdr_video_output_s3.map(Box::new),
             tier_restricted,
-        };
-        if sampling_config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
-            || sampling_config.api_key.is_none()
-        {
-            VideoGenConfig::Unavailable {
-                xai_fallback: Some(Box::new(xai_config)),
-            }
-        } else {
-            xai_config
+            zdr_restricted,
         }
     }
     pub(super) fn prepare_web_search_sampling_config(&self) -> Option<SamplingConfig> {
@@ -3727,9 +3707,10 @@ impl MvpAgent {
             spawn_upload_task(
                 "harness_trace_turn",
                 async move {
-                    let session_state = build_chat_history_session_state(
-                        &capture.messages,
-                    );
+                    let (session_state, capture) = build_chat_history_then_move_capture(
+                            capture,
+                        )
+                        .await;
                     futures::join!(
                     upload_metadata(&ctx, metadata),
                     upload_turn_messages(&ctx, capture, UploadWait::Confirm),

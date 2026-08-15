@@ -19,6 +19,7 @@ pub(crate) fn rejected_stream() -> SamplingError {
     SamplingError::StreamError {
         error_type: "provider_error".to_string(),
         message: "ChatGPT Codex stream rejected".to_string(),
+        code: None,
     }
 }
 
@@ -26,6 +27,7 @@ pub(crate) fn failed_stream() -> SamplingError {
     SamplingError::StreamError {
         error_type: "provider_error".to_string(),
         message: "ChatGPT Codex response failed".to_string(),
+        code: None,
     }
 }
 
@@ -33,6 +35,7 @@ pub(crate) fn incomplete_stream() -> SamplingError {
     SamplingError::StreamError {
         error_type: "provider_error".to_string(),
         message: "ChatGPT Codex response was incomplete".to_string(),
+        code: None,
     }
 }
 
@@ -104,11 +107,13 @@ pub(crate) fn try_parse_stream_error(data: &str) -> Option<SamplingError> {
         return Some(SamplingError::StreamError {
             error_type: "usage_limit_reached".to_owned(),
             message: "ChatGPT Codex stream rejected (usage limit reached)".to_owned(),
+            code: None,
         });
     }
     Some(SamplingError::StreamError {
         error_type: "provider_error".to_owned(),
         message: "ChatGPT Codex stream rejected".to_owned(),
+        code: None,
     })
 }
 
@@ -150,6 +155,7 @@ pub(crate) fn unsupported_custom_tool_call() -> SamplingError {
         model_metadata: None,
         retry_after_secs: None,
         should_retry: Some(false),
+        error_code: None,
     }
 }
 

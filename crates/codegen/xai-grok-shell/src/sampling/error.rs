@@ -188,6 +188,7 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
         SamplingError::StreamError {
             error_type,
             message,
+            ..
         } => acp::Error::internal_error().data(format!("{error_type}: {message}")),
         SamplingError::EmptyResponse { context } => acp::Error::internal_error().data(format!(
             "empty response from model ({}): model={}, had_reasoning={}, finish_reason={}",
@@ -474,6 +475,126 @@ mod tests {
     }
 
     #[test]
+    fn format_rate_limited_surfaces_nonempty_server_detail() {
+        let body = "The service is temporarily at capacity. Please retry your request shortly.";
+        // Production detail is SamplingError::Api Display (prefixed).
+        let wire = format!("API error (status 429 Too Many Requests): {body}");
+        assert_eq!(format_rate_limited_user_message(Some(&wire), false), body);
+        assert_eq!(format_rate_limited_user_message(Some(&wire), true), body);
+
+        // Team console rate-limit copy has no personal SuperGrok upsell — surface as-is.
+        let team = "resource-exhausted: Too many requests for team abc. See https://console.x.ai/team/default/rate-limits.";
+        let team_wire = format!("API error (status 429 Too Many Requests): {team}");
+        assert_eq!(
+            format_rate_limited_user_message(Some(&team_wire), true),
+            team
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some("slow down"), false),
+            "slow down"
+        );
+    }
+
+    #[test]
+    fn format_rate_limited_api_key_rewrites_consumer_subscription_upsell() {
+        let body = "Some resource has been exhausted: You are sending requests too quickly. \
+             Please slow down, or upgrade to a Grok subscription for higher limits: \
+             https://grok.com/supergrok";
+        let wire = format!("API error (status 429 Too Many Requests): {body}");
+        // OAuth keeps the IC body (personal plan upgrade is correct).
+        assert_eq!(format_rate_limited_user_message(Some(&wire), false), body);
+        // API key must not push grok.com SuperGrok — team credits / rate-limit tiers.
+        assert_eq!(
+            format_rate_limited_user_message(Some(&wire), true),
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+        );
+    }
+
+    #[test]
+    fn format_rate_limited_strips_api_error_display_prefix() {
+        let body = "The service is temporarily at capacity.";
+        let wire = format!("API error (status 429 Too Many Requests): {body}");
+        assert_eq!(format_rate_limited_user_message(Some(&wire), false), body);
+        assert!(!format_rate_limited_user_message(Some(&wire), false).contains("API error"));
+    }
+
+    #[test]
+    fn is_free_usage_exhausted_error_sniffs_well_known_code() {
+        assert!(is_free_usage_exhausted_error(
+            "subscription:free-usage-exhausted: You have used all your free usage."
+        ));
+        assert!(is_free_usage_exhausted_error(
+            "API error (status 429): subscription:free-usage-exhausted quota hit"
+        ));
+        assert!(!is_free_usage_exhausted_error("throttled"));
+        assert!(!is_free_usage_exhausted_error(
+            "The service is temporarily at capacity."
+        ));
+    }
+
+    #[test]
+    fn format_rate_limited_free_usage_uses_paywall_copy() {
+        let wire = "API error (status 429 Too Many Requests): \
+            subscription:free-usage-exhausted: You have used all your free usage.";
+        assert_eq!(
+            format_rate_limited_user_message(Some(wire), false),
+            FREE_USAGE_USER_MESSAGE
+        );
+        // Free-usage code is consumer-only; still wins for API-key callers.
+        assert_eq!(
+            format_rate_limited_user_message(Some(wire), true),
+            FREE_USAGE_USER_MESSAGE
+        );
+    }
+
+    #[test]
+    fn format_rate_limited_empty_detail_uses_auth_aware_fallback() {
+        assert_eq!(
+            format_rate_limited_user_message(None, false),
+            RATE_LIMITED_USER_MESSAGE_OAUTH
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some(""), false),
+            RATE_LIMITED_USER_MESSAGE_OAUTH
+        );
+        assert_eq!(
+            format_rate_limited_user_message(None, true),
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some("   "), true),
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+        );
+    }
+
+    #[test]
+    fn overload_maps_to_display_message_without_data() {
+        let err = SamplingError::StreamError {
+            error_type: "overloaded_error".into(),
+            message: "Overloaded".into(),
+            code: None,
+        };
+        let acp_err = map_sampling_err_to_acp(err);
+        assert_eq!(acp_err.code, acp::ErrorCode::InternalError);
+        assert_eq!(acp_err.message, OVERLOADED_USER_MESSAGE);
+        // Display appends JSON-encoded `data`; direct-display copy must not
+        // carry any.
+        assert_eq!(acp_err.data, None);
+
+        let err_529 = SamplingError::Api {
+            status: StatusCode::from_u16(529).expect("valid status"),
+            message: "capacity".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        let acp_529 = map_sampling_err_to_acp(err_529);
+        assert_eq!(acp_529.message, OVERLOADED_USER_MESSAGE);
+        assert_eq!(acp_529.data, None);
+    }
+
+    #[test]
     fn rate_limit_error_uses_dedicated_code_for_positive_xai_identity() {
         let err = SamplingError::Api {
             status: StatusCode::TOO_MANY_REQUESTS,
@@ -481,6 +602,7 @@ mod tests {
             model_metadata: provider_metadata(ProviderId::Xai),
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         };
         let acp_err = map_sampling_err_to_acp(err);
         assert_eq!(acp_err.code, acp::ErrorCode::from(RATE_LIMITED_ERROR_CODE));
@@ -499,6 +621,7 @@ mod tests {
             model_metadata: provider_metadata(ProviderId::Xai),
             retry_after_secs: Some(60),
             should_retry: None,
+            error_code: None,
         };
         assert_eq!(err.retry_after(), Some(60));
         let acp_err = map_sampling_err_to_acp(err);
@@ -514,6 +637,7 @@ mod tests {
             model_metadata: provider_metadata(ProviderId::Xai),
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         };
         let server_err = SamplingError::Api {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -521,6 +645,7 @@ mod tests {
             model_metadata: None,
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         };
         let rate_acp = map_sampling_err_to_acp(rate_err);
         let server_acp = map_sampling_err_to_acp(server_err);
@@ -538,6 +663,7 @@ mod tests {
             model_metadata: provider_metadata(ProviderId::Xai),
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         };
         let acp_err = map_sampling_err_to_acp(err);
         assert_eq!(acp_err.code, acp::Error::internal_error().code);
@@ -558,6 +684,7 @@ mod tests {
                 model_metadata: provider.and_then(provider_metadata),
                 retry_after_secs: None,
                 should_retry: None,
+                error_code: None,
             };
             let acp_err = map_sampling_err_to_acp(err);
             assert_eq!(
@@ -580,6 +707,7 @@ mod tests {
             model_metadata: None,
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         };
         let acp_err = map_sampling_err_to_acp(err);
         assert_eq!(acp_err.code, acp::Error::auth_required().code);
@@ -602,6 +730,7 @@ mod tests {
             model_metadata: None,
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         };
         let acp_err = map_sampling_err_to_acp(err);
         assert_ne!(
@@ -658,6 +787,7 @@ mod tests {
                 model_metadata: provider_metadata(ProviderId::Xai),
                 retry_after_secs: None,
                 should_retry: None,
+                error_code: None,
             };
             let acp_err = map_sampling_err_to_acp(err);
             let data = acp_err.data.unwrap();
@@ -683,6 +813,7 @@ mod tests {
                 model_metadata: provider_metadata(ProviderId::Xai),
                 retry_after_secs: None,
                 should_retry: None,
+                error_code: None,
             };
             let acp_err = map_sampling_err_to_acp(err);
             let data = acp_err.data.unwrap();
@@ -710,6 +841,7 @@ mod tests {
                     model_metadata: provider.and_then(provider_metadata),
                     retry_after_secs: None,
                     should_retry: None,
+                    error_code: None,
                 };
                 let acp_err = map_sampling_err_to_acp(err);
                 let message = error_detail_from_data(acp_err.data.as_ref().unwrap()).unwrap();
@@ -729,6 +861,7 @@ mod tests {
                 model_metadata: provider_metadata(ProviderId::Xai),
                 retry_after_secs: None,
                 should_retry: None,
+                error_code: None,
             };
             let acp_err = map_sampling_err_to_acp(err);
             let data = acp_err.data.unwrap();

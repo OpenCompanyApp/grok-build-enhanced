@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use xai_grok_sampling_types::{
-    ConversationResponse, EmptyResponseContext, ResponseModelMetadata, SamplingError,
+    ApiErrorCode, ConversationResponse, EmptyResponseContext, ResponseModelMetadata, SamplingError,
     SentCredential,
 };
 
@@ -160,6 +160,11 @@ pub struct SamplingErrorInfo {
     /// Explicit provider retry directive from `x-should-retry`, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub should_retry: Option<bool>,
+    /// The server error envelope's `code` slot (e.g. `invalid_image`).
+    /// Serializes as the plain wire string; `None` when absent or from an
+    /// older peer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<ApiErrorCode>,
     pub model_metadata: Option<ResponseModelMetadata>,
     /// Present only when `kind == EmptyResponse`. Carries the structured
     /// context from the L2 stream so downstream consumers can distinguish
@@ -286,6 +291,11 @@ impl From<&SamplingError> for SamplingErrorInfo {
             SamplingError::ProviderAuthRejected { .. } => SentCredential::Sent,
             _ => SentCredential::Unknown,
         };
+        let error_code = match err {
+            SamplingError::Api { error_code, .. } => error_code.clone(),
+            SamplingError::StreamError { code, .. } => code.clone(),
+            _ => None,
+        };
 
         Self {
             kind,
@@ -294,6 +304,7 @@ impl From<&SamplingError> for SamplingErrorInfo {
             is_retryable,
             retry_after_secs,
             should_retry,
+            error_code,
             model_metadata,
             empty_response_context,
             doom_loop_triggers,
@@ -307,6 +318,61 @@ impl From<&SamplingError> for SamplingErrorInfo {
 mod tests {
     use super::*;
     use reqwest::StatusCode;
+    use xai_grok_sampling_types::ApiErrorCode;
+
+    #[test]
+    fn from_sampling_error_carries_should_retry_header() {
+        let err = SamplingError::Api {
+            status: StatusCode::from_u16(529).expect("valid status"),
+            message: "Overloaded".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: Some(false),
+            error_code: None,
+        };
+        let info = SamplingErrorInfo::from(&err);
+        assert_eq!(info.should_retry, Some(false));
+
+        // Non-Api variants have no header — stays None.
+        let stream_err = SamplingError::StreamError {
+            error_type: "overloaded_error".into(),
+            message: "Overloaded".into(),
+            code: None,
+        };
+        assert_eq!(SamplingErrorInfo::from(&stream_err).should_retry, None);
+    }
+
+    #[test]
+    fn from_sampling_error_carries_error_code() {
+        let api = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "bad image".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: Some(ApiErrorCode::InvalidImage),
+        };
+        assert_eq!(
+            SamplingErrorInfo::from(&api).error_code,
+            Some(ApiErrorCode::InvalidImage)
+        );
+
+        let stream = SamplingError::StreamError {
+            error_type: "invalid_request_error".into(),
+            message: "bad image".into(),
+            code: Some(ApiErrorCode::InvalidImage),
+        };
+        assert_eq!(
+            SamplingErrorInfo::from(&stream).error_code,
+            Some(ApiErrorCode::InvalidImage)
+        );
+
+        // Non-wire variants carry none.
+        assert_eq!(
+            SamplingErrorInfo::from(&SamplingError::auth_unknown("x")).error_code,
+            None
+        );
+    }
 
     #[test]
     fn auth_variant_classified_as_auth() {
@@ -358,6 +424,7 @@ mod tests {
             model_metadata: None,
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         };
         let info = SamplingErrorInfo::from(&err);
         assert_eq!(info.kind, SamplingErrorKind::Api);
@@ -373,6 +440,7 @@ mod tests {
             model_metadata: None,
             retry_after_secs: Some(15),
             should_retry: Some(false),
+            error_code: None,
         };
         let info = SamplingErrorInfo::from(&err);
         assert_eq!(info.kind, SamplingErrorKind::Api);
@@ -393,6 +461,7 @@ mod tests {
             }),
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         };
         let info = SamplingErrorInfo::from(&err);
         assert_eq!(info.kind, SamplingErrorKind::Api);
@@ -415,6 +484,7 @@ mod tests {
         let err = SamplingError::StreamError {
             error_type: "server_error".into(),
             message: "transient".into(),
+            code: None,
         };
         let info = SamplingErrorInfo::from(&err);
         assert_eq!(info.kind, SamplingErrorKind::Api);

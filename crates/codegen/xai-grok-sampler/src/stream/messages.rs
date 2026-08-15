@@ -539,6 +539,7 @@ pub(crate) fn stream_messages_for_provider<'a>(
                             model_metadata: None,
                             retry_after_secs: None,
                             should_retry: None,
+                            error_code: None,
                         }
                     };
                     yield SamplingEvent::Failed {

@@ -1418,6 +1418,7 @@ mod tests {
             model_metadata: None,
             retry_after_secs: None,
             should_retry: Some(false),
+            error_code: None,
         };
 
         assert!(error.is_image_processing_error());
@@ -1432,6 +1433,7 @@ mod tests {
             model_metadata: None,
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         };
 
         assert!(error.is_context_length_error());

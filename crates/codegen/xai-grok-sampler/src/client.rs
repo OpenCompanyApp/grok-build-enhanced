@@ -21,7 +21,8 @@ use reqwest::header::{
 use serde::Serialize;
 
 use xai_grok_sampling_types::error::{
-    try_parse_stream_error, try_parse_stream_error_redacted, user_facing_api_error_message,
+    parse_error_code, try_parse_stream_error, try_parse_stream_error_redacted,
+    user_facing_api_error_message,
 };
 use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ChatContentBlock,
@@ -1639,6 +1640,7 @@ impl SamplingClient {
                 model_metadata,
                 retry_after_secs,
                 should_retry,
+                error_code: parse_error_code(bytes.as_ref()),
             });
         }
 
@@ -1794,6 +1796,7 @@ impl SamplingClient {
                 model_metadata: None,
                 retry_after_secs: None,
                 should_retry: None,
+                error_code: None,
             });
         }
         if response.content_length().is_some_and(|len| len > 64 * 1024) {
@@ -2062,6 +2065,7 @@ impl SamplingClient {
                 model_metadata,
                 retry_after_secs,
                 should_retry,
+                error_code: parse_error_code(bytes.as_ref()),
             });
         }
 
@@ -2375,6 +2379,7 @@ impl SamplingClient {
                 model_metadata,
                 retry_after_secs,
                 should_retry,
+                error_code: parse_error_code(bytes.as_ref()),
             });
         }
 
@@ -2616,6 +2621,7 @@ impl SamplingClient {
                 model_metadata,
                 retry_after_secs,
                 should_retry,
+                error_code: parse_error_code(bytes.as_ref()),
             });
         }
 
@@ -2889,6 +2895,7 @@ impl SamplingClient {
                 model_metadata,
                 retry_after_secs,
                 should_retry,
+                error_code: parse_error_code(bytes.as_ref()),
             });
         }
 
@@ -3068,6 +3075,7 @@ impl SamplingClient {
                 model_metadata,
                 retry_after_secs,
                 should_retry,
+                error_code: parse_error_code(bytes.as_ref()),
             });
         }
 
@@ -3536,6 +3544,7 @@ fn stream_collect_error(info: SamplingErrorInfo) -> SamplingError {
         model_metadata: info.model_metadata,
         retry_after_secs: info.retry_after_secs,
         should_retry: info.should_retry,
+        error_code: info.error_code,
     }
 }
 
@@ -3547,8 +3556,8 @@ mod tests {
         CODEX_THREAD_ID_HEADER, OPENAI_CODEX_ORIGINATOR, OPENAI_FEDRAMP_HEADER,
     };
     use indexmap::IndexMap;
-    use xai_grok_sampling_types::OPENAI_CODEX_COMPATIBILITY_VERSION;
     use xai_grok_sampling_types::types::{ChatRequestMessage, ToolCallRequest};
+    use xai_grok_sampling_types::{ApiErrorCode, OPENAI_CODEX_COMPATIBILITY_VERSION};
 
     const CODEX_AUTHORIZATION_FIXTURE: &str = "Bearer opaque-credential";
     const CODEX_ACCOUNT_FIXTURE: &str = "opaque-account";
@@ -3646,6 +3655,7 @@ mod tests {
             is_retryable: true,
             retry_after_secs: Some(3),
             should_retry: Some(false),
+            error_code: Some(ApiErrorCode::InvalidImage),
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,
@@ -3660,6 +3670,7 @@ mod tests {
             model_metadata,
             retry_after_secs,
             should_retry,
+            error_code,
         } = stream_collect_error(info)
         else {
             panic!("expected Api");
@@ -3671,8 +3682,16 @@ mod tests {
                 model_metadata.is_none(),
                 retry_after_secs,
                 should_retry,
+                error_code,
             ),
-            (529, "Overloaded", true, Some(3), Some(false)),
+            (
+                529,
+                "Overloaded",
+                true,
+                Some(3),
+                Some(false),
+                Some(ApiErrorCode::InvalidImage)
+            ),
         );
     }
 
@@ -5600,7 +5619,10 @@ mod tests {
         assert_eq!(body["reasoning"]["effort"], "max");
         assert_eq!(body["reasoning"]["summary"], "auto");
         assert_eq!(body["reasoning"]["context"], "all_turns");
-        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(
+            body["parallel_tool_calls"], true,
+            "the Codex Responses boundary advertises parallel tool-call capability"
+        );
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["input"][0]["type"], "additional_tools");
         assert_eq!(body["input"][0]["role"], "developer");

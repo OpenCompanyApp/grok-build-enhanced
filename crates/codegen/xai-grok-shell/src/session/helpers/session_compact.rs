@@ -119,6 +119,7 @@ fn classify_sampling_error_for_provider(
         SamplingError::StreamError {
             error_type,
             message,
+            ..
         } if error_type == "usage_limit_reached" || message.contains("usage limit reached") => {
             CompactFailure::DeterministicWithCurrentModelFallback(acp_err)
         }
@@ -1165,6 +1166,7 @@ mod classify_tests {
                 model_metadata: None,
                 retry_after_secs: None,
                 should_retry: None,
+                error_code: None,
             }))
         };
         assert!(det(StatusCode::BAD_REQUEST));
@@ -1187,11 +1189,13 @@ mod classify_tests {
             model_metadata: None,
             retry_after_secs: Some(3_600),
             should_retry: None,
+            error_code: None,
         })));
         assert!(is_det(&classify_sampling_error(
             SamplingError::StreamError {
                 error_type: "usage_limit_reached".into(),
                 message: "ChatGPT Codex stream rejected (usage limit reached)".into(),
+                code: None,
             }
         )));
         assert!(is_det(&classify_response_event_error(
@@ -1206,6 +1210,7 @@ mod classify_tests {
                 model_metadata: None,
                 retry_after_secs: Some(60),
                 should_retry: None,
+                error_code: None,
             },
             xai_grok_sampling_types::ProviderId::OpenAiCodex,
         )));
@@ -1216,6 +1221,7 @@ mod classify_tests {
                 model_metadata: None,
                 retry_after_secs: None,
                 should_retry: Some(false),
+                error_code: None,
             },
             xai_grok_sampling_types::ProviderId::OpenAiCodex,
         )));
@@ -1229,6 +1235,7 @@ mod classify_tests {
                 model_metadata: None,
                 retry_after_secs: None,
                 should_retry: Some(false),
+                error_code: None,
             },
             xai_grok_sampling_types::ProviderId::OpenAiCodex,
         );
@@ -1305,6 +1312,7 @@ mod classify_tests {
             SamplingError::StreamError {
                 error_type: "overloaded_error".into(),
                 message: "try again".into(),
+                code: None,
             }
         )));
     }
@@ -1367,6 +1375,7 @@ mod classify_tests {
             model_metadata: None,
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         })));
     }
     #[test]
@@ -1398,6 +1407,7 @@ mod classify_tests {
                 model_metadata: None,
                 retry_after_secs: None,
                 should_retry: None,
+                error_code: None,
             })
         else {
             panic!("expected model-fallback-eligible deterministic failure for 400");
@@ -1411,6 +1421,7 @@ mod classify_tests {
             model_metadata: None,
             retry_after_secs: None,
             should_retry: None,
+            error_code: None,
         }) else {
             panic!("expected Transient for 500");
         };
@@ -2962,7 +2973,10 @@ mod codex_responses_compaction_tests {
             request.body["prompt_cache_key"], "codex-compaction-test",
             "compaction cache identity must derive from the stable session, not the random request id"
         );
-        assert_eq!(request.body["parallel_tool_calls"], false);
+        assert_eq!(
+            request.body["parallel_tool_calls"], true,
+            "the Codex Responses boundary advertises parallel capability even when compaction supplies no tools"
+        );
         assert!(request.body.get("temperature").is_none());
         assert!(request.body.get("tools").is_none());
         assert!(request.body.get("tool_choice").is_none());

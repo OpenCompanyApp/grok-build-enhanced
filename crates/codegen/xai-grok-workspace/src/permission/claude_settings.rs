@@ -373,17 +373,60 @@ pub fn find_claude_settings_paths(cwd: &Path) -> Vec<PathBuf> {
     paths
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Unit tests must never import permission rules from the developer's real
+    /// `~/.claude`. Tests that exercise the global tier opt in with
+    /// [`TestClaudeHomeGuard`]; all other tests see no global Claude directory.
+    static TEST_CLAUDE_HOME: std::cell::RefCell<Option<PathBuf>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) struct TestClaudeHomeGuard {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl TestClaudeHomeGuard {
+    pub(crate) fn set(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let previous = TEST_CLAUDE_HOME.with(|home| home.replace(Some(path)));
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestClaudeHomeGuard {
+    fn drop(&mut self) {
+        TEST_CLAUDE_HOME.with(|home| {
+            home.replace(self.previous.take());
+        });
+    }
+}
+
+#[cfg(test)]
+fn global_claude_home() -> Option<PathBuf> {
+    TEST_CLAUDE_HOME.with(|home| home.borrow().clone())
+}
+
+#[cfg(not(test))]
+fn global_claude_home() -> Option<PathBuf> {
+    dirs::home_dir()
+}
+
 /// Global (user-tier) `~/.claude` settings paths, highest-priority-first. Split
 /// out of [`find_claude_settings_paths`] so [`claude_settings_paths_for_trust`]
 /// can load ONLY the user tier when a folder is untrusted.
 ///
-/// Use `dirs::home_dir()` to match the home-resolution strategy used by
-/// `claude_import.rs::scan_importable_settings` and `claude_import_state.rs`,
-/// so a path returned here reliably tests as global in the import scanner's
-/// `is_global` check.
+/// Production uses `dirs::home_dir()` to match the home-resolution strategy
+/// used by `claude_import.rs::scan_importable_settings` and
+/// `claude_import_state.rs`, so a returned path reliably tests as global in the
+/// import scanner's `is_global` check.
 fn global_claude_settings_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = global_claude_home() {
         let global = home.join(".claude");
         paths.push(global.join("settings.local.json"));
         paths.push(global.join("settings.json"));

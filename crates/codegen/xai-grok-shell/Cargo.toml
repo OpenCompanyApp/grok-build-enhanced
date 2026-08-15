@@ -9,6 +9,8 @@ default = []
 unstable = []
 dhat-heap = ["dep:dhat"]
 test-support = []
+test-util = []
+# Local Computer Hub workspace_server (own/attach + crash-restart). Requires
 local-workspace = []
 default-bazel = [
     "local-workspace",

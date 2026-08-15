@@ -2893,6 +2893,7 @@ mod tests {
         let _home_guard = EnvVarGuard::set("HOME", home.path());
         let _grok_guard = EnvVarGuard::set("GROK_HOME", home.path());
         let _marker_guard = EnvVarGuard::unset("_GROK_CLAUDE_MARKER_OVERRIDE");
+        let _claude_home_guard = TestClaudeHomeGuard::set(home.path());
 
         // Global user-tier allow (must survive untrusted project).
         let global_claude = home.path().join(".claude");

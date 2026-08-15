@@ -520,6 +520,7 @@ pub(crate) fn classify_stream_error(error_type: &str, message: &str) -> Sampling
         model_metadata: None,
         retry_after_secs: None,
         should_retry,
+        error_code: None,
     }
 }
 
