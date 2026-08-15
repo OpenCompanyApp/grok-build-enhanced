@@ -4999,6 +4999,33 @@
       "legal_paths": [
         "LICENSE"
       ]
+    },
+    {
+      "id": "august15-75e7-parity-adoption",
+      "description": "Adopts the focused Grok 75e7 preserved-surface fixes for sticky worktree identity, logical Home/End navigation across wrapped prompts, Linux-only hook write-deny enforcement, and untracked-file diff statistics while retaining Enhanced provider startup and release metadata.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/dashboard.rs",
+        "crates/codegen/xai-grok-sandbox/src/child_net.rs",
+        "crates/codegen/xai-grok-sandbox/src/hook_write_deny.rs",
+        "crates/codegen/xai-grok-sandbox/src/lib.rs",
+        "crates/codegen/xai-grok-workspace/src/session/git.rs",
+        "crates/codegen/xai-ratatui-textarea/src/textarea.rs",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs",
+        "crates/codegen/xai-grok-sandbox/src/hook_write_deny.rs",
+        "crates/codegen/xai-grok-workspace/src/session/git.rs",
+        "crates/codegen/xai-ratatui-textarea/src/textarea.rs",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
     }
   ]
 }

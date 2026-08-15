@@ -62,7 +62,9 @@ pub fn requires_hook_write_deny(profile: &ProfileName, workspace: &Path) -> bool
 }
 #[cfg(all(feature = "enforce", unix))]
 use nono::Sandbox;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "linux", test))]
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 static SANDBOX: OnceLock<GlobalSandboxState> = OnceLock::new();
@@ -80,6 +82,9 @@ struct GlobalSandboxState {
     profile: String,
     logger: SandboxLogger,
     applied: bool,
+}
+fn restrict_network_at_known_linux_launches(applied: bool, configured: bool) -> bool {
+    applied && configured && cfg!(target_os = "linux")
 }
 /// Whether child subprocesses should have network blocked via seccomp.
 pub fn should_restrict_child_network() -> bool {
@@ -206,9 +211,10 @@ impl SandboxManager {
         match Sandbox::apply(&caps) {
             Ok(_) => {
                 self.applied = true;
-                if self.net_restricted {
-                    RESTRICT_CHILD_NETWORK.store(true, Ordering::Relaxed);
-                }
+                RESTRICT_CHILD_NETWORK.store(
+                    restrict_network_at_known_linux_launches(self.applied, self.net_restricted),
+                    Ordering::Relaxed,
+                );
                 self.logger.log(SandboxEvent::profile_applied(
                     &self.profile.to_string(),
                     workspace,
@@ -266,7 +272,7 @@ impl SandboxManager {
     }
     /// Whether child subprocesses should have network blocked.
     pub fn restrict_child_network(&self) -> bool {
-        self.applied && self.net_restricted
+        restrict_network_at_known_linux_launches(self.applied, self.net_restricted)
     }
     /// The active profile name.
     pub fn profile(&self) -> &ProfileName {
