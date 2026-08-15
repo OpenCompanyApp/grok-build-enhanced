@@ -157,6 +157,7 @@ mod tests {
             usage_command_visible: true,
             workflows_available: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
+            current_title: None,
         };
         let items = command
             .suggest_args(&app_ctx, "")

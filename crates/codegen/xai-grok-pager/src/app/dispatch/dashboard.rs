@@ -1800,13 +1800,23 @@ pub(super) fn dispatch_dashboard_begin_rename(app: &mut AppView) {
         d.set_error_toast("Subagent rows can't be renamed");
         return;
     }
-    // The draft starts EMPTY (not prefilled with the current title):
-    // renames are almost always full rewrites, so prefilling only costs
-    // the user a hold-Backspace. Esc / empty-draft Enter cancel without
-    // touching the existing name.
+    let prefill = match &sel {
+        crate::views::dashboard::DashboardRowId::TopLevel(agent_id) => app
+            .agents
+            .get(agent_id)
+            .map(rename_prefill_title)
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
     if let Some(d) = app.dashboard.as_mut() {
-        d.rename = Some(crate::views::dashboard::state::RenameDraft::new(sel, ""));
+        d.rename = Some(crate::views::dashboard::state::RenameDraft::new(
+            sel, prefill,
+        ));
     }
+}
+
+fn rename_prefill_title(agent: &AgentView) -> String {
+    crate::views::session_title::rename_source_title(agent).unwrap_or_default()
 }
 
 pub(super) fn dispatch_dashboard_commit_rename(app: &mut AppView) -> Vec<Effect> {
@@ -1838,6 +1848,7 @@ pub(super) fn dispatch_dashboard_commit_rename(app: &mut AppView) -> Vec<Effect>
                 session_id,
                 title,
                 cwd,
+                kind: agent.rename_kind(),
             });
         } else {
             agent.display_name = Some(title);

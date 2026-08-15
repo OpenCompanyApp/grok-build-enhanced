@@ -98,6 +98,18 @@ fn resolve_memory_embedding_route(
     }
 }
 
+/// Build the per-session current-thread tokio runtime.
+///
+/// Construction acquires fds (epoll/kqueue, waker) and fails with
+/// `EMFILE`/`EAGAIN` under resource pressure. Cap only — pre-warm is
+/// process-lifetime (`xai_tty_utils::runtime`).
+pub(crate) fn build_session_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    let mut builder = tokio::runtime::Builder::new_current_thread();
+    xai_tty_utils::runtime::apply_blocking_pool(builder.enable_all()).build()
+}
+#[cfg(all(test, unix))]
+#[path = "spawn_runtime_containment_tests.rs"]
+mod runtime_containment_tests;
 #[cfg(test)]
 mod cli_catchall_drop_tests {
     use super::drop_cli_catchall_allows;
