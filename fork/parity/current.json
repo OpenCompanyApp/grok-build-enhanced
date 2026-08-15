@@ -27,21 +27,18 @@
       "id": "GB-8A14-LANDING",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Land and validate the sixteen preserved-surface behaviors from the 8a14 snapshot.",
-      "closure_evidence": [],
-      "owner": "Grok parity campaign",
-      "impact": "The validated Enhanced candidate still lacks the prior snapshot's preserved-surface fixes.",
-      "acceptance_criteria": "Commit thematic changes and pass focused session, ACP, headless, hook, MCP, TUI, workspace, binary and strict ownership checks.",
-      "intended_tests": [
-        "8a14 focused behavior suites",
-        "cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The coherent implementation remains uncommitted and unvalidated in a separate isolated worktree.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "test:xai-grok-pager session_load_barrier (13 passed)",
+        "test:xai-grok-shell replay_tests (47 passed)",
+        "test:xai-grok-tools skill_path_suggestion (9 passed)",
+        "test:xai-grok-workspace envrc (12 passed)",
+        "test:xai-grok-pager-pty-harness exit_timeout --ignored (2 passed)",
+        "test:cargo check -p xai-grok-pager-bin",
+        "test:cargo build -p xai-grok-pager-bin --bin xai-grok-pager"
+      ]
     },
     {
       "id": "GB-B13-WORKTREE",

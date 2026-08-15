@@ -78,6 +78,20 @@ All applicable behavior remains adopt-by-default and is explicitly deferred:
 Each open item has an owner, impact, blocker, 2026-08-22 deadline, acceptance
 criteria, and intended tests in `fork/parity/current.json`.
 
+## Closed Grok adoption: 8a14 preserved surfaces
+
+Commit `08499fc6d94bc86df60e46a4084ab76f5013f823` lands the sixteen
+preserved-surface behaviors carried from the `8a14c91d` snapshot, including
+bounded replay and shutdown, durable session loading, worktree identity,
+headless interaction, managed MCP cleanup, skill-path suggestions, workspace
+`.envrc` deadlines, and truthful notification delivery.
+
+Focused validation executed 83 tests with no failures: 13 pager session-load
+barrier tests, 47 shell replay tests, 9 skill-path tests, 12 workspace `.envrc`
+tests, and both opt-in real-PTY shutdown deadline tests. The composed pager also
+passes `cargo check` and a direct production-binary build. `GB-8A14-LANDING`
+therefore closes as **adopt**; no skipped PTY check is counted as evidence.
+
 ## Inspiration-source decisions
 
 | Source | Decision |
@@ -91,12 +105,12 @@ criteria, and intended tests in `fork/parity/current.json`.
 
 The campaign contains 92 stable obligations:
 
-- 1 closed **adopt** item;
+- 2 closed **adopt** items;
 - 7 closed **already equivalent** items;
 - 31 closed **not applicable** items; and
-- 53 open **temporarily deferred** items.
+- 52 open **temporarily deferred** items.
 
-All 78 prior IDs are carried forward. The open set contains 45 Grok adoption
+All 78 prior IDs are carried forward. The open set contains 44 Grok adoption
 obligations and 8 Codex adapter/harness obligations. No prior deferral vanished
 or changed classification without closure evidence.
 
@@ -119,7 +133,7 @@ classification; no rename inference or abbreviated object identity is used.
 
 ## Acknowledgement and publication decision
 
-Grok acknowledgement is ineligible because 45 Grok adoption obligations remain
+Grok acknowledgement is ineligible because 44 Grok adoption obligations remain
 open after this refresh. The publication workflow requires an eligible audited
 acknowledgement marker whose first-parent tree is unchanged. There is therefore
 no Reviewed-pin advancement, prepare step, marker merge, release tag, GitHub
