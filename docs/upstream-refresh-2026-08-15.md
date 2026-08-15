@@ -105,6 +105,22 @@ guard test, and a full `x86_64-pc-windows-gnu` sandbox library check using an
 unprivileged temporary MinGW toolchain. `GB-B13-WORKTREE`,
 `GB-B13-PORTABILITY`, and `GB-B13-INPUT` therefore close as **adopt**.
 
+Commit `52e4fbff` adopts the remaining `b13fa526` preserved-surface behavior.
+Session titles are bounded, sanitized, pinned, resettable, persistent, and
+version-gated across local and remote paths; abandoned persistent-agent boot
+slots are generation-safe; runtime blocking pools are capped and prewarmed;
+workspace RPC activity is classified and versioned; and ordered session,
+task-result, status, summary, and interjection semantics are retained without
+cross-provider credential fallback.
+
+Focused validation passed 10 runtime tests, 97 workspace activity/version
+tests, 68 shell title/boot/persistence/interjection/summary tests, 239 pager
+title/session-event/task-result/turn-completion tests, and all 37 pager-bin
+tests. Formatting, pager-bin checking, and strict manifest coverage also pass.
+`GB-B13-TITLES`, `GB-B13-AGENT-BOOT`, `GB-B13-RUNTIME`,
+`GB-B13-WORKSPACE-RPC`, `GB-B13-SESSION-EVENTS`, `GB-B13-WIRE`, and
+`GB-B13-INTEGRATION` therefore close as **adopt**.
+
 ## Inspiration-source decisions
 
 | Source | Decision |
@@ -118,12 +134,12 @@ unprivileged temporary MinGW toolchain. `GB-B13-WORKTREE`,
 
 The campaign contains 92 stable obligations:
 
-- 5 closed **adopt** items;
+- 12 closed **adopt** items;
 - 7 closed **already equivalent** items;
 - 31 closed **not applicable** items; and
-- 49 open **temporarily deferred** items.
+- 42 open **temporarily deferred** items.
 
-All 78 prior IDs are carried forward. The open set contains 41 Grok adoption
+All 78 prior IDs are carried forward. The open set contains 34 Grok adoption
 obligations and 8 Codex adapter/harness obligations. No prior deferral vanished
 or changed classification without closure evidence.
 
@@ -146,7 +162,7 @@ classification; no rename inference or abbreviated object identity is used.
 
 ## Acknowledgement and publication decision
 
-Grok acknowledgement is ineligible because 41 Grok adoption obligations remain
+Grok acknowledgement is ineligible because 34 Grok adoption obligations remain
 open after this refresh. The publication workflow requires an eligible audited
 acknowledgement marker whose first-parent tree is unchanged. There is therefore
 no Reviewed-pin advancement, prepare step, marker merge, release tag, GitHub

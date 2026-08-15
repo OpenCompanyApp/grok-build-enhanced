@@ -79,135 +79,95 @@
       "id": "GB-B13-TITLES",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt bounded sanitized manual rename/reset, persistence, hydration, export and remote synchronization.",
-      "closure_evidence": [],
-      "owner": "Session/TUI parity",
-      "impact": "Titles can be clobbered, stale, or contain control characters.",
-      "acceptance_criteria": "Preserve scalar/byte bounds, control and bidi stripping, manual-pin metadata, FIFO persistence, reset-to-auto and version-gated remote behavior.",
-      "intended_tests": [
-        "session rename/reset unit and ACP tests",
-        "persistence/export/pull tests",
-        "rename PTY test"
-      ],
-      "blocker": "Crosses ACP, TUI, storage and authenticated remote seams and depends on the 8a14 session base.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-15.md",
+        "test:xai-grok-shell session_rename_tests (14 passed)",
+        "test:xai-grok-shell durable_update_tests (19 passed)",
+        "test:xai-grok-pager session title resolution and sanitization (37 passed)",
+        "test:xai-grok-pager session title reset and task results (83 passed)"
+      ]
     },
     {
       "id": "GB-B13-AGENT-BOOT",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Reclaim abandoned persistent-agent boot slots safely.",
-      "closure_evidence": [],
-      "owner": "Agent runtime parity",
-      "impact": "Dropped boot senders can strand waiters.",
-      "acceptance_criteria": "Port generation-guarded boot slots and stale-guard race handling.",
-      "intended_tests": [
-        "agent server boot-slot race tests"
-      ],
-      "blocker": "Requires leader/runtime reconciliation on top of the pending startup changes.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-15.md",
+        "test:xai-grok-shell server_tests (8 passed)"
+      ]
     },
     {
       "id": "GB-B13-RUNTIME",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Bound and prewarm blocking threads and contain EAGAIN/runtime-build failures.",
-      "closure_evidence": [],
-      "owner": "Runtime parity",
-      "impact": "Resource pressure can abort startup or detached work.",
-      "acceptance_criteria": "Port capped pools, prewarm/release and child re-exec containment.",
-      "intended_tests": [
-        "xai-tty-utils runtime tests",
-        "spawn runtime containment tests"
-      ],
-      "blocker": "Must preserve Enhanced runtime topology and platform bounds.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-15.md",
+        "test:xai-tty-utils runtime (10 passed)",
+        "test:xai-grok-pager-bin binary unit suite (37 passed)"
+      ]
     },
     {
       "id": "GB-B13-WORKSPACE-RPC",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Classify RPC activity and report or gate by workspace server version without idle races.",
-      "closure_evidence": [],
-      "owner": "Workspace parity",
-      "impact": "Reads can incorrectly prevent idle or old servers can receive unsupported mutations.",
-      "acceptance_criteria": "Port activity classes, version fields, mutation stamping and idle windows.",
-      "intended_tests": [
-        "workspace RPC activity tests",
-        "workspace version-gating tests"
-      ],
-      "blocker": "Protocol changes require backward-compatible version gating.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-15.md",
+        "test:xai-grok-workspace activity (96 passed)",
+        "test:xai-grok-workspace workspace_info (1 passed)"
+      ]
     },
     {
       "id": "GB-B13-SESSION-EVENTS",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Preserve ordered session notifications, task results and status transitions.",
-      "closure_evidence": [],
-      "owner": "ACP/TUI parity",
-      "impact": "Users can see stale or reordered session status.",
-      "acceptance_criteria": "Port session-event, router, status and task-result behavior.",
-      "intended_tests": [
-        "pager session-event tests",
-        "pager status and task-result tests"
-      ],
-      "blocker": "Depends on the pending 8a14 event-loop integration.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-15.md",
+        "test:xai-grok-pager session_events (45 passed)",
+        "test:xai-grok-pager task_result (79 passed)",
+        "test:xai-grok-pager turn_completion (74 passed)"
+      ]
     },
     {
       "id": "GB-B13-WIRE",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Preserve explicit empty summaries and unfinished-task reminders.",
-      "closure_evidence": [],
-      "owner": "Session protocol parity",
-      "impact": "Empty and omitted wire values can diverge and reminders can disappear.",
-      "acceptance_criteria": "Preserve serde round trips and reminder formatting.",
-      "intended_tests": [
-        "xai-tool-protocol frame tests",
-        "xai-interjection-core reminder tests"
-      ],
-      "blocker": "Wire semantics require backward-compatible serialization.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-15.md",
+        "test:xai-grok-shell interjection_tests (6 passed)",
+        "test:xai-grok-shell summary::tests (21 passed)"
+      ]
     },
     {
       "id": "GB-B13-INTEGRATION",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Reconcile remaining lock, documentation, test and cross-cutting integration paths.",
-      "closure_evidence": [],
-      "owner": "Grok parity campaign",
-      "impact": "Unmatched integration paths prevent an exhaustive reviewed snapshot.",
-      "acceptance_criteria": "Leave no unmatched raw path and pass formatting, focused suites, binary validation and strict ownership.",
-      "intended_tests": [
-        "cargo fmt",
-        "cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "Multiple behavior owners must land before the lock and shared seams can be accepted.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-15.md",
+        "test:cargo fmt --all -- --check",
+        "test:cargo check -p xai-grok-pager-bin",
+        "test:fork/scripts/check_manifest.py --strict-coverage"
+      ]
     },
     {
       "id": "GB-B13-REL",
