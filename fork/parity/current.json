@@ -44,56 +44,36 @@
       "id": "GB-B13-WORKTREE",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Preserve sticky standalone-worktree identity when live dashboard probing is incomplete.",
-      "closure_evidence": [],
-      "owner": "TUI/session parity",
-      "impact": "Dashboard branch labeling can lose known worktree identity.",
-      "acceptance_criteria": "Port OR-merge semantics and dashboard regressions.",
-      "intended_tests": [
-        "dashboard standalone-worktree tests"
-      ],
-      "blocker": "Depends on landing the 8a14 worktree/session base.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "test:xai-grok-pager dashboard_open_ (15 passed)"
+      ]
     },
     {
       "id": "GB-B13-PORTABILITY",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Keep hook write-deny and child-network code correct on non-Linux targets.",
-      "closure_evidence": [],
-      "owner": "Sandbox parity",
-      "impact": "Non-Linux builds or diagnostics may diverge.",
-      "acceptance_criteria": "Pass Linux and non-Linux compile/tests without weakening hook identity checks.",
-      "intended_tests": [
-        "sandbox platform cfg tests",
-        "cross-target cargo check"
-      ],
-      "blocker": "Platform cfg changes must be reconciled with Enhanced sandbox policy.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "test:xai-grok-sandbox hook_write_deny (6 passed)",
+        "test:xai-grok-sandbox known_launch_guard_is_linux_only (1 passed)",
+        "test:cargo check -p xai-grok-sandbox --target x86_64-pc-windows-gnu --lib"
+      ]
     },
     {
       "id": "GB-B13-INPUT",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Make Home and End operate on logical lines across soft-wrapped input.",
-      "closure_evidence": [],
-      "owner": "TUI input parity",
-      "impact": "Soft-wrapped prompt navigation can jump to visual rather than logical boundaries.",
-      "acceptance_criteria": "Port textarea behavior and soft-wrap tests.",
-      "intended_tests": [
-        "xai-ratatui-textarea soft-wrap Home/End test"
-      ],
-      "blocker": "Needs terminal-specific regression coverage.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "test:xai-ratatui-textarea home_end_use_logical_line_when_soft_wrapped (1 passed)"
+      ]
     },
     {
       "id": "GB-B13-TITLES",

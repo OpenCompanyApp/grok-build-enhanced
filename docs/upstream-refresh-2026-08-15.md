@@ -92,6 +92,19 @@ tests, and both opt-in real-PTY shutdown deadline tests. The composed pager also
 passes `cargo check` and a direct production-binary build. `GB-8A14-LANDING`
 therefore closes as **adopt**; no skipped PTY check is counted as evidence.
 
+Commit `3c13d1526df91ce5220f3a1e7080feb24b3b4b58` adopts the focused
+`75e73f3d` behaviors without replacing Enhanced's provider-isolated agent
+startup or fork-owned release metadata. Dashboard worktree identity now uses
+the session/probe OR semantics, Home/End follows logical wrapped lines, hook
+write-deny enforcement and child-network launch policy are platform-gated, and
+HEAD-to-working diff statistics include untracked files.
+
+Validation passed 15 dashboard tests, the wrapped-input regression, the
+untracked-file diff-stat regression, 6 hook write-deny tests, the Linux launch
+guard test, and a full `x86_64-pc-windows-gnu` sandbox library check using an
+unprivileged temporary MinGW toolchain. `GB-B13-WORKTREE`,
+`GB-B13-PORTABILITY`, and `GB-B13-INPUT` therefore close as **adopt**.
+
 ## Inspiration-source decisions
 
 | Source | Decision |
@@ -105,12 +118,12 @@ therefore closes as **adopt**; no skipped PTY check is counted as evidence.
 
 The campaign contains 92 stable obligations:
 
-- 2 closed **adopt** items;
+- 5 closed **adopt** items;
 - 7 closed **already equivalent** items;
 - 31 closed **not applicable** items; and
-- 52 open **temporarily deferred** items.
+- 49 open **temporarily deferred** items.
 
-All 78 prior IDs are carried forward. The open set contains 44 Grok adoption
+All 78 prior IDs are carried forward. The open set contains 41 Grok adoption
 obligations and 8 Codex adapter/harness obligations. No prior deferral vanished
 or changed classification without closure evidence.
 
@@ -133,7 +146,7 @@ classification; no rename inference or abbreviated object identity is used.
 
 ## Acknowledgement and publication decision
 
-Grok acknowledgement is ineligible because 44 Grok adoption obligations remain
+Grok acknowledgement is ineligible because 41 Grok adoption obligations remain
 open after this refresh. The publication workflow requires an eligible audited
 acknowledgement marker whose first-parent tree is unchanged. There is therefore
 no Reviewed-pin advancement, prepare step, marker merge, release tag, GitHub
