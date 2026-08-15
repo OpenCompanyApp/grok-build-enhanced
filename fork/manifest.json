@@ -163,7 +163,7 @@
         "commit": "8e4b10446eed7bafb39d8a469f9be25a41f4864f"
       },
       "latest_fetched": {
-        "commit": "6bed213411d1250686cc162feb4324975c12158a"
+        "commit": "c4941302c73c6322b153bba13ac0a9f4396301d6"
       }
     },
     {
@@ -187,7 +187,7 @@
         "commit": "afbc0fb710320c7add294c2106d447ecc3e3af2e"
       },
       "latest_fetched": {
-        "commit": "eb267feff13129e568df38fb6fdf0ceb65f735d6"
+        "commit": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e"
       }
     },
     {
@@ -235,7 +235,7 @@
         "commit": "437a1b8ba1b7e0f6662bdadc669564fdc58c3f5a"
       },
       "latest_fetched": {
-        "commit": "d96cd037702637305422222e985139e51ff83c8c"
+        "commit": "6b72345f8bb03487e3bcc05b541e65484818428c"
       }
     },
     {
@@ -295,7 +295,7 @@
         "commit": "22b24b885693e890af52df15c29f7ca024904c74"
       },
       "latest_fetched": {
-        "commit": "24be9995fb8b182ead850f1afba3c2806085bb52"
+        "commit": "f15f142a7787143a4a991ed4ff54c3057ae412ba"
       }
     },
     {
@@ -319,7 +319,7 @@
         "commit": "ac01bd90859928691e2e8e65df5cf390ffb1539e"
       },
       "latest_fetched": {
-        "commit": "a25d0e1f35368f685476e30fef5101d00801fc53"
+        "commit": "65db14442d690d1e21d2d6e739ccf6451386d4ab"
       }
     },
     {
@@ -4779,6 +4779,42 @@
         "UPSTREAM_VERSIONS.md",
         "docs/upstream-refresh-2026-08-14.md",
         "docs/upstream-refresh-2026-08-14-paths.json",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "august15-glm53-refresh-audit",
+      "description": "Records first-party GLM-5.3 Coding Plan interoperability research without creating a Z.AI runtime provider, pins and exhaustively classifies the August 15 advancing source heads, corrects conflicting provider claims, carries every prior obligation, and records why acknowledgement and publication remain ineligible.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "kimi-code",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper",
+        "models-dev"
+      ],
+      "paths": [
+        "README.md",
+        "UPSTREAM_VERSIONS.md",
+        "docs/providers/zai-glm-coding-plan-integration-research.md",
+        "docs/upstream-refresh-2026-08-15.md",
+        "docs/upstream-refresh-2026-08-15-paths.json",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "integration_paths": [
+        "README.md",
+        "UPSTREAM_VERSIONS.md",
+        "docs/providers/zai-glm-coding-plan-integration-research.md",
+        "docs/upstream-refresh-2026-08-15.md",
+        "docs/upstream-refresh-2026-08-15-paths.json",
         "fork/manifest.json",
         "fork/parity/current.json"
       ],

@@ -20,11 +20,46 @@ The reviewed sources are tracked in `UPSTREAM_VERSIONS.md`:
 - `zai-org/z-ai-sdk-python` for public API request conventions;
 - `zai-org/zai-coding-plugins` for coding-tool interoperability research;
 - `zai-org/GLM-5` for model metadata research;
-- CodexBar and the Z.AI usage-browser repository for UI/schema research only.
+- CodexBar and the Z.AI usage-browser repository for UI/schema research only;
+- `sst/models.dev` for non-authoritative catalog corroboration only.
 
 Ignored source checkouts belong under `inspiration/`. Credentials, private
 correspondence, authenticated response captures, and unreviewed source must
 never be committed.
+
+## GLM-5.3 Coding Plan status (2026-08-15)
+
+Z.AI's public documentation now lists GLM-5.3 as available to all Coding Plan
+tiers (Lite, Pro, and Max). This fork records the launch as a research input; it
+does not add the model to an Enhanced runtime catalog.
+
+The documented compatibility surface is:
+
+- model ID `glm-5.3`, with `glm-5.3[1m]` as an optional explicit one-million-
+  token-context selection;
+- a 1,048,576-token context window and 131,072-token maximum output;
+- reasoning levels `low`, `high`, and `max`, with Coding Plan's Codex mapping
+  treating minimal/light/low as low, medium/high as high, and
+  xhigh/max/ultra as max;
+- `https://api.z.ai/api/v1` for Codex-compatible clients,
+  `https://api.z.ai/api/anthropic` for Anthropic-compatible clients, and
+  `https://api.z.ai/api/coding/paas/v4` for other OpenAI-compatible clients;
+  and
+- Coding Plan credit multipliers of 6.9 for input, 1.7 for cache reads, and 24
+  for output. Public documentation says older GLM-5.2 and GLM-5.1 requests are
+  automatically routed to GLM-5.3.
+
+The public model guide describes GLM-5.3 API availability as coming soon while
+the Coding Plan documentation says the model is already live for plan users.
+That distinction must remain explicit in any later evaluation; Coding Plan
+availability is not evidence that every API product or endpoint has the same
+launch state.
+
+Primary public references:
+
+- [GLM-5.3 model guide](https://docs.z.ai/guides/llm/glm-5.3)
+- [Coding Plan model selection and reasoning mapping](https://docs.z.ai/devpack/latest-model)
+- [Coding Plan overview and credit multipliers](https://docs.z.ai/devpack/overview)
 
 ## Observed public contracts
 
