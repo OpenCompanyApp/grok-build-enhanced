@@ -174,6 +174,10 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
 
         let grok_home = crate::util::grok_home::grok_home();
         crate::builtin::extract_builtin_files(&grok_home);
+        if !cfg!(test) {
+            // Deletes dirs; must never touch a unit-test process's real home.
+            crate::builtin::purge_stale_extracted_skills(&grok_home);
+        }
 
         // Auto-register is gated (default off; env/remote settings enables). Kept out
         // of built-in extraction so the gate can read the resolved

@@ -18,10 +18,8 @@ use xai_acp_lib::{
 };
 use xai_grok_shell::{
     agent::{
-        MvpAgent,
-        activity::SESSION_FLUSH_GRACE,
-        config::Config as AgentConfig,
-        models::{RefreshStrategy, XaiSpeechModelCatalog},
+        MvpAgent, activity::SESSION_FLUSH_GRACE, config::Config as AgentConfig,
+        models::XaiSpeechModelCatalog,
     },
     auth::AuthManager,
     util::grok_home::grok_home,
@@ -214,12 +212,9 @@ pub async fn spawn_grok_shell(
     let (agent_config, models_manager) =
         xai_grok_shell::agent::init::bootstrap(&agent_config, &auth_manager, None)
             .map_err(|e| anyhow::anyhow!(e))?;
-    models_manager
-        .list_models(RefreshStrategy::OnlineIfUncached)
-        .await;
+    // Keep startup non-blocking. Voice uses the currently available
+    // bundled/cache catalog while the shared manager refreshes all providers.
     let voice_models = XaiSpeechModelCatalog::from_models(&models_manager.models());
-    // Self-heal a cold-cache/failed boot fetch once the backend recovers,
-    // matching the leader and stdio paths.
     models_manager.spawn_background_refresh();
 
     let agent_cancel = cancel.child_token();

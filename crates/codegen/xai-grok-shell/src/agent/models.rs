@@ -1642,6 +1642,50 @@ impl ModelsManager {
         self.start_xai_catalog_recovery();
     }
 
+    /// Wait for the first authenticated provider catalog without making
+    /// startup itself synchronous. The background xAI and Codex recovery
+    /// workers remain provider-local; this bounded reader only waits for one
+    /// of them to publish a usable catalog.
+    pub(crate) async fn wait_for_first_catalog(&self) {
+        let _ = self
+            .wait_for_first_catalog_inner(crate::util::config::resolve_remote_fetch_enabled())
+            .await;
+    }
+
+    async fn wait_for_first_catalog_inner(&self, remote_fetch_enabled: bool) -> bool {
+        if *self.inner.has_xai_catalog.read() || self.inner.codex_catalog.has_catalog() {
+            return true;
+        }
+        if !remote_fetch_enabled {
+            return false;
+        }
+
+        let fetch_auth = *self.inner.fetch_auth.read();
+        let xai_expected = match fetch_auth {
+            ModelFetchAuth::Session => self.inner.auth_manager.current_or_expired().is_some(),
+            ModelFetchAuth::ApiKey
+            | ModelFetchAuth::Deployment
+            | ModelFetchAuth::CustomEndpoint => true,
+        };
+        let codex_expected = current_identity().is_some();
+        if !xai_expected && !codex_expected {
+            return false;
+        }
+
+        const BUDGET: std::time::Duration = crate::http::STARTUP_AUTH_REFRESH_TIMEOUT
+            .saturating_add(crate::http::STARTUP_FETCH_TIMEOUT);
+        tokio::time::timeout(BUDGET, async {
+            loop {
+                if *self.inner.has_xai_catalog.read() || self.inner.codex_catalog.has_catalog() {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     /// Recover a missing credential-scoped xAI startup catalog without
     /// waiting for a later file/auth notification. This is required when an
     /// early prefetch is correctly discarded because its producing account
@@ -3519,6 +3563,21 @@ mod tests {
         let failed: std::io::Result<std::thread::JoinHandle<()>> = Err(error);
 
         assert!(retain_worker_thread("test worker", failed).is_none());
+    }
+
+    #[tokio::test]
+    async fn first_catalog_wait_returns_immediately_when_remote_fetch_is_disabled() {
+        let manager = test_manager();
+
+        assert!(!manager.wait_for_first_catalog_inner(false).await);
+    }
+
+    #[tokio::test]
+    async fn first_catalog_wait_accepts_an_installed_xai_catalog() {
+        let manager = test_manager();
+        *manager.inner.has_xai_catalog.write() = true;
+
+        assert!(manager.wait_for_first_catalog_inner(true).await);
     }
 
     fn test_manager() -> ModelsManager {

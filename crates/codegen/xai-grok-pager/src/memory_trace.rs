@@ -41,9 +41,35 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[path = "memory_trace_wait.rs"]
+mod memory_trace_wait;
+use memory_trace_wait::wait_full_interval;
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[path = "memory_trace_signal_topology_tests.rs"]
+mod memory_trace_signal_topology_tests;
+
+/// Test-only: `pthread_t` of the live `grok-memtrace` sampler, published when
+/// the thread starts so the isolated SIGCHLD topology test can `pthread_kill`
+/// that waiter (errno is thread-local; process-wide `kill` can miss it).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+static SAMPLER_PTHREAD: AtomicUsize = AtomicUsize::new(0);
+
+/// Test-only accessor for [`SAMPLER_PTHREAD`]. `None` until the sampler thread
+/// has entered its entry point after [`start`].
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(super) fn test_only_sampler_pthread() -> Option<usize> {
+    let value = SAMPLER_PTHREAD.load(Ordering::SeqCst);
+    (value != 0).then_some(value)
+}
+
+pub use xai_tty_utils::{ProcessResources, sample_process_memory};
 
 /// Allocator gauges sampled from jemalloc (`stats.*` mallctls). All bytes.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -133,125 +159,6 @@ pub fn install_allocator_dump_provider(provider: fn() -> String) {
 /// footprint halves). Idempotent; first caller wins.
 pub fn install_threshold_hook(hook: fn(&Path, u64)) {
     let _ = THRESHOLD_HOOK.set(hook);
-}
-
-// ─── Process memory sampling ──────────────────────────────────────────────
-
-/// Cross-platform process memory gauges. Fields are `None` where the
-/// platform offers no cheap equivalent.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ProcessMem {
-    pub footprint_bytes: Option<u64>,
-    pub rss_bytes: Option<u64>,
-}
-
-/// Sample this process's memory. Sub-microsecond syscall on macOS/Linux.
-pub fn sample_process_memory() -> ProcessMem {
-    imp::sample()
-}
-
-#[cfg(target_os = "macos")]
-mod imp {
-    use super::ProcessMem;
-
-    // Hand-rolled `task_vm_info` prefix through `phys_footprint` (the kernel
-    // accepts any count ≤ the current struct revision; passing the prefix
-    // count returns exactly these fields). Layout per XNU osfmk/mach/task_info.h.
-    #[repr(C)]
-    #[derive(Default)]
-    struct TaskVmInfoPrefix {
-        virtual_size: u64,
-        region_count: i32,
-        page_size: i32,
-        resident_size: u64,
-        resident_size_peak: u64,
-        device: u64,
-        device_peak: u64,
-        internal: u64,
-        internal_peak: u64,
-        external: u64,
-        external_peak: u64,
-        reusable: u64,
-        reusable_peak: u64,
-        purgeable_volatile_pmap: u64,
-        purgeable_volatile_resident: u64,
-        purgeable_volatile_virtual: u64,
-        compressed: u64,
-        compressed_peak: u64,
-        compressed_lifetime: u64,
-        phys_footprint: u64,
-    }
-
-    const TASK_VM_INFO: u32 = 22;
-    // mach natural_t (u32) units.
-    const PREFIX_COUNT: u32 = (size_of::<TaskVmInfoPrefix>() / size_of::<u32>()) as u32;
-
-    unsafe extern "C" {
-        // libSystem: the calling task's control port and task_info(2).
-        static mach_task_self_: u32;
-        fn task_info(task: u32, flavor: u32, info: *mut u8, count: *mut u32) -> i32;
-    }
-
-    pub(super) fn sample() -> ProcessMem {
-        let mut info = TaskVmInfoPrefix::default();
-        let mut count = PREFIX_COUNT;
-        // SAFETY: `info` is a properly sized/aligned out-buffer and `count`
-        // tells the kernel its length in natural_t units; TASK_VM_INFO on
-        // the caller's own task port cannot fault.
-        let kr = unsafe {
-            task_info(
-                mach_task_self_,
-                TASK_VM_INFO,
-                (&raw mut info).cast::<u8>(),
-                &raw mut count,
-            )
-        };
-        if kr != 0 {
-            return ProcessMem::default();
-        }
-        ProcessMem {
-            footprint_bytes: Some(info.phys_footprint),
-            rss_bytes: Some(info.resident_size),
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-mod imp {
-    use super::ProcessMem;
-
-    pub(super) fn sample() -> ProcessMem {
-        // /proc/self/statm field 2 = resident pages.
-        let Ok(statm) = std::fs::read_to_string("/proc/self/statm") else {
-            return ProcessMem::default();
-        };
-        let rss_pages: u64 = statm
-            .split_whitespace()
-            .nth(1)
-            .and_then(|f| f.parse().ok())
-            .unwrap_or(0);
-        // Kernel page size is not always 4 KiB (aarch64 kernels commonly use
-        // 16K/64K pages); ask once.
-        // SAFETY: sysconf(_SC_PAGESIZE) has no preconditions.
-        static PAGE_SIZE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-        let page = *PAGE_SIZE.get_or_init(|| {
-            let sz = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-            if sz > 0 { sz as u64 } else { 4096 }
-        });
-        ProcessMem {
-            footprint_bytes: None,
-            rss_bytes: Some(rss_pages * page),
-        }
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-mod imp {
-    use super::ProcessMem;
-
-    pub(super) fn sample() -> ProcessMem {
-        ProcessMem::default()
-    }
 }
 
 // ─── Threshold state (pure; unit-tested) ──────────────────────────────────
@@ -523,9 +430,11 @@ fn interval_from_env() -> Duration {
     let secs = std::env::var("GROK_MEMTRACE_INTERVAL_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(30)
-        .max(5);
-    Duration::from_secs(secs)
+        .unwrap_or(30);
+    // Production floors at 5s so accidental tiny values don't spam samples.
+    // Test builds allow 1s so isolated regressions can finish quickly.
+    let min_secs = if cfg!(test) { 1 } else { 5 };
+    Duration::from_secs(secs.max(min_secs))
 }
 
 fn first_threshold_from_env() -> u64 {
@@ -566,14 +475,22 @@ pub fn start(dir: PathBuf) {
         )));
     }
     let interval = interval_from_env();
-    // Detached sampler; the thread holds no locks across sleeps and dies
-    // with the process. Named for `sample`/Instruments visibility.
+    // Detached sampler: holds no locks across waits, and the JoinHandle is
+    // dropped so nothing else can unpark this thread (see memory_trace_wait).
+    // Named for `sample`/Instruments visibility; dies with the process.
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    SAMPLER_PTHREAD.store(0, Ordering::SeqCst);
     let _ = std::thread::Builder::new()
         .name("grok-memtrace".into())
         .spawn(move || {
+            #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+            {
+                // SAFETY: pthread_self returns this thread's valid pthread_t.
+                SAMPLER_PTHREAD.store(unsafe { libc::pthread_self() as usize }, Ordering::SeqCst);
+            }
             let mut wrote_start = false;
             loop {
-                std::thread::sleep(interval);
+                wait_full_interval(interval);
                 with_sink(|s| {
                     if !wrote_start {
                         wrote_start = true;

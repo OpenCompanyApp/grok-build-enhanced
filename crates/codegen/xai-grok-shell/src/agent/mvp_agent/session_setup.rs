@@ -134,7 +134,6 @@ struct SessionWorkspace {
     remote_settings: Option<crate::util::config::RemoteSettings>,
     initial_client_mcp_servers: Vec<acp::McpServer>,
     mcp_servers: Vec<acp::McpServer>,
-    managed_mcp_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     mcp_meta_config_map: McpMetaConfigMap,
 }
 /// Open the telemetry session context, then describe the session for storage.
@@ -182,7 +181,7 @@ impl MvpAgent {
             .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
         let remote_settings = self.cfg.borrow().remote_settings.clone();
         folder_trust::resolve_and_record(cwd.as_path(), remote_settings.as_ref(), false);
-        let (initial_client_mcp_servers, mcp_servers, managed_mcp_expires_at) = self
+        let (initial_client_mcp_servers, mcp_servers) = self
             .resolve_mcp_servers(client_mcp_servers, cwd.as_path())
             .await;
         Ok(SessionWorkspace {
@@ -190,7 +189,6 @@ impl MvpAgent {
             remote_settings,
             initial_client_mcp_servers,
             mcp_servers,
-            managed_mcp_expires_at,
             mcp_meta_config_map: parse_mcp_meta_config(meta),
         })
     }
@@ -241,7 +239,6 @@ impl MvpAgent {
             remote_settings,
             initial_client_mcp_servers,
             mcp_servers,
-            managed_mcp_expires_at,
             mcp_meta_config_map,
         } = self
             .resolve_workspace(
@@ -480,14 +477,13 @@ impl MvpAgent {
                     client_terminal,
                     client_fs_read,
                     client_fs_write,
-                    preloaded_envrc: None,
+                    envrc: None,
                     persisted_signals: None,
                     persisted_plan_mode: None,
                     persisted_goal_mode: None,
                     persisted_workflow_runs: Vec::new(),
                     persisted_announcement_state: None,
                     session_meta: arguments.meta.as_ref(),
-                    managed_mcp_expires_at,
                     model_agent_type: model_agent_type.as_deref(),
                     session_model_id,
                     restored_credential_binding: None,
@@ -691,7 +687,6 @@ impl MvpAgent {
             remote_settings,
             initial_client_mcp_servers,
             mcp_servers,
-            managed_mcp_expires_at,
             mcp_meta_config_map,
         } = self
             .resolve_workspace(&cwd, client_mcp_servers, request_meta.as_ref())
@@ -881,6 +876,19 @@ impl MvpAgent {
                 self.cfg.borrow().session.load_envrc.unwrap_or(true)
             }
         };
+        let envrc = if !load_envrc {
+            Some(xai_grok_workspace::envrc::spawn_envrc_load(
+                cwd.as_path().to_path_buf(),
+                false,
+            ))
+        } else if session_exists {
+            None
+        } else {
+            Some(xai_grok_workspace::envrc::spawn_envrc_load(
+                cwd.as_path().to_path_buf(),
+                folder_trust::project_scope_allowed(cwd.as_path()),
+            ))
+        };
         let (initial_total_tokens, unfinished_subagents) = self
             .replay_transcript_gate(
                 &session_id,
@@ -894,10 +902,6 @@ impl MvpAgent {
                 no_replay,
             )
             .await?;
-        let preloaded_envrc = xai_grok_workspace::envrc::load_envrc_or_empty_when_trusted(
-            cwd.as_path(),
-            load_envrc && folder_trust::project_scope_allowed(cwd.as_path()),
-        );
         let ClientCaps {
             code_nav: client_code_nav_enabled,
             terminal: client_terminal,
@@ -944,14 +948,13 @@ impl MvpAgent {
                     client_terminal,
                     client_fs_read,
                     client_fs_write,
-                    preloaded_envrc: Some(preloaded_envrc),
+                    envrc,
                     persisted_signals,
                     persisted_plan_mode,
                     persisted_goal_mode: _persisted_goal_mode,
                     persisted_workflow_runs,
                     persisted_announcement_state,
                     session_meta: request_meta.as_ref(),
-                    managed_mcp_expires_at,
                     model_agent_type: persisted_agent_name.as_deref(),
                     session_model_id: spawn_model_id,
                     restored_credential_binding: summary.credential_binding.clone(),
