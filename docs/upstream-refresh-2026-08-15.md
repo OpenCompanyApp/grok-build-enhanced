@@ -121,6 +121,26 @@ tests. Formatting, pager-bin checking, and strict manifest coverage also pass.
 `GB-B13-WORKSPACE-RPC`, `GB-B13-SESSION-EVENTS`, `GB-B13-WIRE`, and
 `GB-B13-INTEGRATION` therefore close as **adopt**.
 
+## Closed Grok adoption: be71 preserved surfaces
+
+Commit `6f5b8f6d` adopts the remaining `be713136` preserved-surface behavior.
+The fork now carries rewind and MCP state fixes, subagent and tool lifecycle
+updates, cancellable Git/search work, sandbox skill paths, trace and modal
+behavior, video ZDR enforcement, fork-owned updates, slash suggestions, goal and
+session runtime changes, notifications, steering and selection improvements,
+startup status, and structured sampler errors. Provider boundaries remain
+explicit: Codex and Kimi errors are sanitized locally, video is disabled for
+non-xAI providers, and no credential fragment enters logs or telemetry.
+
+Full library validation passed 139 update tests, 348 sampling-type tests, 338
+sampler tests, 286 fast-worktree tests, 80 sandbox tests plus the focused
+trailing-glob case, 6 tty child-wait tests, 104 tool-type tests, 8,384 pager
+tests, 6,463 shell tests, 3,031 tool tests, and 1,721 serial workspace tests.
+The pager-bin update integration test, formatting, pager-bin check, and strict
+manifest coverage also pass. All 15 open `GB-BE71-*` behavior obligations
+therefore close as **adopt**; the release-only obligation remains closed as
+**not applicable** because Enhanced owns its release route.
+
 ## Inspiration-source decisions
 
 | Source | Decision |
@@ -134,12 +154,12 @@ tests. Formatting, pager-bin checking, and strict manifest coverage also pass.
 
 The campaign contains 92 stable obligations:
 
-- 12 closed **adopt** items;
+- 27 closed **adopt** items;
 - 7 closed **already equivalent** items;
 - 31 closed **not applicable** items; and
-- 42 open **temporarily deferred** items.
+- 27 open **temporarily deferred** items.
 
-All 78 prior IDs are carried forward. The open set contains 34 Grok adoption
+All 78 prior IDs are carried forward. The open set contains 19 Grok adoption
 obligations and 8 Codex adapter/harness obligations. No prior deferral vanished
 or changed classification without closure evidence.
 
@@ -162,7 +182,7 @@ classification; no rename inference or abbreviated object identity is used.
 
 ## Acknowledgement and publication decision
 
-Grok acknowledgement is ineligible because 34 Grok adoption obligations remain
+Grok acknowledgement is ineligible because 19 Grok adoption obligations remain
 open after this refresh. The publication workflow requires an eligible audited
 acknowledgement marker whose first-parent tree is unchanged. There is therefore
 no Reviewed-pin advancement, prepare step, marker merge, release tag, GitHub

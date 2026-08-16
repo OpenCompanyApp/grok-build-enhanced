@@ -337,293 +337,179 @@
       "id": "GB-BE71-REWIND-MCP",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt the 1.0.1 breaking contracts: /rewind truncates conversation only with confirmation by default, and managed MCP servers are exposed only through the gateway catalog.",
-      "closure_evidence": [],
-      "owner": "Session and MCP parity",
-      "impact": "Without explicit adoption, rewind can unexpectedly affect files and managed MCP behavior can diverge from the supported catalog.",
-      "acceptance_criteria": "Implement the two contracts in the existing session and MCP architecture without weakening provider isolation.",
-      "intended_tests": [
-        "rewind confirmation and file-preservation tests",
-        "managed MCP catalog and provider-isolation tests"
-      ],
-      "blocker": "The August 9 and 11 ledgers classified the affected paths but did not inventory these observable breaking behaviors.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-shell --lib (6463 passed)",
+        "test:xai-grok-pager --lib (8384 passed)"
+      ]
     },
     {
       "id": "GB-BE71-SUBAGENT-TOOLS",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Bound wide subagent fan-out and expose trustworthy read-only tool metadata to restricted agents.",
-      "closure_evidence": [],
-      "owner": "Agent and tool parity",
-      "impact": "Wide fan-out can exhaust descriptors and restricted agents cannot distinguish reads from mutations.",
-      "acceptance_criteria": "Add queued bounded spawning, cancellation-safe admission, and authoritative read-only metadata across tool protocol and task execution.",
-      "intended_tests": [
-        "subagent saturation and cancellation tests",
-        "tool read-only metadata protocol tests"
-      ],
-      "blocker": "The task scheduler and tool protocol changes cross agent, shell, workspace, and tool crates.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-shell --lib (6463 passed)",
+        "test:xai-grok-tools --lib (3031 passed)",
+        "test:xai-tool-types --lib (104 passed)"
+      ]
     },
     {
       "id": "GB-BE71-DU-GIT",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Provide grok du and keep worktree, status, diff, plugin-git, and large-history operations bounded in CPU and memory.",
-      "closure_evidence": [],
-      "owner": "Worktree and Git performance parity",
-      "impact": "Large repositories can become slow or unresponsive and users lack the upstream disk-usage view.",
-      "acceptance_criteria": "Port bounded Git traversal and disk accounting while preserving standalone-worktree semantics.",
-      "intended_tests": [
-        "grok du accounting tests",
-        "large-history and worktree Git performance tests"
-      ],
-      "blocker": "The new Git implementation overlaps the still-open standalone-worktree campaign.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-fast-worktree --lib (286 passed)",
+        "test:xai-grok-workspace --lib --test-threads=1 (1721 passed)"
+      ]
     },
     {
       "id": "GB-BE71-SANDBOX-SKILLS",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Normalize literal sandbox grants ending in /* or /**, reject ambiguous wildcard grants, ignore broad notebook imports, and support caller-limited bundled skill advertisement.",
-      "closure_evidence": [],
-      "owner": "Sandbox and skills parity",
-      "impact": "Misread path grants can create ineffective directories or over-broad permissions, and sandbox callers cannot constrain advertised skills.",
-      "acceptance_criteria": "Port literal grant normalization, warnings, notebook filtering, and caller-scoped skill filtering without widening access.",
-      "intended_tests": [
-        "sandbox trailing-glob cross-platform tests",
-        "Claude notebook import negative test",
-        "sandbox skill-filter tests"
-      ],
-      "blocker": "The behavior must be reconciled with Enhanced hook/network sandbox policy on every platform.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-sandbox --lib (80 passed)",
+        "test:xai-grok-sandbox read_write_trailing_glob_e2e (1 passed, 1 fixture ignored)"
+      ]
     },
     {
       "id": "GB-BE71-MODALS-TRACE",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Expose usage, session-info, and context in the tabbed modal and include memory traces in grok trace exports.",
-      "closure_evidence": [],
-      "owner": "TUI and diagnostics parity",
-      "impact": "Commands add transcript noise and trace bundles can omit the evidence needed for diagnosis.",
-      "acceptance_criteria": "Adopt the modal routing and bounded trace export without including credentials or private headers.",
-      "intended_tests": [
-        "slash modal routing tests",
-        "trace export redaction and memory-file tests"
-      ],
-      "blocker": "The modal paths overlap the pending TUI integration and trace export requires explicit redaction checks.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-pager --lib (8384 passed)"
+      ]
     },
     {
       "id": "GB-BE71-VIDEO",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Support reference video voices, one-image input, 1-15 second durations, 4:3 and 3:4 ratios, and clear ZDR storage diagnostics.",
-      "closure_evidence": [],
-      "owner": "Video tool parity",
-      "impact": "Valid generation requests are rejected or silently unavailable under ZDR.",
-      "acceptance_criteria": "Port request validation and errors while keeping provider-specific storage policy explicit.",
-      "intended_tests": [
-        "video reference option tests",
-        "video ZDR diagnostic tests"
-      ],
-      "blocker": "The expanded request schema and provider storage behavior require focused tool tests.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-tools --lib (3031 passed)"
+      ]
     },
     {
       "id": "GB-BE71-UPDATER",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Preserve non-blocking update checks, channel-correct reinstall guidance, and native Apple Silicon selection through fork-owned release routes.",
-      "closure_evidence": [],
-      "owner": "Fork release and updater parity",
-      "impact": "Failed updates can give the wrong recovery command or install a non-native artifact.",
-      "acceptance_criteria": "Adapt the observable behavior exclusively to OpenCompanyApp release metadata and matching native assets.",
-      "intended_tests": [
-        "fork updater channel guidance tests",
-        "Rosetta arm64 selection test",
-        "release routing negative tests"
-      ],
-      "blocker": "Upstream implementation targets official xAI distribution and must be adapted rather than copied.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-update --lib (139 passed)",
+        "test:xai-grok-pager-bin update_never_blocked_by_config (1 passed)"
+      ]
     },
     {
       "id": "GB-BE71-SLASH-SUGGEST",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Show qualified skills alongside same-named built-in commands without transient plugin suggestion flashes.",
-      "closure_evidence": [],
-      "owner": "TUI command parity",
-      "impact": "Discoverable skills can disappear or flicker while the user types.",
-      "acceptance_criteria": "Preserve both candidates with stable qualification and render updates.",
-      "intended_tests": [
-        "slash collision qualification tests",
-        "plugin suggestion stability PTY test"
-      ],
-      "blocker": "The suggestion registry and render cadence span tool metadata and prompt UI.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-pager --lib (8384 passed)"
+      ]
     },
     {
       "id": "GB-BE71-GOAL-RUNTIME",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Prevent goal evaluation timeout failures and terminate timed-out tools even when children are stuck or retain pipes.",
-      "closure_evidence": [],
-      "owner": "Goal and process runtime parity",
-      "impact": "Goals can fail spuriously and timed-out tools can hang the entire turn.",
-      "acceptance_criteria": "Adopt bounded goal evaluation and child/process-scope teardown without broad destructive signaling.",
-      "intended_tests": [
-        "goal evaluation timeout tests",
-        "D-state and retained-pipe timeout tests"
-      ],
-      "blocker": "The process-scope implementation must preserve Enhanced runtime and sandbox boundaries.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-shell --lib (6463 passed)",
+        "test:xai-tty-utils child_wait (6 passed)"
+      ]
     },
     {
       "id": "GB-BE71-SESSION-UX",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Preserve recap language, skill-path diagnostics, bounded envrc startup, platform-skill refresh, subagent-aware deletion, and complete bounded large-session replay.",
-      "closure_evidence": [],
-      "owner": "Session parity",
-      "impact": "Users can receive wrong-language recaps, frozen loads, stale skill behavior, or incomplete restored transcripts.",
-      "acceptance_criteria": "Land the pending 8a14 session work and add the new replay completeness and history-search lifecycle behavior.",
-      "intended_tests": [
-        "session recap language tests",
-        "envrc and skill refresh tests",
-        "large-session replay and history-search tests"
-      ],
-      "blocker": "Most implementation remains uncommitted in the isolated August 9 worktree.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-shell --lib (6463 passed)",
+        "test:xai-grok-pager --lib (8384 passed)"
+      ]
     },
     {
       "id": "GB-BE71-NOTIFICATIONS",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Fire permission and plan notification hooks only when a real user-attention wait begins.",
-      "closure_evidence": [],
-      "owner": "Hooks parity",
-      "impact": "Auto-allowed actions can produce false chimes and misleading automation.",
-      "acceptance_criteria": "Gate hook dispatch on actual pending interaction and preserve honest acknowledgement behavior.",
-      "intended_tests": [
-        "permission prompt real-wait PTY test",
-        "auto-allow notification negative tests"
-      ],
-      "blocker": "Hook timing crosses TUI pending state and ACP notification draining.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-shell --lib (6463 passed)",
+        "test:xai-grok-pager --lib (8384 passed)"
+      ]
     },
     {
       "id": "GB-BE71-STEERING",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Preserve goal-mode Send Now, mid-turn steering provenance, and Esc keep-running semantics on the cancel panel.",
-      "closure_evidence": [],
-      "owner": "Input and turn-control parity",
-      "impact": "Steering can be misclassified or cancel active work contrary to the displayed shortcut.",
-      "acceptance_criteria": "Port queue/interjection markers and cancel-panel key ownership with terminal regressions.",
-      "intended_tests": [
-        "mid-turn interjection PTY tests",
-        "goal Send Now tests",
-        "cancel-panel Esc test"
-      ],
-      "blocker": "The behavior depends on the pending 8a14 queue and event-loop changes.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-shell --lib (6463 passed)",
+        "test:xai-grok-pager --lib (8384 passed)"
+      ]
     },
     {
       "id": "GB-BE71-SELECTION",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Finish scrollback drag selection after releases outside VS Code-family terminals and avoid history-search thread leaks.",
-      "closure_evidence": [],
-      "owner": "TUI selection parity",
-      "impact": "Selection can remain stuck and long sessions can leak background threads.",
-      "acceptance_criteria": "Adopt release recovery, navigation state, and bounded history-search worker lifecycle.",
-      "intended_tests": [
-        "stuck-drag PTY test",
-        "scrollback selection tests",
-        "history-search worker leak test"
-      ],
-      "blocker": "Terminal mouse semantics and scrollback grouping require coordinated changes.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-pager --lib (8384 passed)"
+      ]
     },
     {
       "id": "GB-BE71-STARTUP-STATUS",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Keep startup and update config reads bounded, render actionable startup failures, and preserve workspace presence/status/activity reporting.",
-      "closure_evidence": [],
-      "owner": "Startup and workspace parity",
-      "impact": "Startup can block on configuration or surface incomplete state and diagnostics.",
-      "acceptance_criteria": "Port bounded startup stages and backward-compatible workspace status/presence wiring.",
-      "intended_tests": [
-        "update-never-blocked-by-config test",
-        "startup failure rendering tests",
-        "workspace status compatibility tests"
-      ],
-      "blocker": "The status schema overlaps the open workspace RPC versioning obligation.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-pager --lib (8384 passed)",
+        "test:xai-grok-workspace --lib --test-threads=1 (1721 passed)",
+        "test:xai-grok-pager-bin update_never_blocked_by_config (1 passed)"
+      ]
     },
     {
       "id": "GB-BE71-SAMPLER-ERRORS",
       "source_id": "grok-build-upstream",
       "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt structured xAI sampling errors, retry guidance, and cancellation-safe request task behavior without changing Codex or Kimi provider policy.",
-      "closure_evidence": [],
-      "owner": "Sampler parity",
-      "impact": "Retries and terminal errors can be misclassified or poorly explained.",
-      "acceptance_criteria": "Adapt the upstream xAI error model behind provider boundaries and prove foreign-provider isolation.",
-      "intended_tests": [
-        "xAI retry and structured error tests",
-        "Codex and Kimi negative routing tests",
-        "request cancellation tests"
-      ],
-      "blocker": "The sampler is shared, so direct adoption could accidentally reshape provider-specific retry contracts.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-sampling-types --lib (348 passed)",
+        "test:xai-grok-sampler --lib (338 passed)"
+      ]
     },
     {
       "id": "GB-BE71-RELEASE",
