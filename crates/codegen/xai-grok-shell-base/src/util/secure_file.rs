@@ -111,6 +111,16 @@ pub fn ensure_secure_file_permissions(file: &File, _path: &Path) -> io::Result<(
     Ok(())
 }
 
+/// Re-assert owner-only permissions for an existing file by path.
+///
+/// This is intended for files that have already been atomically published.
+/// Sensitive writes should continue to use [`open_secure_file`] so permissions
+/// are installed before any credential bytes are written.
+pub fn ensure_owner_only_permissions(path: &Path) -> io::Result<()> {
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    ensure_secure_file_permissions(&file, path)
+}
+
 /// Sets Windows-specific secure permissions on a file.
 ///
 /// This function modifies the file's ACL to:

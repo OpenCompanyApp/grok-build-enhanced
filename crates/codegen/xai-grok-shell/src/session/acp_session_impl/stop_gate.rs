@@ -407,6 +407,7 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: owner.map(str::to_owned),
+            kill_result_delivered: false,
             description: None,
             is_backgrounded: false,
             output_total_bytes: 0,

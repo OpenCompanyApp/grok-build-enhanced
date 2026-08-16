@@ -903,7 +903,7 @@ impl SessionActor {
             } else {
                 mcp_state.cancel_init();
                 self.events
-                    .emit(xai_file_utils::events::Event::McpInitCancelled {
+                    .emit(xai_grok_session_events::Event::McpInitCancelled {
                         reason: MCP_INIT_CANCELLED_CONFIG_CHANGED.to_string(),
                     });
             }
@@ -975,7 +975,7 @@ impl SessionActor {
             } else {
                 mcp_state.cancel_init();
                 self.events
-                    .emit(xai_file_utils::events::Event::McpInitCancelled {
+                    .emit(xai_grok_session_events::Event::McpInitCancelled {
                         reason: MCP_INIT_CANCELLED_CONFIG_CHANGED.to_string(),
                     });
             }
@@ -1056,7 +1056,7 @@ impl SessionActor {
                         .iter()
                         .find(|c| mcp_server_name(c) == sname.as_str());
                     self.events
-                        .emit(xai_file_utils::events::Event::McpServerFailed {
+                        .emit(xai_grok_session_events::Event::McpServerFailed {
                             server_name: sname,
                             transport: cfg.map(|c| mcp_transport_str(c).to_string()),
                             target: cfg.map(mcp_target_str),
@@ -1078,7 +1078,7 @@ impl SessionActor {
             if mcp_state.generation() != generation {
                 mcp_state.cancel_init();
                 self.events
-                    .emit(xai_file_utils::events::Event::McpInitCancelled {
+                    .emit(xai_grok_session_events::Event::McpInitCancelled {
                         reason: MCP_INIT_CANCELLED_CONFIG_CHANGED.to_string(),
                     });
                 return;
@@ -1169,7 +1169,7 @@ impl SessionActor {
                     let server_name = client.server_name().to_string();
                     let server_start = std::time::Instant::now();
                     let timeout_sec = client.startup_timeout_sec();
-                    ew.emit(xai_file_utils::events::Event::McpServerStarting {
+                    ew.emit(xai_grok_session_events::Event::McpServerStarting {
                         server_name: server_name.clone(),
                         transport: transport.clone(),
                         target,
@@ -1245,7 +1245,7 @@ impl SessionActor {
                         generation,
                         mcp_state.generation()
                     );
-                    event_writer.emit(xai_file_utils::events::Event::McpInitCancelled {
+                    event_writer.emit(xai_grok_session_events::Event::McpInitCancelled {
                         reason: MCP_INIT_CANCELLED_CONFIG_CHANGED.to_string(),
                     });
                     return;
@@ -1337,7 +1337,7 @@ impl SessionActor {
                                             e
                                         );
                                         event_writer
-                                            .emit(xai_file_utils::events::Event::McpToolRegistrationFailed {
+                                            .emit(xai_grok_session_events::Event::McpToolRegistrationFailed {
                                                 server_name: server_name.clone(),
                                                 tool_name: qualified_name.clone(),
                                                 error: e.to_string(),
@@ -1372,7 +1372,7 @@ impl SessionActor {
                                 .get(server_name.as_str())
                                 .copied()
                                 .unwrap_or("unknown");
-                            event_writer.emit(xai_file_utils::events::Event::McpServerConnected {
+                            event_writer.emit(xai_grok_session_events::Event::McpServerConnected {
                                 server_name: server_name.clone(),
                                 transport: transport_str.to_string(),
                                 tool_count,
@@ -1397,15 +1397,15 @@ impl SessionActor {
                         }
                         Err((server_name, ref e, needs_auth, elapsed, timeout_sec)) => {
                             let error_cat = if needs_auth {
-                                xai_file_utils::events::McpErrorCategory::AuthRequired
+                                xai_grok_session_events::McpErrorCategory::AuthRequired
                             } else {
                                 e.error_category()
                             };
                             let error_type_label = match error_cat {
-                                xai_file_utils::events::McpErrorCategory::AuthRequired => {
+                                xai_grok_session_events::McpErrorCategory::AuthRequired => {
                                     xai_grok_telemetry::events::McpErrorType::Auth
                                 }
-                                xai_file_utils::events::McpErrorCategory::Timeout => {
+                                xai_grok_session_events::McpErrorCategory::Timeout => {
                                     xai_grok_telemetry::events::McpErrorType::Timeout
                                 }
                                 _ => xai_grok_telemetry::events::McpErrorType::HandshakeFailed,
@@ -1434,7 +1434,7 @@ impl SessionActor {
                                 None,
                                 Some(error_type_label.as_str()),
                             );
-                            event_writer.emit(xai_file_utils::events::Event::McpServerFailed {
+                            event_writer.emit(xai_grok_session_events::Event::McpServerFailed {
                                 server_name: server_name.clone(),
                                 transport: Some(transport_str.to_string()),
                                 target: server_target_map.get(server_name.as_str()).cloned(),
@@ -1491,7 +1491,7 @@ impl SessionActor {
                         is_reinit,
                     },
                 );
-                event_writer.emit(xai_file_utils::events::Event::McpInitCompleted {
+                event_writer.emit(xai_grok_session_events::Event::McpInitCompleted {
                     total_servers: server_count,
                     succeeded: servers_succeeded,
                     failed: servers_failed,

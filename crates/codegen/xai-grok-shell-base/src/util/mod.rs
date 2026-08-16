@@ -62,11 +62,21 @@ fn matches_trusted_base_url(candidate: &str, trusted_base: &str) -> bool {
 pub fn is_prod_cli_chat_proxy_url(url: &str) -> bool {
     matches_trusted_base_url(url, crate::env::PROD_CLI_CHAT_PROXY_BASE_URL)
 }
+/// True for configured first-party cli-chat-proxy routes, excluding arbitrary loopback URLs.
+///
+/// Unlike [`is_cli_chat_proxy_url`], this only trusts the exact compiled or
+/// environment-selected route and is suitable for xAI-only request extensions.
+pub fn is_trusted_cli_chat_proxy_url(url: &str) -> bool {
+    if is_prod_cli_chat_proxy_url(url) {
+        return true;
+    }
+    false
+}
 /// True for cli-chat-proxy URLs (production, plus local-dev hosts when the
 /// optional non-production feature is enabled). When that feature is on,
 /// runtime env overrides can extend this trust set.
 pub fn is_cli_chat_proxy_url(url: &str) -> bool {
-    if matches_trusted_base_url(url, crate::env::PROD_CLI_CHAT_PROXY_BASE_URL) {
+    if is_trusted_cli_chat_proxy_url(url) {
         return true;
     }
     #[cfg(feature = "test-support")]
@@ -99,30 +109,50 @@ pub fn is_cli_chat_proxy_url(url: &str) -> bool {
 /// Scheme-agnostic so credential *refusal* fails closed. To decide where to
 /// *attach* a session bearer, use [`is_xai_api_bearer_url`].
 pub fn is_xai_api_url(url: &str) -> bool {
+    is_xai_api_url_impl(url, false)
+}
+/// Like [`is_xai_api_url`], but requires `https` on every arm, so a
+/// session bearer is never attached to a cleartext endpoint, including loopback
+/// (a co-located process could otherwise read a token sent to `http://localhost`).
+pub fn is_xai_api_bearer_url(url: &str) -> bool {
+    if is_trusted_xai_https_url(url) {
+        return true;
+    }
+    false
+}
+/// True for trusted first-party xAI HTTPS routes, excluding arbitrary loopback URLs.
+pub fn is_trusted_xai_https_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    if is_loopback_host(&parsed) {
+        return false;
+    }
+    if is_trusted_cli_chat_proxy_url(url) {
+        return true;
+    }
+    parsed
+        .host_str()
+        .is_some_and(|host| host == "x.ai" || host.ends_with(".x.ai"))
+}
+fn is_xai_api_url_impl(url: &str, require_https: bool) -> bool {
+    if require_https {
+        return is_xai_api_bearer_url(url);
+    }
     if is_cli_chat_proxy_url(url) {
         return true;
     }
     reqwest::Url::parse(url)
         .ok()
-        .and_then(|u| u.host_str().map(str::to_owned))
+        .and_then(|url| url.host_str().map(str::to_owned))
         .is_some_and(|host| host == "x.ai" || host.ends_with(".x.ai"))
 }
 
 /// Backward-compatible name retained for downstream credential-seam callers.
 pub fn is_first_party_xai_url(url: &str) -> bool {
-    is_xai_api_url(url)
-}
-
-/// True only when a session bearer may be attached to an xAI API URL.
-/// HTTPS is mandatory and all loopback spellings are rejected, including
-/// local HTTPS, so a co-located process cannot receive the session token.
-pub fn is_xai_api_bearer_url(url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    if parsed.scheme() != "https" || is_loopback_host(&parsed) {
-        return false;
-    }
     is_xai_api_url(url)
 }
 

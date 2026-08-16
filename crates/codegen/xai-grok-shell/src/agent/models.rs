@@ -1909,6 +1909,35 @@ impl ModelsManager {
         }
     }
 
+    /// A catalog-fetch session refresh bounded by `STARTUP_AUTH_REFRESH_TIMEOUT`.
+    /// A hung IdP on a cold cache degrades to a session-less fetch (the
+    /// bundled/cache catalog stays and the next refresh retries) instead of
+    /// stalling boot, mirroring the readiness path's no-mint auth bound.
+    async fn bounded_startup_auth(auth_manager: &Arc<AuthManager>) -> Option<GrokAuth> {
+        // A dark-wake deferral degrades to a session-less fetch here and the
+        // next full wake retries.
+        Self::bounded_auth_refresh(async { auth_manager.auth_background().await.ok() }).await
+    }
+
+    /// Bounds an auth-refresh future to `STARTUP_AUTH_REFRESH_TIMEOUT`, yielding
+    /// `None` on timeout. Split out so the timeout contract is unit-testable
+    /// without a live IdP.
+    async fn bounded_auth_refresh<F>(fut: F) -> Option<GrokAuth>
+    where
+        F: std::future::Future<Output = Option<GrokAuth>>,
+    {
+        match tokio::time::timeout(crate::http::STARTUP_AUTH_REFRESH_TIMEOUT, fut).await {
+            Ok(auth) => auth,
+            Err(_) => {
+                tracing::warn!(
+                    timeout_secs = crate::http::STARTUP_AUTH_REFRESH_TIMEOUT.as_secs(),
+                    "model catalog: auth refresh timed out; fetching without a fresh session"
+                );
+                None
+            }
+        }
+    }
+
     /// Re-attest the credential returned by `AuthManager::auth()` before a
     /// network request starts. `auth()` may itself refresh an external bearer
     /// or adopt a sibling-process credential, so the identity can differ from

@@ -450,6 +450,24 @@ fn has_rules_directory(file_path: &str, config_dir: &str) -> bool {
     false
 }
 
+fn instruction_scope(
+    file_path: &str,
+    grok_home: &Path,
+    vendor_homes: &[(PathBuf, bool)],
+    workspace_root: &Path,
+) -> Scope {
+    if crate::util::is_user_instruction_path(
+        Path::new(file_path),
+        grok_home,
+        vendor_homes,
+        &[workspace_root],
+    ) {
+        Scope::Global
+    } else {
+        Scope::Project
+    }
+}
+
 fn instruction_file_type(
     file_path: &str,
     claude_imported: bool,

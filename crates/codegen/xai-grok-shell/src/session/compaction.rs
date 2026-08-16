@@ -16,8 +16,8 @@ use crate::session::helpers::CompactionStateContext;
 use crate::session::helpers::compaction_context::CompactionInputs;
 use crate::session::helpers::compaction_context::to_system_reminder;
 use crate::session::helpers::session_compact::{
-    CompactOutput, CompactionOutcome, build_compaction_chat_history,
-    build_two_pass_compaction_prompt, generate_session_compact, is_context_length_error,
+    CompactOutput, CompactionOutcome, build_two_pass_compaction_prompt, generate_session_compact,
+    is_context_length_error,
 };
 use crate::session::persistence::PersistenceMsg;
 use crate::session::two_pass::{
@@ -277,6 +277,7 @@ impl SessionActor {
         };
         let tool_defs = self.prepare_tool_definitions().await;
         let tools = self.turn_base_tool_specs(&tool_defs);
+        let compaction_tool_tokens = xai_chat_state::estimate_tool_specs_tokens(&tools);
         let hosted_tools = self.hosted_tools_for_turn();
         let wall_clock_budget_secs = self
             .agent
@@ -286,6 +287,7 @@ impl SessionActor {
         let (cancel, _cancel_scope) = self.compaction.cancel.enter();
         match generate_session_compact(
             history,
+            compaction_tool_tokens,
             tools,
             hosted_tools,
             client,
@@ -1221,6 +1223,7 @@ impl SessionActor {
             user_context.clone(),
             compaction_tools.clone(),
             compaction_hosted_tools.clone(),
+            compaction_tool_tokens,
             sampling_client,
             self.session_info.id.clone(),
             sampling_config.clone(),
@@ -1412,12 +1415,9 @@ impl SessionActor {
         } else {
             active_model_id
         };
-        if two_pass_output.is_none() {
-            let request_chat_history = build_compaction_chat_history(
-                request_turns,
-                user_context.as_deref(),
-                use_short_prompt,
-            );
+        if two_pass_output.is_none()
+            && let Some(request_chat_history) = sampler.take_last_attempted_items()
+        {
             self.persist_compaction_request_artifact(
                 request_chat_history,
                 compaction_tools,
@@ -2559,7 +2559,7 @@ mod inline_auto_compact_flow_tests {
         let state = TokioMutex::new(State {
             running_task: None,
             pending_inputs: VecDeque::new(),
-            combine_edit_holds: std::collections::HashSet::new(),
+            edit_holds: std::collections::HashMap::new(),
             pending_notifications: Vec::new(),
             notifications_suppressed: false,
             rewindable: false,
@@ -2781,6 +2781,7 @@ mod inline_auto_compact_flow_tests {
                 crate::session::acp_session::StreamingTurnCapture::default(),
             ),
             turn_stream_drained: parking_lot::Mutex::new(None),
+            pending_image_strip: parking_lot::Mutex::new(None),
             sampler_handle: xai_grok_sampler::SamplerHandle::noop(),
             rebuild_spec: crate::session::agent_rebuild::test_rebuild_spec_default(),
             image_description_model: crate::test_support::TEST_MODEL.to_owned(),
@@ -2791,6 +2792,7 @@ mod inline_auto_compact_flow_tests {
             subagent_token_records: parking_lot::Mutex::new(std::collections::HashMap::new()),
             workspace_ops: xai_grok_workspace::WorkspaceOps::for_test(),
             trace_config_template: std::cell::RefCell::new(None),
+            last_live_orphan_reconcile: std::cell::Cell::new(None),
         }
     }
     /// Test check_auto_compact_needed uses state values.

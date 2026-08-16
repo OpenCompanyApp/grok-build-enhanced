@@ -49,6 +49,13 @@ fn resolve_configured_cutoff(
         web_search: prefer_non_empty(over_web, seed_web, WebSearchOptions::is_empty),
     }
 }
+
+const CLASSIFIER_REQUEST_TOKEN_RESERVE: u64 = 16_384;
+
+fn classifier_request_fits_context(input_tokens: u64, context_window: u64) -> bool {
+    input_tokens <= context_window.saturating_sub(CLASSIFIER_REQUEST_TOKEN_RESERVE)
+}
+
 /// Auth-failure detector for tool errors. Matches strictly on HTTP 401
 /// when the error carries a structured status code, mirroring
 /// `SamplingError::is_auth_error` in xai-grok-sampling-types: 403 is
@@ -710,6 +717,11 @@ impl SessionActor {
             xai_grok_sampling_types::ProviderId::Xai => None,
         };
         let mut state_cfg = cfg.clone();
+        let extra_response_includes = crate::agent::config::response_include_extensions(
+            self.supports_backend_search.get(),
+            &cfg.api_backend,
+            &cfg.base_url,
+        );
         let full_config = SamplingConfig {
             provider: cfg.provider,
             credential_source,
@@ -723,6 +735,7 @@ impl SessionActor {
             api_backend: cfg.api_backend,
             auth_scheme,
             extra_headers,
+            extra_response_includes,
             query_params: cfg.query_params.clone(),
             env_http_headers: cfg.env_http_headers.clone(),
             comp_hash: cfg.comp_hash.clone(),
@@ -824,12 +837,13 @@ impl SessionActor {
                 .as_ref()
                 .ok()
                 .and_then(Option::as_ref)
-                .map(|(_, route)| route.model.as_str()),
+                .map(|(_, route, _)| route.model.as_str()),
             &session_model,
             &models,
         );
         let (prompt_type, classifier_reasoning_effort) =
             crate::util::config::auto_mode_classifier_defaults(&auto_cfg, effective_supports_re);
+        let classify_timeout = crate::util::config::auto_mode_classify_timeout(&auto_cfg);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
             Vec<xai_grok_workspace::permission::ClassifierMessage>,
             tokio::sync::oneshot::Sender<
@@ -838,27 +852,22 @@ impl SessionActor {
         )>();
         let session = Arc::clone(self);
         tokio::task::spawn_local(async move {
-            const TIMEOUT_MS: u64 = 15_000;
             while let Some((messages, respond_to)) = rx.recv().await {
                 let result = async {
-                    let (sampling_client, model) = match &aux_classifier_sampler {
-                        Ok(Some((client, route))) => (client.clone(), route.model.clone()),
+                    let (sampling_client, model, context_window) = match &aux_classifier_sampler {
+                        Ok(Some((client, route, context_window))) => {
+                            (client.clone(), route.model.clone(), *context_window)
+                        }
                         Ok(None) => {
-                            let client = session
-                                .prepare_chat_completion(false)
+                            let (client, config) = session
+                                .prepare_bound_chat_completion(false)
                                 .await
                                 .map_err(|e| {
                                     xai_grok_workspace::permission::ClassifierFailure::TransportError(
                                         e.to_string(),
                                     )
                                 })?;
-                            let model = session
-                                .chat_state_handle
-                                .get_sampling_config()
-                                .await
-                                .map(|c| c.model)
-                                .unwrap_or_default();
-                            (client, model)
+                            (client, config.model, config.context_window)
                         }
                         Err(error) => {
                             return Err(
@@ -880,6 +889,17 @@ impl SessionActor {
                             }
                         })
                         .collect::<Vec<_>>();
+                    let input_tokens = xai_chat_state::estimate_conversation_tokens(
+                        &items,
+                    );
+                    if !classifier_request_fits_context(input_tokens, context_window) {
+                        return Err(
+                            xai_grok_workspace::permission::ClassifierFailure::TransportError(
+                                "permission auto classifier request exceeds context window"
+                                    .to_owned(),
+                            ),
+                        );
+                    }
                     let request = ConversationRequest {
                         items,
                         tools: vec![],
@@ -899,8 +919,7 @@ impl SessionActor {
                         ..ConversationRequest::default()
                     };
                     let fut = sampling_client.conversation_collect(request);
-                    let response =
-                        tokio::time::timeout(std::time::Duration::from_millis(TIMEOUT_MS), fut)
+                    let response = tokio::time::timeout(classify_timeout, fut)
                             .await
                             .map_err(|_| {
                                 xai_grok_workspace::permission::ClassifierFailure::Timeout
@@ -971,6 +990,7 @@ impl SessionActor {
         Option<(
             xai_grok_sampler::SamplingClient,
             crate::session::provider::ProviderModelRoute,
+            u64,
         )>,
         acp::Error,
     > {
@@ -997,6 +1017,7 @@ impl SessionActor {
             .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
         self.mark_codex_auxiliary_usage_incomplete(bound_runtime.route.provider)
             .await;
+        let context_window = bound_runtime.sampler_config.context_window;
         let route = bound_runtime.route;
         let client = xai_grok_sampler::SamplingClient::new(bound_runtime.sampler_config).map_err(
             |error| {
@@ -1008,7 +1029,7 @@ impl SessionActor {
                 self.to_acp_error(error)
             },
         )?;
-        Ok(Some((client, route)))
+        Ok(Some((client, route, context_window)))
     }
 
     /// Prepare an auxiliary sampler with provider-safe fallback. An explicit
@@ -1027,8 +1048,8 @@ impl SessionActor {
         acp::Error,
     > {
         if let Some(slug) = requested_model {
-            if let Some(routed) = self.resolve_routed_aux_sampling_client(slug).await? {
-                return Ok(routed);
+            if let Some((client, route, _)) = self.resolve_routed_aux_sampling_client(slug).await? {
+                return Ok((client, route));
             }
             tracing::warn!(
                 purpose,
@@ -2103,5 +2124,25 @@ impl SessionActor {
         }
         self.chat_state_handle
             .push_assistant_response(assistant_item);
+    }
+}
+
+#[cfg(test)]
+mod classifier_request_bound_tests {
+    use super::{CLASSIFIER_REQUEST_TOKEN_RESERVE, classifier_request_fits_context};
+
+    #[test]
+    fn enforces_reserved_threshold_with_saturating_arithmetic() {
+        let window = 12_000 + CLASSIFIER_REQUEST_TOKEN_RESERVE;
+        for (input, context_window, expected) in [
+            (12_000, window, true),
+            (12_001, window, false),
+            (u64::MAX, u64::MAX, false),
+        ] {
+            assert_eq!(
+                classifier_request_fits_context(input, context_window),
+                expected
+            );
+        }
     }
 }

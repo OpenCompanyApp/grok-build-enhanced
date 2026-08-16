@@ -898,6 +898,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             session_id,
             info,
             text,
+            fields,
             nonce,
         } => {
             let minimal = app.screen_mode.is_minimal();
@@ -916,7 +917,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 }
                 agent.apply_full_context_info(info.data.context);
                 if let Some(state) = usage_modal_state_mut(agent) {
-                    state.session_text = Some(text);
+                    state.session_fields = Some(fields);
                     state.session_error = None;
                 } else if minimal {
                     super::queue::push_and_page_flip(

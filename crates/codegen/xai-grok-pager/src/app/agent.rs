@@ -1863,4 +1863,49 @@ mod tests {
             vec!["hi /commit".to_string(), "go /push now".to_string()]
         );
     }
+    /// Folding a late `TaskBackgrounded` into a terminal tombstone keeps the
+    /// terminal state and backfills only what the snapshot couldn't know —
+    /// including a blank command (gateway-bridge completions synthesize one).
+    #[test]
+    fn absorb_late_backgrounded_backfills_without_resurrecting() {
+        let snapshot = xai_grok_tools::types::TaskSnapshot {
+            task_id: "t1".into(),
+            command: String::new(),
+            display_command: None,
+            cwd: "/tmp".into(),
+            start_time: SystemTime::now(),
+            end_time: None,
+            output: String::new(),
+            output_file: "/tmp/out.log".into(),
+            truncated: false,
+            exit_code: Some(0),
+            signal: None,
+            completed: true,
+            kind: Default::default(),
+            block_waited: false,
+            explicitly_killed: false,
+            kill_result_delivered: false,
+            owner_session_id: None,
+            description: None,
+            is_backgrounded: true,
+            output_total_bytes: 0,
+        };
+        let mut tombstone =
+            BgTaskState::tombstone_from_snapshot(&snapshot, BgTaskStatus::Done, None, false);
+        assert_eq!(tombstone.status, BgTaskStatus::Done);
+        assert!(tombstone.end_time.is_some(), "end_time falls back to now");
+        let mut fresh =
+            BgTaskState::tombstone_from_snapshot(&snapshot, BgTaskStatus::Running, None, false);
+        fresh.tool_call_id = "tc-1".into();
+        fresh.command = "echo hi".into();
+        fresh.description = Some("say hi".into());
+        fresh.set_stdout("demoted output".into());
+        tombstone.absorb_late_backgrounded(fresh, None);
+        assert_eq!(tombstone.status, BgTaskStatus::Done, "terminal status kept");
+        assert_eq!(tombstone.tool_call_id, "tc-1");
+        assert_eq!(tombstone.command, "echo hi", "blank command backfilled");
+        assert_eq!(tombstone.description.as_deref(), Some("say hi"));
+        assert_eq!(tombstone.stdout, "demoted output");
+        assert_eq!(tombstone.stdout_line_count, 1);
+    }
 }

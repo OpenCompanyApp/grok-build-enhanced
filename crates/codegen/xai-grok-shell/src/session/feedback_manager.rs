@@ -1859,9 +1859,7 @@ mod tests {
                 &self,
                 _reason: crate::auth::refresh::RefreshReason,
             ) -> crate::auth::refresh::RefreshOutcome {
-                crate::auth::refresh::RefreshOutcome::TransientFailure {
-                    message: "noop".into(),
-                }
+                crate::auth::refresh::RefreshOutcome::transient("noop")
             }
         }
 

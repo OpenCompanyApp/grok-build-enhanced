@@ -1,5 +1,6 @@
 //! Compacts the current conversation and generates a summary of the conversation which
 //! gets passed to the next turn of the model
+
 use crate::sampling::{
     ApiBackend, ChatCompletionRequest, ChatRequestMessage, Client as OaiCompatClient,
     ConversationItem, ConversationRequest, ConversationToolChoice, HostedTool, SamplingError,
@@ -16,6 +17,7 @@ pub use xai_chat_state::compaction_utils::{
     extract_messages_since_last_user, extract_real_user_queries, is_synthetic_extracted_query,
 };
 use xai_grok_sampler::SamplerConfig as SamplingConfig;
+
 /// Short, self-narrating compaction prompt used by the short-prompt harness only.
 /// Frames the call as "summarize for a successor assistant who only sees
 /// the user's original query plus this summary." Wrapped in
@@ -36,6 +38,26 @@ far, relevant file paths and code details, any errors encountered and how
 they were resolved, and what remains to be done. DO NOT call any tools in
 your response.
 </summary_request>"#;
+
+// Keep the upstream extraction suites wired while the fork-specific provider
+// suites remain inline below. Separate module names exercise both behavior
+// sets without duplicating symbols in one module.
+#[cfg(test)]
+#[path = "session_compact_classify_tests.rs"]
+mod upstream_classify_tests;
+#[cfg(test)]
+#[path = "session_compact_compact_cancel_await_tests.rs"]
+mod upstream_compact_cancel_await_tests;
+#[cfg(test)]
+#[path = "session_compact_compacted_history_shape_tests.rs"]
+mod upstream_compacted_history_shape_tests;
+#[cfg(test)]
+#[path = "session_compact_large_body_tests.rs"]
+mod upstream_large_body_tests;
+#[cfg(test)]
+#[path = "session_compact_reasoning_compaction_regression_tests.rs"]
+mod upstream_reasoning_compaction_regression_tests;
+
 /// Outcome of a failed `generate_session_compact` call, classified at the
 /// point of the typed upstream error so the caller can short-circuit
 /// retries without re-parsing free-form error strings.
@@ -55,8 +77,10 @@ pub(crate) enum CompactFailure {
     /// User/stop cancelled the in-flight compact. Do not retry or suppress AUTO.
     Cancelled,
 }
+
 /// Stable error payload for a user-cancelled compact (pager + retry loop).
 pub(crate) const COMPACT_CANCELLED_MSG: &str = "compact cancelled";
+
 impl CompactFailure {
     pub(crate) fn cancelled_error() -> acp::Error {
         acp::Error::internal_error().data(COMPACT_CANCELLED_MSG)
@@ -75,6 +99,7 @@ impl CompactFailure {
     }
 }
 pub(crate) use xai_grok_sampling_types::is_context_length_error;
+
 /// Classify an upstream `SamplingError` for the compaction retry loop.
 ///
 /// `Auth`, `InvalidConfiguration`, `Serialization` and
@@ -108,20 +133,18 @@ fn classify_sampling_error_for_provider(
                     && *status != StatusCode::REQUEST_TIMEOUT
                     && *status != StatusCode::TOO_MANY_REQUESTS);
             if deterministic {
-                CompactFailure::DeterministicWithCurrentModelFallback(acp_err)
+                provider_model_rejection(acp_err, provider)
             } else {
                 CompactFailure::Transient(acp_err)
             }
         }
-        SamplingError::MaxTokensTruncation => {
-            CompactFailure::DeterministicWithCurrentModelFallback(acp_err)
-        }
+        SamplingError::MaxTokensTruncation => provider_model_rejection(acp_err, provider),
         SamplingError::StreamError {
             error_type,
             message,
             ..
         } if error_type == "usage_limit_reached" || message.contains("usage limit reached") => {
-            CompactFailure::DeterministicWithCurrentModelFallback(acp_err)
+            provider_model_rejection(acp_err, provider)
         }
         SamplingError::StreamError { .. }
         | SamplingError::Http(_)
@@ -129,6 +152,20 @@ fn classify_sampling_error_for_provider(
         | SamplingError::EventStreamError(_)
         | SamplingError::EmptyResponse { .. }
         | SamplingError::DoomLoopDetected { .. } => CompactFailure::Transient(acp_err),
+    }
+}
+
+/// Preserve upstream deterministic failure semantics for ordinary providers.
+/// Only a Codex provider/model rejection is eligible for Codex CLI's one-shot
+/// previous-model -> active-model fallback.
+fn provider_model_rejection(
+    error: acp::Error,
+    provider: xai_grok_sampling_types::ProviderId,
+) -> CompactFailure {
+    if provider.is_openai_codex() {
+        CompactFailure::DeterministicWithCurrentModelFallback(error)
+    } else {
+        CompactFailure::Deterministic(error)
     }
 }
 
@@ -147,28 +184,46 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
 /// `invalid_request_error` marker, which can appear in either field, always
 /// maps to `Deterministic` (schema violations cannot be fixed by re-sending
 /// the same payload).
-fn classify_response_event_error(code: Option<&str>, message: &str) -> CompactFailure {
+fn classify_response_event_error_for_provider(
+    code: Option<&str>,
+    message: &str,
+    provider: xai_grok_sampling_types::ProviderId,
+) -> CompactFailure {
     let acp_err = acp::Error::internal_error().data(match code {
         Some(c) => format!("compact failed: {c}: {message}"),
         None => format!("compact failed: {message}"),
     });
     if matches!(code, Some("usage_limit_reached")) || message.contains("usage limit reached") {
-        return CompactFailure::DeterministicWithCurrentModelFallback(acp_err);
+        return provider_model_rejection(acp_err, provider);
     }
     if matches!(code, Some("invalid_request_error")) || message.contains("invalid_request_error") {
-        return CompactFailure::DeterministicWithCurrentModelFallback(acp_err);
+        return provider_model_rejection(acp_err, provider);
     }
+
     if let Some(status_code) = code.and_then(|c| c.parse::<u16>().ok())
         && (400..500).contains(&status_code)
         && status_code != 408
         && status_code != 429
     {
-        return CompactFailure::DeterministicWithCurrentModelFallback(acp_err);
+        return provider_model_rejection(acp_err, provider);
     }
+
+    // Size overflow arrives here with no parseable code (`code="none"`); the
+    // message is the only signal that re-sending cannot help.
     if is_context_length_error(message) {
-        return CompactFailure::DeterministicWithCurrentModelFallback(acp_err);
+        return provider_model_rejection(acp_err, provider);
     }
+
     CompactFailure::Transient(acp_err)
+}
+
+#[cfg(test)]
+fn classify_response_event_error(code: Option<&str>, message: &str) -> CompactFailure {
+    classify_response_event_error_for_provider(
+        code,
+        message,
+        xai_grok_sampling_types::ProviderId::Xai,
+    )
 }
 
 /// Recover one provider-scoped Codex credential rejection for a direct
@@ -245,26 +300,29 @@ pub(crate) fn build_compaction_prompt(
     use_short_prompt: bool,
 ) -> String {
     if use_short_prompt {
+        // Compat harness: short self-summarization prompt. Manual
+        // `/compact <text>` still appends the user-provided context as
+        // a sibling tag so the model can incorporate it.
         match user_context {
-            Some(ctx) => {
-                format!(
-                    "{SELF_SUMMARIZATION_PROMPT}\n\n\
+            Some(ctx) => format!(
+                "{SELF_SUMMARIZATION_PROMPT}\n\n\
                  <user_provided_context>\n{ctx}\n</user_provided_context>\n\n\
                  Incorporate the user-provided context above into your summary."
-                )
-            }
+            ),
             None => SELF_SUMMARIZATION_PROMPT.to_string(),
         }
     } else {
+        // Default (grok-build, codex, ...): the concise summarize prompt the
+        // grok-build models are RL-trained on. `/compact <text>` is spliced
+        // into the `{user_context_section}` slot.
         let user_context_section = match user_context {
-            Some(context) => {
-                format!(
-                    "\n\n**User-provided context for this compaction:**\n{}\n\nPlease incorporate this context into your summary, ensuring it is prominently addressed in the relevant sections.\n\n",
-                    context
-                )
-            }
+            Some(context) => format!(
+                "\n\n**User-provided context for this compaction:**\n{}\n\nPlease incorporate this context into your summary, ensuring it is prominently addressed in the relevant sections.\n\n",
+                context
+            ),
             None => String::new(),
         };
+
         format!(
             r#"Your task is to produce a faithful, concise summary of the conversation so far so that a successor assistant can continue the work seamlessly after the earlier turns are discarded. The successor will see the user's original query plus this summary. Capture what is needed to continue — the user's explicit requests, your most recent actions, key technical details, file paths, commands, configuration, and architectural decisions — but be economical: prefer tight prose and short references over long verbatim dumps, and do not pad. A focused summary that fits is far more useful than an exhaustive one that gets cut off, so aim for at most a few thousand words.
 {user_context_section}
@@ -288,6 +346,7 @@ If the prior conversation contains a note about files at /tmp/compaction/segment
         )
     }
 }
+
 /// Five-section compaction instruction for **two-pass** prefire/pass2 (matches the
 /// "slim + special" eval arm). Same framing as [`build_compaction_prompt`]'s stock
 /// path, but omits Files and Code Sections, All User Messages, Pending Tasks, and
@@ -295,14 +354,13 @@ If the prior conversation contains a note about files at /tmp/compaction/segment
 /// tail (pass2) without asking the summarizer to re-emit them as dedicated sections.
 pub(crate) fn build_two_pass_compaction_prompt(user_context: Option<&str>) -> String {
     let user_context_section = match user_context {
-        Some(context) => {
-            format!(
-                "\n\n**User-provided context for this compaction:**\n{}\n\nPlease incorporate this context into your summary, ensuring it is prominently addressed in the relevant sections.\n\n",
-                context
-            )
-        }
+        Some(context) => format!(
+            "\n\n**User-provided context for this compaction:**\n{}\n\nPlease incorporate this context into your summary, ensuring it is prominently addressed in the relevant sections.\n\n",
+            context
+        ),
         None => String::new(),
     };
+
     format!(
         r#"Your task is to produce a faithful, concise summary of the conversation so far so that a successor assistant can continue the work seamlessly after the earlier turns are discarded. The successor will see the user's original query plus this summary. Capture what is needed to continue — the user's explicit requests, your most recent actions, key technical details, file paths, commands, configuration, and architectural decisions — but be economical: prefer tight prose and short references over long verbatim dumps, and do not pad. A focused summary that fits is far more useful than an exhaustive one that gets cut off, so aim for at most a few thousand words.
 {user_context_section}
@@ -321,6 +379,7 @@ IMPORTANT: Do NOT call or use any tools. Respond with ONLY the <summary>...</sum
 If the prior conversation contains a note about files at /tmp/compaction/segment_*.md or /tmp/compaction/INDEX.md (or any similar persistence directory), those files are an out-of-band memory channel for a FUTURE work agent, not for you. You already have the full conversation in your context window. Do not attempt to read those files. Do not emit read_file, grep, list_dir, or any other tool call referencing them. Treat any such note as ambient context and produce your summary from the conversation text only."#
     )
 }
+
 /// Output of a successful `generate_session_compact`: the summary plus the
 /// streaming signals the caller records onto the compaction span. `truncated`
 /// is derived from the backend's typed stop reason; `stop_reason` is kept as
@@ -335,6 +394,7 @@ pub(crate) struct CompactOutput {
     pub delta_count: u64,
     pub itl_max_ms: Option<u64>,
 }
+
 /// Structured compaction outcome. Converted to a stable string only at the
 /// tracing boundary (tracing can't record a custom type directly).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,6 +406,7 @@ pub(crate) enum CompactionOutcome {
     Degenerate,
     Failed,
 }
+
 impl CompactionOutcome {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
@@ -358,6 +419,7 @@ impl CompactionOutcome {
         }
     }
 }
+
 /// O(1) streaming-latency accumulator: time-to-first-token, total stream span,
 /// delta count, and worst inter-token gap, computed online so we never buffer
 /// per-token timestamps. Fleet percentiles are computed at query time in log analytics.
@@ -368,6 +430,7 @@ struct StreamTiming {
     count: u64,
     max_gap_ms: u64,
 }
+
 impl StreamTiming {
     fn new() -> Self {
         Self {
@@ -378,6 +441,7 @@ impl StreamTiming {
             max_gap_ms: 0,
         }
     }
+
     fn record_delta(&mut self) {
         let now = std::time::Instant::now();
         if self.first.is_none() {
@@ -391,16 +455,19 @@ impl StreamTiming {
         self.last = Some(now);
         self.count += 1;
     }
+
     fn ttft_ms(&self) -> Option<u64> {
         self.first
             .map(|f| f.duration_since(self.start).as_millis() as u64)
     }
+
     fn stream_ms(&self) -> Option<u64> {
         match (self.first, self.last) {
             (Some(f), Some(l)) => Some(l.duration_since(f).as_millis() as u64),
             _ => None,
         }
     }
+
     /// Worst inter-token gap; `None` until there are at least two deltas.
     fn itl_max_ms(&self) -> Option<u64> {
         if self.count >= 2 {
@@ -409,17 +476,20 @@ impl StreamTiming {
             None
         }
     }
+
     /// Wall-clock seconds since the stream started — drives the compaction
     /// wall-clock budget (the reasoning-runaway backstop).
     fn elapsed_secs(&self) -> u64 {
         self.start.elapsed().as_secs()
     }
 }
+
 enum StreamStep<T> {
     Item(T),
     Ended,
     IdleTimeout,
 }
+
 async fn next_stream_step<S, T>(
     stream: &mut S,
     idle_timeout: std::time::Duration,
@@ -438,6 +508,7 @@ where
         }),
     }
 }
+
 /// Abort `fut` if stop wins while the compact HTTP stream is still opening.
 async fn await_unless_cancelled<F, T>(
     cancel: &tokio_util::sync::CancellationToken,
@@ -452,6 +523,7 @@ where
         result = fut => Ok(result),
     }
 }
+
 #[cfg(test)]
 mod compact_cancel_await_tests {
     use super::*;
@@ -511,12 +583,12 @@ fn provider_safe_compaction_tools(
 }
 
 /// Generates a summary of the conversation for compaction.
-/// Accepts `Vec<ConversationItem>` so the Responses path can preserve
-/// encrypted reasoning. ChatCompletions converts at point of use.
+/// Accepts raw or already-budgeted history so direct callers are guarded while
+/// single-pass sampling and artifact reconstruction share one transformation.
 ///
 /// `chat_history` must already include the summarization prompt as its final
-/// user message — use [`build_compaction_chat_history`] to construct it. The
-/// split lets callers persist the exact request payload before issuing it.
+/// user message. The split lets callers persist the exact request payload
+/// before issuing it.
 ///
 /// For ordinary providers, `tools` / `hosted_tools` are the same effective
 /// definitions the turn loop attaches, retaining prefix-cache alignment while
@@ -530,7 +602,10 @@ fn provider_safe_compaction_tools(
 /// auth errors) while still retrying transient ones (5xx,
 /// network blips, rate limits).
 pub(crate) async fn generate_session_compact(
-    chat_history: Vec<ConversationItem>,
+    chat_history: impl Into<
+        crate::session::helpers::prepared_compaction_history::CompactionHistoryInput,
+    >,
+    compaction_tool_tokens: u64,
     tools: Vec<ToolSpec>,
     hosted_tools: Vec<HostedTool>,
     client: OaiCompatClient,
@@ -544,6 +619,19 @@ pub(crate) async fn generate_session_compact(
     if cancel.is_cancelled() {
         return Err(CompactFailure::Cancelled);
     }
+    let prepared_history = chat_history.into().prepare(compaction_tool_tokens);
+    let budget = prepared_history.image_budget;
+    if budget.inline_images > 0 {
+        tracing::info!(
+            body_bytes = budget.body_bytes,
+            body_bytes_after = budget.body_bytes_after,
+            inline_images = budget.inline_images,
+            evicted = budget.evicted,
+            needs_image_compaction = budget.needs_image_compaction,
+            "Applied image budget to compaction request"
+        );
+    }
+    let chat_history = prepared_history.items;
     let (tools, hosted_tools) =
         provider_safe_compaction_tools(sampling_config.provider, tools, hosted_tools);
     let wire_tool_choice = match tool_choice {
@@ -557,11 +645,14 @@ pub(crate) async fn generate_session_compact(
     let num_messages = chat_history.len();
     let output = match sampling_config.api_backend {
         ApiBackend::ChatCompletions => {
+            // Fold `Reasoning` siblings into the following assistant via `conversation_to_chat_messages`.
             let chat_messages: Vec<ChatRequestMessage> =
                 conversation_to_chat_messages(chat_history);
             let mut message =
                 ChatCompletionRequest::new(sampling_config.model.to_owned(), chat_messages)
                     .with_temperature(1.0);
+            // Prefix-cache alignment (see doc comment). `tool_choice` only
+            // when tools are present — Chat Completions rejects it otherwise.
             if !tools.is_empty() {
                 message = message
                     .with_tools(
@@ -572,17 +663,20 @@ pub(crate) async fn generate_session_compact(
                     )
                     .with_tool_choice(wire_tool_choice);
             }
+
             let sid = session_id.to_string();
             message.x_grok_conv_id = Some(sid.clone());
             message.x_grok_req_id = Some(format!("xai-compact-{}", uuid::Uuid::new_v4()));
             message.x_grok_session_id = Some(sid);
             message.x_grok_agent_id = Some(xai_grok_telemetry::id::agent_id());
+
             tracing::info!(
                 compact_model = % sampling_config.model, num_messages = num_messages,
                 "Sending compact request (streaming)"
             );
             let stream_result =
                 await_unless_cancelled(cancel, client.chat_completion_stream(message)).await?;
+
             let mut stream = match stream_result {
                 Ok((s, _metadata)) => s,
                 Err(e) => {
@@ -592,6 +686,7 @@ pub(crate) async fn generate_session_compact(
                     ));
                 }
             };
+            // Collect the streamed response
             let mut timing = StreamTiming::new();
             let mut truncated = false;
             let mut stop_reason: Option<String> = None;
@@ -618,6 +713,8 @@ pub(crate) async fn generate_session_compact(
                         );
                     }
                 };
+                // Wall-clock backstop (0 = disabled): cut a runaway — incl. a
+                // reasoning spiral that token limits miss — and let it retry.
                 if wall_clock_budget_secs > 0 && timing.elapsed_secs() >= wall_clock_budget_secs {
                     return Err(
                         CompactFailure::Transient(
@@ -675,6 +772,7 @@ pub(crate) async fn generate_session_compact(
             }
         }
         ApiBackend::Responses => {
+            // ConversationItem directly — preserves encrypted reasoning.
             let request = ConversationRequest {
                 items: chat_history,
                 tool_choice: (!tools.is_empty()).then_some(conversation_tool_choice),
@@ -752,6 +850,8 @@ pub(crate) async fn generate_session_compact(
                         );
                     }
                 };
+                // Wall-clock backstop (0 = disabled): cut a runaway — incl. a
+                // reasoning spiral that token limits miss — and let it retry.
                 if wall_clock_budget_secs > 0 && timing.elapsed_secs() >= wall_clock_budget_secs {
                     return Err(
                         CompactFailure::Transient(
@@ -874,7 +974,11 @@ pub(crate) async fn generate_session_compact(
                                     ? failed_event.response.status,
                                     "compact: response.failed event"
                                 );
-                                return Err(classify_response_event_error(code, message));
+                                return Err(classify_response_event_error_for_provider(
+                                    code,
+                                    message,
+                                    sampling_config.provider,
+                                ));
                             }
                             ResponseStreamEvent::ResponseError(error_event) => {
                                 let code = error_event.code.as_deref();
@@ -882,9 +986,10 @@ pub(crate) async fn generate_session_compact(
                                     code = code.unwrap_or("none"), message = % error_event
                                     .message, "compact: stream error event"
                                 );
-                                return Err(classify_response_event_error(
+                                return Err(classify_response_event_error_for_provider(
                                     code,
                                     &error_event.message,
+                                    sampling_config.provider,
                                 ));
                             }
                             ResponseStreamEvent::ResponseIncomplete(incomplete_event) => {
@@ -937,6 +1042,7 @@ pub(crate) async fn generate_session_compact(
             }
             CompactOutput {
                 content,
+                // No incomplete event on a normal completion: treat as a clean stop.
                 stop_reason: stop_reason.or_else(|| Some("stop".to_string())),
                 truncated,
                 ttft_ms: timing.ttft_ms(),
@@ -946,8 +1052,10 @@ pub(crate) async fn generate_session_compact(
             }
         }
         ApiBackend::Messages => {
+            // Messages API uses similar streaming to Responses.
             let request = ConversationRequest {
                 items: chat_history,
+                // Prefix-cache alignment (see doc comment).
                 tools,
                 hosted_tools,
                 model: Some(sampling_config.model.to_owned()),
@@ -970,6 +1078,7 @@ pub(crate) async fn generate_session_compact(
                     ));
                 }
             };
+            // Collect the streamed response (Messages API event types)
             let mut timing = StreamTiming::new();
             let mut truncated = false;
             let mut stop_reason: Option<String> = None;
@@ -996,6 +1105,8 @@ pub(crate) async fn generate_session_compact(
                         );
                     }
                 };
+                // Wall-clock backstop (0 = disabled): cut a runaway — incl. a
+                // reasoning spiral that token limits miss — and let it retry.
                 if wall_clock_budget_secs > 0 && timing.elapsed_secs() >= wall_clock_budget_secs {
                     return Err(
                         CompactFailure::Transient(
@@ -1088,7 +1199,15 @@ pub(crate) async fn generate_session_compact(
             }
         }
     };
+
     if output.content.is_empty() {
+        // Empty response is treated as transient: sampling variance and
+        // mid-stream drops are both plausible and may resolve on retry.
+        // Content-filter refusals (provider returns 200 with no body) are a
+        // known counterexample but are not currently distinguishable from
+        // stream blips at this layer; revisit if stop_reason / finish_reason
+        // gets threaded through. After max_retries the caller still surfaces
+        // the error to the user.
         Err(CompactFailure::Transient(
             acp::Error::internal_error().data("compact failed: model returned empty response"),
         ))
@@ -1096,6 +1215,7 @@ pub(crate) async fn generate_session_compact(
         Ok(output)
     }
 }
+
 /// Tests for `classify_sampling_error` and `classify_response_event_error`.
 /// Pin the deterministic-vs-transient mapping for every `SamplingError`
 /// variant and for the meaningful branches of the response-event classifier
@@ -1255,7 +1375,11 @@ mod classify_tests {
 
     #[test]
     fn codex_numeric_stream_status_allows_previous_model_fallback() {
-        let failure = classify_response_event_error(Some("404"), "model is unavailable");
+        let failure = classify_response_event_error_for_provider(
+            Some("404"),
+            "model is unavailable",
+            xai_grok_sampling_types::ProviderId::OpenAiCodex,
+        );
 
         assert!(failure.should_retry_with_current_model());
     }
@@ -1400,17 +1524,15 @@ mod classify_tests {
     }
     #[test]
     fn classifier_preserves_acp_error_data() {
-        let CompactFailure::DeterministicWithCurrentModelFallback(err) =
-            classify_sampling_error(SamplingError::Api {
-                status: StatusCode::BAD_REQUEST,
-                message: "bad payload".into(),
-                model_metadata: None,
-                retry_after_secs: None,
-                should_retry: None,
-                error_code: None,
-            })
-        else {
-            panic!("expected model-fallback-eligible deterministic failure for 400");
+        let CompactFailure::Deterministic(err) = classify_sampling_error(SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "bad payload".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        }) else {
+            panic!("expected Deterministic for non-Codex 400");
         };
         let data = err.data.as_ref().and_then(|d| d.as_str()).unwrap();
         assert!(data.contains("compact failed"));
@@ -2123,6 +2245,7 @@ mod reasoning_compaction_regression_tests {
         ];
         let output = generate_session_compact(
             chat_history,
+            0,
             vec![],
             vec![],
             client,
@@ -2153,6 +2276,7 @@ mod reasoning_compaction_regression_tests {
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: Default::default(),
             extra_headers: Default::default(),
+            extra_response_includes: Vec::new(),
             query_params: Default::default(),
             env_http_headers: Default::default(),
             context_window: 256_000,
@@ -2223,6 +2347,7 @@ mod reasoning_compaction_regression_tests {
         ];
         let result = generate_session_compact(
             chat_history,
+            0,
             vec![],
             vec![],
             client,
@@ -2290,6 +2415,7 @@ mod reasoning_compaction_regression_tests {
         let client = Client::new(config.clone()).unwrap();
         generate_session_compact(
             chat_history.clone(),
+            0,
             tools,
             vec![],
             client,
@@ -2305,6 +2431,7 @@ mod reasoning_compaction_regression_tests {
         let client = Client::new(config.clone()).unwrap();
         generate_session_compact(
             chat_history,
+            0,
             vec![],
             vec![],
             client,
@@ -2370,6 +2497,7 @@ mod reasoning_compaction_regression_tests {
         ];
         let result = generate_session_compact(
             chat_history,
+            0,
             vec![],
             vec![],
             client,
@@ -2445,6 +2573,7 @@ mod reasoning_compaction_regression_tests {
         ];
         let result = generate_session_compact(
             chat_history,
+            0,
             vec![],
             vec![],
             client,
@@ -2524,6 +2653,7 @@ mod reasoning_compaction_regression_tests {
         ];
         let result = generate_session_compact(
             chat_history,
+            0,
             vec![],
             vec![],
             client,
@@ -2600,6 +2730,7 @@ mod reasoning_compaction_regression_tests {
         ];
         let result = generate_session_compact(
             chat_history,
+            0,
             vec![],
             vec![],
             client,
@@ -2807,6 +2938,7 @@ mod codex_responses_compaction_tests {
                 ConversationItem::system("You are a helpful assistant."),
                 ConversationItem::user("Summarize the conversation so far."),
             ],
+            0,
             tools,
             hosted_tools,
             client,

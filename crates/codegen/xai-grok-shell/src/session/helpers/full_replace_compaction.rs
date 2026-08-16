@@ -40,10 +40,25 @@ use xai_chat_state::compaction_utils::{
 };
 
 use crate::sampling::Client as OaiCompatClient;
+use crate::session::helpers::prepared_compaction_history::{
+    PreparedCompactionHistory, build_compaction_chat_history,
+};
 use crate::session::helpers::session_compact::{
-    CompactFailure, CompactOutput, build_compaction_chat_history, generate_session_compact,
+    CompactFailure, CompactOutput, generate_session_compact,
 };
 use crate::util::config::CompactionToolChoice;
+
+#[derive(Default)]
+struct SamplerState {
+    last_success: Option<CompactOutput>,
+    last_attempted_items: Option<Vec<ConversationItem>>,
+}
+
+impl SamplerState {
+    fn record_attempt(&mut self, history: &PreparedCompactionHistory) {
+        self.last_attempted_items = Some(history.items.clone());
+    }
+}
 
 /// Wraps `generate_session_compact` as the shared engine's
 /// [`CompactionSampler`] for grok-build's full-replace pass.
@@ -69,6 +84,7 @@ pub(crate) struct ShellCompactionSampler {
     user_context: Option<String>,
     tools: Vec<ToolSpec>,
     hosted_tools: Vec<HostedTool>,
+    compaction_tool_tokens: u64,
     primary: CompactionSamplingRoute,
     fallback: Option<CompactionSamplingRoute>,
     fallback_active: AtomicBool,
@@ -82,8 +98,7 @@ pub(crate) struct ShellCompactionSampler {
     wall_clock_budget_secs: u64,
     tool_choice: CompactionToolChoice,
     cancel: CancellationToken,
-    /// Full output of the most recent successful sample (for L5 telemetry).
-    last_success: Mutex<Option<CompactOutput>>,
+    state: Mutex<SamplerState>,
     /// Model used by the most recent request. This keeps persisted compaction
     /// artifacts accurate when the previous-model route falls back.
     last_attempted_model: Mutex<String>,
@@ -96,6 +111,7 @@ impl ShellCompactionSampler {
         user_context: Option<String>,
         tools: Vec<ToolSpec>,
         hosted_tools: Vec<HostedTool>,
+        compaction_tool_tokens: u64,
         client: OaiCompatClient,
         session_id: acp::SessionId,
         sampling_config: SamplingConfig,
@@ -111,6 +127,7 @@ impl ShellCompactionSampler {
             user_context,
             tools,
             hosted_tools,
+            compaction_tool_tokens,
             primary: CompactionSamplingRoute {
                 client,
                 config: sampling_config,
@@ -122,14 +139,19 @@ impl ShellCompactionSampler {
             wall_clock_budget_secs,
             tool_choice,
             cancel,
-            last_success: Mutex::new(None),
+            state: Mutex::new(SamplerState::default()),
             last_attempted_model: Mutex::new(last_attempted_model),
         }
     }
 
     /// Take the [`CompactOutput`] of the most recent successful sample, if any.
     pub(crate) fn take_last_success(&self) -> Option<CompactOutput> {
-        self.last_success.lock().unwrap().take()
+        self.state.lock().unwrap().last_success.take()
+    }
+
+    /// Take the exact image-budgeted items from the latest transport attempt.
+    pub(crate) fn take_last_attempted_items(&self) -> Option<Vec<ConversationItem>> {
+        self.state.lock().unwrap().last_attempted_items.take()
     }
 
     /// Return the model used by the latest primary or fallback request.
@@ -145,6 +167,7 @@ impl ShellCompactionSampler {
         *self.last_attempted_model.lock().unwrap() = route.config.model.clone();
         generate_session_compact(
             chat_history,
+            self.compaction_tool_tokens,
             self.tools.clone(),
             self.hosted_tools.clone(),
             route.client.clone(),
@@ -176,7 +199,10 @@ impl CompactionSampler for ShellCompactionSampler {
             turns.to_vec(),
             self.user_context.as_deref(),
             self.use_short_prompt,
+            self.compaction_tool_tokens,
         );
+        self.state.lock().unwrap().record_attempt(&chat_history);
+        let chat_history = chat_history.items;
 
         let output = if self.fallback_active.load(Ordering::Relaxed) {
             let fallback = self
@@ -205,7 +231,7 @@ impl CompactionSampler for ShellCompactionSampler {
         match output {
             Ok(output) => {
                 let response = output.content.clone();
-                *self.last_success.lock().unwrap() = Some(output);
+                self.state.lock().unwrap().last_success = Some(output);
                 Ok(LlmCompactionOutput {
                     response,
                     thinking: String::new(),
@@ -240,6 +266,10 @@ fn compact_failure_to_sample_error(failure: CompactFailure) -> CompactionSampleE
         CompactionSampleError::Other(anyhow::anyhow!(message))
     }
 }
+
+#[cfg(test)]
+#[path = "full_replace_compaction_tests.rs"]
+mod tests;
 
 /// Render the human-readable detail an `acp::Error` carries in its `data`
 /// field (where `classify_*` stash `"compact failed: <upstream>"`).
@@ -485,7 +515,7 @@ impl FullReplaceObserver for ShellFullReplaceObserver {
 }
 
 #[cfg(test)]
-mod tests {
+mod enhanced_provider_tests {
     //! Scenario: previous-model compaction fails at the inference boundary.
     //! Responsibility: retry once with the active model using real production
     //! sampler wiring and only the HTTP inference service stubbed. Run with
@@ -546,6 +576,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
+            0,
             previous_client,
             acp::SessionId::new("compaction-model-fallback-test"),
             previous_config,

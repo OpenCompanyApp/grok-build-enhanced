@@ -99,6 +99,7 @@ mod tests {
             api_backend: ApiBackend::ChatCompletions,
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
+            extra_response_includes: Vec::new(),
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             comp_hash: None,

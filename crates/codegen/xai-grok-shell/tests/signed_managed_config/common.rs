@@ -169,7 +169,7 @@ pub fn install_test_key() -> (ring::signature::Ed25519KeyPair, Vec<u8>) {
     let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
     let kp = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
     let pubkey = kp.public_key().as_ref().to_vec();
-    signed_policy::test_seam::set_embedded_keys(&[(TEST_KEY_ID, &pubkey)]);
+    signed_policy::test_seam::set_embedded_keys(Some(&[(TEST_KEY_ID, pubkey.as_slice())]));
     assert!(
         signed_policy::verification_active(),
         "the seam must arm verification"

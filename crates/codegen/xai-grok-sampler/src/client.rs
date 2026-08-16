@@ -15,6 +15,7 @@
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
+use indexmap::IndexMap;
 use reqwest::header::{
     ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
 };
@@ -499,6 +500,59 @@ impl Drop for ProviderAuthRecoveryGuard<'_> {
     }
 }
 
+fn append_response_includes(body: &mut serde_json::Value, extra_includes: &[String]) {
+    if extra_includes.is_empty() {
+        return;
+    }
+    let Some(body) = body.as_object_mut() else {
+        return;
+    };
+    let include = body.entry("include").or_insert(serde_json::Value::Null);
+    if include.is_null() {
+        *include = serde_json::Value::Array(Vec::new());
+    }
+    let Some(include) = include.as_array_mut() else {
+        return;
+    };
+    for value in extra_includes {
+        if !include
+            .iter()
+            .any(|existing| existing.as_str() == Some(value.as_str()))
+        {
+            include.push(serde_json::Value::String(value.clone()));
+        }
+    }
+}
+
+/// Resolve `env_http_headers` (`header -> env var`) into `headers` via `getenv`, skipping unset/blank/invalid entries and trimming values.
+fn apply_env_http_headers(
+    env_http_headers: &IndexMap<String, String>,
+    getenv: impl Fn(&str) -> Option<String>,
+    headers: &mut HeaderMap,
+) {
+    for (key, env_var) in env_http_headers {
+        let Some(value) = getenv(env_var) else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let (Ok(name), Ok(header_value)) = (
+            HeaderName::try_from(key.as_str()),
+            HeaderValue::from_str(value),
+        ) else {
+            tracing::warn!(
+                header = %key,
+                env_var = %env_var,
+                "skipping env_http_header with an invalid header name or value"
+            );
+            continue;
+        };
+        headers.insert(name, header_value);
+    }
+}
+
 #[derive(Clone)]
 pub struct SamplingClient {
     /// Eager transport for xAI, Kimi, Z.AI, and Custom providers. Codex is
@@ -569,6 +623,7 @@ struct ClientDefaults {
     service_tier: Option<String>,
     stream_tool_calls: bool,
     responses_lite: bool,
+    extra_response_includes: Vec<String>,
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
 }
 
@@ -868,6 +923,58 @@ impl SamplingClient {
             headers.insert(header_name, header_value);
         }
 
+        // Resolve environment-backed headers only into the request-local
+        // transport state so secret values never enter persisted config.
+        // Apply the same provider boundary checks as static extra headers:
+        // first-class provider credentials and identity headers must remain
+        // owned by their provider adapter.
+        let mut env_headers = HeaderMap::new();
+        apply_env_http_headers(
+            &config.env_http_headers,
+            |var| std::env::var(var).ok(),
+            &mut env_headers,
+        );
+        for (header_name, mut header_value) in env_headers {
+            let Some(header_name) = header_name else {
+                continue;
+            };
+            if config.provider == ProviderId::Xai
+                && !xai_trusted_origin
+                && (Self::is_xai_specific_header(&header_name)
+                    || Self::is_credential_header(&header_name))
+            {
+                continue;
+            }
+            if config.provider != ProviderId::Xai && Self::is_xai_specific_header(&header_name) {
+                return Err(SamplingError::InvalidConfiguration(
+                    "xAI-specific environment headers require the xAI provider",
+                ));
+            }
+            if config.provider.is_openai_codex()
+                && (codex_headers::is_credential_header_or_alias(&header_name)
+                    || codex_headers::is_xai_specific_header(&header_name)
+                    || codex_headers::is_provider_identity_header(&header_name))
+            {
+                return Err(SamplingError::InvalidConfiguration(
+                    "OpenAI Codex protected/provider headers cannot be set via env_http_headers",
+                ));
+            }
+            if config.provider.is_kimi_code() && kimi_code::is_protected_header(&header_name) {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Kimi Code protected/provider headers cannot be set via env_http_headers",
+                ));
+            }
+            if config.provider.is_open_code_go() && opencode_go::is_protected_header(&header_name) {
+                return Err(SamplingError::InvalidConfiguration(
+                    "OpenCode Go protected/provider headers cannot be set via env_http_headers",
+                ));
+            }
+            if Self::is_sensitive_header(header_name.as_str()) {
+                header_value.set_sensitive(true);
+            }
+            headers.insert(header_name, header_value);
+        }
+
         match config.provider {
             ProviderId::Xai if xai_trusted_origin => {
                 // xAI request identity is meaningful only on the two
@@ -996,6 +1103,7 @@ impl SamplingClient {
             service_tier: config.service_tier,
             stream_tool_calls: config.stream_tool_calls,
             responses_lite,
+            extra_response_includes: config.extra_response_includes,
             doom_loop_recovery: config.doom_loop_recovery,
         };
 
@@ -2284,6 +2392,7 @@ impl SamplingClient {
             ),
             &mut request_body,
         )?;
+        append_response_includes(&mut request_body, &self.defaults.extra_response_includes);
         // async-openai's ReasoningTextContent struct omits the `type`
         // discriminator that the Responses API requires on input. Patch
         // it in post-serialize. This is the last surviving piece of the
@@ -2492,6 +2601,7 @@ impl SamplingClient {
             ),
             &mut request_body,
         )?;
+        append_response_includes(&mut request_body, &self.defaults.extra_response_includes);
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
         let grok_headers = GrokRequestHeaders {
             conv_id: x_grok_conv_id,
@@ -3645,6 +3755,9 @@ mod tests {
             .clone();
         events
     }
+    use axum::{Router, body::Bytes, routing::post};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
 
     #[test]
     fn stream_collect_error_preserves_should_retry() {
@@ -3710,6 +3823,7 @@ mod tests {
             auth_scheme: AuthScheme::Bearer,
             service_tier: None,
             extra_headers: IndexMap::new(),
+            extra_response_includes: Vec::new(),
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             comp_hash: None,
@@ -3928,6 +4042,126 @@ mod tests {
 
         assert!(obj.get("max_tokens").is_none());
         assert!(obj.get("tools").is_none());
+    }
+
+    async fn capture_response_body(streaming: bool) -> serde_json::Value {
+        let (body_tx, body_rx) = oneshot::channel();
+        let body_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(body_tx)));
+        let app = Router::new().route(
+            "/v1/responses",
+            post(move |body: Bytes| {
+                let body_tx = body_tx.clone();
+                async move {
+                    let _ = body_tx.lock().unwrap().take().unwrap().send(body);
+                    if streaming {
+                        axum::response::Response::builder()
+                            .header("content-type", "text/event-stream")
+                            .body(axum::body::Body::from("data: [DONE]\n\n"))
+                            .unwrap()
+                    } else {
+                        axum::response::Response::builder()
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(r#"{"id":"resp","object":"response","created_at":0,"model":"test-model","status":"completed","output":[],"usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}}"#))
+                            .unwrap()
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{addr}/v1"),
+            api_backend: ApiBackend::Responses,
+            extra_response_includes: vec!["no_inline_citations".to_owned()],
+            ..minimal_config()
+        })
+        .unwrap();
+        let mut request = rs::CreateResponse {
+            input: rs::InputParam::Text("hi".to_owned()),
+            include: Some(vec![rs::IncludeEnum::ReasoningEncryptedContent]),
+            tools: Some(vec![rs::Tool::WebSearch(rs::WebSearchTool::default())]),
+            ..Default::default()
+        };
+        let mut wrapper = CreateResponseWrapper::new(request.clone());
+        wrapper.extra_raw_tools = vec![serde_json::json!({"type": "x_search"})];
+        if streaming {
+            let (_stream, _model_metadata, _doom_loop_collector) = client
+                .create_response_stream(wrapper)
+                .await
+                .expect("streaming request should succeed");
+        } else {
+            request.tools = None;
+            client
+                .create_response(CreateResponseWrapper::new(request))
+                .await
+                .expect("unary request should succeed");
+        }
+        let body = body_rx.await.unwrap();
+        server.abort();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn response_call_sites_emit_final_includes_and_stream_fields() {
+        let unary = capture_response_body(false).await;
+        assert_eq!(
+            serde_json::json!(["reasoning.encrypted_content", "no_inline_citations"]),
+            unary["include"],
+        );
+
+        let stream = capture_response_body(true).await;
+        assert_eq!(
+            serde_json::json!(["reasoning.encrypted_content", "no_inline_citations"]),
+            stream["include"],
+        );
+        assert_eq!(Some(true), stream["stream"].as_bool());
+        assert!(
+            stream["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["type"] == "x_search")
+        );
+    }
+
+    #[test]
+    fn append_response_includes_preserves_typed_values_and_deduplicates() {
+        let typed = [
+            "reasoning.encrypted_content",
+            "web_search_call.action.sources",
+        ];
+        let mut body = serde_json::json!({ "include": typed });
+        append_response_includes(
+            &mut body,
+            &[
+                "no_inline_citations".to_owned(),
+                "no_inline_citations".to_owned(),
+            ],
+        );
+        assert_eq!(
+            serde_json::json!([
+                "reasoning.encrypted_content",
+                "web_search_call.action.sources",
+                "no_inline_citations",
+            ]),
+            body["include"],
+        );
+
+        let mut unchanged = serde_json::json!({ "include": typed });
+        let expected = unchanged.clone();
+        append_response_includes(&mut unchanged, &[]);
+        assert_eq!(expected, unchanged);
+
+        for mut body in [
+            serde_json::json!({}),
+            serde_json::json!({ "include": null }),
+        ] {
+            append_response_includes(&mut body, &["no_inline_citations".to_owned()]);
+            assert_eq!(serde_json::json!(["no_inline_citations"]), body["include"]);
+        }
     }
 
     #[test]
@@ -4296,6 +4530,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn apply_env_http_headers_resolves_trims_skips_and_overrides() {
+        let mut map = IndexMap::new();
+        map.insert("x-tenant-token".to_string(), "TENANT".to_string());
+        map.insert("x-blank".to_string(), "BLANK".to_string());
+        map.insert("x-missing".to_string(), "MISSING".to_string());
+        map.insert("x-override".to_string(), "OVERRIDE".to_string());
+        map.insert("x invalid".to_string(), "INVALID".to_string());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-override"),
+            HeaderValue::from_static("static"),
+        );
+        apply_env_http_headers(
+            &map,
+            |var| match var {
+                "TENANT" => Some(" tenant-secret\n".to_string()),
+                "BLANK" => Some("   ".to_string()),
+                "OVERRIDE" => Some("from-env".to_string()),
+                "INVALID" => Some("value".to_string()),
+                _ => None,
+            },
+            &mut headers,
+        );
+
+        assert_eq!(headers.get("x-tenant-token").unwrap(), "tenant-secret");
+        assert!(headers.get("x-blank").is_none());
+        assert!(headers.get("x-missing").is_none());
+        assert_eq!(headers.get("x-override").unwrap(), "from-env");
+        assert!(headers.get("x invalid").is_none());
+    }
+
+    #[test]
+    fn custom_environment_credentials_are_transport_only_and_sensitive() {
+        const ENV_NAME: &str = "GROK_SAMPLER_TEST_ENV_SECRET_E5FD";
+        unsafe { std::env::set_var(ENV_NAME, " opaque-environment-value ") };
+        let mut config = minimal_config();
+        config
+            .env_http_headers
+            .insert("x-custom-token".to_owned(), ENV_NAME.to_owned());
+        let client = SamplingClient::new(config).expect("custom env header should construct");
+        unsafe { std::env::remove_var(ENV_NAME) };
+
+        let header = client.default_headers.get("x-custom-token").unwrap();
+        assert_eq!(header, "opaque-environment-value");
+        assert!(header.is_sensitive());
+    }
+
     #[derive(Debug, Clone)]
     struct StaticKimiRequestAuth {
         backend: ApiBackend,
@@ -4330,6 +4613,21 @@ mod tests {
         let mut config = SamplerConfig::kimi_code("k3", backend.clone());
         config.request_auth = Some(std::sync::Arc::new(StaticKimiRequestAuth { backend }));
         config
+    }
+
+    #[test]
+    fn first_class_provider_rejects_protected_environment_credentials() {
+        const ENV_NAME: &str = "GROK_SAMPLER_TEST_KIMI_ENV_SECRET_E5FD";
+        unsafe { std::env::set_var(ENV_NAME, "opaque-kimi-override") };
+        let mut config = kimi_config(ApiBackend::ChatCompletions);
+        config
+            .env_http_headers
+            .insert("authorization".to_owned(), ENV_NAME.to_owned());
+        let error = SamplingClient::new(config).expect_err("provider auth must own credentials");
+        unsafe { std::env::remove_var(ENV_NAME) };
+
+        assert!(matches!(&error, SamplingError::InvalidConfiguration(_)));
+        assert!(!error.to_string().contains("opaque-kimi-override"));
     }
 
     #[derive(Debug)]
