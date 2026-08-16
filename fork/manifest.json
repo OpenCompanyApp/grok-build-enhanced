@@ -3327,11 +3327,11 @@
       ],
       "paths": [
         "crates/codegen/xai-grok-workspace/src/capability.rs",
-        "crates/codegen/xai-grok-workspace/src/preview_supervisor.rs"
+        "crates/codegen/xai-grok-workspace-daemon/src/preview_supervisor.rs"
       ],
       "integration_paths": [
         "crates/codegen/xai-grok-workspace/src/capability.rs",
-        "crates/codegen/xai-grok-workspace/src/preview_supervisor.rs"
+        "crates/codegen/xai-grok-workspace-daemon/src/preview_supervisor.rs"
       ],
       "legal_paths": [
         "LICENSE"
@@ -3599,7 +3599,7 @@
         "crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs",
         "crates/codegen/xai-grok-shell/src/agent/server.rs",
         "crates/codegen/xai-grok-shell/src/remote/client.rs",
-        "crates/codegen/xai-grok-workspace/src/file_system/fuzzy.rs",
+        "crates/codegen/xai-fuzzy-file-search/src/lib.rs",
         "crates/codegen/xai-grok-workspace/src/file_system/mod.rs"
       ],
       "integration_paths": [
@@ -3614,7 +3614,7 @@
         "crates/codegen/xai-grok-shell/src/agent/models.rs",
         "crates/codegen/xai-grok-shell/src/agent/server.rs",
         "crates/codegen/xai-grok-shell/src/remote/client.rs",
-        "crates/codegen/xai-grok-workspace/src/file_system/fuzzy.rs",
+        "crates/codegen/xai-fuzzy-file-search/src/lib.rs",
         "crates/codegen/xai-grok-workspace/src/file_system/mod.rs"
       ],
       "legal_paths": [
@@ -4132,7 +4132,7 @@
         "crates/codegen/xai-grok-shell/src/session/signals.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/relocation/view.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search_fts.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_recovery.rs",
+        "crates/codegen/xai-grok-session-search/src/recovery.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search_remote_sync.rs",
         "crates/codegen/xai-grok-shell/src/session/testkit/e2e.rs",
         "crates/codegen/xai-grok-shell/src/session/testkit/mod.rs",
@@ -4559,11 +4559,11 @@
         "crates/codegen/xai-grok-shell/src/session/result.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/jsonl/copy.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/jsonl/copy_tests.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_bootstrap.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_bootstrap_tests.rs",
+        "crates/codegen/xai-grok-session-search/src/bootstrap.rs",
+        "crates/codegen/xai-grok-session-search/src/bootstrap_tests.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search_content.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search_content_tests.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_db.rs",
+        "crates/codegen/xai-grok-session-search/src/db.rs",
         "crates/codegen/xai-grok-shell/src/session/telemetry/mod.rs",
         "crates/codegen/xai-grok-shell/src/session/telemetry/permission.rs",
         "crates/codegen/xai-grok-shell/src/session/tool_index.rs",
@@ -5314,7 +5314,7 @@
         "crates/codegen/xai-grok-shell/src/session/storage/relocation/mod.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/relocation/tests.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_db.rs",
+        "crates/codegen/xai-grok-session-search/src/db.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search_fts.rs",
         "crates/codegen/xai-grok-shell/src/session/templates/goal_summarizer_prompt.md",
         "crates/codegen/xai-grok-shell/src/terminal/background_task.rs",
@@ -5357,7 +5357,7 @@
         "crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs",
         "crates/codegen/xai-grok-workspace/src/permission/resolution.rs",
         "crates/codegen/xai-grok-workspace/src/permission/state.rs",
-        "crates/codegen/xai-grok-workspace/src/preview_supervisor.rs",
+        "crates/codegen/xai-grok-workspace-daemon/src/preview_supervisor.rs",
         "crates/codegen/xai-grok-workspace/src/recovery.rs",
         "crates/codegen/xai-grok-workspace/src/session/mod.rs",
         "crates/codegen/xai-grok-workspace/src/session/tool_config.rs",
@@ -5761,13 +5761,9 @@
         "crates/codegen/xai-grok-shell/src/session/storage/replay.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/replay_tests.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_bootstrap.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_bootstrap_tests.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search_content.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search_content_tests.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_db.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search_fts.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_recovery.rs",
         "crates/codegen/xai-grok-shell/src/session/tool_index.rs",
         "crates/codegen/xai-grok-shell/src/session/tool_index_tests.rs",
         "crates/codegen/xai-grok-shell/src/session/wire_tags.rs",
