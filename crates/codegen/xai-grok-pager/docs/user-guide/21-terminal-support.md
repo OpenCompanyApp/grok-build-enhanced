@@ -234,6 +234,40 @@ You start voice (`/voice` or `Ctrl+Space`), talk, and no words appear. After ~10
 
 Byobu on screen has best-effort support only. Prefer Byobu on tmux.
 
+### Arabic and Persian (RTL) text
+
+Many terminals already reorder right-to-left text themselves (VTE-based
+terminals, Terminal.app, Konsole, mlterm, and others). Grok Build therefore
+**does not** reorder RTL by default.
+
+If Arabic or Persian in **scrollback** (or list content) reads backwards,
+enable app-side reordering in `~/.grok/pager.toml` (or project config):
+
+```toml
+[scrollback.display]
+rtl_bidi = true
+```
+
+The setting reloads with appearance config (no full restart required). If text
+looks correct with the default and becomes wrong after enabling this, turn it
+back off — your terminal is already handling bidi.
+
+When enabled:
+
+- Reorders full content lines in scrollback, list content, and the fullscreen
+  block viewer (plus the dashboard peek preview and hook popup, which mirror
+  scrollback). Chrome, dropdowns, and modals stay logical so their hit-testing
+  stays consistent.
+- Leaves markdown table columns unchanged.
+- Search highlights, selection/drag-copy, double-click word/URL selection, and
+  link hit targets all map between the painted (visual) cells and the logical
+  text of the same row, so on-screen highlights land on the right glyphs while
+  clipboard paste stays in logical order.
+- Base direction is resolved per painted row. A soft-wrapped continuation that
+  starts with English can take a different base than the paragraph's first row.
+
+This is not a full mirrored RTL UI.
+
 ---
 
 ## Still Stuck?

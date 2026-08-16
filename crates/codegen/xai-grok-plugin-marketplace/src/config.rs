@@ -29,11 +29,12 @@ struct RawSource {
     branch: Option<String>,
 }
 
-/// Whether remote plugin installs and updates must pin a full commit SHA.
+/// Whether remote plugin installs/updates must pin a full commit sha.
 ///
 /// `[marketplace] require_sha = true` in config.toml, or
 /// `GROK_MARKETPLACE_REQUIRE_SHA=1`. Tighten-only: either source can enable,
-/// neither can override the other off. Defaults off for compatibility.
+/// neither can override the other off. Defaults off so existing unpinned
+/// catalogs keep installing.
 pub fn load_require_sha(config: &toml::Value) -> bool {
     env_require_sha()
         || config
@@ -267,6 +268,10 @@ pub fn load_extra_sources_from_settings_in(
 mod tests {
     use super::*;
 
+    /// Serializes every test that touches the process-global
+    /// `GROK_MARKETPLACE_REQUIRE_SHA`, so they cannot race each other.
+    static REQUIRE_SHA_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn parse_local_source() {
         let config: toml::Value = toml::from_str(
@@ -328,17 +333,21 @@ mod tests {
         assert!(load_sources(&config).is_empty());
     }
 
+    /// Drives the shipped composition: config alone, env alone, and the
+    /// tighten-only rule (falsy env cannot relax config-set true).
     #[test]
     fn require_sha_policy_composition() {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap();
+        // Process-global env: serialize against any other env-touching test.
+        let _guard = REQUIRE_SHA_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
 
         let empty: toml::Value = toml::from_str("").unwrap();
         let enabled: toml::Value = toml::from_str("[marketplace]\nrequire_sha = true\n").unwrap();
 
-        // SAFETY: mutation is serialized by ENV_LOCK and restored before release.
+        // SAFETY: single-threaded within the lock; restored before release.
         unsafe { std::env::remove_var("GROK_MARKETPLACE_REQUIRE_SHA") };
-        assert!(!load_require_sha(&empty), "absent everywhere -> off");
+        assert!(!load_require_sha(&empty), "absent everywhere → off");
         assert!(load_require_sha(&enabled), "config alone can enable");
 
         unsafe { std::env::set_var("GROK_MARKETPLACE_REQUIRE_SHA", "1") };
@@ -347,10 +356,28 @@ mod tests {
         unsafe { std::env::set_var("GROK_MARKETPLACE_REQUIRE_SHA", "0") };
         assert!(
             load_require_sha(&enabled),
-            "a falsy env must not relax config-set policy"
+            "a falsy env must not relax config-set policy (tighten-only)"
         );
 
         unsafe { std::env::remove_var("GROK_MARKETPLACE_REQUIRE_SHA") };
+    }
+
+    #[test]
+    fn overlay_cannot_loosen_require_sha() {
+        let _guard = REQUIRE_SHA_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        unsafe { std::env::remove_var("GROK_MARKETPLACE_REQUIRE_SHA") };
+
+        let layers = xai_grok_config::ConfigLayers {
+            user: toml::from_str("[marketplace]\nrequire_sha = true\n").unwrap(),
+            env_overlay: Some(toml::from_str("[marketplace]\nrequire_sha = false\n").unwrap()),
+            ..Default::default()
+        };
+        assert!(load_require_sha(
+            &layers.effective_config_base_without_overlay()
+        ));
+        assert!(!load_require_sha(&layers.effective_config_base()));
     }
 
     #[test]

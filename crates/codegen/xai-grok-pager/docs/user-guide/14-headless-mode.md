@@ -571,7 +571,7 @@ These flags supplement the [Command-Line Options](#command-line-options) table a
 | `--system-prompt-override`    | Override the agent's system prompt                |
 | `--no-plan`                   | Disable plan mode                                 |
 | `--no-subagents`              | Disable subagent spawning                         |
-| `--no-memory`                 | Disable cross-session memory                      |
+| `GROK_MEMORY=0`                | Disable cross-session memory for the process      |
 | `--disable-web-search`        | Disable web search and fetch tools                |
 | `--web-search-mode <MODE>`    | Codex search mode: cached, indexed, live, disabled |
 | `--search`                    | Shorthand for Codex live search mode              |

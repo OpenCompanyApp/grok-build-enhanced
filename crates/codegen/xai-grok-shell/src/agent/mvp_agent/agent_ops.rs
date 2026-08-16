@@ -3,6 +3,7 @@
 //! Inherent [`MvpAgent`] helpers (MCP/clients/gateway, settings/models, session ops, spawn).
 //! Co-located child of `mvp_agent` (`use super::*`).
 use super::*;
+use super::reasoning_effort::EffortTarget;
 use crate::auth::PreferredAuthMethod;
 use crate::upload::trace::PromptMetadataParams;
 use xai_grok_tools::implementations::grok_build::task::backend::SubagentBackend;
@@ -4120,6 +4121,7 @@ impl MvpAgent {
             session_model_id,
             restored_credential_binding,
             restored_comp_hash,
+            initial_reasoning_effort,
             session_yolo_mode,
             session_auto_mode,
             prompt_display_cwd,
@@ -4518,6 +4520,12 @@ impl MvpAgent {
                 sampling_config,
                 origin_client.clone(),
             );
+        self.models_manager.apply_supported_effort(
+            &mut sampling_config,
+            initial_reasoning_effort,
+            &session_info.id,
+            EffortTarget::NewSession,
+        );
         if (sampling_config.provider.is_openai_codex()
             || sampling_config.provider.is_kimi_code()
             || sampling_config.provider.is_open_code_go())

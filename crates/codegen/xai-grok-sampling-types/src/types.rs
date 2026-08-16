@@ -823,10 +823,10 @@ pub enum ReasoningEffort {
 impl ReasoningEffort {
     /// Convert to the subset represented by the pinned `async-openai` type.
     ///
-    /// `max` and `ultra` are current Codex catalog values but are not yet
-    /// variants of `async_openai::types::responses::ReasoningEffort`. The
-    /// sampler carries those values separately and injects them at the Codex
-    /// JSON wire boundary rather than silently degrading them to `xhigh`.
+    /// `max` is represented by the pinned `async-openai` type. `ultra` is a
+    /// current Codex catalog value that the sampler carries separately and
+    /// injects at the Codex JSON wire boundary rather than silently degrading
+    /// it to `xhigh`.
     pub fn to_responses_api(self) -> Option<crate::rs::ReasoningEffort> {
         Some(match self {
             Self::None => crate::rs::ReasoningEffort::None,
@@ -835,7 +835,8 @@ impl ReasoningEffort {
             Self::Medium => crate::rs::ReasoningEffort::Medium,
             Self::High => crate::rs::ReasoningEffort::High,
             Self::Xhigh => crate::rs::ReasoningEffort::Xhigh,
-            Self::Max | Self::Ultra => return None,
+            Self::Max => crate::rs::ReasoningEffort::Max,
+            Self::Ultra => return None,
         })
     }
 
@@ -849,6 +850,7 @@ impl ReasoningEffort {
             crate::rs::ReasoningEffort::Medium => Self::Medium,
             crate::rs::ReasoningEffort::High => Self::High,
             crate::rs::ReasoningEffort::Xhigh => Self::Xhigh,
+            crate::rs::ReasoningEffort::Max => Self::Max,
         }
     }
 
@@ -1355,7 +1357,10 @@ mod tests {
         assert_eq!(ReasoningEffort::Xhigh.as_str(), "xhigh");
         assert_eq!(ReasoningEffort::Max.as_str(), "max");
         assert_eq!(ReasoningEffort::Ultra.as_str(), "ultra");
-        assert_eq!(ReasoningEffort::Max.to_responses_api(), None);
+        assert_eq!(
+            ReasoningEffort::Max.to_responses_api(),
+            Some(crate::rs::ReasoningEffort::Max)
+        );
         assert_eq!(ReasoningEffort::Ultra.to_responses_api(), None);
     }
 

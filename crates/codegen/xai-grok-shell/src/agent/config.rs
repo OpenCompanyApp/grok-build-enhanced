@@ -652,10 +652,8 @@ pub struct RuntimeResolutionContext<'a> {
     /// CLI Codex standalone-search mode override (`--web-search-mode`/`--search`).
     pub cli_web_search_mode: Option<CodexWebSearchMode>,
     pub cli_session_summary_model: Option<&'a str>,
-    /// CLI `--experimental-memory` flag. Enables cross-session memory.
-    pub cli_experimental_memory: bool,
-    /// CLI `--no-memory` flag. Overrides all other memory settings.
-    pub cli_no_memory: bool,
+    /// CLI memory override set by a legacy compatibility flag.
+    pub memory_enabled_override: Option<bool>,
     /// CLI `--disable-web-search` flag. ORed with config.toml value.
     pub disable_web_search: bool,
     /// CLI `--todo-gate` flag. Session-scoped — not persisted.
@@ -993,8 +991,8 @@ pub struct FeedbackUserConfig {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CompactionConfig {
-    pub memory_flush: Option<crate::config::MemoryFlushConfig>,
-    pub pruning: Option<crate::config::PruningConfig>,
+    pub memory_flush: Option<crate::config::MemoryFlushSettings>,
+    pub pruning: Option<crate::config::PruningSettings>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -1403,7 +1401,7 @@ pub struct Config {
     #[serde(default, skip_serializing)]
     pub subagents: crate::config::SubagentsConfig,
     #[serde(default, skip_serializing)]
-    pub memory: crate::config::MemoryConfig,
+    pub memory: crate::config::MemorySettings,
     #[serde(default, skip_serializing)]
     pub compaction: CompactionConfig,
     #[serde(default, skip_serializing)]
@@ -1459,15 +1457,12 @@ pub struct Config {
     pub default_yolo_mode: bool,
     /// Start sessions in auto permission mode (classifier) when no per-session override.
     pub default_auto_mode: bool,
-    /// CLI `--experimental-memory` flag. Stored for `ConfigReloader` hot-reload re-resolution.
-    #[serde(skip)]
-    pub cli_experimental_memory: bool,
-    /// CLI `--no-memory` flag. Stored for `ConfigReloader` hot-reload re-resolution.
-    #[serde(skip)]
-    pub cli_no_memory: bool,
     /// Original CLI Codex web-search mode, preserved for hot-reload re-resolution.
     #[serde(skip)]
     pub cli_web_search_mode: Option<CodexWebSearchMode>,
+    /// CLI memory override preserved across config and remote-setting refreshes.
+    #[serde(skip)]
+    pub memory_enabled_override: Option<bool>,
     /// Original CLI `--subagents` tri-state, preserved for re-resolution
     /// when remote settings settings are refreshed on /new.
     #[serde(skip)]
@@ -1805,7 +1800,7 @@ impl Default for Config {
             disabled_mcp_servers: Vec::new(),
             disabled_mcp_tools: std::collections::HashMap::new(),
             subagents: crate::config::SubagentsConfig::default(),
-            memory: crate::config::MemoryConfig::default(),
+            memory: crate::config::MemorySettings::default(),
             compaction: CompactionConfig::default(),
             managed_mcps: crate::config::ManagedMcpsConfig::default(),
             auth: None,
@@ -1848,9 +1843,8 @@ impl Default for Config {
             disable_zdr_incompatible_tools: false,
             zdr_video_output_s3: None,
             path_not_found_hints: false,
-            cli_experimental_memory: false,
-            cli_no_memory: false,
             cli_web_search_mode: None,
+            memory_enabled_override: None,
             cli_subagents: None,
             memory_config: None,
             managed_mcps_enabled: true,
@@ -2188,7 +2182,7 @@ impl Config {
     /// - managed_mcps_enabled via `ManagedMcpsConfig::resolve`
     /// - web_search_model / session_summary_model / image_description_model /
     ///   prompt_suggest_model_pin via `ModelOverrideConfig::resolve`
-    /// - memory_config via `MemoryConfig::resolve`
+    /// - memory_config via typed `Config::resolve_memory`
     /// - disable_web_search (CLI flag ORed with config.toml)
     /// - storage_mode via `StorageMode::resolve`
     /// - path_not_found_hints from remote_settings
@@ -2254,14 +2248,8 @@ impl Config {
         self.session_summary_model = models.session_summary;
         self.image_description_model = models.image_description;
         self.prompt_suggest_model_pin = models.prompt_suggestion;
-        self.cli_experimental_memory = ctx.cli_experimental_memory;
-        self.cli_no_memory = ctx.cli_no_memory;
-        let mem = crate::config::MemoryConfig::resolve(
-            ctx.cli_experimental_memory,
-            ctx.cli_no_memory,
-            ctx.raw_config,
-            ctx.remote_settings,
-        );
+        self.memory_enabled_override = ctx.memory_enabled_override;
+        let mem = self.resolve_memory(ctx.memory_enabled_override, ctx.remote_settings);
         self.memory_config = if mem.enabled { Some(mem) } else { None };
         self.cli_web_search_mode = ctx.cli_web_search_mode;
         if let Some(mode) = self.requirements.web_search_mode.pinned() {
@@ -2287,6 +2275,24 @@ impl Config {
             .value;
         self.compat_resolved = resolve_compat_config(&self.compat, ctx.remote_settings);
     }
+    pub(crate) fn resolve_memory(
+        &self,
+        memory_enabled_override: Option<bool>,
+        remote: Option<&crate::util::config::RemoteSettings>,
+    ) -> crate::config::MemoryConfig {
+        let default_flush = crate::config::MemoryFlushSettings::default();
+        let default_pruning = crate::config::PruningSettings::default();
+        crate::config::MemoryConfig::resolve_settings(
+            memory_enabled_override,
+            &self.memory,
+            self.compaction
+                .memory_flush
+                .as_ref()
+                .unwrap_or(&default_flush),
+            self.compaction.pruning.as_ref().unwrap_or(&default_pruning),
+            remote,
+        )
+    }
     /// Re-resolve eagerly-resolved runtime fields using the current `Config`
     /// state and fresh `raw_config` + `cwd`. Builds a
     /// [`RuntimeResolutionContext`] from the CLI flags already stored on this
@@ -2298,6 +2304,15 @@ impl Config {
         raw_config: &toml::Value,
         cwd: Option<&std::path::Path>,
     ) {
+        match Self::new_from_toml_cfg(raw_config) {
+            Ok(parsed_config) => {
+                self.memory = parsed_config.memory;
+                self.compaction = parsed_config.compaction;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "config parse failed during runtime re-resolution");
+            }
+        }
         let remote_settings = self.remote_settings.clone();
         let cli_web_search_model = self.web_search_model_override.clone();
         let cli_session_summary_model = self.session_summary_model_override.clone();
@@ -2311,8 +2326,7 @@ impl Config {
             cli_web_search_model: cli_web_search_model.as_deref(),
             cli_web_search_mode: self.cli_web_search_mode,
             cli_session_summary_model: cli_session_summary_model.as_deref(),
-            cli_experimental_memory: self.cli_experimental_memory,
-            cli_no_memory: self.cli_no_memory,
+            memory_enabled_override: self.memory_enabled_override,
             disable_web_search: self.disable_web_search,
             todo_gate: self.todo_gate,
             laziness_debug_log: laziness_debug_log.as_deref(),
@@ -3475,6 +3489,18 @@ pub(crate) fn resolve_external_otel_config_with(
             protocol: t
                 .get("otel_protocol")
                 .or_else(|| t.get("otel_transport"))
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned),
+            certificate: t
+                .get("otel_certificate")
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned),
+            client_certificate: t
+                .get("otel_client_certificate")
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned),
+            client_key: t
+                .get("otel_client_key")
                 .and_then(toml::Value::as_str)
                 .map(str::to_owned),
             log_user_prompts: t
@@ -5641,10 +5667,10 @@ pub fn inject_url_derived_headers(
         headers
             .entry("x-authenticateresponse".to_string())
             .or_insert_with(|| "authenticate-response".to_string());
-        headers
-            .entry(crate::http::CLIENT_MODE_HEADER.to_string())
-            .or_insert_with(|| crate::http::process_client_mode().to_string());
     }
+    headers
+        .entry(crate::http::CLIENT_MODE_HEADER.to_string())
+        .or_insert_with(|| crate::http::process_client_mode().to_string());
     let _ = (alpha_test_key, base_url);
 }
 pub fn resolve_model_to_sampling_config(

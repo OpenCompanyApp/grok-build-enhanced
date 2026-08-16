@@ -5992,6 +5992,7 @@ mod tests {
             (crate::ReasoningEffort::High, "high"),
             (crate::ReasoningEffort::Xhigh, "xhigh"),
             (crate::ReasoningEffort::Max, "max"),
+            (crate::ReasoningEffort::Max, "max"),
             (crate::ReasoningEffort::Ultra, "ultra"),
         ] {
             let req = ConversationRequest::from_items(vec![ConversationItem::user("hi")])
@@ -6049,20 +6050,18 @@ mod tests {
     }
 
     #[test]
-    fn test_typed_responses_request_defers_extended_codex_efforts_to_sampler() {
-        for variant in [crate::ReasoningEffort::Max, crate::ReasoningEffort::Ultra] {
-            let req = ConversationRequest {
-                reasoning_effort: Some(variant),
-                ..ConversationRequest::from_items(vec![ConversationItem::user("hi")])
-                    .with_model("test")
-            };
-            let resp: crate::rs::CreateResponse = (&req).into();
-            let json = serde_json::to_value(&resp).unwrap();
-            assert!(
-                json.pointer("/reasoning/effort").is_none(),
-                "{variant:?} must not be degraded through async-openai; got: {json:#}",
-            );
-        }
+    fn test_typed_responses_request_defers_ultra_codex_effort_to_sampler() {
+        let variant = crate::ReasoningEffort::Ultra;
+        let req = ConversationRequest {
+            reasoning_effort: Some(variant),
+            ..ConversationRequest::from_items(vec![ConversationItem::user("hi")]).with_model("test")
+        };
+        let resp: crate::rs::CreateResponse = (&req).into();
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(
+            json.pointer("/reasoning/effort").is_none(),
+            "{variant:?} must not be degraded through async-openai; got: {json:#}",
+        );
     }
 
     #[test]

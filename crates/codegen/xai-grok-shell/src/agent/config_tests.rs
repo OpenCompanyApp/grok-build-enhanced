@@ -166,6 +166,12 @@ fn inject_url_derived_headers_adds_proxy_headers_for_cli_chat_proxy_url() {
         headers.get("x-authenticateresponse").map(String::as_str),
         Some("authenticate-response")
     );
+    assert_eq!(
+        headers
+            .get(crate::http::CLIENT_MODE_HEADER)
+            .map(String::as_str),
+        Some(crate::http::process_client_mode())
+    );
 }
 #[test]
 fn inject_url_derived_headers_skips_proxy_headers_for_external_url() {
@@ -173,6 +179,12 @@ fn inject_url_derived_headers_skips_proxy_headers_for_external_url() {
     inject_url_derived_headers(&mut headers, None, "https://api.x.ai/v1");
     assert!(headers.get("X-XAI-Token-Auth").is_none());
     assert!(headers.get("x-authenticateresponse").is_none());
+    assert_eq!(
+        headers
+            .get(crate::http::CLIENT_MODE_HEADER)
+            .map(String::as_str),
+        Some(crate::http::process_client_mode())
+    );
 }
 #[test]
 fn inject_url_derived_headers_preserves_caller_extra_headers() {
@@ -240,8 +252,7 @@ fn resolve_runtime_fields_propagates_disable_zdr_incompatible_tools() {
             cli_web_search_model: None,
             cli_web_search_mode: None,
             cli_session_summary_model: None,
-            cli_experimental_memory: false,
-            cli_no_memory: false,
+            memory_enabled_override: None,
             disable_web_search: false,
             todo_gate: false,
             laziness_debug_log: None,
@@ -259,6 +270,17 @@ fn resolve_runtime_fields_propagates_disable_zdr_incompatible_tools() {
     assert!(cfg.disable_zdr_incompatible_tools);
 }
 #[test]
+fn re_resolve_runtime_fields_refreshes_typed_memory_from_raw_config() {
+    let initial: toml::Value =
+        toml::from_str("[memory]\nenabled = true\n[memory.search]\nmax_results = 6").unwrap();
+    let updated: toml::Value =
+        toml::from_str("[memory]\nenabled = true\n[memory.search]\nmax_results = 12").unwrap();
+    let mut cfg = Config::new_from_toml_cfg(&initial).unwrap();
+    cfg.memory_enabled_override = Some(true);
+    cfg.re_resolve_runtime_fields(&updated);
+    assert_eq!(cfg.memory_config.unwrap().search.max_results, 12);
+}
+#[test]
 fn resolve_runtime_fields_propagates_disable_web_search() {
     fn ctx(raw: &toml::Value, disable_web_search: bool) -> RuntimeResolutionContext<'_> {
         RuntimeResolutionContext {
@@ -270,8 +292,7 @@ fn resolve_runtime_fields_propagates_disable_web_search() {
             cli_web_search_model: None,
             cli_web_search_mode: None,
             cli_session_summary_model: None,
-            cli_experimental_memory: false,
-            cli_no_memory: false,
+            memory_enabled_override: None,
             disable_web_search,
             todo_gate: false,
             laziness_debug_log: None,
@@ -4107,8 +4128,15 @@ fn resolve_doom_loop_recovery_precedence() {
     let default_policy = default_cfg
         .resolve_doom_loop_recovery()
         .expect("doom-loop recovery defaults on");
-    assert_eq!(default_policy.max_threshold, 8);
+    assert_eq!(
+        default_policy.max_threshold, 64,
+        "default tunables unchanged"
+    );
     assert_eq!(default_policy.max_retries, 2);
+    assert_eq!(
+        default_policy.window_tokens, 1024,
+        "default tunables unchanged"
+    );
     let config_off = Config {
         doom_loop_recovery: DoomLoopRecoverySettings {
             enabled: Some(false),
@@ -6003,7 +6031,8 @@ fn external_otel_file_table_layered_under_env() {
         false,
     )
     .expect("file table must activate");
-    assert_eq!(cfg.transport.as_protocol_str(), "grpc");
+    assert_eq!(cfg.logs_transport.as_protocol_str(), "grpc");
+    assert_eq!(cfg.metrics_transport.as_protocol_str(), "grpc");
     assert_eq!(cfg.logs_endpoint, "https://collector.corp.example:4318");
     let cfg = resolve_external_otel_config_with(
         Some(&effective),
@@ -6013,7 +6042,8 @@ fn external_otel_file_table_layered_under_env() {
         false,
     )
     .expect("env protocol must override file protocol");
-    assert_eq!(cfg.transport.as_protocol_str(), "http/protobuf");
+    assert_eq!(cfg.logs_transport.as_protocol_str(), "http/protobuf");
+    assert_eq!(cfg.metrics_transport.as_protocol_str(), "http/protobuf");
     assert_eq!(
         cfg.logs_endpoint,
         "https://collector.corp.example:4318/v1/logs"
@@ -6028,6 +6058,60 @@ fn external_otel_file_table_layered_under_env() {
         )
         .is_none()
     );
+}
+#[test]
+fn external_otel_file_table_carries_mtls_paths() {
+    let effective: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_metrics_exporter = "otlp"
+            otel_endpoint = "https://collector.corp.example:4318"
+            otel_protocol = "grpc"
+            otel_certificate = "/etc/ssl/corp-ca.pem"
+            otel_client_certificate = "/etc/ssl/client.crt"
+            otel_client_key = "/etc/ssl/client.key"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        Some(&effective),
+        None,
+        ext_env(&[]),
+        ext_client(),
+        false,
+    )
+    .expect("managed paths alone must activate");
+    assert_eq!(
+        cfg.logs_ca_certificate.as_deref(),
+        Some("/etc/ssl/corp-ca.pem")
+    );
+    assert_eq!(
+        cfg.logs_client_certificate.as_deref(),
+        Some("/etc/ssl/client.crt")
+    );
+    assert_eq!(cfg.logs_client_key.as_deref(), Some("/etc/ssl/client.key"));
+    assert_eq!(
+        cfg.metrics_client_certificate.as_deref(),
+        Some("/etc/ssl/client.crt")
+    );
+    let cfg = resolve_external_otel_config_with(
+        Some(&effective),
+        None,
+        ext_env(&[
+            ("OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", "/env/client.crt"),
+            ("OTEL_EXPORTER_OTLP_CLIENT_KEY", "/env/client.key"),
+        ]),
+        ext_client(),
+        false,
+    )
+    .expect("env override must resolve");
+    assert_eq!(
+        cfg.logs_client_certificate.as_deref(),
+        Some("/env/client.crt")
+    );
+    assert_eq!(cfg.logs_client_key.as_deref(), Some("/env/client.key"));
 }
 #[test]
 fn external_otel_requirements_pin_wins_over_env() {
@@ -6424,8 +6508,7 @@ fn resolve_runtime_fields_compat_asymmetric_sources() {
         cli_web_search_model: None,
         cli_web_search_mode: None,
         cli_session_summary_model: None,
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search: false,
         todo_gate: false,
         laziness_debug_log: None,
@@ -6451,8 +6534,7 @@ fn resolve_runtime_fields_interactive_defaults() {
         cli_web_search_model: None,
         cli_web_search_mode: None,
         cli_session_summary_model: None,
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search: false,
         todo_gate: false,
         laziness_debug_log: None,
@@ -6488,8 +6570,7 @@ fn resolve_runtime_fields_headless_defaults() {
         cli_web_search_model: None,
         cli_web_search_mode: None,
         cli_session_summary_model: None,
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search: false,
         todo_gate: false,
         laziness_debug_log: None,
@@ -6521,8 +6602,7 @@ fn resolve_runtime_fields_managed_gateway_tools_from_remote() {
         cli_web_search_model: None,
         cli_web_search_mode: None,
         cli_session_summary_model: None,
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search: false,
         todo_gate: false,
         laziness_debug_log: None,
@@ -6545,8 +6625,7 @@ fn resolve_runtime_fields_subagents_from_config() {
         cli_web_search_model: None,
         cli_web_search_mode: None,
         cli_session_summary_model: None,
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search: false,
         todo_gate: false,
         laziness_debug_log: None,
@@ -6569,8 +6648,7 @@ fn resolve_runtime_fields_cli_subagents_override() {
         cli_web_search_model: None,
         cli_web_search_mode: None,
         cli_session_summary_model: None,
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search: false,
         todo_gate: false,
         laziness_debug_log: None,
@@ -6594,8 +6672,7 @@ fn resolve_runtime_fields_gitignore_from_env() {
         cli_web_search_model: None,
         cli_web_search_mode: None,
         cli_session_summary_model: None,
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search: false,
         todo_gate: false,
         laziness_debug_log: None,
@@ -6619,8 +6696,7 @@ fn resolve_runtime_fields_model_overrides_from_cli() {
         cli_web_search_model: Some("custom-ws"),
         cli_web_search_mode: None,
         cli_session_summary_model: Some("custom-ss"),
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search: false,
         todo_gate: false,
         laziness_debug_log: None,
@@ -6648,8 +6724,7 @@ fn resolve_runtime_fields_path_hints_from_remote() {
         cli_web_search_model: None,
         cli_web_search_mode: None,
         cli_session_summary_model: None,
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search: false,
         todo_gate: false,
         laziness_debug_log: None,
@@ -6672,8 +6747,7 @@ fn resolve_runtime_fields_idempotent() {
         cli_web_search_model: None,
         cli_web_search_mode: None,
         cli_session_summary_model: None,
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search: false,
         todo_gate: false,
         laziness_debug_log: None,

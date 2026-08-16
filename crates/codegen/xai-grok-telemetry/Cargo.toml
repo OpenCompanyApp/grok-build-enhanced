@@ -91,6 +91,7 @@ rustls = { version = "0.23", features = ["aws-lc-rs"] }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 # In-process OTLP collector fixture (tests/external_otlp.rs).
 axum = { workspace = true }
+axum-server = { workspace = true, features = ["tls-rustls"] }
 opentelemetry-proto = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }

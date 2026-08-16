@@ -128,6 +128,7 @@ pub(crate) struct ConfigReloader {
     /// either provider can change without disturbing the other.
     last_openai_codex_auth_fingerprint: Option<OpenAiCodexAuthFingerprint>,
     last_global_config: toml::Value,
+    last_effective_config: toml::Value,
     /// Per-cwd content hash of the project MCP config files, used to
     /// to diff (the dedup lives in `ModelsManager::reload_from_disk_cache`),
     /// mtime-only touches (see `hash_project_mcp_config`).
@@ -138,10 +139,7 @@ pub(crate) struct ConfigReloader {
     auth_scope: String,
     remote_settings: Option<crate::util::config::RemoteSettings>,
     config_update_tx: mpsc::UnboundedSender<ConfigUpdate>,
-    /// Whether --experimental-memory was passed at startup. Persists across config reloads.
-    experimental_memory: bool,
-    /// Whether --no-memory was passed at startup. Persists across config reloads.
-    no_memory: bool,
+    memory_enabled_override: Option<bool>,
 }
 
 impl ConfigReloader {
@@ -152,24 +150,25 @@ impl ConfigReloader {
         auth_scope: String,
         remote_settings: Option<crate::util::config::RemoteSettings>,
         config_update_tx: mpsc::UnboundedSender<ConfigUpdate>,
-        experimental_memory: bool,
-        no_memory: bool,
+        memory_enabled_override: Option<bool>,
     ) -> Self {
         let auth_path = crate::auth::resolved_auth_path(&grok_home);
         let last_openai_codex_auth_fingerprint = read_auth_json(&auth_path)
             .ok()
             .and_then(|store| store.get_codex().map(openai_codex_auth_fingerprint));
+        let last_effective_config =
+            crate::config::load_effective_config().unwrap_or_else(|_| initial_config.clone());
         Self {
             last_auth_key_hash: initial_auth_key_hash,
             last_openai_codex_auth_fingerprint,
             last_global_config: initial_config,
+            last_effective_config,
             last_project_mcp_hashes: HashMap::new(),
             auth_path,
             auth_scope,
             remote_settings,
             config_update_tx,
-            experimental_memory,
-            no_memory,
+            memory_enabled_override,
         }
     }
 
@@ -437,24 +436,36 @@ impl ConfigReloader {
             let _ = self.config_update_tx.send(ConfigUpdate::McpServersChanged);
         }
 
-        // Memory config
-        let old_mem = crate::config::MemoryConfig::resolve(
-            self.experimental_memory,
-            self.no_memory,
-            &self.last_global_config,
-            self.remote_settings.as_ref(),
-        );
-        let new_mem = crate::config::MemoryConfig::resolve(
-            self.experimental_memory,
-            self.no_memory,
-            &new_global,
-            self.remote_settings.as_ref(),
-        );
-        if old_mem != new_mem {
-            info!("memory config change detected");
-            let _ = self
-                .config_update_tx
-                .send(ConfigUpdate::Memory(Box::new(new_mem)));
+        let mut accepted_effective = None;
+        match crate::config::load_effective_config() {
+            Ok(new_effective) => match changed_memory_config(
+                &self.last_effective_config,
+                &new_effective,
+                self.memory_enabled_override,
+                self.remote_settings.as_ref(),
+            ) {
+                Ok(new_mem) => {
+                    if let Some(new_mem) = new_mem {
+                        info!("memory config change detected");
+                        let _ = self
+                            .config_update_tx
+                            .send(ConfigUpdate::Memory(Box::new(new_mem)));
+                    }
+                    accepted_effective = Some(new_effective);
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        "failed to parse memory config, keeping previous memory config"
+                    );
+                }
+            },
+            Err(e) => {
+                error!(
+                    error = %e,
+                    "failed to load effective config, keeping previous memory config"
+                );
+            }
         }
 
         // Skills config
@@ -499,8 +510,24 @@ impl ConfigReloader {
         }
 
         self.last_global_config = new_global;
+        if let Some(new_effective) = accepted_effective {
+            self.last_effective_config = new_effective;
+        }
         Ok(())
     }
+}
+
+fn changed_memory_config(
+    old_effective: &toml::Value,
+    new_effective: &toml::Value,
+    memory_enabled_override: Option<bool>,
+    remote_settings: Option<&crate::util::config::RemoteSettings>,
+) -> Result<Option<crate::config::MemoryConfig>, String> {
+    let old_config = crate::agent::config::Config::new_from_toml_cfg(old_effective)?;
+    let new_config = crate::agent::config::Config::new_from_toml_cfg(new_effective)?;
+    let old_mem = old_config.resolve_memory(memory_enabled_override, remote_settings);
+    let new_mem = new_config.resolve_memory(memory_enabled_override, remote_settings);
+    Ok((old_mem != new_mem).then_some(new_mem))
 }
 
 /// Derive the unique project cwds whose files were touched in this
@@ -916,8 +943,7 @@ mod tests {
             scope,
             None,
             tx,
-            false,
-            false,
+            None,
         );
 
         reloader.reload_auth().unwrap();
@@ -947,8 +973,7 @@ mod tests {
             scope,
             None,
             tx,
-            false,
-            false,
+            None,
         );
 
         reloader.reload_auth().unwrap();
@@ -979,8 +1004,7 @@ mod tests {
             "https://test.example.com".to_string(),
             None,
             tx,
-            false,
-            false,
+            None,
         );
 
         reloader.reload_auth().unwrap();
@@ -1002,8 +1026,7 @@ mod tests {
             "https://test.example.com".to_string(),
             None,
             tx,
-            false,
-            false,
+            None,
         );
 
         let result = reloader.reload_auth();
@@ -1028,8 +1051,7 @@ mod tests {
             "https://test.example.com".to_string(),
             None,
             tx,
-            false,
-            false,
+            None,
         );
 
         let result = reloader.reload_auth();
@@ -1056,8 +1078,7 @@ mod tests {
             "https://test.example.com".to_string(),
             None,
             tx,
-            false,
-            false,
+            None,
         );
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -1097,8 +1118,7 @@ mod tests {
             "https://test.example.com".to_string(),
             None,
             tx,
-            false,
-            false,
+            None,
         );
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -1228,8 +1248,12 @@ ignore = ["/tmp"]
         let empty = toml::Value::Table(toml::map::Map::new());
         let enabled: toml::Value = toml::from_str("[memory]\nenabled = true").unwrap();
 
-        let old = crate::config::MemoryConfig::resolve(false, false, &empty, None);
-        let new = crate::config::MemoryConfig::resolve(false, false, &enabled, None);
+        let old = crate::agent::config::Config::new_from_toml_cfg(&empty)
+            .unwrap()
+            .resolve_memory(None, None);
+        let new = crate::agent::config::Config::new_from_toml_cfg(&enabled)
+            .unwrap()
+            .resolve_memory(None, None);
         assert_ne!(old, new, "should detect enabled field change");
     }
 
@@ -1238,9 +1262,21 @@ ignore = ["/tmp"]
         let a: toml::Value = toml::from_str("[memory.search]\nmax_results = 6").unwrap();
         let b: toml::Value = toml::from_str("[memory.search]\nmax_results = 10").unwrap();
 
-        let old = crate::config::MemoryConfig::resolve(false, false, &a, None);
-        let new = crate::config::MemoryConfig::resolve(false, false, &b, None);
+        let old = crate::agent::config::Config::new_from_toml_cfg(&a)
+            .unwrap()
+            .resolve_memory(None, None);
+        let new = crate::agent::config::Config::new_from_toml_cfg(&b)
+            .unwrap()
+            .resolve_memory(None, None);
         assert_ne!(old, new, "should detect search param change");
+    }
+
+    #[test]
+    fn memory_config_diff_rejects_invalid_typed_memory_without_advancing() {
+        let old: toml::Value = toml::from_str("[memory.search]\nmax_results = 6").unwrap();
+        let invalid: toml::Value =
+            toml::from_str("[memory.search]\nmax_results = \"many\"").unwrap();
+        assert!(changed_memory_config(&old, &invalid, None, None).is_err());
     }
 
     #[test]

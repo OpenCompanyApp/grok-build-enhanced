@@ -1547,7 +1547,7 @@ pub async fn run_leader(
                         }
                     });
                 }
-                let initial_config = crate::config::load_effective_config()
+                let initial_config = crate::config::load_from_disk()
                     .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()));
                 let reloader = crate::config::reloader::ConfigReloader::new(
                     grok_home::grok_home(),
@@ -1556,8 +1556,7 @@ pub async fn run_leader(
                     auth_scope,
                     remote_settings_for_reloader,
                     config_update_tx,
-                    agent_config.cli_experimental_memory,
-                    agent_config.cli_no_memory,
+                    agent_config.memory_enabled_override,
                 );
                 tokio::spawn(reloader.run(events_rx, cancel_clone.clone()));
                 Some(watcher)
@@ -2000,6 +1999,150 @@ mod tests {
                 // First headless registration → relay connects.
                 demand_tx.send(true).unwrap();
                 wait_for_connection(&count, "after headless demand signal").await;
+            })
+            .await;
+        cancel.cancel();
+    }
+    /// Regression test for the "leader booted without auth is invisible
+    /// forever" bug: a leader that starts with no session (e.g. a devbox
+    /// whose initial mint hit a transient provider outage) must arm the
+    /// relay when a relay-eligible token is later hot-reloaded — and must
+    /// hand the parts back (not consume them) for a non-eligible token, so
+    /// a later eligible one can still arm.
+    #[tokio::test]
+    async fn deferred_arm_connects_relay_when_auth_appears() {
+        let (addr, count) = spawn_mock_relay_server().await;
+        let cancel = CancellationToken::new();
+        let (ws_to_agent_tx, _ws_to_agent_rx) = mpsc::unbounded_channel();
+        let agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>> =
+            Rc::new(Mutex::new(None));
+        let (_demand_tx, demand_rx) = watch::channel(false);
+        let slot = Rc::new(std::cell::RefCell::new(None));
+        let grok_com_config = crate::auth::GrokComConfig {
+            grok_ws_url: format!("ws://{addr}"),
+            grok_ws_origin: format!("http://{addr}"),
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let auth_manager = Arc::new(AuthManager::new(tmp.path(), grok_com_config.clone()));
+        let arm = DeferredRelayArm {
+            relay_on_demand: false,
+            relay_demand_rx: demand_rx,
+            ws_to_agent_tx,
+            agent_to_ws_tx: agent_to_ws_tx.clone(),
+            cancel: cancel.clone(),
+            slot: slot.clone(),
+            grok_com_config,
+            alpha_test_key: None,
+        };
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let ineligible = GrokAuth::test_default();
+                let arm = arm
+                    .arm_if_eligible(&ineligible, &auth_manager)
+                    .expect("non-eligible token must hand the parts back");
+                assert!(slot.borrow().is_none(), "no handle parked yet");
+                assert_eq!(
+                    count.load(Ordering::SeqCst),
+                    0,
+                    "non-eligible token must not connect the relay"
+                );
+                let eligible = GrokAuth {
+                    auth_mode: AuthMode::Oidc,
+                    oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_string()),
+                    ..GrokAuth::test_default()
+                };
+                assert!(
+                    arm.arm_if_eligible(&eligible, &auth_manager).is_none(),
+                    "eligible token must consume the arm parts"
+                );
+                assert!(
+                    slot.borrow().is_some(),
+                    "handle must be parked in the shared shutdown slot"
+                );
+                assert!(
+                    agent_to_ws_tx.lock().is_some(),
+                    "outbound relay sender must be installed"
+                );
+                wait_for_connection(&count, "deferred arm after auth hot-reload").await;
+            })
+            .await;
+        cancel.cancel();
+    }
+    /// End-to-end for the merge reconciliation: a background cold-mint persists
+    /// a relay-eligible session to auth.json, the config watcher emits
+    /// `ConfigUpdate::Auth`, and that arms the deferred relay.
+    #[tokio::test]
+    async fn cold_mint_auth_write_arms_deferred_relay() {
+        use crate::config::reloader::{ConfigReloader, ConfigUpdate, hash_auth_key};
+        let (addr, _count) = spawn_mock_relay_server().await;
+        let grok_com_config = crate::auth::GrokComConfig {
+            grok_ws_url: format!("ws://{addr}"),
+            grok_ws_origin: format!("http://{addr}"),
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = "https://test.example.com".to_string();
+        let session = GrokAuth {
+            auth_mode: AuthMode::Oidc,
+            oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_string()),
+            ..GrokAuth::test_default()
+        };
+        let mut store = std::collections::BTreeMap::new();
+        store.insert(scope.clone(), session);
+        std::fs::write(
+            tmp.path().join("auth.json"),
+            serde_json::to_string_pretty(&store).unwrap(),
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut reloader = ConfigReloader::new(
+            tmp.path().to_path_buf(),
+            hash_auth_key("sessionless-boot"),
+            toml::Value::Table(Default::default()),
+            scope,
+            None,
+            tx,
+            None,
+        );
+        reloader.reload_auth().unwrap();
+        let ConfigUpdate::Auth(minted) = rx
+            .try_recv()
+            .expect("cold-mint auth.json write must emit ConfigUpdate::Auth")
+        else {
+            panic!("expected ConfigUpdate::Auth");
+        };
+        let auth_manager = Arc::new(AuthManager::new(tmp.path(), grok_com_config.clone()));
+        let (ws_to_agent_tx, _ws_to_agent_rx) = mpsc::unbounded_channel();
+        let agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>> =
+            Rc::new(Mutex::new(None));
+        let agent_to_ws_tx_probe = agent_to_ws_tx.clone();
+        let (_demand_tx, demand_rx) = watch::channel(false);
+        let slot = Rc::new(std::cell::RefCell::new(None));
+        let cancel = CancellationToken::new();
+        let arm = DeferredRelayArm {
+            relay_on_demand: false,
+            relay_demand_rx: demand_rx,
+            ws_to_agent_tx,
+            agent_to_ws_tx,
+            cancel: cancel.clone(),
+            slot: slot.clone(),
+            grok_com_config,
+            alpha_test_key: None,
+        };
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                assert!(
+                    arm.arm_if_eligible(&minted, &auth_manager).is_none(),
+                    "a cold-minted relay-eligible session must arm the relay"
+                );
+                assert!(slot.borrow().is_some(), "relay handle must be parked");
+                assert!(
+                    agent_to_ws_tx_probe.lock().is_some(),
+                    "outbound relay sender must be installed"
+                );
             })
             .await;
         cancel.cancel();
