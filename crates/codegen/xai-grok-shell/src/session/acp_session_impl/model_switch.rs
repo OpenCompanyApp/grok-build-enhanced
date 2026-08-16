@@ -334,11 +334,15 @@ fn web_search_config_for_provider(
     if sampling_config.provider.is_kimi_code() {
         return WebSearchConfig::KimiCode {
             base_url: xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned(),
+            allowed_domains: None,
+            excluded_domains: None,
         };
     }
     if sampling_config.provider.is_open_code_go() {
         return WebSearchConfig::ExaHosted {
             base_url: xai_grok_sampling_types::EXA_HOSTED_MCP_URL.to_owned(),
+            allowed_domains: None,
+            excluded_domains: None,
         };
     }
     // Preserve a dedicated provider-owned web-search model when returning to
@@ -352,6 +356,8 @@ fn web_search_config_for_provider(
             model,
             extra_headers,
             alpha_test_key: configured_alpha_test_key,
+            allowed_domains,
+            excluded_domains,
         } = configured
     {
         return WebSearchConfig::Enabled {
@@ -365,6 +371,8 @@ fn web_search_config_for_provider(
             alpha_test_key: configured_alpha_test_key
                 .clone()
                 .or_else(|| alpha_test_key.map(str::to_owned)),
+            allowed_domains: allowed_domains.clone(),
+            excluded_domains: excluded_domains.clone(),
         };
     }
 
@@ -377,6 +385,8 @@ fn web_search_config_for_provider(
         model: sampling_config.model.clone(),
         extra_headers: sampling_config.extra_headers.clone(),
         alpha_test_key: alpha_test_key.map(str::to_owned),
+        allowed_domains: None,
+        excluded_domains: None,
     }
 }
 
@@ -768,6 +778,16 @@ impl SessionActor {
             sampling_config,
             self.session_info.id.0.as_ref(),
             alpha_test_key,
+        );
+        web_search_config.apply_domain_policy(
+            self.rebuild_spec
+                .web_search_domains
+                .as_ref()
+                .and_then(|options| options.allowed_domains.clone()),
+            self.rebuild_spec
+                .web_search_domains
+                .as_ref()
+                .and_then(|options| options.excluded_domains.clone()),
         );
         if (sampling_config.provider.is_openai_codex() || sampling_config.provider.is_kimi_code())
             && api_key_provider.is_none()
@@ -1263,6 +1283,8 @@ mod provider_media_switch_tests {
                 "x-xai-route".to_owned() => "search".to_owned(),
             },
             alpha_test_key: Some("old-alpha".to_owned()),
+            allowed_domains: None,
+            excluded_domains: None,
         }
     }
 
@@ -1314,7 +1336,7 @@ mod provider_media_switch_tests {
 
         assert!(matches!(
             config,
-            WebSearchConfig::KimiCode { ref base_url }
+            WebSearchConfig::KimiCode { ref base_url, .. }
                 if base_url == xai_grok_sampling_types::KIMI_CODE_BASE_URL
         ));
     }
@@ -1484,6 +1506,8 @@ mod provider_media_switch_tests {
             model,
             extra_headers,
             alpha_test_key,
+            allowed_domains,
+            excluded_domains,
         } = config
         else {
             panic!("custom route with an explicit key must remain enabled");
@@ -1497,6 +1521,8 @@ mod provider_media_switch_tests {
         );
         assert!(!extra_headers.contains_key("x-xai-route"));
         assert_eq!(alpha_test_key.as_deref(), Some("custom-alpha"));
+        assert!(allowed_domains.is_none());
+        assert!(excluded_domains.is_none());
     }
 
     #[test]

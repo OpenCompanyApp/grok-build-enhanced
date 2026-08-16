@@ -20,6 +20,8 @@ pub(in crate::implementations::web_search) struct ResponsesBackend {
     http: reqwest::Client,
     base_url: String,
     model: String,
+    default_allowed_domains: Option<Vec<String>>,
+    default_excluded_domains: Option<Vec<String>>,
     api_key_provider: Option<SharedApiKeyProvider>,
     attribution_callback: Option<SharedAttributionCallback>,
 }
@@ -30,6 +32,8 @@ impl ResponsesBackend {
         base_url: &str,
         model: &str,
         extra_headers: &IndexMap<String, String>,
+        default_allowed_domains: Option<Vec<String>>,
+        default_excluded_domains: Option<Vec<String>>,
         api_key_provider: Option<SharedApiKeyProvider>,
     ) -> Result<Self, xai_tool_runtime::ToolError> {
         if api_key_provider.as_ref().is_some_and(|provider| {
@@ -75,6 +79,8 @@ impl ResponsesBackend {
             http,
             base_url,
             model: model.to_owned(),
+            default_allowed_domains,
+            default_excluded_domains,
             api_key_provider,
             attribution_callback: None,
         })
@@ -93,8 +99,8 @@ impl ResponsesBackend {
         allowed_domains: Option<Vec<String>>,
     ) -> Result<BackendSearchResult, xai_tool_runtime::ToolError> {
         validate_search_query(query)?;
-        let allowed_domains = validate_allowed_domains(allowed_domains)?;
-        self.execute(query, allowed_domains).await
+        let (allowed_domains, excluded_domains) = self.resolve_filters(allowed_domains)?;
+        self.execute(query, allowed_domains, excluded_domains).await
     }
 
     pub(in crate::implementations::web_search) async fn run_commands(
@@ -123,14 +129,34 @@ impl ResponsesBackend {
         }
 
         validate_search_query(query)?;
-        let allowed_domains = validate_allowed_domains(allowed_domains)?;
-        self.execute(query, allowed_domains).await
+        let (allowed_domains, excluded_domains) = self.resolve_filters(allowed_domains)?;
+        self.execute(query, allowed_domains, excluded_domains).await
+    }
+
+    fn resolve_filters(
+        &self,
+        call_allowed_domains: Option<Vec<String>>,
+    ) -> Result<(Option<Vec<String>>, Option<Vec<String>>), xai_tool_runtime::ToolError> {
+        if self.default_allowed_domains.is_some() {
+            return Ok((
+                validate_allowed_domains(self.default_allowed_domains.clone())?,
+                None,
+            ));
+        }
+        if self.default_excluded_domains.is_some() {
+            return Ok((
+                None,
+                validate_allowed_domains(self.default_excluded_domains.clone())?,
+            ));
+        }
+        Ok((validate_allowed_domains(call_allowed_domains)?, None))
     }
 
     async fn execute(
         &self,
         query: &str,
         allowed_domains: Option<Vec<String>>,
+        excluded_domains: Option<Vec<String>>,
     ) -> Result<BackendSearchResult, xai_tool_runtime::ToolError> {
         let web_search = rs::WebSearchToolArgs::default()
             .filters(rs::WebSearchToolFilters { allowed_domains })
@@ -146,6 +172,20 @@ impl ResponsesBackend {
             .max_output_tokens(8192u32)
             .build()
             .map_err(|_| execution_error("Responses web search request is invalid"))?;
+        let mut request = serde_json::to_value(request)
+            .map_err(|_| execution_error("Responses web search request is invalid"))?;
+        if let Some(excluded) = excluded_domains {
+            let tool = request
+                .get_mut("tools")
+                .and_then(serde_json::Value::as_array_mut)
+                .and_then(|tools| tools.first_mut())
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| execution_error("Responses web search request is invalid"))?;
+            let filters = tool
+                .entry("filters")
+                .or_insert_with(|| serde_json::json!({}));
+            filters["excluded_domains"] = serde_json::json!(excluded);
+        }
 
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
         let sent_bearer =
@@ -409,6 +449,8 @@ mod tests {
             &server.uri(),
             "configured-search-model",
             &IndexMap::new(),
+            None,
+            None,
             provider,
         )
         .expect("Responses backend should build")
@@ -450,6 +492,8 @@ mod tests {
             "https://example.com/v1",
             "configured-search-model",
             &IndexMap::new(),
+            None,
+            None,
             Some(provider),
         )
         .err()
@@ -475,6 +519,8 @@ mod tests {
                 rejected,
                 "configured-search-model",
                 &IndexMap::new(),
+                None,
+                None,
                 None,
             )
             .err()
@@ -504,6 +550,8 @@ mod tests {
             "https://example.com/v1",
             "configured-search-model",
             &headers,
+            None,
+            None,
             None,
         )
         .err()

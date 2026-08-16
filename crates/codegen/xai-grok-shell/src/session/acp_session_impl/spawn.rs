@@ -581,7 +581,12 @@ pub(crate) async fn spawn_session_actor(
     let configured_web_search_provider = web_search_sampling_config
         .as_ref()
         .map(|config| config.provider);
-    let web_search_config = if disable_web_search {
+    let web_search_domains = if disable_web_search {
+        None
+    } else {
+        crate::util::config::resolve_web_search_domains_from_disk()
+    };
+    let mut web_search_config = if disable_web_search {
         xai_grok_tools::implementations::WebSearchConfig::Disabled
     } else if sampling_config.provider.is_openai_codex() {
         if !codex_web_search_settings.mode.is_enabled() {
@@ -604,6 +609,8 @@ pub(crate) async fn spawn_session_actor(
         if api_key_provider.is_some() {
             xai_grok_tools::implementations::WebSearchConfig::KimiCode {
                 base_url: xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned(),
+                allowed_domains: None,
+                excluded_domains: None,
             }
         } else {
             tracing::warn!(
@@ -615,6 +622,8 @@ pub(crate) async fn spawn_session_actor(
     } else if sampling_config.provider.is_open_code_go() {
         xai_grok_tools::implementations::WebSearchConfig::ExaHosted {
             base_url: xai_grok_sampling_types::EXA_HOSTED_MCP_URL.to_owned(),
+            allowed_domains: None,
+            excluded_domains: None,
         }
     } else if let Some(cfg) = web_search_sampling_config.as_ref() {
         if let Some(api_key) = cfg.api_key.clone() {
@@ -624,6 +633,12 @@ pub(crate) async fn spawn_session_actor(
                 model: cfg.model.clone(),
                 extra_headers: cfg.extra_headers.clone(),
                 alpha_test_key: credentials.alpha_test_key.clone(),
+                allowed_domains: web_search_domains
+                    .as_ref()
+                    .and_then(|o| o.allowed_domains.clone()),
+                excluded_domains: web_search_domains
+                    .as_ref()
+                    .and_then(|o| o.excluded_domains.clone()),
             }
         } else {
             tracing::warn!("web_search disabled: resolved config has no API key");
@@ -633,6 +648,14 @@ pub(crate) async fn spawn_session_actor(
         tracing::warn!("web_search disabled: configured model could not be resolved");
         xai_grok_tools::implementations::WebSearchConfig::Disabled
     };
+    web_search_config.apply_domain_policy(
+        web_search_domains
+            .as_ref()
+            .and_then(|options| options.allowed_domains.clone()),
+        web_search_domains
+            .as_ref()
+            .and_then(|options| options.excluded_domains.clone()),
+    );
     let web_fetch_config = if sampling_config.provider.is_openai_codex()
         && !codex_web_search_settings.mode.is_enabled()
         && matches!(
@@ -1131,6 +1154,7 @@ pub(crate) async fn spawn_session_actor(
                 configured_web_search_provider
             }
         },
+        web_search_domains,
         backend_search: backend_tools_enabled,
         web_fetch_config: web_fetch_config.clone(),
         image_gen_config: image_gen_config.clone(),
@@ -1908,6 +1932,9 @@ pub(crate) async fn spawn_session_actor(
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
         hook_registry: std::cell::RefCell::new(built_hook_registry),
+        turn_report: Default::default(),
+        turn_abort: Default::default(),
+        turn_end_tx: Default::default(),
         client_hooks: std::cell::RefCell::new(client_hooks),
         hook_resolved_workspace_root: resolved_workspace_root,
         vcs_kind: {

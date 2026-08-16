@@ -1183,10 +1183,10 @@ pub struct CreateResponseWrapper {
     /// Optional tracing context (e.g., where to persist the finalized request payload).
     pub trace: Option<Box<dyn TraceContext>>,
 
-    /// xAI-specific tool definitions that can't be expressed via
-    /// `async_openai`'s `rs::Tool` enum (e.g., `x_search`). Injected
-    /// as raw JSON into the serialized request body's `tools` array.
-    pub extra_raw_tools: Vec<serde_json::Value>,
+    /// Hosted tool definitions that cannot be represented losslessly by
+    /// `async_openai`'s `rs::Tool` enum. Injected as raw JSON into the
+    /// serialized request body's `tools` array.
+    pub extra_tool_entries: Vec<serde_json::Value>,
 
     /// Canonical reasoning effort selected for this request. The typed
     /// `async-openai` request already carries values through `xhigh`; this
@@ -1208,7 +1208,7 @@ impl CreateResponseWrapper {
             x_grok_deployment_id: None,
             x_grok_user_id: None,
             trace: None,
-            extra_raw_tools: vec![],
+            extra_tool_entries: vec![],
             wire_reasoning_effort: None,
         }
     }

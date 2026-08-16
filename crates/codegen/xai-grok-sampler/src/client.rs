@@ -349,6 +349,26 @@ fn record_stream_request_failure(err: &SamplingError) {
     span.record("error", err.to_string().as_str());
 }
 
+/// Splice the raw-JSON hosted-tool entries for `web_search` and `x_search` into a serialized
+/// Responses request body's `tools` array. `x_search` has no `rs::Tool` variant at all, and
+/// `web_search` has one whose typed filters cannot carry `excluded_domains`, so both travel as raw
+/// JSON and neither may also be emitted as a typed `rs::Tool` (the API rejects the duplicate).
+/// Shared by the streaming (`create_response_stream`) and non-streaming (`create_response`) paths
+/// so neither can silently drop these tools.
+fn splice_extra_tool_entries(
+    request_body: &mut serde_json::Value,
+    entries: Vec<serde_json::Value>,
+) {
+    if entries.is_empty() {
+        return;
+    }
+    if let Some(tools) = request_body.get_mut("tools").and_then(|v| v.as_array_mut()) {
+        tools.extend(entries);
+    } else {
+        request_body["tools"] = serde_json::Value::Array(entries);
+    }
+}
+
 fn extract_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     headers
         .get(reqwest::header::RETRY_AFTER)
@@ -2368,6 +2388,7 @@ impl SamplingClient {
             "responses request prepared"
         );
 
+        let extra_tool_entries = std::mem::take(&mut request.extra_tool_entries);
         let mut request_body = serde_json::to_value(&request.inner).map_err(|e| {
             tracing::error!("Failed to serialize responses request: {}", e);
             SamplingError::Serialization(e)
@@ -2392,6 +2413,7 @@ impl SamplingClient {
             ),
             &mut request_body,
         )?;
+        splice_extra_tool_entries(&mut request_body, extra_tool_entries);
         append_response_includes(&mut request_body, &self.defaults.extra_response_includes);
         // async-openai's ReasoningTextContent struct omits the `type`
         // discriminator that the Responses API requires on input. Patch
@@ -2563,7 +2585,7 @@ impl SamplingClient {
             "Sending responses API stream request"
         );
 
-        let extra_raw_tools = std::mem::take(&mut request.extra_raw_tools);
+        let extra_tool_entries = std::mem::take(&mut request.extra_tool_entries);
         let mut request_body = serde_json::to_value(&request.inner).map_err(|e| {
             tracing::error!("Failed to serialize responses request: {}", e);
             SamplingError::Serialization(e)
@@ -2583,15 +2605,7 @@ impl SamplingClient {
         if !self.defaults.provider.is_openai_codex() && self.defaults.stream_tool_calls {
             request_body["stream_tool_calls"] = serde_json::json!(true);
         }
-        // Inject xAI-specific tools (e.g., x_search) that can't be expressed
-        // via async_openai's rs::Tool enum.
-        if !self.defaults.provider.is_openai_codex() && !extra_raw_tools.is_empty() {
-            if let Some(tools) = request_body.get_mut("tools").and_then(|v| v.as_array_mut()) {
-                tools.extend(extra_raw_tools);
-            } else {
-                request_body["tools"] = serde_json::Value::Array(extra_raw_tools);
-            }
-        }
+        splice_extra_tool_entries(&mut request_body, extra_tool_entries);
         codex_responses::apply_codex_responses_lite_contract(
             self.defaults.provider,
             self.defaults.responses_lite,
@@ -3431,9 +3445,9 @@ impl SamplingClient {
         let x_grok_agent_id = request.x_grok_agent_id.clone();
         let wire_reasoning_effort = request.reasoning_effort;
 
-        // Collect xAI-specific tools that can't be expressed via rs::Tool
-        // (e.g., x_search). These are injected as raw JSON after serialization.
-        let extra_tools = xai_grok_sampling_types::extra_raw_tools(&request.hosted_tools);
+        // The hosted tools travel as raw JSON, spliced in after serialization by
+        // `splice_extra_tool_entries`, whose doc explains why each one does.
+        let extra_tools = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
 
         // The shell resolves the authenticated provider/model capability for
         // each turn. Normalize only this cheap Arc-backed prompt clone at the
@@ -3448,7 +3462,7 @@ impl SamplingClient {
         wrapper.x_grok_session_id = x_grok_session_id;
         wrapper.x_grok_turn_idx = x_grok_turn_idx;
         wrapper.x_grok_agent_id = x_grok_agent_id;
-        wrapper.extra_raw_tools = extra_tools;
+        wrapper.extra_tool_entries = extra_tools;
         wrapper.wire_reasoning_effort = wire_reasoning_effort;
 
         if let Some(trace) = trace {
@@ -3489,6 +3503,9 @@ impl SamplingClient {
 
         // Keep non-streaming Responses on the same request-copy capability
         // contract as the interactive streaming path.
+        // Hosted tools use the same raw-JSON channel as streaming so web
+        // search blocklists and x_search survive typed serialization.
+        let extra_tools = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
         let serialization_prompt = request.clone_for_responses_serialization();
         let responses_request: rs::CreateResponse = (&serialization_prompt).into();
 
@@ -3499,6 +3516,7 @@ impl SamplingClient {
         wrapper.x_grok_turn_idx = x_grok_turn_idx;
         wrapper.x_grok_agent_id = x_grok_agent_id;
         wrapper.wire_reasoning_effort = wire_reasoning_effort;
+        wrapper.extra_tool_entries = extra_tools;
 
         if let Some(trace) = trace {
             wrapper.trace = Some(trace);
@@ -3758,6 +3776,30 @@ mod tests {
     use axum::{Router, body::Bytes, routing::post};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
+
+    #[test]
+    fn splice_extra_tool_entries_extends_existing_tools_array() {
+        let mut body = serde_json::json!({ "tools": [{ "type": "function" }] });
+        splice_extra_tool_entries(&mut body, vec![serde_json::json!({ "type": "web_search" })]);
+        assert_eq!(
+            body["tools"],
+            serde_json::json!([{ "type": "function" }, { "type": "web_search" }])
+        );
+    }
+
+    #[test]
+    fn splice_extra_tool_entries_creates_tools_array_when_absent() {
+        let mut body = serde_json::json!({});
+        splice_extra_tool_entries(&mut body, vec![serde_json::json!({ "type": "web_search" })]);
+        assert_eq!(body["tools"], serde_json::json!([{ "type": "web_search" }]));
+    }
+
+    #[test]
+    fn splice_extra_tool_entries_noop_when_empty() {
+        let mut body = serde_json::json!({ "tools": [{ "type": "function" }] });
+        splice_extra_tool_entries(&mut body, vec![]);
+        assert_eq!(body["tools"], serde_json::json!([{ "type": "function" }]));
+    }
 
     #[test]
     fn stream_collect_error_preserves_should_retry() {
@@ -4086,7 +4128,7 @@ mod tests {
             ..Default::default()
         };
         let mut wrapper = CreateResponseWrapper::new(request.clone());
-        wrapper.extra_raw_tools = vec![serde_json::json!({"type": "x_search"})];
+        wrapper.extra_tool_entries = vec![serde_json::json!({"type": "x_search"})];
         if streaming {
             let (_stream, _model_metadata, _doom_loop_collector) = client
                 .create_response_stream(wrapper)
@@ -5816,7 +5858,7 @@ mod tests {
         request.x_grok_req_id = Some("must-not-be-sent".to_string());
         request.x_grok_session_id = Some(CODEX_SESSION_FIXTURE.to_string());
         request.x_grok_agent_id = Some("must-not-be-sent".to_string());
-        request.extra_raw_tools = vec![serde_json::json!({"type": "x_search"})];
+        request.extra_tool_entries = vec![serde_json::json!({"type": "x_search"})];
 
         let error = match client.create_response_stream(request).await {
             Err(error) => error,

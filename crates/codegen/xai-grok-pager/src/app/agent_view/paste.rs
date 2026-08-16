@@ -1174,6 +1174,7 @@ pub(super) mod paste_key_tests {
             active_idx: 0,
             bash_highlights: None,
             bash_selection_count: 0,
+            bash_deny_selection_count: 0,
             bash_command_raw: None,
             mcp_scope: None,
             title: String::new(),

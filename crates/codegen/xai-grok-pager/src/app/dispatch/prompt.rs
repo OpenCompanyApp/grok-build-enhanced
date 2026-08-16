@@ -27,6 +27,9 @@ use crate::slash::command::DoctorRequest;
 use agent_client_protocol as acp;
 use xai_grok_telemetry::session_ctx::log_event;
 
+/// Shared by every submit guard that refuses while the session reconnects.
+pub(super) const RECONNECTING_NOTICE: &str = "Reconnecting, please wait...";
+
 /// Chat kind for the next create: CLI `--chat` (`app.chat_mode`) or one-shot
 /// `/chat` (`deferred_startup.pending_chat`, consumed here).
 pub(super) fn consume_chat_kind(app: &mut AppView) -> bool {
@@ -446,7 +449,7 @@ pub(super) fn dispatch_send_prompt_inner(
     };
 
     if app.reconnect_pending {
-        app.show_toast("Reconnecting, please wait...");
+        app.show_toast(RECONNECTING_NOTICE);
         return vec![];
     }
 
@@ -461,6 +464,7 @@ pub(super) fn dispatch_send_prompt_inner(
     let respect_manual_folds_from_app = app.appearance.scrollback.scroll.respect_manual_folds;
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
+    let leader_mode_from_app = app.leader_mode;
     // Set when a plain prompt is queued while a turn is running (local path);
     // shown after the agent borrow ends so we can re-enter via the tip helper.
     let mut tip_send_now_after_queue = false;
@@ -600,6 +604,9 @@ pub(super) fn dispatch_send_prompt_inner(
                     // filtered out of every completion surface, but it stays
                     // resolvable so a fully-typed invocation earns a hint that
                     // names the way out instead of leaking to the model.
+                    // A refusal added here must also extend the pre-check in `EditedCommandGate`
+                    // (`dispatch::queue`): that caller has to know the command will be refused
+                    // before it drops the queued row the text came from.
                     if let Some(refusal) = command
                         .mode_support()
                         .refusal(invocation.token, ctx.screen_mode)
@@ -789,8 +796,8 @@ pub(super) fn dispatch_send_prompt_inner(
             .slash_controller
             .recognized_token_ranges(&text, &agent.session.models);
 
-        let immediate_server_send =
-            immediate_server_send_eligible(agent) && agent.prompt.images.is_empty();
+        let immediate_server_send = immediate_server_send_eligible(agent, leader_mode_from_app)
+            && agent.prompt.images.is_empty();
         tracing::debug!(
             target: "qtrace",
             pid = std::process::id(),
@@ -812,7 +819,7 @@ pub(super) fn dispatch_send_prompt_inner(
 
         // Images can't ride immediate server-send; empty-held park still send-nows.
         if !immediate_server_send
-            && immediate_server_send_eligible(agent)
+            && immediate_server_send_eligible(agent, leader_mode_from_app)
             && !agent.prompt.images.is_empty()
             && parked_sendable_wait
             && !hold_behind_existing_queue
@@ -874,7 +881,10 @@ pub(super) fn dispatch_send_prompt_inner(
                 Some(&sid_str),
                 Some(serde_json::json!({ "kind": "prompt", "len": text.len() })),
             );
-            if queued_while_running && !parked_sendable_wait {
+            if queued_while_running
+                && !parked_sendable_wait
+                && !crate::appearance::cache::load_follow_up_steer()
+            {
                 maybe_show_send_now_tip(app);
             }
             return vec![Effect::SendPrompt {
@@ -946,13 +956,14 @@ pub(super) fn dispatch_send_prompt_inner(
 /// the execute block from the shell IS the visual entry.
 pub(super) fn dispatch_send_bash_command(app: &mut AppView, command: String) -> Vec<Effect> {
     if app.reconnect_pending {
-        app.show_toast("Reconnecting, please wait...");
+        app.show_toast(RECONNECTING_NOTICE);
         return vec![];
     }
 
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
+    let leader_mode_from_app = app.leader_mode;
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
@@ -986,7 +997,7 @@ pub(super) fn dispatch_send_bash_command(app: &mut AppView, command: String) -> 
     // into the shared queue with `kind="bash"`. On `running_prompt_id`
     // adoption the turn-start shim sets `bash_turn` (no user block). The IDLE
     // case is unchanged: enqueue locally + drain instantly.
-    let bash_immediate = immediate_server_send_eligible(agent);
+    let bash_immediate = immediate_server_send_eligible(agent, leader_mode_from_app);
     tracing::debug!(
         target: "qtrace",
         pid = std::process::id(),

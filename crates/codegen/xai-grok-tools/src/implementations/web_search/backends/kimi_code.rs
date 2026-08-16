@@ -19,6 +19,8 @@ const MAX_RENDERED_BYTES: usize = 256 * 1024;
 pub(in crate::implementations::web_search) struct KimiCodeBackend {
     http: reqwest::Client,
     endpoint: String,
+    default_allowed_domains: Option<Vec<String>>,
+    default_excluded_domains: Option<Vec<String>>,
     auth_provider: SharedApiKeyProvider,
     attribution_callback: Option<SharedAttributionCallback>,
 }
@@ -33,6 +35,8 @@ struct SearchResult {
 impl KimiCodeBackend {
     pub(in crate::implementations::web_search) fn new(
         base_url: &str,
+        default_allowed_domains: Option<Vec<String>>,
+        default_excluded_domains: Option<Vec<String>>,
         auth_provider: SharedApiKeyProvider,
     ) -> Result<Self, xai_tool_runtime::ToolError> {
         if auth_provider.request_auth_provider_id() != Some(KIMI_CODE_PROVIDER_ID) {
@@ -49,6 +53,8 @@ impl KimiCodeBackend {
         Ok(Self {
             http,
             endpoint,
+            default_allowed_domains,
+            default_excluded_domains,
             auth_provider,
             attribution_callback: None,
         })
@@ -67,8 +73,13 @@ impl KimiCodeBackend {
         allowed_domains: Option<Vec<String>>,
     ) -> Result<BackendSearchResult, xai_tool_runtime::ToolError> {
         validate_search_query(query)?;
-        let allowed_domains = validate_allowed_domains(allowed_domains)?;
-        self.execute(query, allowed_domains.as_deref()).await
+        let (allowed_domains, excluded_domains) = self.resolve_filters(allowed_domains)?;
+        self.execute(
+            query,
+            allowed_domains.as_deref(),
+            excluded_domains.as_deref(),
+        )
+        .await
     }
 
     pub(in crate::implementations::web_search) async fn run_commands(
@@ -97,14 +108,39 @@ impl KimiCodeBackend {
             ));
         }
         validate_search_query(query)?;
-        let allowed_domains = validate_allowed_domains(allowed_domains)?;
-        self.execute(query, allowed_domains.as_deref()).await
+        let (allowed_domains, excluded_domains) = self.resolve_filters(allowed_domains)?;
+        self.execute(
+            query,
+            allowed_domains.as_deref(),
+            excluded_domains.as_deref(),
+        )
+        .await
+    }
+
+    fn resolve_filters(
+        &self,
+        call_allowed_domains: Option<Vec<String>>,
+    ) -> Result<(Option<Vec<String>>, Option<Vec<String>>), xai_tool_runtime::ToolError> {
+        if self.default_allowed_domains.is_some() {
+            return Ok((
+                validate_allowed_domains(self.default_allowed_domains.clone())?,
+                None,
+            ));
+        }
+        if self.default_excluded_domains.is_some() {
+            return Ok((
+                None,
+                validate_allowed_domains(self.default_excluded_domains.clone())?,
+            ));
+        }
+        Ok((validate_allowed_domains(call_allowed_domains)?, None))
     }
 
     async fn execute(
         &self,
         query: &str,
         allowed_domains: Option<&[String]>,
+        excluded_domains: Option<&[String]>,
     ) -> Result<BackendSearchResult, xai_tool_runtime::ToolError> {
         let auth = resolve_kimi_code_request_auth(&self.auth_provider)
             .await
@@ -151,7 +187,7 @@ impl KimiCodeBackend {
         }
         let bytes = read_response_body(response, MAX_RESPONSE_BYTES).await?;
         let results = parse_search_results(&bytes)?;
-        project_results(results, allowed_domains)
+        project_results(results, allowed_domains, excluded_domains)
     }
 
     fn record_401(&self) {
@@ -290,6 +326,7 @@ fn sanitize_markdown_text(raw: &str) -> String {
 fn project_results(
     results: Vec<SearchResult>,
     allowed_domains: Option<&[String]>,
+    excluded_domains: Option<&[String]>,
 ) -> Result<BackendSearchResult, xai_tool_runtime::ToolError> {
     let mut rendered = String::new();
     let mut citations = Vec::new();
@@ -308,12 +345,18 @@ fn project_results(
             || !url.username().is_empty()
             || url.password().is_some()
             || url.host_str().is_none()
-            || allowed_domains.is_some_and(|domains| {
+            || {
                 let host = url.host_str().unwrap_or_default();
-                !domains
-                    .iter()
-                    .any(|domain| host == domain || host.ends_with(&format!(".{domain}")))
-            })
+                allowed_domains.is_some_and(|domains| {
+                    !domains
+                        .iter()
+                        .any(|domain| host == domain || host.ends_with(&format!(".{domain}")))
+                }) || excluded_domains.is_some_and(|domains| {
+                    domains
+                        .iter()
+                        .any(|domain| host == domain || host.ends_with(&format!(".{domain}")))
+                })
+            }
         {
             continue;
         }
@@ -386,7 +429,7 @@ mod tests {
 
     fn test_backend(server: &MockServer) -> KimiCodeBackend {
         let provider: SharedApiKeyProvider = Arc::new(KimiTestProvider);
-        KimiCodeBackend::new(&server.uri(), provider).unwrap()
+        KimiCodeBackend::new(&server.uri(), None, None, provider).unwrap()
     }
 
     #[tokio::test]
@@ -551,6 +594,33 @@ mod tests {
                 },
             ],
             Some(&["example.com".to_owned()]),
+            None,
+        )
+        .unwrap();
+        assert!(result.content.contains("Allowed"));
+        assert!(!result.content.contains("Blocked"));
+        assert_eq!(result.citation_pairs.len(), 1);
+    }
+
+    #[test]
+    fn projection_filters_configured_excluded_domains() {
+        let result = project_results(
+            vec![
+                SearchResult {
+                    site_name: String::new(),
+                    title: "Allowed".to_owned(),
+                    url: "https://docs.example.com/page".to_owned(),
+                    snippet: "text".to_owned(),
+                },
+                SearchResult {
+                    site_name: String::new(),
+                    title: "Blocked".to_owned(),
+                    url: "https://private.example.com/page".to_owned(),
+                    snippet: "text".to_owned(),
+                },
+            ],
+            None,
+            Some(&["private.example.com".to_owned()]),
         )
         .unwrap();
         assert!(result.content.contains("Allowed"));

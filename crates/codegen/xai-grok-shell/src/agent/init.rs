@@ -120,12 +120,7 @@ fn resolve_config(cfg: &AgentConfig, auth_manager: &AuthManager) -> AgentConfig 
         }
     }
 
-    let managed_enforced = crate::config::apply_managed_settings_features(&mut cfg);
-    let requirements_enforced = crate::config::apply_requirements(&mut cfg);
-
-    for e in managed_enforced.iter().chain(&requirements_enforced) {
-        tracing::info!(field = %e.path, value = %e.value, source = %e.source, "policy override");
-    }
+    crate::config::apply_policy(&mut cfg);
 
     ensure_remote_settings_side_effects(&mut cfg, true);
     crate::util::config::sync_campaign_fields(&mut cfg);

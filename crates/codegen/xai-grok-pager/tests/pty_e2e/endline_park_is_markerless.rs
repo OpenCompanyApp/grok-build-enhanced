@@ -1,26 +1,15 @@
-//! PTY: a parked wait produces two static markers — the park pushes "Turn
-//! completed in X. 1 command still running…" and the turn that follows ends
-//! with its own marker below. A prompt typed mid-park is cancel-and-send:
-//! the shell silently cancels the parked turn (no "Turn cancelled by user"
-//! marker) and runs the message as its OWN next turn, whose completion pushes
-//! the second marker; the park line is never edited, so the transcript holds
-//! BOTH markers with the park text intact, in order.
-//!
-//! Wire journey, fully flag-file driven — no timing windows: the model
-//! backgrounds a flag-gated command, then runs a flag-gated foreground hold
-//! while the test extracts the runtime task id from the request bodies
-//! (`<task-id>` envelope; a UUID minted by the terminal actor, so it cannot
-//! be scripted statically) and enqueues the blocking
-//! `get_command_or_subagent_output(timeout)` on the real id — the pager
-//! parks. Typing mid-park cancels-and-sends and the fixed-text reply ends
-//! the new turn with the second, final marker.
+//! PTY, fully flag-file driven: the model backgrounds a flag-gated command,
+//! the test extracts the runtime task id and enqueues a blocking
+//! `get_command_or_subagent_output` on it (park), then types mid-park
+//! (cancel-and-send). Asserts exactly ONE "Worked for" marker — the new
+//! turn's — with no park row and no "Turn cancelled by user" marker.
 #[allow(unused_imports)]
 use super::common::*;
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
-async fn endline_park_two_static_markers() {
+#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+async fn endline_park_is_markerless() {
     let content = ContentController::start().await.expect("start content");
     // Gates the background command the watching cue counts (released at the end).
     let park_flag = content.home().join("endline_park_flag");
@@ -31,8 +20,7 @@ async fn endline_park_two_static_markers() {
         format!("while [ ! -e {} ]; do /bin/sleep 0.2; done", flag.display())
     };
 
-    // Tool call 1: a flag-gated background command — the work both markers
-    // snapshot ("1 command still running…").
+    // Tool call 1: the flag-gated background command the watching cue counts.
     let bg_args = json!({
         "command": gated_loop(&park_flag),
         "description": "flag-gated command",
@@ -111,7 +99,6 @@ async fn endline_park_two_static_markers() {
     // Everything downstream is scripted — let the id-extraction hold finish.
     std::fs::write(&id_ready_flag, b"ready").expect("release id-extraction hold");
 
-    // Park: the first static marker reads as a completion with the count.
     harness
         .wait_for_text("1 command still running", Duration::from_secs(90))
         .unwrap_or_else(|_| {
@@ -121,10 +108,18 @@ async fn endline_park_two_static_markers() {
                 dump_non_system_messages(&content.request_bodies())
             )
         });
+    harness
+        .wait_for_text("send a message to interrupt", Duration::from_secs(30))
+        .unwrap_or_else(|_| {
+            panic!(
+                "parked interrupt cue never appeared; screen:\n{}",
+                harness.screen_contents()
+            )
+        });
+    let screen = harness.screen_contents();
     assert!(
-        harness.screen_contents().contains("Worked for"),
-        "the parked marker keeps the completion prefix; screen:\n{}",
-        harness.screen_contents()
+        !screen.contains("Worked for"),
+        "a park must write no marker; screen:\n{screen}"
     );
 
     harness
@@ -147,16 +142,10 @@ async fn endline_park_two_static_markers() {
     harness.update(Duration::from_millis(300));
     harness.inject_keys(b"g").expect("goto transcript top");
 
-    // Two static markers: the park line unchanged above the promoted prompt
-    // and the new turn's final marker (also counting the still-gated command)
-    // below it — with NO cancelled marker anywhere (silent send-now cancel).
-    let two_markers = wait_until(Duration::from_secs(90), || {
+    let single_marker = wait_until(Duration::from_secs(90), || {
         harness.update(Duration::from_millis(100));
         let screen = harness.screen_contents();
-        // Positional: park marker ABOVE the promoted prompt ABOVE the final
-        // marker (screen text is row-major), both markers intact.
-        screen.matches("Worked for").count() == 2
-            && screen.matches("1 command still running").count() == 2
+        screen.matches("Worked for").count() == 1
             && !screen.contains("Turn cancelled by user")
             && matches!(
                 (screen.find("hurry up please"), screen.find("Worked for")),

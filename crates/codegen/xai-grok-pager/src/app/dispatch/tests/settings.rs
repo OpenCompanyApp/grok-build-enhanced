@@ -1508,6 +1508,17 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
             let next = !app.current_ui.confirm_before_rewind_enabled();
             let _ = dispatch(Action::SetConfirmBeforeRewind(next), app);
         }
+        "follow_up_behavior" => {
+            let away = match crate::appearance::cache::load_follow_up_behavior() {
+                crate::appearance::FollowUpBehavior::Queue => {
+                    crate::appearance::FollowUpBehavior::Steer
+                }
+                crate::appearance::FollowUpBehavior::Steer => {
+                    crate::appearance::FollowUpBehavior::Queue
+                }
+            };
+            let _ = dispatch(Action::SetFollowUpBehavior(away), app);
+        }
         "simple_mode" => {
             let _ = dispatch(Action::SetSimpleMode(false), app);
         }

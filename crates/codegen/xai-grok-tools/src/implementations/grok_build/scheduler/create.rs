@@ -107,7 +107,11 @@ impl crate::types::tool_metadata::ToolMetadata for SchedulerCreateTool {
     }
 
     fn description_template(&self) -> &str {
-        r#"Create a scheduled task that runs a prompt on a recurring interval, or update an existing one in place.
+        // Formatted once so the TTL copy is derived from RECURRING_TASK_TTL_DAYS instead of
+        // being pinned by a duplicate literal.
+        static DESCRIPTION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+            format!(
+                r#"Create a scheduled task that runs a prompt on a recurring interval, or update an existing one in place.
 
 New recurring tasks run as background subagents by default. Set foreground: true only for compatibility when each fire needs the main conversation's accumulated context.
 
@@ -118,8 +122,12 @@ To change an existing task, pass its task_id: provided fields replace old values
 Usage notes:
 - Interval format: "5m" (minutes), "2h" (hours), "1d" (days), "60s" (seconds, min 60)
 - Maximum 50 scheduled tasks at once
-- Tasks auto-expire after 7 days
-- For one-time delayed work, run a background terminal command (e.g. `sleep 1800 && <command>`) instead; its completion notifies you"#
+- Tasks auto-expire after {} days
+- For one-time delayed work, run a background terminal command (e.g. `sleep 1800 && <command>`) instead; its completion notifies you"#,
+                super::types::RECURRING_TASK_TTL_DAYS
+            )
+        });
+        &DESCRIPTION
         // TODO: scheduler tools share ToolKind::Other so they can't be template-ized
         // via ${{ tools.by_kind.* }}. If tool name randomization is needed, add
         // dedicated ToolKind variants (SchedulerCreate, SchedulerDelete, SchedulerList).

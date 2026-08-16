@@ -60,6 +60,8 @@ impl WebSearchClient {
                 model,
                 extra_headers,
                 alpha_test_key,
+                allowed_domains,
+                excluded_domains,
             } => {
                 let _ = alpha_test_key;
                 WebSearchBackend::Responses(ResponsesBackend::new(
@@ -67,6 +69,8 @@ impl WebSearchClient {
                     base_url,
                     model,
                     extra_headers,
+                    allowed_domains.clone(),
+                    excluded_domains.clone(),
                     api_key_provider,
                 )?)
             }
@@ -94,17 +98,32 @@ impl WebSearchClient {
                     request_auth_provider,
                 )?)
             }
-            WebSearchConfig::KimiCode { base_url } => {
+            WebSearchConfig::KimiCode {
+                base_url,
+                allowed_domains,
+                excluded_domains,
+            } => {
                 let request_auth_provider = api_key_provider.ok_or_else(|| {
                     super::backends::execution_error(
                         "Cannot create a Kimi Code web search client without provider authentication",
                     )
                 })?;
-                WebSearchBackend::KimiCode(KimiCodeBackend::new(base_url, request_auth_provider)?)
+                WebSearchBackend::KimiCode(KimiCodeBackend::new(
+                    base_url,
+                    allowed_domains.clone(),
+                    excluded_domains.clone(),
+                    request_auth_provider,
+                )?)
             }
-            WebSearchConfig::ExaHosted { base_url } => {
-                WebSearchBackend::ExaHosted(ExaHostedBackend::new(base_url)?)
-            }
+            WebSearchConfig::ExaHosted {
+                base_url,
+                allowed_domains,
+                excluded_domains,
+            } => WebSearchBackend::ExaHosted(ExaHostedBackend::new(
+                base_url,
+                allowed_domains.clone(),
+                excluded_domains.clone(),
+            )?),
         };
         Ok(Self { backend })
     }

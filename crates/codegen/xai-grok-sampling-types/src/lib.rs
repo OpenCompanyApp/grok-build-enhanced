@@ -55,8 +55,8 @@ pub use self::provider::{
     XAI_CLI_CHAT_PROXY_BASE_URL, is_trusted_xai_inference_url,
 };
 pub use self::tool_overrides::{
-    ClearableField, SearchDateBound, SearchDateBoundError, ToolOverrides, ToolOverridesUpdate,
-    WebSearchOptions, XSearchOptions,
+    ClearableField, MAX_WEB_SEARCH_DOMAINS, SearchDateBound, SearchDateBoundError, ToolOverrides,
+    ToolOverridesUpdate, WebSearchOptions, WebSearchOptionsError, XSearchOptions,
 };
 pub use self::types::*;
 

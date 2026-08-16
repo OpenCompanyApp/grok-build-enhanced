@@ -108,10 +108,9 @@ impl HookRegistry {
     /// (it is `#[serde(skip)]`). This method rebuilds it using the
     /// same logic as the original parse path, via [`HookMatcher::new`].
     ///
-    /// Specs whose `configured_matcher` is `None` (match-all) are
-    /// left untouched. Invalid patterns are logged and the spec's
-    /// matcher remains `None` (match-all fallback), which is the
-    /// safest fail-open behavior.
+    /// Specs whose `configured_matcher` is `None` (match-all) are left
+    /// untouched. Invalid configured patterns install a never-match matcher:
+    /// deserialization must not silently widen a scoped hook to match-all.
     pub fn recompile_matchers(&mut self) {
         for specs in self.hooks.values_mut() {
             for spec in specs.iter_mut() {
@@ -123,9 +122,9 @@ impl HookRegistry {
                                 hook = %spec.name,
                                 pattern = %pattern,
                                 error = %e,
-                                "hooks: failed to recompile matcher after deserialization"
+                                "hooks: hook will match no tools until its matcher pattern is fixed"
                             );
-                            // Leave matcher as None → match-all (fail-open).
+                            spec.matcher = Some(HookMatcher::never());
                         }
                     }
                 }

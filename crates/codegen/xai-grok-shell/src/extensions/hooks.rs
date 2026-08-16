@@ -30,6 +30,7 @@ pub(crate) fn hook_spec_to_info(spec: &xai_grok_hooks::config::HookSpec) -> Hook
         HookEventName::SessionEnd => HookEvent::SessionEnd,
         HookEventName::Stop => HookEvent::Stop,
         HookEventName::StopFailure => HookEvent::StopFailure,
+        HookEventName::StopCancelled => HookEvent::StopCancelled,
         // Tool events
         HookEventName::PreToolUse => HookEvent::PreToolUse,
         HookEventName::PostToolUse => HookEvent::PostToolUse,
@@ -514,12 +515,12 @@ mod tests {
             transcript_path: None,
             client_identifier: None,
             prompt_id: None,
+            permission_mode: None,
             payload: HookPayload::PreToolUse {
                 tool_name: "run_terminal_command".into(),
                 tool_use_id: "call_1".into(),
                 tool_input: serde_json::json!({ "command": "ls" }),
                 tool_input_truncated: true,
-                permission_mode: None,
                 subagent_type: None,
             },
         };

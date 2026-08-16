@@ -17,11 +17,14 @@ const MAX_CITATIONS: usize = 64;
 pub(in crate::implementations::web_search) struct ExaHostedBackend {
     http: reqwest::Client,
     endpoint: String,
+    configured_domain_policy: bool,
 }
 
 impl ExaHostedBackend {
     pub(in crate::implementations::web_search) fn new(
         base_url: &str,
+        allowed_domains: Option<Vec<String>>,
+        excluded_domains: Option<Vec<String>>,
     ) -> Result<Self, xai_tool_runtime::ToolError> {
         let endpoint = validate_endpoint(base_url)?;
         let http = xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
@@ -29,7 +32,11 @@ impl ExaHostedBackend {
             .timeout(std::time::Duration::from_secs(25))
             .build()
             .map_err(|_| execution_error("Exa hosted search client could not be built"))?;
-        Ok(Self { http, endpoint })
+        Ok(Self {
+            http,
+            endpoint,
+            configured_domain_policy: allowed_domains.is_some() || excluded_domains.is_some(),
+        })
     }
 
     pub(in crate::implementations::web_search) async fn search(
@@ -38,6 +45,7 @@ impl ExaHostedBackend {
         allowed_domains: Option<Vec<String>>,
     ) -> Result<BackendSearchResult, xai_tool_runtime::ToolError> {
         validate_search_query(query)?;
+        self.reject_configured_domain_policy()?;
         reject_domain_filter(allowed_domains)?;
         self.execute(query).await
     }
@@ -68,8 +76,18 @@ impl ExaHostedBackend {
                 execution_error("Exa hosted search supports one search_query command")
             })?;
         validate_search_query(query)?;
+        self.reject_configured_domain_policy()?;
         reject_domain_filter(allowed_domains)?;
         self.execute(query).await
+    }
+
+    fn reject_configured_domain_policy(&self) -> Result<(), xai_tool_runtime::ToolError> {
+        if self.configured_domain_policy {
+            return Err(execution_error(
+                "Exa hosted search cannot enforce the configured domain policy; refusing an unfiltered search",
+            ));
+        }
+        Ok(())
     }
 
     async fn execute(
@@ -316,5 +334,13 @@ mod tests {
     fn domain_filters_fail_closed() {
         assert!(reject_domain_filter(Some(vec!["example.com".to_owned()])).is_err());
         assert!(reject_domain_filter(None).is_ok());
+
+        let configured = ExaHostedBackend::new(
+            EXA_HOSTED_MCP_URL,
+            None,
+            Some(vec!["private.example.com".to_owned()]),
+        )
+        .unwrap();
+        assert!(configured.reject_configured_domain_policy().is_err());
     }
 }

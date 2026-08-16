@@ -2146,3 +2146,92 @@ mod classifier_request_bound_tests {
         }
     }
 }
+#[cfg(test)]
+mod configured_cutoff_tests {
+    use xai_grok_sampling_types::{
+        SearchDateBound, ToolOverrides, WebSearchOptions, XSearchOptions,
+    };
+    fn x_cut(to: &str) -> XSearchOptions {
+        XSearchOptions {
+            date_bound: Some(SearchDateBound::new(None, Some(to.into())).unwrap()),
+        }
+    }
+    #[test]
+    fn seed_only_is_inherited_without_a_per_turn_update() {
+        let seed = ToolOverrides {
+            x_search: Some(x_cut("2020-01-01")),
+            web_search: None,
+        };
+        assert_eq!(
+            super::resolve_configured_cutoff(Some(seed.clone()), None),
+            seed
+        );
+    }
+    #[test]
+    fn non_empty_base_wins_per_tool_and_empty_reverts_to_seed() {
+        let seed = ToolOverrides {
+            x_search: Some(x_cut("2020-01-01")),
+            web_search: Some(WebSearchOptions {
+                allowed_domains: Some(vec!["x.com".into()]),
+                excluded_domains: None,
+            }),
+        };
+        let base = ToolOverrides {
+            x_search: Some(x_cut("2019-06-01")),
+            web_search: Some(WebSearchOptions {
+                allowed_domains: Some(vec![]),
+                excluded_domains: None,
+            }),
+        };
+        let got = super::resolve_configured_cutoff(Some(seed.clone()), Some(&base));
+        assert_eq!(got.x_search, Some(x_cut("2019-06-01")));
+        assert_eq!(got.web_search, seed.web_search);
+    }
+    /// The contamination invariant: `resolve_configured_cutoff` (inheritance) must resolve the same
+    /// bound the wire/echo path (`apply_tool_overrides`) does for the same seed and per-turn base.
+    /// Two independent precedence implementations, so drift on the inherited boundary fails CI.
+    #[test]
+    fn inherited_cutoff_agrees_with_the_wire_echo() {
+        use xai_grok_sampling_types::{HostedTool, apply_tool_overrides};
+        let web = WebSearchOptions {
+            allowed_domains: Some(vec!["x.com".into()]),
+            excluded_domains: None,
+        };
+        let cases = [
+            (
+                Some(ToolOverrides {
+                    x_search: Some(x_cut("2020-01-01")),
+                    web_search: None,
+                }),
+                None,
+            ),
+            (
+                Some(ToolOverrides {
+                    x_search: Some(x_cut("2020-01-01")),
+                    web_search: Some(web.clone()),
+                }),
+                Some(ToolOverrides {
+                    x_search: Some(x_cut("2019-06-01")),
+                    web_search: None,
+                }),
+            ),
+            (
+                None,
+                Some(ToolOverrides {
+                    x_search: Some(x_cut("2018-01-01")),
+                    web_search: Some(web.clone()),
+                }),
+            ),
+        ];
+        for (seed, base) in cases {
+            let mut tools = vec![
+                HostedTool::WebSearch { options: None },
+                HostedTool::XSearch { options: None },
+            ];
+            apply_tool_overrides(&mut tools, seed.as_ref());
+            let wire_echo = apply_tool_overrides(&mut tools, base.as_ref());
+            let inherited = super::resolve_configured_cutoff(seed.clone(), base.as_ref());
+            assert_eq!(wire_echo, inherited, "seed={seed:?} base={base:?}");
+        }
+    }
+}

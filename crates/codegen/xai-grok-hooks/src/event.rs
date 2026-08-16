@@ -134,8 +134,8 @@ hook_events! {
         aliases: ["PermissionDenied", "permission_denied", "permissionDenied"],
         traits: (Observe, Tested, true),
     },
-    /// Fires on a genuine turn-end with stop decision control (a hook can block);
-    /// not on user interrupts (API-error turns fire `StopFailure`); observe-only at session end.
+    /// Blocking at a genuine turn-end, observe-only at session end. An interrupt fires
+    /// `StopCancelled` instead, and an API error `StopFailure`.
     Stop {
         display: "stop",
         aliases: ["Stop", "stop"],
@@ -145,6 +145,16 @@ hook_events! {
     StopFailure {
         display: "stop_failure",
         aliases: ["StopFailure", "stop_failure", "stopFailure"],
+        traits: (Observe, Tested, true),
+    },
+    /// Runs instead of `Stop` when a turn ends without completing. Observe-only.
+    StopCancelled {
+        display: "stop_cancelled",
+        aliases: [
+            "StopCancelled",
+            "stop_cancelled",
+            "stopCancelled",
+        ],
         traits: (Observe, Tested, true),
     },
     Notification {
@@ -246,13 +256,24 @@ impl HookEventName {
     }
 }
 
-/// Maximum serialized character count for every string projected into a
-/// `Stop`/`SubagentStop` envelope.
-pub const MAX_STOP_ENTRY_TEXT_CHARS: usize = 1000;
-
 /// Maximum serialized size of an entire `Stop`/`SubagentStop` envelope,
 /// including common metadata and every active-work descriptor.
 pub const MAX_STOP_ENVELOPE_BYTES: usize = 64 * 1024;
+
+/// Max characters for `StopBackgroundTask`/`StopSessionCron` entries, `StopFailure`'s
+/// `errorDetails`, and `StopCancelled`'s `reasonDetails`.
+pub const MAX_STOP_ENTRY_TEXT_CHARS: usize = 1000;
+
+/// Cancel triggers are short tokens.
+pub const MAX_CANCEL_TRIGGER_CHARS: usize = 64;
+
+/// Chars, not bytes. Nothing truncates a hook envelope, so this is the field's only ceiling.
+/// Sized as [`MAX_PAYLOAD_SIZE`] divided by UTF-8's worst case of 4 bytes per char.
+pub const MAX_ASSISTANT_MESSAGE_CHARS: usize = 32_768;
+
+pub fn clip_assistant_message(text: &str) -> String {
+    clip_text(text, MAX_ASSISTANT_MESSAGE_CHARS)
+}
 
 /// Clip `text` to at most `max` Unicode scalar values. The omission marker is
 /// included in the bound, and slicing never splits a UTF-8 codepoint.
@@ -324,6 +345,11 @@ pub fn sanitize_stop_text(text: &str) -> String {
     clip_text(&redacted, MAX_STOP_ENTRY_TEXT_CHARS)
 }
 
+/// Bound one stop-entry field at the shared credential-safe projection seam.
+pub fn clip_stop_entry_text(text: &str) -> String {
+    sanitize_stop_text(text)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SubagentStopPhase {
@@ -342,8 +368,9 @@ pub enum BackgroundTaskType {
 
 /// `StopFailure` error type. Capacity failures fold into `RateLimit`; the
 /// provider-neutral hook contract deliberately has no provider billing type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::IntoStaticStr, strum::EnumIter)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum StopFailureKind {
     RateLimit,
     AuthenticationFailed,
@@ -353,16 +380,49 @@ pub enum StopFailureKind {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::IntoStaticStr, strum::EnumIter)]
+#[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum StopCancelledReason {
+    UserInterrupt,
+    PermissionRejected,
+    PermissionCancelled,
+    MaxTurns,
+    NoProgress,
+    /// A cancel the runtime could not classify. New causes land here until they get a name.
+    Unknown,
+}
+
+/// Derived from `reason` and shipped anyway, so hosts do not re-derive it as reasons are added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelledBy {
+    User,
+    Runtime,
+    /// Paired with `reason: "unknown"`, where the runtime cannot say whether the user was
+    /// responsible.
+    Unknown,
+}
+
+impl StopCancelledReason {
+    pub fn cancelled_by(self) -> CancelledBy {
+        match self {
+            Self::UserInterrupt | Self::PermissionRejected | Self::PermissionCancelled => {
+                CancelledBy::User
+            }
+            Self::MaxTurns | Self::NoProgress => CancelledBy::Runtime,
+            Self::Unknown => CancelledBy::Unknown,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
+
 impl StopFailureKind {
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::RateLimit => "rate_limit",
-            Self::AuthenticationFailed => "authentication_failed",
-            Self::InvalidRequest => "invalid_request",
-            Self::ServerError => "server_error",
-            Self::MaxOutputTokens => "max_output_tokens",
-            Self::Unknown => "unknown",
-        }
+        self.into()
     }
 }
 
@@ -433,6 +493,10 @@ pub struct HookEventEnvelope {
     pub client_identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_id: Option<String>,
+    /// Session permission mode (`default`, `auto`, `plan`, or
+    /// `bypassPermissions`) at fire time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
     #[serde(flatten)]
     pub payload: HookPayload,
 }
@@ -456,6 +520,9 @@ pub enum HookPayload {
         turn_count: Option<u64>,
         #[serde(rename = "toolCallCount", skip_serializing_if = "Option::is_none")]
         tool_call_count: Option<u64>,
+        /// Lets a host settling on `SessionEnd` tell a child's teardown from its own.
+        #[serde(rename = "subagentType", skip_serializing_if = "Option::is_none")]
+        subagent_type: Option<String>,
     },
     Stop {
         reason: String,
@@ -485,6 +552,24 @@ pub enum HookPayload {
             skip_serializing_if = "Option::is_none"
         )]
         last_assistant_message: Option<String>,
+        #[serde(rename = "subagentType", skip_serializing_if = "Option::is_none")]
+        subagent_type: Option<String>,
+    },
+    StopCancelled {
+        reason: StopCancelledReason,
+        #[serde(rename = "cancelledBy")]
+        cancelled_by: CancelledBy,
+        #[serde(rename = "cancelTrigger", skip_serializing_if = "Option::is_none")]
+        cancel_trigger: Option<String>,
+        #[serde(rename = "reasonDetails", skip_serializing_if = "Option::is_none")]
+        reason_details: Option<String>,
+        #[serde(
+            rename = "lastAssistantMessage",
+            skip_serializing_if = "Option::is_none"
+        )]
+        last_assistant_message: Option<String>,
+        #[serde(rename = "subagentType", skip_serializing_if = "Option::is_none")]
+        subagent_type: Option<String>,
     },
 
     // ── Tool events ─────────────────────────────────────────────
@@ -500,8 +585,6 @@ pub enum HookPayload {
         tool_input: serde_json::Value,
         #[serde(rename = "toolInputTruncated")]
         tool_input_truncated: bool,
-        #[serde(rename = "permissionMode", skip_serializing_if = "Option::is_none")]
-        permission_mode: Option<String>,
         /// The subagent's type when this tool runs inside one (the envelope's `sessionId`
         /// gives its identity); `None` for the top-level session.
         #[serde(rename = "subagentType", skip_serializing_if = "Option::is_none")]
@@ -566,6 +649,10 @@ pub enum HookPayload {
     UserPromptSubmit {
         #[serde(skip_serializing_if = "Option::is_none")]
         prompt: Option<String>,
+        /// Lets a host filter a subagent's prompts out of its busy signal, the way the turn-end
+        /// events let it filter their ends.
+        #[serde(rename = "subagentType", skip_serializing_if = "Option::is_none")]
+        subagent_type: Option<String>,
     },
     /// Fires on agent notifications (permission prompts, idle, etc.).
     Notification {
@@ -637,6 +724,8 @@ impl HookPayload {
             Self::SessionEnd { reason, .. } => reason,
             // The structured kind is always a non-empty stable matcher value.
             Self::StopFailure { error, .. } => return Some(error.as_str()),
+            Self::StopCancelled { reason, .. } => return Some(reason.as_str()),
+            // Ignored events listed explicitly so a new Tested event can't silently return None.
             Self::Stop { .. } | Self::UserPromptSubmit { .. } => return None,
         };
         Some(value.as_str()).filter(|value| !value.is_empty())
@@ -804,6 +893,11 @@ mod tests {
             ("SessionEnd", "session_end", HookEventName::SessionEnd),
             ("Stop", "stop", HookEventName::Stop),
             ("StopFailure", "stop_failure", HookEventName::StopFailure),
+            (
+                "StopCancelled",
+                "stop_cancelled",
+                HookEventName::StopCancelled,
+            ),
             ("Notification", "notification", HookEventName::Notification),
             (
                 "UserPromptSubmit",
@@ -849,6 +943,7 @@ mod tests {
             (HookEventName::SessionEnd, "session_end"),
             (HookEventName::Stop, "stop"),
             (HookEventName::StopFailure, "stop_failure"),
+            (HookEventName::StopCancelled, "stop_cancelled"),
             (HookEventName::Notification, "notification"),
             (HookEventName::UserPromptSubmit, "user_prompt_submit"),
             (HookEventName::PermissionDenied, "permission_denied"),
@@ -870,6 +965,33 @@ mod tests {
         assert_eq!(json, "\"pre_tool_use\"");
         let parsed: HookEventName = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, name);
+    }
+
+    #[test]
+    fn event_name_deser_camel_and_operation_aliases() {
+        let cases: &[(&str, HookEventName)] = &[
+            ("sessionStart", HookEventName::SessionStart),
+            ("preToolUse", HookEventName::PreToolUse),
+            ("beforeShellExecution", HookEventName::PreToolUse),
+            ("beforeMCPExecution", HookEventName::PreToolUse),
+            ("beforeReadFile", HookEventName::PreToolUse),
+            ("postToolUse", HookEventName::PostToolUse),
+            ("afterShellExecution", HookEventName::PostToolUse),
+            ("afterMCPExecution", HookEventName::PostToolUse),
+            ("afterFileEdit", HookEventName::PostToolUse),
+            ("afterAgentResponse", HookEventName::PostToolUse),
+            ("afterAgentThought", HookEventName::PostToolUse),
+            ("beforeSubmitPrompt", HookEventName::UserPromptSubmit),
+            ("subagentStop", HookEventName::SubagentStop),
+            ("subagentEnd", HookEventName::SubagentEnd),
+            ("preCompact", HookEventName::PreCompact),
+            ("stopFailure", HookEventName::StopFailure),
+            ("stopCancelled", HookEventName::StopCancelled),
+        ];
+        for (spelling, expected) in cases {
+            let parsed: HookEventName = serde_json::from_str(&format!("\"{spelling}\"")).unwrap();
+            assert_eq!(parsed, *expected, "alias deser failed for {spelling}");
+        }
     }
 
     #[test]
@@ -935,6 +1057,147 @@ mod tests {
     }
 
     #[test]
+    fn event_traits_report_gate_matcher_and_hub_forward() {
+        use super::{GateKind, MatcherPolicy};
+
+        assert_eq!(HookEventName::PreToolUse.traits().gate, GateKind::Tool);
+        assert_eq!(HookEventName::Stop.traits().gate, GateKind::Stop);
+        assert_eq!(HookEventName::SubagentStop.traits().gate, GateKind::Stop);
+        assert_eq!(
+            HookEventName::SubagentEnd.traits().gate,
+            GateKind::Stop,
+            "alias resolves through canonical()"
+        );
+        assert_eq!(HookEventName::PostToolUse.traits().gate, GateKind::Observe);
+
+        assert_eq!(HookEventName::Stop.traits().matcher, MatcherPolicy::Ignored);
+        assert_eq!(
+            HookEventName::UserPromptSubmit.traits().matcher,
+            MatcherPolicy::Ignored
+        );
+        assert_eq!(
+            HookEventName::SessionStart.traits().matcher,
+            MatcherPolicy::Tested
+        );
+
+        assert!(!HookEventName::PreToolUse.traits().hub_forward);
+        assert!(HookEventName::Stop.traits().hub_forward);
+    }
+
+    #[test]
+    fn clip_stop_entry_text_clips_on_char_boundary() {
+        assert_eq!(clip_stop_entry_text("short"), "short");
+        let exact = "x".repeat(MAX_STOP_ENTRY_TEXT_CHARS);
+        assert_eq!(clip_stop_entry_text(&exact), exact);
+
+        let long = "x".repeat(MAX_STOP_ENTRY_TEXT_CHARS + 42);
+        let clipped = clip_stop_entry_text(&long);
+        assert_eq!(clipped.chars().count(), MAX_STOP_ENTRY_TEXT_CHARS);
+        assert!(clipped.contains("… [+"));
+        assert!(clipped.ends_with(" chars]"));
+
+        let unicode = "€".repeat(MAX_STOP_ENTRY_TEXT_CHARS + 7);
+        let clipped = clip_stop_entry_text(&unicode);
+        assert_eq!(clipped.chars().count(), MAX_STOP_ENTRY_TEXT_CHARS);
+        assert!(clipped.is_char_boundary(clipped.len()));
+        assert!(clipped.ends_with(" chars]"));
+    }
+
+    #[test]
+    fn stop_payload_serializes_task_and_cron_entries() {
+        let envelope = HookEventEnvelope {
+            hook_event_name: HookEventName::Stop,
+            session_id: "s".into(),
+            cwd: "/tmp".into(),
+            workspace_root: "/tmp".into(),
+            timestamp: "t".into(),
+            transcript_path: None,
+            client_identifier: None,
+            prompt_id: None,
+            permission_mode: None,
+            payload: HookPayload::Stop {
+                reason: "end_turn".into(),
+                stop_hook_active: true,
+                last_assistant_message: Some("done".into()),
+                background_tasks: Some(vec![
+                    StopBackgroundTask {
+                        id: "task-001".into(),
+                        r#type: BackgroundTaskType::Shell,
+                        status: "running".into(),
+                        description: None,
+                        command: Some("tail -f /var/log/syslog".into()),
+                        agent_type: None,
+                    },
+                    StopBackgroundTask {
+                        id: "task-002".into(),
+                        r#type: BackgroundTaskType::Subagent,
+                        status: "running".into(),
+                        description: Some("explore the repo".into()),
+                        command: None,
+                        agent_type: Some("explore".into()),
+                    },
+                ]),
+                session_crons: Some(vec![StopSessionCron {
+                    id: "cron-001".into(),
+                    schedule: "every 2h".into(),
+                    recurring: true,
+                    prompt: "check the build".into(),
+                }]),
+            },
+        };
+        let value = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(value["stopHookActive"], true);
+        assert_eq!(value["backgroundTasks"][0]["id"], "task-001");
+        assert_eq!(value["backgroundTasks"][0]["type"], "shell");
+        assert_eq!(
+            value["backgroundTasks"][0]["command"],
+            "tail -f /var/log/syslog"
+        );
+        assert_eq!(value["backgroundTasks"][1]["agentType"], "explore");
+        assert_eq!(value["sessionCrons"][0]["schedule"], "every 2h");
+        assert_eq!(value["sessionCrons"][0]["recurring"], true);
+    }
+
+    #[test]
+    fn subagent_stop_phase_serializes_lowercase() {
+        let payload = HookPayload::SubagentStop {
+            phase: SubagentStopPhase::Observe,
+            subagent_id: "sub-1".into(),
+            subagent_type: "explore".into(),
+            stop_hook_active: None,
+            last_assistant_message: None,
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value["phase"], "observe");
+        assert_eq!(
+            serde_json::to_value(SubagentStopPhase::Gate).unwrap(),
+            "gate"
+        );
+    }
+
+    /// Exhaustive, so renaming a variant is a deliberate wire change rather than a silent one.
+    #[test]
+    fn stop_failure_kind_wire_shape() {
+        let wire_of = |kind: StopFailureKind| match kind {
+            StopFailureKind::RateLimit => "rate_limit",
+            StopFailureKind::AuthenticationFailed => "authentication_failed",
+            StopFailureKind::InvalidRequest => "invalid_request",
+            StopFailureKind::ServerError => "server_error",
+            StopFailureKind::MaxOutputTokens => "max_output_tokens",
+            StopFailureKind::Unknown => "unknown",
+        };
+        for kind in <StopFailureKind as strum::IntoEnumIterator>::iter() {
+            let wire = wire_of(kind);
+            assert_eq!(kind.as_str(), wire, "{kind:?} strum name drifted");
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                wire,
+                "{kind:?} serde drifted"
+            );
+        }
+    }
+
+    #[test]
     fn truncate_small_payload() {
         let value = serde_json::json!({"key": "small"});
         let (result, truncated) = truncate_payload(value.clone());
@@ -974,6 +1237,7 @@ mod tests {
             transcript_path: None,
             client_identifier: None,
             prompt_id: None,
+            permission_mode: None,
             payload: HookPayload::SessionStart {
                 source: "new".into(),
                 model_id: Some("grok-3".into()),
@@ -1078,6 +1342,7 @@ mod tests {
             transcript_path: None,
             client_identifier: None,
             prompt_id: Some("prompt-1".into()),
+            permission_mode: None,
             payload: HookPayload::Stop {
                 reason: "end_turn".into(),
                 stop_hook_active: false,
@@ -1146,5 +1411,52 @@ mod tests {
                 .as_deref()
                 .is_none_or(|value| value.chars().count() <= MAX_STOP_ENTRY_TEXT_CHARS)
         );
+    }
+
+    /// Additive: omitted in the main session, so those payloads stay byte-identical, and present
+    /// in a child so a host can filter one out of the busy half of a busy/idle signal.
+    #[test]
+    fn user_prompt_submit_names_a_subagent_only_inside_one() {
+        let payload = |subagent_type| HookPayload::UserPromptSubmit {
+            prompt: Some("hi".into()),
+            subagent_type,
+        };
+        assert_eq!(
+            serde_json::to_value(payload(None)).unwrap(),
+            serde_json::json!({ "prompt": "hi" })
+        );
+        assert_eq!(
+            serde_json::to_value(payload(Some("explore".to_string()))).unwrap()["subagentType"],
+            "explore"
+        );
+    }
+
+    /// Exhaustive, so a new reason has to name its wire value here.
+    #[test]
+    fn stop_cancelled_wire_shape() {
+        let wire_of = |reason: StopCancelledReason| match reason {
+            StopCancelledReason::UserInterrupt => ("user_interrupt", "user"),
+            StopCancelledReason::PermissionRejected => ("permission_rejected", "user"),
+            StopCancelledReason::PermissionCancelled => ("permission_cancelled", "user"),
+            StopCancelledReason::MaxTurns => ("max_turns", "runtime"),
+            StopCancelledReason::NoProgress => ("no_progress", "runtime"),
+            StopCancelledReason::Unknown => ("unknown", "unknown"),
+        };
+        for reason in <StopCancelledReason as strum::IntoEnumIterator>::iter() {
+            let (wire, cancelled_by) = wire_of(reason);
+            let payload = HookPayload::StopCancelled {
+                reason,
+                cancelled_by: reason.cancelled_by(),
+                cancel_trigger: None,
+                reason_details: None,
+                last_assistant_message: None,
+                subagent_type: None,
+            };
+            assert_eq!(payload.match_value(), Some(wire));
+            let value = serde_json::to_value(&payload).unwrap();
+            assert_eq!(value["reason"], wire);
+            assert_eq!(value["cancelledBy"], cancelled_by);
+            assert!(value.get("cancelTrigger").is_none());
+        }
     }
 }

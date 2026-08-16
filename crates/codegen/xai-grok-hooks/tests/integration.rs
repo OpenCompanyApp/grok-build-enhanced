@@ -31,12 +31,12 @@ fn pre_tool_use_envelope(tool_name: &str) -> HookEventEnvelope {
         transcript_path: None,
         client_identifier: None,
         prompt_id: None,
+        permission_mode: None,
         payload: HookPayload::PreToolUse {
             tool_name: tool_name.into(),
             tool_use_id: "call-1".into(),
             tool_input: serde_json::json!({"command": "echo hello"}),
             tool_input_truncated: false,
-            permission_mode: None,
             subagent_type: None,
         },
     }
@@ -53,6 +53,7 @@ fn session_start_envelope() -> HookEventEnvelope {
         transcript_path: None,
         client_identifier: None,
         prompt_id: None,
+        permission_mode: None,
         payload: HookPayload::SessionStart {
             source: "new".into(),
             model_id: None,
@@ -77,6 +78,7 @@ async fn hook_allows_via_json() {
     let ctx = RunContext {
         session_id: "test",
         workspace_root: dir.path().to_str().unwrap(),
+        process_scope: None,
     };
 
     let result = dispatcher::dispatch_pre_tool_use(
@@ -105,6 +107,7 @@ async fn hook_denies_via_json() {
     let ctx = RunContext {
         session_id: "test",
         workspace_root: dir.path().to_str().unwrap(),
+        process_scope: None,
     };
 
     let result = dispatcher::dispatch_pre_tool_use(
@@ -379,6 +382,7 @@ async fn hook_receives_env_vars() {
     let ctx = RunContext {
         session_id: "sess-456",
         workspace_root: dir.path().to_str().unwrap(),
+        process_scope: None,
     };
 
     let pre_result =
@@ -429,6 +433,7 @@ fn make_envelope(event: HookEventName, payload: HookPayload) -> HookEventEnvelop
         transcript_path: None,
         client_identifier: None,
         prompt_id: None,
+        permission_mode: None,
         payload,
     }
 }
@@ -505,12 +510,31 @@ async fn new_event_types_fire_and_receive_correct_envelope() {
                 error: xai_grok_hooks::event::StopFailureKind::RateLimit,
                 error_details: Some("429 Too Many Requests".into()),
                 last_assistant_message: Some("Turn failed: rate limited".into()),
+                subagent_type: None,
             },
             assertions: vec![
                 ("hookEventName", "stop_failure".into()),
                 ("error", "rate_limit".into()),
                 ("errorDetails", "429 Too Many Requests".into()),
                 ("lastAssistantMessage", "Turn failed: rate limited".into()),
+            ],
+        },
+        Case {
+            event_name: HookEventName::StopCancelled,
+            json_key: "StopCancelled",
+            payload: HookPayload::StopCancelled {
+                reason: xai_grok_hooks::event::StopCancelledReason::UserInterrupt,
+                cancelled_by: xai_grok_hooks::event::CancelledBy::User,
+                cancel_trigger: Some("ctrl_c".into()),
+                reason_details: Some("read_file: user declined".into()),
+                last_assistant_message: Some("partial answer".into()),
+                subagent_type: Some("explore".into()),
+            },
+            assertions: vec![
+                ("hookEventName", "stop_cancelled".into()),
+                ("reason", "user_interrupt".into()),
+                ("cancelledBy", "user".into()),
+                ("cancelTrigger", "ctrl_c".into()),
             ],
         },
     ];

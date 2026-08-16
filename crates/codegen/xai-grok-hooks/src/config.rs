@@ -800,21 +800,20 @@ mod tests {
     }
 
     #[test]
-    fn reject_lifecycle_hook_with_matcher() {
+    fn session_start_matcher_compiles_and_tests_source() {
         let json = r#"{
             "hooks": {
                 "SessionStart": [
-                    { "matcher": "something", "hooks": [{ "type": "command", "command": "s.sh" }] }
+                    { "matcher": "startup|resume", "hooks": [{ "type": "command", "command": "s.sh" }] }
                 ]
             }
         }"#;
         let (specs, errors) = parse_hook_file(json, Path::new("/tmp/test.json"));
-        assert!(specs.is_empty());
-        assert_eq!(errors.len(), 1);
-        assert!(matches!(
-            &errors[0],
-            HookError::LifecycleMatcherNotAllowed { .. }
-        ));
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_eq!(specs.len(), 1);
+        let matcher = specs[0].matcher.as_ref().expect("matcher compiles");
+        assert!(matcher.is_match("startup"));
+        assert!(!matcher.is_match("clear"));
     }
 
     #[test]

@@ -129,7 +129,12 @@ fn strip_untrusted_provider_fields(patch: &mut toml::Table) {
 }
 
 /// Deep-merge each patch in iteration order (later wins on a leaf), stripping
-/// trusted credential/routing fields and `strip_keys` first.
+/// trusted credential/routing fields and `strip_keys` (top level) first.
+///
+/// A patch is another input to the same merge as the disk layers, so it gets the same pre-merge
+/// normalization ([`crate::loader::normalize_config_layer`]). Otherwise a patch that flips
+/// `[toolset.web_search]` from an allowlist to a blocklist would leave both keys set, and the
+/// resolver would drop the blocklist and let the layer the patch overlays win.
 pub fn apply_patches(
     config: &mut toml::Value,
     patches: impl IntoIterator<Item = toml::Table>,
@@ -140,7 +145,9 @@ pub fn apply_patches(
         for key in strip_keys {
             patch.remove(*key);
         }
-        deep_merge_toml(config, &toml::Value::Table(patch));
+        let mut patch = toml::Value::Table(patch);
+        crate::loader::normalize_config_layer(&mut patch);
+        deep_merge_toml(config, &patch);
     }
 }
 

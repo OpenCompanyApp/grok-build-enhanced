@@ -202,6 +202,7 @@ pub struct CodexWebSearchSettings {
 ///
 /// Use `Disabled` when no API key is available or web search should be turned off.
 /// Use `Enabled { … }` to provide credentials and endpoint configuration.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum WebSearchConfig {
@@ -215,6 +216,19 @@ pub enum WebSearchConfig {
         extra_headers: IndexMap<String, String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         alpha_test_key: Option<String>,
+        /// Authoritative domain allowlist from `[toolset.web_search] allowed_domains`.
+        /// When set, it governs the client-side web_search tool and the model's
+        /// own per-call `allowed_domains` is ignored (see `resolve_filters`), so a
+        /// configured policy cannot be bypassed. Mutually exclusive with
+        /// `excluded_domains`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        /// Authoritative domain blocklist from `[toolset.web_search] excluded_domains`. Like
+        /// `allowed_domains` it governs outright: the model cannot un-block a domain by naming it
+        /// in its own per-call `allowed_domains`, which is what makes this a real block. Mutually
+        /// exclusive with `allowed_domains`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        excluded_domains: Option<Vec<String>>,
     },
     /// ChatGPT Codex subscription search through the provider-owned
     /// `alpha/search` endpoint. Authentication is resolved dynamically from
@@ -230,10 +244,22 @@ pub enum WebSearchConfig {
     /// Kimi Code hosted search through the provider-owned `/search` service.
     /// Authentication is resolved per request from the Kimi-scoped provider;
     /// no API key is serialized into this configuration.
-    KimiCode { base_url: String },
+    KimiCode {
+        base_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        excluded_domains: Option<Vec<String>>,
+    },
     /// Keyless Exa hosted MCP search. This is the default search transport for
     /// OpenCode Go sessions and carries no provider credential.
-    ExaHosted { base_url: String },
+    ExaHosted {
+        base_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        excluded_domains: Option<Vec<String>>,
+    },
 }
 
 impl std::fmt::Debug for WebSearchConfig {
@@ -274,6 +300,46 @@ impl WebSearchConfig {
         self.is_codex_subscription() || self.is_kimi_code()
     }
 
+    /// Apply the authoritative `[toolset.web_search]` policy to whichever
+    /// provider owns this standalone-search route.
+    pub fn apply_domain_policy(
+        &mut self,
+        allowed_domains: Option<Vec<String>>,
+        excluded_domains: Option<Vec<String>>,
+    ) {
+        match self {
+            Self::Disabled => {}
+            Self::Enabled {
+                allowed_domains: configured_allowed,
+                excluded_domains: configured_excluded,
+                ..
+            }
+            | Self::KimiCode {
+                allowed_domains: configured_allowed,
+                excluded_domains: configured_excluded,
+                ..
+            }
+            | Self::ExaHosted {
+                allowed_domains: configured_allowed,
+                excluded_domains: configured_excluded,
+                ..
+            } => {
+                *configured_allowed = allowed_domains;
+                *configured_excluded = excluded_domains;
+            }
+            Self::CodexSubscription { settings, .. } => {
+                if let Some(allowed_domains) = allowed_domains {
+                    settings.allowed_domains = Some(allowed_domains);
+                }
+                if let Some(excluded_domains) = excluded_domains {
+                    settings.blocked_domains.extend(excluded_domains);
+                    settings.blocked_domains.sort();
+                    settings.blocked_domains.dedup();
+                }
+            }
+        }
+    }
+
     /// Return a copy safe for returning to clients.
     ///
     /// Static keys, configured header values, and Codex turn/session identity
@@ -286,6 +352,8 @@ impl WebSearchConfig {
                 base_url,
                 model,
                 extra_headers,
+                allowed_domains,
+                excluded_domains,
                 ..
             } => {
                 let _ = extra_headers;
@@ -297,6 +365,8 @@ impl WebSearchConfig {
                     // be returned merely because their values were removed.
                     extra_headers: IndexMap::new(),
                     alpha_test_key: None,
+                    allowed_domains: allowed_domains.clone(),
+                    excluded_domains: excluded_domains.clone(),
                 }
             }
             Self::CodexSubscription {
@@ -310,11 +380,23 @@ impl WebSearchConfig {
                 session_id: "***REDACTED***".to_owned(),
                 settings: settings.clone(),
             },
-            Self::KimiCode { base_url } => Self::KimiCode {
+            Self::KimiCode {
+                base_url,
+                allowed_domains,
+                excluded_domains,
+            } => Self::KimiCode {
                 base_url: sanitize_redacted_base_url(base_url),
+                allowed_domains: allowed_domains.clone(),
+                excluded_domains: excluded_domains.clone(),
             },
-            Self::ExaHosted { base_url } => Self::ExaHosted {
+            Self::ExaHosted {
+                base_url,
+                allowed_domains,
+                excluded_domains,
+            } => Self::ExaHosted {
                 base_url: sanitize_redacted_base_url(base_url),
+                allowed_domains: allowed_domains.clone(),
+                excluded_domains: excluded_domains.clone(),
             },
         }
     }
@@ -355,6 +437,8 @@ mod tests {
             model: "test-web-search-model".to_string(),
             extra_headers: IndexMap::new(),
             alpha_test_key: None,
+            allowed_domains: None,
+            excluded_domains: None,
         };
         assert!(config.is_enabled());
         assert!(config.allows_hosted_responses_tool());
@@ -376,6 +460,49 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_domain_policy_is_projected_to_provider_routes() {
+        let excluded = Some(vec!["private.example.com".to_owned()]);
+
+        let mut codex = WebSearchConfig::CodexSubscription {
+            base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
+            model: "gpt-5.6-luna".to_owned(),
+            session_id: "session-public-id".to_owned(),
+            settings: Default::default(),
+        };
+        codex.apply_domain_policy(None, excluded.clone());
+        assert!(matches!(
+            codex,
+            WebSearchConfig::CodexSubscription { ref settings, .. }
+                if settings.blocked_domains == vec!["private.example.com"]
+        ));
+
+        for mut config in [
+            WebSearchConfig::KimiCode {
+                base_url: "https://api.kimi.com/coding/v1".to_owned(),
+                allowed_domains: None,
+                excluded_domains: None,
+            },
+            WebSearchConfig::ExaHosted {
+                base_url: "https://mcp.exa.ai/mcp".to_owned(),
+                allowed_domains: None,
+                excluded_domains: None,
+            },
+        ] {
+            config.apply_domain_policy(None, excluded.clone());
+            assert!(matches!(
+                config,
+                WebSearchConfig::KimiCode {
+                    excluded_domains: Some(ref domains),
+                    ..
+                } | WebSearchConfig::ExaHosted {
+                    excluded_domains: Some(ref domains),
+                    ..
+                } if domains == &vec!["private.example.com".to_owned()]
+            ));
+        }
+    }
+
+    #[test]
     fn test_config_redacted() {
         let mut headers = IndexMap::new();
         headers.insert("X-Custom".to_string(), "value".to_string());
@@ -385,6 +512,8 @@ mod tests {
             model: "test-web-search-model".to_string(),
             extra_headers: headers,
             alpha_test_key: Some("alpha-secret".to_string()),
+            allowed_domains: Some(vec!["docs.x.ai".to_string()]),
+            excluded_domains: None,
         };
         let redacted = config.redacted();
         match redacted {
@@ -394,12 +523,17 @@ mod tests {
                 model,
                 extra_headers,
                 alpha_test_key,
+                allowed_domains,
+                excluded_domains,
             } => {
                 assert_eq!(api_key, "***REDACTED***");
                 assert_eq!(base_url, "https://api.x.ai/v1");
                 assert_eq!(model, "test-web-search-model");
                 assert!(extra_headers.is_empty());
                 assert!(alpha_test_key.is_none());
+                // Domain filters survive redaction (not secrets).
+                assert_eq!(allowed_domains, Some(vec!["docs.x.ai".to_string()]));
+                assert!(excluded_domains.is_none());
             }
             _ => panic!("Expected Enabled variant"),
         }
@@ -429,6 +563,8 @@ mod tests {
             model: "test-web-search-model".to_string(),
             extra_headers: IndexMap::new(),
             alpha_test_key: None,
+            allowed_domains: None,
+            excluded_domains: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: WebSearchConfig = serde_json::from_str(&json).unwrap();
@@ -460,6 +596,8 @@ mod tests {
             model: "test-model".to_owned(),
             extra_headers: headers,
             alpha_test_key: Some("sentinel-alpha-key".to_owned()),
+            allowed_domains: None,
+            excluded_domains: None,
         };
         let context = CodexWebSearchContext {
             input: vec![CodexWebSearchMessage::user("sentinel-visible-turn-text")],

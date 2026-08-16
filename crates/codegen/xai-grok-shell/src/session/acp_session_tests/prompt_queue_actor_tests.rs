@@ -1444,6 +1444,310 @@ async fn interject_queued_bash_row_noop_keeps_row_queued() {
         .await;
 }
 
+#[tokio::test]
+async fn promote_queued_as_interjections_sends_plain_and_stops_at_bash() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("running", "A"));
+                state.pending_inputs.push_back(user_item("m1", "A"));
+                state.pending_inputs.push_back(user_item("m2", "A"));
+                state.pending_inputs.push_back(bash_item("b3", "A", "ls"));
+                state.pending_inputs.push_back(user_item("m4", "A"));
+                state.running_task = Some(running_task_stub("running"));
+            }
+
+            actor.promote_queued_as_interjections().await;
+
+            let state = actor.state.lock().await;
+            let order: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(order, vec!["running", "b3", "m4"]);
+            drop(state);
+            let interjections: Vec<String> = actor
+                .pending_interjections
+                .drain_all()
+                .into_iter()
+                .map(|entry| entry.text)
+                .collect();
+            assert_eq!(interjections, vec!["text for m1", "text for m2"]);
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn promote_queued_as_interjections_stops_at_edit_hold() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("running", "A"));
+                state.pending_inputs.push_back(user_item("m1", "A"));
+                state.pending_inputs.push_back(user_item("m2", "A"));
+                state.pending_inputs.push_back(user_item("m3", "A"));
+                state
+                    .edit_holds
+                    .insert("m2".into(), std::time::Instant::now());
+                state.running_task = Some(running_task_stub("running"));
+            }
+
+            actor.promote_queued_as_interjections().await;
+
+            let state = actor.state.lock().await;
+            let order: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(order, vec!["running", "m2", "m3"]);
+            assert!(state.edit_holds.contains_key("m2"));
+            drop(state);
+            let interjections: Vec<String> = actor
+                .pending_interjections
+                .drain_all()
+                .into_iter()
+                .map(|entry| entry.text)
+                .collect();
+            assert_eq!(interjections, vec!["text for m1"]);
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn promote_queued_as_interjections_stops_at_send_now() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("running", "A"));
+                let mut send_now = user_item("m1", "A");
+                send_now.send_now = true;
+                state.pending_inputs.push_back(send_now);
+                state.pending_inputs.push_back(user_item("m2", "A"));
+                state.running_task = Some(running_task_stub("running"));
+            }
+
+            actor.promote_queued_as_interjections().await;
+
+            let state = actor.state.lock().await;
+            let order: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(order, vec!["running", "m1", "m2"]);
+            assert!(state.pending_inputs[1].send_now);
+            drop(state);
+            assert!(
+                actor.pending_interjections.is_empty(),
+                "send-now must stay queued to run as the next turn"
+            );
+        })
+        .await;
+}
+
+/// Product gate: with Steer off, a held plain row must not promote at a
+/// safe point (queue stays; no interjection in conversation).
+#[tokio::test]
+#[serial_test::serial(follow_up_steer_cache)]
+async fn drain_at_safe_point_with_steer_off_does_not_promote_held_row() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            crate::util::config::set_follow_up_steer_cache(false);
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("running", "A"));
+                state.pending_inputs.push_back(user_item("held", "A"));
+                state.running_task = Some(running_task_stub("running"));
+            }
+
+            assert!(!actor.drain_interjections_at_safe_point().await);
+            let state = actor.state.lock().await;
+            let order: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(order, vec!["running", "held"]);
+            drop(state);
+            assert!(
+                actor.pending_interjections.is_empty(),
+                "Queue mode must not promote into the interjection buffer"
+            );
+        })
+        .await;
+}
+
+/// Product gate: with Steer on, a held plain row promotes and drains into a
+/// synthetic interjection user item.
+#[tokio::test]
+#[serial_test::serial(follow_up_steer_cache)]
+async fn drain_at_safe_point_with_steer_on_promotes_and_drains_held_row() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            crate::util::config::set_follow_up_steer_cache(true);
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("running", "A"));
+                state.pending_inputs.push_back(user_item("held", "A"));
+                state.running_task = Some(running_task_stub("running"));
+            }
+
+            assert!(
+                actor.drain_interjections_at_safe_point().await,
+                "Steer must promote and drain the held follow-up"
+            );
+            let state = actor.state.lock().await;
+            let order: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(order, vec!["running"]);
+            drop(state);
+            assert!(actor.pending_interjections.is_empty());
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            let last = conversation
+                .last()
+                .expect("interjection must land in conversation");
+            let text = last.text_content();
+            assert!(
+                text.contains("text for held"),
+                "drained interjection must include held prompt text, got: {text}"
+            );
+        })
+        .await;
+}
+
+/// Leader multi-client: only promote rows owned by the *running* client.
+/// Another client's "I'll go next" row stops the FIFO prefix (not skipped).
+#[tokio::test]
+async fn promote_queued_as_interjections_stops_at_other_owner() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("running", "A"));
+                state.pending_inputs.push_back(user_item("a1", "A"));
+                state.pending_inputs.push_back(user_item("b1", "B"));
+                state.pending_inputs.push_back(user_item("a2", "A"));
+                state.running_task = Some(running_task_stub("running"));
+            }
+
+            actor.promote_queued_as_interjections().await;
+
+            let state = actor.state.lock().await;
+            let order: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            // a1 promoted; b1 blocks a2 (FIFO — do not jump B).
+            assert_eq!(order, vec!["running", "b1", "a2"]);
+            drop(state);
+            let interjections: Vec<String> = actor
+                .pending_interjections
+                .drain_all()
+                .into_iter()
+                .map(|entry| entry.text)
+                .collect();
+            assert_eq!(interjections, vec!["text for a1"]);
+        })
+        .await;
+}
+
+/// Per-turn tool overrides are applied at turn promotion, not via
+/// interjection; stop rather than drop the override payload.
+#[tokio::test]
+async fn promote_queued_as_interjections_stops_at_tool_overrides() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("running", "A"));
+                state.pending_inputs.push_back(user_item("plain", "A"));
+                let mut with_override = user_item("override", "A");
+                with_override.tool_overrides_update = Some(x_search_cutoff_update());
+                state.pending_inputs.push_back(with_override);
+                state.pending_inputs.push_back(user_item("after", "A"));
+                state.running_task = Some(running_task_stub("running"));
+            }
+
+            actor.promote_queued_as_interjections().await;
+
+            let state = actor.state.lock().await;
+            let order: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(order, vec!["running", "override", "after"]);
+            assert!(
+                state.pending_inputs[1].tool_overrides_update.is_some(),
+                "override row must stay queued with its payload"
+            );
+            drop(state);
+            let interjections: Vec<String> = actor
+                .pending_interjections
+                .drain_all()
+                .into_iter()
+                .map(|entry| entry.text)
+                .collect();
+            assert_eq!(interjections, vec!["text for plain"]);
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn promote_queued_as_interjections_does_not_steal_other_owners_next_turn() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                // A is running; B only has a queued next-turn prompt.
+                state.pending_inputs.push_back(user_item("running", "A"));
+                state.pending_inputs.push_back(user_item("b_next", "B"));
+                state.running_task = Some(running_task_stub("running"));
+            }
+
+            actor.promote_queued_as_interjections().await;
+
+            let state = actor.state.lock().await;
+            let order: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(order, vec!["running", "b_next"]);
+            drop(state);
+            assert!(
+                actor.pending_interjections.is_empty(),
+                "must not inject another client's next-turn into A's turn"
+            );
+        })
+        .await;
+}
+
 /// An edited interject of a bash row refuses the interject but keeps the edit.
 #[tokio::test]
 async fn interject_queued_bash_row_with_new_text_saves_edit() {
@@ -2051,6 +2355,431 @@ async fn queue_input_send_now_pins_front_on_running_task_identity() {
         .await;
 }
 
+/// A stale completion must not clear the promoted turn's `running_task` (would double-spawn).
+#[tokio::test]
+async fn stale_completion_does_not_clear_promoted_turns_running_task() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("promoted", "A"));
+                state.running_task = Some(running_task_stub("promoted"));
+            }
+            *actor
+                .current_prompt_id
+                .lock()
+                .expect("current_prompt_id mutex poisoned") = Some("promoted".into());
+
+            actor
+                .handle_completion(
+                    "cancelled-old".to_string(),
+                    Ok(crate::session::commands::PromptTurnOk {
+                        stop_reason: acp::StopReason::EndTurn,
+                        total_tokens: 0,
+                        turn_snapshot: None,
+                        completion_kind: crate::session::commands::PromptCompletionKind::Completed,
+                        structured_output: None,
+                        usage: None,
+                        tool_overrides: None,
+                    }),
+                )
+                .await;
+
+            let state = actor.state.lock().await;
+            assert!(
+                state.running_task.is_some(),
+                "stale completion must not clear the promoted turn's task"
+            );
+            assert_eq!(
+                state.running_prompt_id(),
+                Some("promoted"),
+                "promoted turn still owns the front"
+            );
+            assert_eq!(
+                actor
+                    .current_prompt_id
+                    .lock()
+                    .expect("current_prompt_id mutex poisoned")
+                    .as_deref(),
+                Some("promoted"),
+                "stale completion must not clear the promoted turn's prompt id"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn tool_overrides_update_applies_at_promotion_never_at_enqueue() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            let options = xai_grok_sampling_types::XSearchOptions {
+                date_bound: Some(
+                    xai_grok_sampling_types::SearchDateBound::new(
+                        None,
+                        Some("2024-03-15".to_string()),
+                    )
+                    .unwrap(),
+                ),
+            };
+            // A per-turn update that SETS the x_search override to `options`.
+            let set_update = || xai_grok_sampling_types::ToolOverridesUpdate {
+                x_search: Some(Some(options.clone())),
+                web_search: None,
+            };
+            let expected = xai_grok_sampling_types::ToolOverrides {
+                x_search: Some(options.clone()),
+                web_search: None,
+            };
+
+            let (mut item, prompt_rx) = user_item_with_rx("p1", "alice");
+            item.tool_overrides_update = Some(set_update());
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(item);
+            }
+            assert_eq!(
+                *actor.tool_overrides.borrow(),
+                None,
+                "an enqueued update must not rebind the session before its turn starts"
+            );
+
+            actor.handle_remove_queued_prompt("p1", 0, None).await;
+            assert_eq!(
+                *actor.tool_overrides.borrow(),
+                None,
+                "a removed prompt's update must never apply"
+            );
+            let removed = prompt_rx.await.expect("removed prompt resolves its RPC");
+            assert!(
+                matches!(
+                    removed,
+                    Ok(crate::session::commands::PromptTurnOk {
+                        completion_kind: PromptCompletionKind::RemovedFromQueue,
+                        tool_overrides: None,
+                        ..
+                    })
+                ),
+                "the removal response echoes the session's standing overrides (none)"
+            );
+
+            let (mut promoted, _promoted_rx) = user_item_with_rx("p2", "alice");
+            promoted.tool_overrides_update = Some(set_update());
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(promoted);
+            }
+            let (completion_tx, _completion_rx) = tokio::sync::mpsc::unbounded_channel();
+            actor.clone().maybe_start_running_task(completion_tx).await;
+            assert_eq!(
+                actor.tool_overrides.borrow().as_ref(),
+                Some(&expected),
+                "promotion applies the front prompt's update to the session override"
+            );
+            assert_eq!(
+                actor
+                    .resolved_tool_overrides
+                    .load_full()
+                    .map(|o| (*o).clone()),
+                Some(expected.clone()),
+                "promotion also republishes the configured cutoff into the cell subagents inherit"
+            );
+
+            actor.apply_tool_overrides_update(None);
+            assert_eq!(
+                actor.tool_overrides.borrow().as_ref(),
+                Some(&expected),
+                "a prompt with no update leaves the sticky override in place"
+            );
+            actor.apply_tool_overrides_update(Some(xai_grok_sampling_types::ToolOverridesUpdate {
+                x_search: Some(None),
+                web_search: None,
+            }));
+            assert_eq!(
+                *actor.tool_overrides.borrow(),
+                None,
+                "an explicit clear removes the override"
+            );
+            assert!(
+                actor.resolved_tool_overrides.load().is_none(),
+                "clearing the override republishes an empty configured cutoff to the shared cell"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn effective_tool_overrides_echoes_and_gates_on_backend_search() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            // Backend search on, with a bare (unbounded) x_search hosted tool.
+            *actor.agent.borrow_mut() =
+                test_agent_backend_search(vec![xai_grok_sampling_types::HostedTool::XSearch {
+                    options: None,
+                }])
+                .await;
+            actor.supports_backend_search.set(true);
+            assert!(
+                actor.backend_search_active(),
+                "fixture must actually reach the enabled-backend-search path"
+            );
+
+            // A standing per-turn cutoff (toDate only).
+            let options = xai_grok_sampling_types::XSearchOptions {
+                date_bound: Some(
+                    xai_grok_sampling_types::SearchDateBound::new(
+                        None,
+                        Some("2024-03-15".to_string()),
+                    )
+                    .unwrap(),
+                ),
+            };
+            let expected = xai_grok_sampling_types::ToolOverrides {
+                x_search: Some(options.clone()),
+                web_search: None,
+            };
+            *actor.tool_overrides.borrow_mut() = Some(expected.clone());
+
+            assert_eq!(
+                actor.effective_tool_overrides(),
+                Some(expected.clone()),
+                "backend search on ⇒ the applied cutoff echoes back for attestation"
+            );
+            assert_eq!(
+                actor.effective_hosted_tools(),
+                vec![xai_grok_sampling_types::HostedTool::XSearch {
+                    options: Some(options.clone()),
+                }],
+                "the wire's XSearch entry carries exactly the bound the echo attests (wire == echo)"
+            );
+
+            actor.supports_backend_search.set(false);
+            assert!(
+                actor.tool_overrides.borrow().is_some(),
+                "the standing override is unchanged — only per-model support flipped"
+            );
+            assert_eq!(
+                actor.effective_tool_overrides(),
+                None,
+                "backend search off ⇒ echo is None: never attest a cutoff the wire never carried"
+            );
+        })
+        .await;
+}
+
+/// Moving `web_search` onto the raw-JSON `extra_tool_entries` channel must not leak it past the
+/// backend-search gate. `hosted_tools_for_turn` is the only thing that populates a request's
+/// `hosted_tools`, and `extra_tool_entries` is derived from that, so a model without server-side
+/// search sends no hosted tool on either channel, configured domain policy or not.
+#[tokio::test]
+async fn unsupported_backend_search_sends_no_hosted_tool_on_either_channel() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            let configured = xai_grok_sampling_types::WebSearchOptions {
+                allowed_domains: None,
+                excluded_domains: Some(vec!["reddit.com".to_string()]),
+            };
+            *actor.agent.borrow_mut() =
+                test_agent_backend_search(vec![xai_grok_sampling_types::HostedTool::WebSearch {
+                    options: Some(configured),
+                }])
+                .await;
+
+            // Model advertises server-side search: the hosted tool rides both channels.
+            actor.supports_backend_search.set(true);
+            assert!(!actor.hosted_tools_for_turn().is_empty());
+            assert_eq!(
+                xai_grok_sampling_types::extra_tool_entries(&actor.hosted_tools_for_turn()).len(),
+                1
+            );
+
+            // Model does not: the gate empties the list before it can reach the wire.
+            actor.supports_backend_search.set(false);
+            assert!(
+                actor.hosted_tools_for_turn().is_empty(),
+                "the backend-search gate must drop the hosted tool"
+            );
+            assert!(
+                xai_grok_sampling_types::extra_tool_entries(&actor.hosted_tools_for_turn())
+                    .is_empty(),
+                "and so no raw-JSON entry is produced to splice"
+            );
+        })
+        .await;
+}
+
+/// The `[toolset.web_search]` policy is folded into the agent's hosted tools at build
+/// time (see `agent_rebuild`), and it beats agent frontmatter. A per-turn
+/// `ToolOverridesUpdate` is a deliberate API-level override, so it intentionally still
+/// wins on top of the config policy: the one bypass the config does not close.
+#[tokio::test]
+async fn per_turn_tool_overrides_win_over_the_config_web_search_policy() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            // The hosted tool as `build_agent` leaves it: config blocklist already folded in.
+            let configured = xai_grok_sampling_types::WebSearchOptions {
+                allowed_domains: None,
+                excluded_domains: Some(vec!["reddit.com".to_string()]),
+            };
+            *actor.agent.borrow_mut() =
+                test_agent_backend_search(vec![xai_grok_sampling_types::HostedTool::WebSearch {
+                    options: Some(configured.clone()),
+                }])
+                .await;
+            actor.supports_backend_search.set(true);
+            assert!(actor.backend_search_active());
+
+            // No per-turn update: the config policy is what reaches the wire.
+            assert_eq!(
+                actor.effective_hosted_tools(),
+                vec![xai_grok_sampling_types::HostedTool::WebSearch {
+                    options: Some(configured.clone()),
+                }],
+            );
+
+            let per_turn = xai_grok_sampling_types::WebSearchOptions {
+                allowed_domains: Some(vec!["docs.x.ai".to_string()]),
+                excluded_domains: None,
+            };
+            actor.apply_tool_overrides_update(Some(xai_grok_sampling_types::ToolOverridesUpdate {
+                x_search: None,
+                web_search: Some(Some(per_turn.clone())),
+            }));
+
+            assert_eq!(
+                actor.effective_hosted_tools(),
+                vec![xai_grok_sampling_types::HostedTool::WebSearch {
+                    options: Some(per_turn.clone()),
+                }],
+                "an explicit per-turn override replaces the configured policy on the wire"
+            );
+            assert_eq!(
+                actor.effective_tool_overrides(),
+                Some(xai_grok_sampling_types::ToolOverrides {
+                    x_search: None,
+                    web_search: Some(per_turn),
+                }),
+                "and the echo attests exactly what the wire carried"
+            );
+
+            // Clearing the per-turn override falls back to the configured policy.
+            actor.apply_tool_overrides_update(Some(xai_grok_sampling_types::ToolOverridesUpdate {
+                x_search: None,
+                web_search: Some(None),
+            }));
+            assert_eq!(
+                actor.effective_hosted_tools(),
+                vec![xai_grok_sampling_types::HostedTool::WebSearch {
+                    options: Some(configured),
+                }],
+            );
+        })
+        .await;
+}
+
+/// An agent rebuild (model switch) swaps the definition seed, so it must republish the cutoff cell;
+/// the fixture keeps `supports_backend_search == false` to also pin that publishing isn't gated on
+/// the parent's own search.
+#[tokio::test]
+async fn agent_rebuild_republishes_the_configured_cutoff() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            assert!(
+                !actor.backend_search_active(),
+                "fixture must exercise the not-gated-on-backend-search path",
+            );
+            assert!(
+                actor.resolved_tool_overrides.load().is_none(),
+                "the default definition seeds no cutoff",
+            );
+
+            let seed = xai_grok_sampling_types::ToolOverrides {
+                x_search: Some(xai_grok_sampling_types::XSearchOptions {
+                    date_bound: Some(
+                        xai_grok_sampling_types::SearchDateBound::new(
+                            None,
+                            Some("2020-01-01".to_string()),
+                        )
+                        .unwrap(),
+                    ),
+                }),
+                web_search: None,
+            };
+            let mut seeded = xai_grok_agent::AgentDefinition::default_grok_build();
+            seeded.tool_overrides = Some(seed.clone());
+            actor
+                .handle_rebuild_agent_for_definition(seeded)
+                .await
+                .expect("zero-turn rebuild should succeed");
+            assert_eq!(
+                actor
+                    .resolved_tool_overrides
+                    .load_full()
+                    .map(|o| (*o).clone()),
+                Some(seed),
+                "rebuild must republish the new definition seed for subagent inheritance",
+            );
+
+            // Rebuilding to a seedless definition must clear the cell; a stale bound is a divergence.
+            actor
+                .handle_rebuild_agent_for_definition(
+                    xai_grok_agent::AgentDefinition::default_grok_build(),
+                )
+                .await
+                .expect("second rebuild should succeed");
+            assert!(
+                actor.resolved_tool_overrides.load().is_none(),
+                "rebuild to a seedless definition must not leave a stale cutoff",
+            );
+        })
+        .await;
+}
+
+/// A spawned subagent is seeded via `SetToolOverrides` before its first prompt. The seed must
+/// publish the inheritance cell immediately, with no turn run, so the child's own subagents read
+/// the inherited cutoff regardless of turn timing.
+#[tokio::test]
+async fn set_tool_overrides_publishes_the_inheritance_cell_before_any_turn() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            assert!(actor.resolved_tool_overrides.load().is_none());
+            let cutoff = xai_grok_sampling_types::ToolOverrides {
+                x_search: Some(xai_grok_sampling_types::XSearchOptions {
+                    date_bound: Some(
+                        xai_grok_sampling_types::SearchDateBound::new(
+                            None,
+                            Some("2020-01-01".to_string()),
+                        )
+                        .unwrap(),
+                    ),
+                }),
+                web_search: None,
+            };
+            actor.set_tool_overrides(cutoff.clone());
+            assert_eq!(
+                actor
+                    .resolved_tool_overrides
+                    .load_full()
+                    .map(|o| (*o).clone()),
+                Some(cutoff),
+                "seeding must publish the inheritance cell before any turn runs",
+            );
+        })
+        .await;
+}
 /// Queue a plain-text send-now prompt, returning the shell's cancel decision.
 async fn queue_text_send_now(actor: &SessionActor, id: &str) -> bool {
     let (respond_to, _rx) = oneshot::channel();
@@ -2438,318 +3167,6 @@ async fn rewind_if_pristine_never_pops_an_interjection_fallback_front() {
                     }))
                 ),
                 "a fallback front resolves through the normal cancel, never the rewind pop"
-            );
-        })
-        .await;
-}
-
-/// A stale completion must not clear the promoted turn's `running_task` (would double-spawn).
-#[tokio::test]
-async fn stale_completion_does_not_clear_promoted_turns_running_task() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (actor, _rx) = build_actor().await;
-            {
-                let mut state = actor.state.lock().await;
-                state.pending_inputs.push_back(user_item("promoted", "A"));
-                state.running_task = Some(running_task_stub("promoted"));
-            }
-            *actor
-                .current_prompt_id
-                .lock()
-                .expect("current_prompt_id mutex poisoned") = Some("promoted".into());
-
-            actor
-                .handle_completion(
-                    "cancelled-old".to_string(),
-                    Ok(crate::session::commands::PromptTurnOk {
-                        stop_reason: acp::StopReason::EndTurn,
-                        total_tokens: 0,
-                        turn_snapshot: None,
-                        completion_kind: crate::session::commands::PromptCompletionKind::Completed,
-                        structured_output: None,
-                        usage: None,
-                        tool_overrides: None,
-                    }),
-                )
-                .await;
-
-            let state = actor.state.lock().await;
-            assert!(
-                state.running_task.is_some(),
-                "stale completion must not clear the promoted turn's task"
-            );
-            assert_eq!(
-                state.running_prompt_id(),
-                Some("promoted"),
-                "promoted turn still owns the front"
-            );
-            assert_eq!(
-                actor
-                    .current_prompt_id
-                    .lock()
-                    .expect("current_prompt_id mutex poisoned")
-                    .as_deref(),
-                Some("promoted"),
-                "stale completion must not clear the promoted turn's prompt id"
-            );
-        })
-        .await;
-}
-
-#[tokio::test]
-async fn tool_overrides_update_applies_at_promotion_never_at_enqueue() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (actor, _rx) = build_actor().await;
-            let options = xai_grok_sampling_types::XSearchOptions {
-                date_bound: Some(
-                    xai_grok_sampling_types::SearchDateBound::new(
-                        None,
-                        Some("2024-03-15".to_string()),
-                    )
-                    .unwrap(),
-                ),
-            };
-            // A per-turn update that SETS the x_search override to `options`.
-            let set_update = || xai_grok_sampling_types::ToolOverridesUpdate {
-                x_search: Some(Some(options.clone())),
-                web_search: None,
-            };
-            let expected = xai_grok_sampling_types::ToolOverrides {
-                x_search: Some(options.clone()),
-                web_search: None,
-            };
-
-            let (mut item, prompt_rx) = user_item_with_rx("p1", "alice");
-            item.tool_overrides_update = Some(set_update());
-            {
-                let mut state = actor.state.lock().await;
-                state.pending_inputs.push_back(item);
-            }
-            assert_eq!(
-                *actor.tool_overrides.borrow(),
-                None,
-                "an enqueued update must not rebind the session before its turn starts"
-            );
-
-            actor.handle_remove_queued_prompt("p1", 0, None).await;
-            assert_eq!(
-                *actor.tool_overrides.borrow(),
-                None,
-                "a removed prompt's update must never apply"
-            );
-            let removed = prompt_rx.await.expect("removed prompt resolves its RPC");
-            assert!(
-                matches!(
-                    removed,
-                    Ok(crate::session::commands::PromptTurnOk {
-                        completion_kind: PromptCompletionKind::RemovedFromQueue,
-                        tool_overrides: None,
-                        ..
-                    })
-                ),
-                "the removal response echoes the session's standing overrides (none)"
-            );
-
-            let (mut promoted, _promoted_rx) = user_item_with_rx("p2", "alice");
-            promoted.tool_overrides_update = Some(set_update());
-            {
-                let mut state = actor.state.lock().await;
-                state.pending_inputs.push_back(promoted);
-            }
-            let (completion_tx, _completion_rx) = tokio::sync::mpsc::unbounded_channel();
-            actor.clone().maybe_start_running_task(completion_tx).await;
-            assert_eq!(
-                actor.tool_overrides.borrow().as_ref(),
-                Some(&expected),
-                "promotion applies the front prompt's update to the session override"
-            );
-            assert_eq!(
-                actor
-                    .resolved_tool_overrides
-                    .load_full()
-                    .map(|o| (*o).clone()),
-                Some(expected.clone()),
-                "promotion also republishes the configured cutoff into the cell subagents inherit"
-            );
-
-            actor.apply_tool_overrides_update(None);
-            assert_eq!(
-                actor.tool_overrides.borrow().as_ref(),
-                Some(&expected),
-                "a prompt with no update leaves the sticky override in place"
-            );
-            actor.apply_tool_overrides_update(Some(xai_grok_sampling_types::ToolOverridesUpdate {
-                x_search: Some(None),
-                web_search: None,
-            }));
-            assert_eq!(
-                *actor.tool_overrides.borrow(),
-                None,
-                "an explicit clear removes the override"
-            );
-            assert!(
-                actor.resolved_tool_overrides.load().is_none(),
-                "clearing the override republishes an empty configured cutoff to the shared cell"
-            );
-        })
-        .await;
-}
-
-#[tokio::test]
-async fn effective_tool_overrides_echoes_and_gates_on_backend_search() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (actor, _rx) = build_actor().await;
-            // Backend search on, with a bare (unbounded) x_search hosted tool.
-            *actor.agent.borrow_mut() =
-                test_agent_backend_search(vec![xai_grok_sampling_types::HostedTool::XSearch {
-                    options: None,
-                }])
-                .await;
-            actor.supports_backend_search.set(true);
-            assert!(
-                actor.backend_search_active(),
-                "fixture must actually reach the enabled-backend-search path"
-            );
-
-            // A standing per-turn cutoff (toDate only).
-            let options = xai_grok_sampling_types::XSearchOptions {
-                date_bound: Some(
-                    xai_grok_sampling_types::SearchDateBound::new(
-                        None,
-                        Some("2024-03-15".to_string()),
-                    )
-                    .unwrap(),
-                ),
-            };
-            let expected = xai_grok_sampling_types::ToolOverrides {
-                x_search: Some(options.clone()),
-                web_search: None,
-            };
-            *actor.tool_overrides.borrow_mut() = Some(expected.clone());
-
-            assert_eq!(
-                actor.effective_tool_overrides(),
-                Some(expected.clone()),
-                "backend search on ⇒ the applied cutoff echoes back for attestation"
-            );
-            assert_eq!(
-                actor.effective_hosted_tools(),
-                vec![xai_grok_sampling_types::HostedTool::XSearch {
-                    options: Some(options.clone()),
-                }],
-                "the wire's XSearch entry carries exactly the bound the echo attests (wire == echo)"
-            );
-
-            actor.supports_backend_search.set(false);
-            assert!(
-                actor.tool_overrides.borrow().is_some(),
-                "the standing override is unchanged — only per-model support flipped"
-            );
-            assert_eq!(
-                actor.effective_tool_overrides(),
-                None,
-                "backend search off ⇒ echo is None: never attest a cutoff the wire never carried"
-            );
-        })
-        .await;
-}
-
-/// An agent rebuild (model switch) swaps the definition seed, so it must republish the cutoff cell;
-/// the fixture keeps `supports_backend_search == false` to also pin that publishing isn't gated on
-/// the parent's own search.
-#[tokio::test]
-async fn agent_rebuild_republishes_the_configured_cutoff() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (actor, _rx) = build_actor().await;
-            assert!(
-                !actor.backend_search_active(),
-                "fixture must exercise the not-gated-on-backend-search path",
-            );
-            assert!(
-                actor.resolved_tool_overrides.load().is_none(),
-                "the default definition seeds no cutoff",
-            );
-
-            let seed = xai_grok_sampling_types::ToolOverrides {
-                x_search: Some(xai_grok_sampling_types::XSearchOptions {
-                    date_bound: Some(
-                        xai_grok_sampling_types::SearchDateBound::new(
-                            None,
-                            Some("2020-01-01".to_string()),
-                        )
-                        .unwrap(),
-                    ),
-                }),
-                web_search: None,
-            };
-            let mut seeded = xai_grok_agent::AgentDefinition::default_grok_build();
-            seeded.tool_overrides = Some(seed.clone());
-            actor
-                .handle_rebuild_agent_for_definition(seeded)
-                .await
-                .expect("zero-turn rebuild should succeed");
-            assert_eq!(
-                actor
-                    .resolved_tool_overrides
-                    .load_full()
-                    .map(|o| (*o).clone()),
-                Some(seed),
-                "rebuild must republish the new definition seed for subagent inheritance",
-            );
-
-            // Rebuilding to a seedless definition must clear the cell; a stale bound is a divergence.
-            actor
-                .handle_rebuild_agent_for_definition(
-                    xai_grok_agent::AgentDefinition::default_grok_build(),
-                )
-                .await
-                .expect("second rebuild should succeed");
-            assert!(
-                actor.resolved_tool_overrides.load().is_none(),
-                "rebuild to a seedless definition must not leave a stale cutoff",
-            );
-        })
-        .await;
-}
-
-/// A spawned subagent is seeded via `SetToolOverrides` before its first prompt. The seed must
-/// publish the inheritance cell immediately, with no turn run, so the child's own subagents read
-/// the inherited cutoff regardless of turn timing.
-#[tokio::test]
-async fn set_tool_overrides_publishes_the_inheritance_cell_before_any_turn() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (actor, _rx) = build_actor().await;
-            assert!(actor.resolved_tool_overrides.load().is_none());
-            let cutoff = xai_grok_sampling_types::ToolOverrides {
-                x_search: Some(xai_grok_sampling_types::XSearchOptions {
-                    date_bound: Some(
-                        xai_grok_sampling_types::SearchDateBound::new(
-                            None,
-                            Some("2020-01-01".to_string()),
-                        )
-                        .unwrap(),
-                    ),
-                }),
-                web_search: None,
-            };
-            actor.set_tool_overrides(cutoff.clone());
-            assert_eq!(
-                actor
-                    .resolved_tool_overrides
-                    .load_full()
-                    .map(|o| (*o).clone()),
-                Some(cutoff),
-                "seeding must publish the inheritance cell before any turn runs",
             );
         })
         .await;

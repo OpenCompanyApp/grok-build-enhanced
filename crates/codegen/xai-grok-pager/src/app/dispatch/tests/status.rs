@@ -1556,6 +1556,48 @@ fn open_tutorial_toggles_overlay_without_effects() {
 
 // ── Usage modal (full TUI) dispatch tests ────────────────────────────
 
+fn current_usage_nonce(app: &AppView) -> u64 {
+    match app.agents[&AgentId(0)].active_modal.as_ref() {
+        Some(crate::views::modal::ActiveModal::UsageInfo { state }) => state.fetch_nonce,
+        _ => 0,
+    }
+}
+
+fn complete_session_usage(app: &mut AppView) {
+    let nonce = current_usage_nonce(app);
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionUsageComplete {
+            agent_id: AgentId(0),
+            session_id: "test-session".to_string().into(),
+            usage: Box::default(),
+            nonce,
+        }),
+        app,
+    );
+}
+
+fn context_info_response() -> xai_grok_shell::session::SessionInfoResponse {
+    use xai_grok_shell::session::acp_types::{ContextInfo, SessionInfoData};
+
+    xai_grok_shell::session::SessionInfoResponse {
+        session_id: "test-session".to_string(),
+        cwd: "/tmp/test".to_string(),
+        data: SessionInfoData {
+            agent_name: None,
+            model: Some("grok-build".to_string()),
+            model_display_name: None,
+            resolved_model_id: None,
+            model_fingerprint: None,
+            show_model_fingerprint: false,
+            api_backend: None,
+            conversation_id: None,
+            turns: 0,
+            turn_index: 0,
+            context: ContextInfo::default(),
+        },
+    }
+}
+
 fn usage_modal_state(app: &AppView) -> &crate::views::usage_modal::UsageInfoModalState {
     match app.agents[&AgentId(0)].active_modal.as_ref() {
         Some(crate::views::modal::ActiveModal::UsageInfo { state }) => state,

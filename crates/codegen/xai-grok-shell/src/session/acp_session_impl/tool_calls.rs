@@ -634,7 +634,7 @@ impl SessionActor {
                 self.chat_state_handle.push_user_message(chat);
             }
         }
-        self.drain_pending_interjections().await;
+        self.drain_interjections_at_safe_point().await;
         self.flush_pending_skill_reminders().await;
         if let Some(final_result) = final_result {
             return Ok(final_result);
@@ -958,7 +958,7 @@ impl SessionActor {
                     post_tool_use_external_content = tool_result.external_content.clone();
                     let drained = DrainedToolSuccess::new(tool_result);
                     post_tool_use_result = self
-                        .hook_event_active(xai_grok_hooks::event::HookEventName::PostToolUse)
+                        .may_have_hooks_for(xai_grok_hooks::event::HookEventName::PostToolUse)
                         .then(|| {
                             serde_json::to_value(drained.output())
                                 .unwrap_or(serde_json::Value::Null)
@@ -998,9 +998,9 @@ impl SessionActor {
                         )
                         .await;
                     deferred_followups.extend(err_followups);
-                    if self
-                        .hook_event_active(xai_grok_hooks::event::HookEventName::PostToolUseFailure)
-                    {
+                    if self.may_have_hooks_for(
+                        xai_grok_hooks::event::HookEventName::PostToolUseFailure,
+                    ) {
                         let raw_input: serde_json::Value =
                             serde_json::from_str(&prepared.raw_arguments)
                                 .unwrap_or(serde_json::Value::Null);
@@ -1292,17 +1292,15 @@ impl SessionActor {
         {
             arguments.remove(CODEX_IMAGE_TURN_CONTEXT_FIELD);
         }
-        let external_input = external_tool_input(tool_kind, &raw_input);
-        let external_arguments = (tool_kind
+        let mut external_input = external_tool_input(tool_kind, &raw_input);
+        let mut external_arguments = (tool_kind
             == Some(xai_grok_tools::types::tool::ToolKind::WebFetch))
         .then(|| serde_json::to_string(&external_input).expect("tool input is JSON-serializable"));
-        let tool_input = match self
-            .agent
-            .borrow()
-            .tool_bridge()
+        let parsed = self
+            .tool_bridge_handle()
             .try_parse(&call.function.name, raw_input.clone())
-            .await
-        {
+            .await;
+        let mut tool_input = match parsed {
             Ok(input) => input,
             Err(err) => {
                 self.handle_tool_parse_error(
@@ -1319,57 +1317,21 @@ impl SessionActor {
                 return Ok(Err(ToolLoop::ToolParsingError));
             }
         };
-        let access_kind = AccessKind::from(&tool_input);
-        let plan_gate = plan_mode_edit_gate(&self.plan_mode.lock(), &tool_input, &access_kind);
-        if plan_gate != PlanEditGate::Allow {
-            tracing::info_span!(
-                "tool.decision",
-                tool_name = %call.function.name,
-                tool_use_id = %call.id,
-                decision = "deny",
-                source = "plan_mode",
-                wait_ms = 0_i64,
-            )
-            .in_scope(|| {});
-            let msg = match plan_gate {
-                _ => self.plan_mode_edit_rejected_message().await,
-            };
-            self.handle_tool_not_executed(&call.id, &tool_call_id, msg)
-                .await?;
-            return Ok(Err(ToolLoop::Continue));
-        }
-        let tool_call_display = self
-            .send_tool_call_start(
-                &tool_call_id,
-                &call.function.name,
-                tool_input.clone(),
-                external_input.clone(),
-            )
-            .await;
         let _recovered_raw_input = if concatenated_json_count > 0 {
             Some(raw_input.clone())
         } else {
             None
         };
-        let dispatch_target_name = tool_input.dispatch_target_name();
-        let resolved_tool_name = dispatch_target_name
+        let mut dispatch_target_name = tool_input.dispatch_target_name();
+        let mut resolved_tool_name = dispatch_target_name
             .clone()
             .unwrap_or_else(|| call.function.name.clone());
-        if self.hook_event_active(xai_grok_hooks::event::HookEventName::PreToolUse) {
-            let (hook_tool_input, hook_tool_input_truncated) =
-                xai_grok_hooks::event::truncate_payload(external_input.clone());
-            let envelope = self.make_hook_envelope(
-                xai_grok_hooks::event::HookEventName::PreToolUse,
-                None,
-                xai_grok_hooks::event::HookPayload::PreToolUse {
-                    tool_name: resolved_tool_name.clone(),
-                    tool_use_id: call.id.clone(),
-                    tool_input: hook_tool_input,
-                    tool_input_truncated: hook_tool_input_truncated,
-                    permission_mode: Some(self.permission_mode_label().to_string()),
-                    subagent_type: self.subagent_type_label(),
-                },
-            );
+        let mut raw_arguments = external_arguments
+            .clone()
+            .unwrap_or_else(|| call.function.arguments.clone());
+        if self.may_have_hooks_for(xai_grok_hooks::event::HookEventName::PreToolUse) {
+            let mut envelope =
+                self.make_pre_tool_use_envelope(&resolved_tool_name, &call.id, &external_input);
             let hook_registry_snapshot = self.hook_registry.borrow().clone();
             if let Some(registry) = hook_registry_snapshot {
                 let ctx = self.hook_run_ctx();
@@ -1402,6 +1364,55 @@ impl SessionActor {
                         )
                         .await?));
                 }
+                if let Some(rewrite) = pre_result.updated_input {
+                    let mut updated = rewrite.input;
+                    if tool_kind == Some(xai_grok_tools::types::tool::ToolKind::WebSearch)
+                        && let serde_json::Value::Object(arguments) = &mut updated
+                    {
+                        arguments.remove(CODEX_WEB_SEARCH_CONTEXT_FIELD);
+                    }
+                    if is_image_turn_tool(tool_kind, &call.function.name)
+                        && let serde_json::Value::Object(arguments) = &mut updated
+                    {
+                        arguments.remove(CODEX_IMAGE_TURN_CONTEXT_FIELD);
+                    }
+                    let updated_args = updated.to_string();
+                    let parsed = self
+                        .tool_bridge_handle()
+                        .try_parse(&call.function.name, updated.clone())
+                        .await;
+                    tool_input = match parsed {
+                        Ok(input) => input,
+                        Err(err) => {
+                            let msg = format!(
+                                "PreToolUse hook '{}' returned an invalid updatedInput: {err}",
+                                rewrite.hook_name
+                            );
+                            self.handle_tool_not_executed(&call.id, &tool_call_id, msg)
+                                .await?;
+                            return Ok(Err(ToolLoop::ToolParsingError));
+                        }
+                    };
+                    dispatch_target_name = tool_input.dispatch_target_name();
+                    resolved_tool_name = dispatch_target_name
+                        .clone()
+                        .unwrap_or_else(|| call.function.name.clone());
+                    raw_input = updated;
+                    external_input = external_tool_input(tool_kind, &raw_input);
+                    external_arguments = (tool_kind
+                        == Some(xai_grok_tools::types::tool::ToolKind::WebFetch))
+                    .then(|| {
+                        serde_json::to_string(&external_input)
+                            .expect("tool input is JSON-serializable")
+                    });
+                    raw_arguments = external_arguments.unwrap_or(updated_args);
+                    concatenated_json_count = 0;
+                    envelope = self.make_pre_tool_use_envelope(
+                        &resolved_tool_name,
+                        &call.id,
+                        &external_input,
+                    );
+                }
             }
             if let Some(denied) = self
                 .run_pre_tool_use_client_hook(&call, &tool_call_id, &envelope)
@@ -1410,6 +1421,31 @@ impl SessionActor {
                 return Ok(Err(denied));
             }
         }
+        let access_kind = AccessKind::from(&tool_input);
+        let plan_gate = plan_mode_edit_gate(&self.plan_mode.lock(), &tool_input, &access_kind);
+        if plan_gate != PlanEditGate::Allow {
+            tracing::info_span!(
+                "tool.decision",
+                tool_name = %call.function.name,
+                tool_use_id = %call.id,
+                decision = "deny",
+                source = "plan_mode",
+                wait_ms = 0_i64,
+            )
+            .in_scope(|| {});
+            let msg = self.plan_mode_edit_rejected_message().await;
+            self.handle_tool_not_executed(&call.id, &tool_call_id, msg)
+                .await?;
+            return Ok(Err(ToolLoop::Continue));
+        }
+        let tool_call_display = self
+            .send_tool_call_start(
+                &tool_call_id,
+                &call.function.name,
+                tool_input.clone(),
+                external_input.clone(),
+            )
+            .await;
         let plan_file_auto_approve = if let AccessKind::Edit(ref path) = access_kind {
             self.plan_mode
                 .lock()
@@ -1829,7 +1865,7 @@ impl SessionActor {
             call_id: call.id.clone(),
             tool_call_id,
             tool_name: call.function.name.clone(),
-            raw_arguments: external_arguments.unwrap_or_else(|| call.function.arguments.clone()),
+            raw_arguments,
             parsed_args: dispatch_args,
             model_id: model_id_str,
             concatenated_json_count,
@@ -2416,7 +2452,26 @@ impl SessionActor {
             trigger: xai_grok_telemetry::events::SkillTrigger::SkillMdRead,
         });
     }
-
+    fn make_pre_tool_use_envelope(
+        &self,
+        resolved_tool_name: &str,
+        call_id: &str,
+        input: &serde_json::Value,
+    ) -> xai_grok_hooks::event::HookEventEnvelope {
+        let (tool_input, tool_input_truncated) =
+            xai_grok_hooks::event::truncate_payload(input.clone());
+        self.make_hook_envelope(
+            xai_grok_hooks::event::HookEventName::PreToolUse,
+            None,
+            xai_grok_hooks::event::HookPayload::PreToolUse {
+                tool_name: resolved_tool_name.to_string(),
+                tool_use_id: call_id.to_string(),
+                tool_input,
+                tool_input_truncated,
+                subagent_type: self.subagent_type_label(),
+            },
+        )
+    }
     async fn handle_tool_parse_error(
         &self,
         tool_call_id: &acp::ToolCallId,

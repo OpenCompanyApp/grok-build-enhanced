@@ -2903,8 +2903,7 @@ fn content_parts_to_easy_input_content(
 /// backend rejects the request with `Duplicate tool names: <name>` otherwise);
 /// the hosted tool wins.
 fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
-    let mut tools: Vec<rs::Tool> = req
-        .tools
+    req.tools
         .iter()
         .filter(|t| {
             let collides = req.hosted_tools.iter().any(|h| h.wire_name() == t.name);
@@ -2924,29 +2923,7 @@ fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
                 strict: None,
             })
         })
-        .collect();
-
-    for hosted in &req.hosted_tools {
-        match hosted {
-            HostedTool::WebSearch { options } => {
-                let filters = options
-                    .as_ref()
-                    .and_then(|options| options.allowed_domains.as_ref())
-                    .map(|domains| rs::WebSearchToolFilters {
-                        allowed_domains: Some(domains.clone()),
-                    });
-                tools.push(rs::Tool::WebSearch(rs::WebSearchTool {
-                    filters,
-                    ..Default::default()
-                }));
-            }
-            // XSearch is xAI-specific — not in async_openai's rs::Tool enum.
-            // Injected as raw JSON by the sampler client after serialization.
-            HostedTool::XSearch { .. } => {}
-        }
-    }
-
-    tools
+        .collect()
 }
 
 /// Return raw JSON tool definitions for xAI-specific hosted tools that
@@ -2954,22 +2931,25 @@ fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
 ///
 /// The sampler client injects these into the serialized request body's
 /// `tools` array before sending to the API.
-pub fn extra_raw_tools(hosted_tools: &[HostedTool]) -> Vec<serde_json::Value> {
-    let mut raw = Vec::new();
+pub fn extra_tool_entries(hosted_tools: &[HostedTool]) -> Vec<serde_json::Value> {
+    let mut entries = Vec::new();
     for tool in hosted_tools {
         match tool {
-            // WebSearch is handled natively via rs::Tool::WebSearch in
-            // build_responses_tools() — no raw JSON injection needed.
-            HostedTool::WebSearch { .. } => {}
+            HostedTool::WebSearch { options } => {
+                entries.push(match options {
+                    Some(options) => options.to_tool_entry(),
+                    None => WebSearchOptions::default().to_tool_entry(),
+                });
+            }
             HostedTool::XSearch { options } => {
-                raw.push(match options {
+                entries.push(match options {
                     Some(options) => options.to_tool_entry(),
                     None => XSearchOptions::default().to_tool_entry(),
                 });
             }
         }
     }
-    raw
+    entries
 }
 
 // ============================================================================
@@ -4063,6 +4043,7 @@ mod compaction_item_bridge_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SearchDateBound, ToolOverridesUpdate};
     use assert_matches::assert_matches;
 
     #[test]
@@ -4237,6 +4218,42 @@ mod tests {
     }
 
     #[test]
+    fn tool_overrides_update_apply_merges_tristate() {
+        let x = XSearchOptions {
+            date_bound: Some(SearchDateBound::new(None, Some("2024-03-15".into())).unwrap()),
+        };
+        let w = WebSearchOptions {
+            allowed_domains: Some(vec!["x.com".into()]),
+            excluded_domains: None,
+        };
+
+        let base = ToolOverridesUpdate {
+            x_search: Some(Some(x.clone())),
+            web_search: None,
+        }
+        .apply(None);
+        assert_eq!(
+            base.as_ref().and_then(|o| o.x_search.clone()),
+            Some(x.clone())
+        );
+
+        let merged = ToolOverridesUpdate {
+            x_search: None,
+            web_search: Some(Some(w.clone())),
+        }
+        .apply(base.clone());
+        assert_eq!(merged.as_ref().and_then(|o| o.x_search.clone()), Some(x));
+        assert_eq!(merged.and_then(|o| o.web_search), Some(w));
+
+        let cleared = ToolOverridesUpdate {
+            x_search: Some(None),
+            web_search: None,
+        }
+        .apply(base);
+        assert!(cleared.is_none());
+    }
+
+    #[test]
     fn test_conversation_item_roundtrip() {
         // System message
         let system = ConversationItem::system("You are a helpful assistant.");
@@ -4324,10 +4341,7 @@ mod tests {
             .iter()
             .filter(|t| matches!(t, rs::Tool::WebSearch(_)))
             .count();
-        assert_eq!(
-            web_search_count, 1,
-            "exactly one typed web_search: {tools:?}"
-        );
+        assert_eq!(web_search_count, 0, "web_search uses raw JSON: {tools:?}");
         let function_names: Vec<&str> = tools
             .iter()
             .filter_map(|t| match t {
@@ -4339,6 +4353,10 @@ mod tests {
             function_names,
             vec!["read_file"],
             "colliding function tool must be dropped"
+        );
+        assert_eq!(
+            extra_tool_entries(&req.hosted_tools),
+            vec![serde_json::json!({"type": "web_search"})]
         );
     }
 
@@ -4355,8 +4373,8 @@ mod tests {
         let responses_req: rs::CreateResponse = (&req).into();
         let tools = responses_req.tools.unwrap_or_default();
         assert!(tools.is_empty(), "expected no tools, got: {tools:?}");
-        let raw = extra_raw_tools(&req.hosted_tools);
-        assert_eq!(raw, vec![serde_json::json!({"type": "x_search"})]);
+        let entries = extra_tool_entries(&req.hosted_tools);
+        assert_eq!(entries, vec![serde_json::json!({"type": "x_search"})]);
     }
 
     #[test]
@@ -8534,7 +8552,7 @@ mod tests {
             .push(ConversationItem::tool_result("call-1", "result text"));
 
         let stripped = req.strip_images();
-        assert_eq!(stripped, 0);
+        assert_eq!(stripped.len(), 0);
 
         // Verify nothing was modified
         assert_matches!(&req.items[0], ConversationItem::System(s) => {
@@ -8588,7 +8606,7 @@ mod tests {
         req.items.push(user2);
 
         let stripped = req.strip_images();
-        assert_eq!(stripped, 3);
+        assert_eq!(stripped.len(), 3);
     }
 
     // ── Request-time image capability tests ───────────────────────────────────
@@ -8817,7 +8835,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_without_images_stays_text() {
-        let req = ConversationRequest::from_items(vec![
+        let mut req = ConversationRequest::from_items(vec![
             ConversationItem::user("Run ls"),
             ConversationItem::assistant_tool_calls(vec![ToolCall {
                 id: "call_1".into(),
@@ -8829,6 +8847,21 @@ mod tests {
 
         let stripped = req.strip_images();
         assert_eq!(stripped.len(), 0);
+
+        let responses_req: rs::CreateResponse = (&req).into();
+        let rs::InputParam::Items(items) = responses_req.input else {
+            panic!("Expected Items input");
+        };
+        let fco = items
+            .iter()
+            .find_map(|item| {
+                if let rs::InputItem::Item(rs::Item::FunctionCallOutput(fco)) = item {
+                    Some(fco)
+                } else {
+                    None
+                }
+            })
+            .expect("Expected function call output");
 
         // Should still be Text variant when no images
         assert!(
@@ -8923,8 +8956,16 @@ mod tests {
             })
             .unwrap();
 
-        let stripped = req.strip_images();
-        assert_eq!(stripped.len(), 3);
+        let crate::messages::ToolResultContent::Blocks(inner) = tool_result_block else {
+            panic!("Expected ToolResultContent::Blocks, got Text");
+        };
+        assert_eq!(inner.len(), 2);
+        assert!(
+            matches!(&inner[0], crate::messages::ContentBlock::Text { text, .. } if text == "Read image file: photo.png")
+        );
+        assert!(
+            matches!(&inner[1], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Base64 { media_type, data }, .. } if media_type == "image/png" && data == "iVBOR")
+        );
     }
 
     #[test]
