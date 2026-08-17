@@ -77,6 +77,7 @@ fn test_actor_with_all(
             summary,
             registry_title_sync: None,
             gateway: None,
+            search_index: crate::session::storage::search::SharedSearchIndex::never_indexed(),
             disk_full_tx,
             disk_full_notified: false,
         }

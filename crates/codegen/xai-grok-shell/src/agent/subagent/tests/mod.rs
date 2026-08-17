@@ -1827,6 +1827,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             user_selectable: true,
             id: None,
             provider: xai_grok_sampling_types::ProviderId::Xai,
+            model_family: None,
             model: model_id.to_string(),
             base_url: String::new(),
             name: None,

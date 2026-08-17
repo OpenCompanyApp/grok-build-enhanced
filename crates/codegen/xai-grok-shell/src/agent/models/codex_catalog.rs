@@ -887,6 +887,7 @@ impl CodexCatalogController {
                             id: Some(id),
                             provider: ProviderId::OpenAiCodex,
                             model: model.slug,
+                            model_family: None,
                             base_url: xai_grok_sampling_types::OPENAI_CODEX_BASE_URL.to_owned(),
                             name: Some(display_name),
                             description: model.description,

@@ -120,7 +120,7 @@ pub(crate) async fn single_check(
         .refresh_chain(
             TokenType::OidcSession,
             RefreshReason::ServerRejected,
-            crate::auth::manager::RefreshUrgency::UserFacing,
+            crate::auth::manager::RefreshUrgency::Background,
         )
         .await
     {

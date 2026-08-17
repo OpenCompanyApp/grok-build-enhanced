@@ -269,15 +269,15 @@ async fn refresh_provider_memory_resource(
             params.embed_config = None;
             params.embed_base_url.clear();
             params.embed_api_key = None;
-            params.api_key_provider = None;
-            params.auth_credentials = None;
+            params.embedding_credentials =
+                crate::session::memory::EndpointScopedCredentials::none();
         }
         xai_grok_sampling_types::ProviderId::Xai => {
-            params.api_key_provider = session.auth_manager.as_ref().map(|manager| {
+            let api_key_provider = session.auth_manager.as_ref().map(|manager| {
                 std::sync::Arc::new(crate::auth::manager::SharedAuthKeyProvider(manager.clone()))
                     as xai_grok_tools::types::SharedApiKeyProvider
             });
-            params.auth_credentials = session.auth_manager.as_ref().map(|manager| {
+            let auth_credentials = session.auth_manager.as_ref().map(|manager| {
                 std::sync::Arc::new(
                     crate::auth::credential_provider::ShellAuthCredentialProvider::new(
                         manager.clone(),
@@ -286,12 +286,19 @@ async fn refresh_provider_memory_resource(
                     ),
                 ) as std::sync::Arc<dyn xai_grok_auth::AuthCredentialProvider>
             });
+            params.embedding_credentials =
+                crate::session::memory::EndpointScopedCredentials::for_endpoint(
+                    &params.embed_base_url,
+                    crate::util::is_xai_api_url,
+                    auth_credentials,
+                    api_key_provider,
+                );
         }
         xai_grok_sampling_types::ProviderId::Custom => {
             // A custom endpoint may use its explicit key, but the xAI
             // AuthManager must never cross that provider boundary.
-            params.api_key_provider = None;
-            params.auth_credentials = None;
+            params.embedding_credentials =
+                crate::session::memory::EndpointScopedCredentials::none();
         }
     }
 

@@ -22,6 +22,8 @@ fn default_oauth2_scopes() -> Vec<String> {
         "api:access".into(),
         "conversations:read".into(),
         "conversations:write".into(),
+        "workspaces:read".into(),
+        "workspaces:write".into(),
     ]
 }
 fn default_team_oauth2_scopes() -> Vec<String> {
@@ -33,6 +35,8 @@ fn default_team_oauth2_scopes() -> Vec<String> {
         "team:read".into(),
         "conversations:read".into(),
         "conversations:write".into(),
+        "workspaces:read".into(),
+        "workspaces:write".into(),
     ]
 }
 /// Pin automatic auth to one method (`[auth] preferred_method` in config.toml).
@@ -320,6 +324,73 @@ fn env_lockdown_forced() -> bool {
         .ok()
         .is_some_and(|v| env_flag_enabled(&v))
 }
+
+const FORCE_LOGIN_TEAM_ID_ENV: &str = "GROK_FORCE_LOGIN_TEAM_ID";
+
+pub(crate) fn force_login_team_from_env() -> Option<ForceLoginTeam> {
+    let raw = std::env::var(FORCE_LOGIN_TEAM_ID_ENV).ok()?;
+    parse_force_login_team(&raw)
+}
+
+pub(crate) fn force_login_team_from_requirements() -> Option<ForceLoginTeam> {
+    force_login_team_from_requirements_value(&crate::config::load_merged_requirements()?)
+}
+
+fn force_login_team_from_requirements_value(requirements: &toml::Value) -> Option<ForceLoginTeam> {
+    let value = requirements
+        .get("grok_com_config")
+        .and_then(|section| section.get("force_login_team_uuid"))
+        .or_else(|| {
+            requirements
+                .get("auth")
+                .and_then(|section| section.get("force_login_team_uuid"))
+        })?;
+    match value.clone().try_into() {
+        Ok(team) => Some(team),
+        Err(_) => {
+            tracing::warn!(
+                "force_login_team_uuid in requirements.toml is malformed; failing closed"
+            );
+            Some(ForceLoginTeam::AnyOf(vec![]))
+        }
+    }
+}
+
+/// Resolve the effective team pin by trust tier: requirements/MDM, environment,
+/// then merged user/managed config.
+pub(crate) fn resolve_force_login_team(
+    requirements: Option<ForceLoginTeam>,
+    env: Option<ForceLoginTeam>,
+    config: Option<ForceLoginTeam>,
+) -> Option<ForceLoginTeam> {
+    requirements.or(env).or(config)
+}
+
+fn parse_force_login_team(raw: &str) -> Option<ForceLoginTeam> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('[') {
+        match serde_json::from_str::<Vec<String>>(trimmed) {
+            Ok(teams) => Some(ForceLoginTeam::AnyOf(
+                teams
+                    .into_iter()
+                    .map(|team| team.trim().to_owned())
+                    .collect(),
+            )),
+            Err(_) => {
+                tracing::warn!(
+                    "GROK_FORCE_LOGIN_TEAM_ID is not a valid JSON array; failing closed"
+                );
+                Some(ForceLoginTeam::AnyOf(vec![]))
+            }
+        }
+    } else {
+        Some(ForceLoginTeam::Single(trimmed.to_owned()))
+    }
+}
+
 impl OidcAuthConfig {
     pub fn from_env() -> Option<Self> {
         let issuer = std::env::var("GROK_OIDC_ISSUER").ok()?;
@@ -381,7 +452,7 @@ mod tests {
         assert_eq!(PROD_ACCOUNTS_APP_ORIGINS, &["https://accounts.x.ai"]);
         assert_eq!(allowed_accounts_app_origins(), PROD_ACCOUNTS_APP_ORIGINS);
     }
-    /// FROZEN client contract: the 8 scopes the xAI OAuth2 client requests.
+    /// FROZEN client contract: the 10 scopes the xAI OAuth2 client requests.
     /// The server must keep accepting all of them; existing tokens carry
     /// exactly this set. Frozen OAuth client scope contract.
     #[test]
@@ -399,6 +470,8 @@ mod tests {
                 "api:access",
                 "conversations:read",
                 "conversations:write",
+                "workspaces:read",
+                "workspaces:write",
             ]
         );
     }
@@ -420,5 +493,72 @@ mod tests {
         assert_eq!(cfg.preferred_method, Some(PreferredAuthMethod::Oidc));
         let cfg: GrokComConfig = toml::from_str("").expect("parse empty");
         assert_eq!(cfg.preferred_method, None);
+    }
+
+    #[test]
+    fn parse_force_login_team_handles_all_shapes() {
+        assert_eq!(
+            parse_force_login_team("  team-abc  "),
+            Some(ForceLoginTeam::Single("team-abc".into())),
+        );
+        assert_eq!(
+            parse_force_login_team(r#"["  team-a "]"#),
+            Some(ForceLoginTeam::AnyOf(vec!["team-a".into()])),
+        );
+        assert_eq!(
+            parse_force_login_team(r#"["team-a", " team-b "]"#),
+            Some(ForceLoginTeam::AnyOf(vec![
+                "team-a".into(),
+                "team-b".into(),
+            ])),
+        );
+        assert_eq!(
+            parse_force_login_team("[]"),
+            Some(ForceLoginTeam::AnyOf(vec![])),
+        );
+        assert_eq!(
+            parse_force_login_team(r#"["team-a", "team-b"#),
+            Some(ForceLoginTeam::AnyOf(vec![])),
+        );
+        assert_eq!(parse_force_login_team(""), None);
+        assert_eq!(parse_force_login_team("   "), None);
+    }
+
+    #[test]
+    fn resolve_force_login_team_precedence() {
+        let req = || Some(ForceLoginTeam::Single("req-team".into()));
+        let env = || Some(ForceLoginTeam::Single("env-team".into()));
+        let cfg = || Some(ForceLoginTeam::Single("cfg-team".into()));
+        assert_eq!(resolve_force_login_team(req(), env(), cfg()), req());
+        assert_eq!(resolve_force_login_team(req(), None, cfg()), req());
+        assert_eq!(resolve_force_login_team(req(), env(), None), req());
+        assert_eq!(resolve_force_login_team(None, env(), cfg()), env());
+        assert_eq!(resolve_force_login_team(None, env(), None), env());
+        assert_eq!(resolve_force_login_team(None, None, cfg()), cfg());
+        assert_eq!(resolve_force_login_team(None, None, None), None);
+    }
+
+    #[test]
+    fn force_login_team_from_requirements_value_extracts_and_fails_closed() {
+        fn pin(toml_str: &str) -> Option<ForceLoginTeam> {
+            force_login_team_from_requirements_value(&toml::from_str(toml_str).expect("parse"))
+        }
+        assert_eq!(
+            pin("[grok_com_config]\nforce_login_team_uuid = \"team-a\"\n"),
+            Some(ForceLoginTeam::Single("team-a".into())),
+        );
+        assert_eq!(
+            pin("[auth]\nforce_login_team_uuid = [\"team-a\", \"team-b\"]\n"),
+            Some(ForceLoginTeam::AnyOf(vec![
+                "team-a".into(),
+                "team-b".into(),
+            ])),
+        );
+        assert_eq!(
+            pin("[grok_com_config]\nforce_login_team_uuid = 123\n"),
+            Some(ForceLoginTeam::AnyOf(vec![])),
+        );
+        assert_eq!(pin("[grok_com_config]\n"), None);
+        assert_eq!(pin(""), None);
     }
 }

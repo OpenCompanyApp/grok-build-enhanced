@@ -363,6 +363,7 @@ pub(super) fn test_summary(
         last_turn_summary: None,
         last_turn_summary_prompt_id: None,
         credential_binding: None,
+        last_recap: None,
     }
 }
 
