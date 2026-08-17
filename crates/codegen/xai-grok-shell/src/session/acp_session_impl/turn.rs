@@ -2149,6 +2149,36 @@ impl SessionActor {
         json_schema: Option<serde_json::Value>,
         browse_requirement: crate::session::web_browsing::BrowseRequirement,
     ) -> Result<TurnOutcome, acp::Error> {
+        #[cfg(test)]
+        {
+            // This debug-build sampler future has a large poll frame. Run it
+            // as a separate local task so the compatibility wrappers above do
+            // not keep all of their poll frames live on libtest's 2 MiB stack.
+            // The abort guard preserves direct-await cancellation semantics.
+            let actor = Arc::clone(self);
+            let req_id = req_id.to_owned();
+            let artifact_tracker = artifact_tracker.cloned();
+            let (result_tx, result_rx) = oneshot::channel();
+            let task = tokio::task::spawn_local(async move {
+                let result = actor
+                    .process_conversation_turn_with_native_browse_availability(
+                        &req_id,
+                        trace_gcs_config,
+                        artifact_tracker.as_ref(),
+                        json_schema,
+                        browse_requirement,
+                        None,
+                    )
+                    .await;
+                let _ = result_tx.send(result);
+            });
+            let _abort_on_drop = crate::util::AbortOnDrop(task);
+            return result_rx
+                .await
+                .expect("test sampler task must return a turn outcome");
+        }
+
+        #[cfg(not(test))]
         self.process_conversation_turn_with_native_browse_availability(
             req_id,
             trace_gcs_config,
