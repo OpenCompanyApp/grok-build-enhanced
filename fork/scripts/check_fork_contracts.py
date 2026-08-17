@@ -84,7 +84,7 @@ def check_provider_isolation_sentinels() -> None:
             "extra_authorization_header_cannot_disable_redaction",
         "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs":
             "image_resource_and_definitions_follow_provider_switches",
-        "crates/codegen/xai-grok-shell/src/agent/config.rs":
+        "crates/codegen/xai-grok-shell/src/agent/config_tests.rs":
             "custom_credentials_never_inherit_xai_session_or_global_keys",
         "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs":
             "custom_runtime_drops_xai_credentials_and_generic_tool_auth",
@@ -170,20 +170,29 @@ def check_updater_routes() -> None:
 
 
 def check_generated_workspace(manifest: dict[str, object]) -> None:
-    patch_stack = manifest.get("patch_stack")
-    if not isinstance(patch_stack, dict):
-        raise ContractError("fork manifest has no patch_stack object")
-    baseline = patch_stack.get("baseline")
-    if not isinstance(baseline, dict) or not isinstance(baseline.get("commit"), str):
-        raise ContractError("fork manifest has no immutable baseline commit")
+    sources = manifest.get("sources")
+    if not isinstance(sources, list):
+        raise ContractError("fork manifest has no source inventory")
+    grok = next(
+        (
+            source
+            for source in sources
+            if isinstance(source, dict) and source.get("id") == "grok-build-upstream"
+        ),
+        None,
+    )
+    reviewed = grok.get("reviewed") if isinstance(grok, dict) else None
+    if not isinstance(reviewed, dict) or not isinstance(reviewed.get("commit"), str):
+        raise ContractError("fork manifest has no reviewed Grok source revision")
     result = subprocess.run(
-        ["git", "diff", "--quiet", baseline["commit"], "--", "Cargo.toml"],
+        ["git", "diff", "--quiet", reviewed["commit"], "--", "Cargo.toml"],
         cwd=ROOT,
         check=False,
     )
     if result.returncode == 1:
         raise ContractError(
-            "root Cargo.toml differs from the immutable baseline; edit crate manifests instead"
+            "generated root Cargo.toml differs from the reviewed Grok target; "
+            "edit crate manifests and use the documented regeneration process"
         )
     if result.returncode not in (0, 1):
         raise ContractError("could not compare generated Cargo.toml to the baseline")
