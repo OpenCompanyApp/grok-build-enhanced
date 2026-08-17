@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "campaign": "2026-08-15-glm53-refresh",
+  "campaign": "2026-08-17-glm53-refresh",
   "inventory": {
     "count": 92,
     "sha256": "30b0f19fbeaabca7961a19589bdc502acbd5e4c0ce55515131d275ceb7f3d931"
   },
   "target_sources": {
-    "grok-build-upstream": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+    "grok-build-upstream": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
     "openai-codex": "c4941302c73c6322b153bba13ac0a9f4396301d6",
     "opencode": "4643e65ad6334de3e4e68dedc201d5fbb828c9fe",
     "opencode-codex-auth": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
@@ -26,7 +26,7 @@
     {
       "id": "GB-8A14-LANDING",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Land and validate the sixteen preserved-surface behaviors from the 8a14 snapshot.",
@@ -43,7 +43,7 @@
     {
       "id": "GB-B13-WORKTREE",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Preserve sticky standalone-worktree identity when live dashboard probing is incomplete.",
@@ -54,7 +54,7 @@
     {
       "id": "GB-B13-PORTABILITY",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Keep hook write-deny and child-network code correct on non-Linux targets.",
@@ -67,7 +67,7 @@
     {
       "id": "GB-B13-INPUT",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Make Home and End operate on logical lines across soft-wrapped input.",
@@ -78,7 +78,7 @@
     {
       "id": "GB-B13-TITLES",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Adopt bounded sanitized manual rename/reset, persistence, hydration, export and remote synchronization.",
@@ -93,7 +93,7 @@
     {
       "id": "GB-B13-AGENT-BOOT",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Reclaim abandoned persistent-agent boot slots safely.",
@@ -105,7 +105,7 @@
     {
       "id": "GB-B13-RUNTIME",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Bound and prewarm blocking threads and contain EAGAIN/runtime-build failures.",
@@ -118,7 +118,7 @@
     {
       "id": "GB-B13-WORKSPACE-RPC",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Classify RPC activity and report or gate by workspace server version without idle races.",
@@ -131,7 +131,7 @@
     {
       "id": "GB-B13-SESSION-EVENTS",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Preserve ordered session notifications, task results and status transitions.",
@@ -145,7 +145,7 @@
     {
       "id": "GB-B13-WIRE",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Preserve explicit empty summaries and unfinished-task reminders.",
@@ -158,7 +158,7 @@
     {
       "id": "GB-B13-INTEGRATION",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Reconcile remaining lock, documentation, test and cross-cutting integration paths.",
@@ -172,7 +172,7 @@
     {
       "id": "GB-B13-REL",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "SOURCE_REV remains fork-owned release metadata.",
@@ -184,77 +184,46 @@
       "id": "CDX-F2A6-METADATA",
       "source_id": "openai-codex",
       "source_revision": "c4941302c73c6322b153bba13ac0a9f4396301d6",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Send bounded provider-owned Responses turn metadata, including sandbox mode, without reserved-key override.",
-      "closure_evidence": [],
-      "owner": "Codex adapter",
-      "impact": "Server-side policy context may be incomplete for normal turns.",
-      "acceptance_criteria": "Implement provider-scoped header/body metadata with bounds and reserved-key enforcement.",
-      "intended_tests": [
-        "Codex metadata wire test",
-        "xAI and Kimi negative metadata tests"
-      ],
-      "blocker": "Enhanced has scoped hosted-tool metadata but no equivalent normal-turn envelope.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "test:xai-grok-sampler codex_turn_metadata (2 passed)"
+      ]
     },
     {
       "id": "CDX-F2A6-SAFETY",
       "source_id": "openai-codex",
       "source_revision": "c4941302c73c6322b153bba13ac0a9f4396301d6",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Parse safety-buffering signals from the current response.metadata event shape.",
-      "closure_evidence": [],
-      "owner": "Codex adapter",
-      "impact": "Codex safety buffering may be invisible.",
-      "acceptance_criteria": "Add bounded parsing, precedence and malformed-event behavior without cross-provider handling.",
-      "intended_tests": [
-        "Codex SSE safety-buffering tests",
-        "non-Codex negative test"
-      ],
-      "blocker": "The direct sampler does not classify the nested metadata form.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "test:xai-grok-sampler codex_safety_buffering (3 passed)"
+      ]
     },
     {
       "id": "CDX-F2A6-IMAGE-LIMIT",
       "source_id": "openai-codex",
       "source_revision": "c4941302c73c6322b153bba13ac0a9f4396301d6",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Surface image-generation quota exhaustion with reset metadata.",
-      "closure_evidence": [],
-      "owner": "Codex hosted image adapter",
-      "impact": "Users receive an untyped failure for exhausted image quota.",
-      "acceptance_criteria": "Map only image_gen usage limits while retaining structural redaction.",
-      "intended_tests": [
-        "Codex image quota/reset test",
-        "other-limit and credential-redaction tests"
-      ],
-      "blocker": "Current hosted-image errors do not project the typed image_gen usage-limit outcome.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "test:xai-grok-tools codex_image_usage_limit_is_typed_bounded_and_redacted"
+      ]
     },
     {
       "id": "CDX-F2A6-MODEL-HISTORY",
       "source_id": "openai-codex",
       "source_revision": "c4941302c73c6322b153bba13ac0a9f4396301d6",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "already equivalent",
+      "state": "closed",
       "behavior": "Retain model identity needed when history spans model switches and compaction.",
-      "closure_evidence": [],
-      "owner": "Codex compaction",
-      "impact": "Fallback and compaction can lose model provenance.",
-      "acceptance_criteria": "Implement provider/model/credential-bound envelopes or prove equivalence across switch, persist, resume and compact.",
-      "intended_tests": [
-        "Codex model-switch persistence test",
-        "Codex compaction provenance test"
-      ],
-      "blocker": "Local raw history is not yet proven equivalent to upstream response-item envelopes.",
-      "deadline": "2026-08-18",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "test:xai-grok-sampling-types responses_api_conversion_preserves_model_fingerprint",
+        "test:xai-grok-shell provider-qualified history, compaction, fork, resume, and export regressions"
+      ]
     },
     {
       "id": "OC-0D92-SCOPE",
@@ -336,7 +305,7 @@
     {
       "id": "GB-BE71-REWIND-MCP",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Adopt the 1.0.1 breaking contracts: /rewind truncates conversation only with confirmation by default, and managed MCP servers are exposed only through the gateway catalog.",
@@ -348,7 +317,7 @@
     {
       "id": "GB-BE71-SUBAGENT-TOOLS",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Bound wide subagent fan-out and expose trustworthy read-only tool metadata to restricted agents.",
@@ -361,7 +330,7 @@
     {
       "id": "GB-BE71-DU-GIT",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Provide grok du and keep worktree, status, diff, plugin-git, and large-history operations bounded in CPU and memory.",
@@ -373,7 +342,7 @@
     {
       "id": "GB-BE71-SANDBOX-SKILLS",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Normalize literal sandbox grants ending in /* or /**, reject ambiguous wildcard grants, ignore broad notebook imports, and support caller-limited bundled skill advertisement.",
@@ -385,7 +354,7 @@
     {
       "id": "GB-BE71-MODALS-TRACE",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Expose usage, session-info, and context in the tabbed modal and include memory traces in grok trace exports.",
@@ -396,7 +365,7 @@
     {
       "id": "GB-BE71-VIDEO",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Support reference video voices, one-image input, 1-15 second durations, 4:3 and 3:4 ratios, and clear ZDR storage diagnostics.",
@@ -407,7 +376,7 @@
     {
       "id": "GB-BE71-UPDATER",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Preserve non-blocking update checks, channel-correct reinstall guidance, and native Apple Silicon selection through fork-owned release routes.",
@@ -419,7 +388,7 @@
     {
       "id": "GB-BE71-SLASH-SUGGEST",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Show qualified skills alongside same-named built-in commands without transient plugin suggestion flashes.",
@@ -430,7 +399,7 @@
     {
       "id": "GB-BE71-GOAL-RUNTIME",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Prevent goal evaluation timeout failures and terminate timed-out tools even when children are stuck or retain pipes.",
@@ -442,7 +411,7 @@
     {
       "id": "GB-BE71-SESSION-UX",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Preserve recap language, skill-path diagnostics, bounded envrc startup, platform-skill refresh, subagent-aware deletion, and complete bounded large-session replay.",
@@ -454,7 +423,7 @@
     {
       "id": "GB-BE71-NOTIFICATIONS",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Fire permission and plan notification hooks only when a real user-attention wait begins.",
@@ -466,7 +435,7 @@
     {
       "id": "GB-BE71-STEERING",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Preserve goal-mode Send Now, mid-turn steering provenance, and Esc keep-running semantics on the cancel panel.",
@@ -478,7 +447,7 @@
     {
       "id": "GB-BE71-SELECTION",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Finish scrollback drag selection after releases outside VS Code-family terminals and avoid history-search thread leaks.",
@@ -489,7 +458,7 @@
     {
       "id": "GB-BE71-STARTUP-STATUS",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Keep startup and update config reads bounded, render actionable startup failures, and preserve workspace presence/status/activity reporting.",
@@ -502,7 +471,7 @@
     {
       "id": "GB-BE71-SAMPLER-ERRORS",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Adopt structured xAI sampling errors, retry guidance, and cancellation-safe request task behavior without changing Codex or Kimi provider policy.",
@@ -514,7 +483,7 @@
     {
       "id": "GB-BE71-RELEASE",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "SOURCE_REV, upstream 1.0.1 packaging, official installers, and official channel ownership remain inapplicable; Enhanced retains fork-owned version and release routes.",
@@ -526,39 +495,24 @@
       "id": "CDX-D6EE-ROOT-TURN",
       "source_id": "openai-codex",
       "source_revision": "c4941302c73c6322b153bba13ac0a9f4396301d6",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Carry a reserved, provider-owned root_turn_id across delegated Codex requests while failing closed for ambiguous roots.",
-      "closure_evidence": [],
-      "owner": "Codex adapter",
-      "impact": "Delegated requests can lose causal turn attribution expected by the subscription service.",
-      "acceptance_criteria": "Extend bounded Codex metadata with reserved root-turn propagation and ambiguity handling.",
-      "intended_tests": [
-        "Codex root-turn metadata tests",
-        "reserved-key override and non-Codex negative tests"
-      ],
-      "blocker": "The normal-turn metadata envelope remains an open prerequisite.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-sampler codex_turn_metadata (2 passed)",
+        "test:xai-grok-shell delegated Codex root-turn propagation regressions"
+      ]
     },
     {
       "id": "CDX-D6EE-HARNESS-HISTORY",
       "source_id": "openai-codex",
       "source_revision": "c4941302c73c6322b153bba13ac0a9f4396301d6",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "already equivalent",
+      "state": "closed",
       "behavior": "Preserve Codex harness metadata through history normalization, compaction, fork, resume, and export.",
-      "closure_evidence": [],
-      "owner": "Codex history and compaction",
-      "impact": "History transformations can discard provider-owned metadata required for continuity.",
-      "acceptance_criteria": "Use provider/model/credential-bound history envelopes and retain metadata through every transformation.",
-      "intended_tests": [
-        "Codex annotated-history normalization tests",
-        "Codex compact/fork/resume metadata tests"
-      ],
-      "blocker": "Enhanced raw history has not yet been proven equivalent to upstream annotated envelopes.",
-      "deadline": "2026-08-19",
-      "target": "before acknowledgement or publication"
+      "closure_evidence": [
+        "test:xai-grok-shell provider-qualified history, compaction, fork, resume, and export regressions"
+      ]
     },
     {
       "id": "CDX-D6EE-STORE",
@@ -695,227 +649,150 @@
     {
       "id": "GB-EB26-SESSION-IMAGE",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt cwd-relative markdown links; session image capability capture/persistence; invalid-image healing; shared request/compaction byte budgets; and conversation-scoped image metadata.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "Resumed or compacted sessions can retain stale image state, exceed current image budgets, or resolve existing relative links differently from upstream.",
-      "acceptance_criteria": "Implement the session-state and persistence changes without changing the Enhanced session format or allowing provider metadata to cross provider identities.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-AGENT-QUEUE",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt stale-child terminalization, cancellation-safe subagent stop and reaping, UI-kill wakeups, queue/interjection semantics, late lifecycle events, wait activity, the 32-turn doom-loop default, and communication guidance.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "Subagents and queued follow-ups can remain live, be delayed, or present inconsistent lifecycle/activity state.",
-      "acceptance_criteria": "Preserve tool names and the agent loop while matching cancellation, queue, lifecycle, wakeup, activity, and turn-limit behavior in unit, ACP, and PTY coverage.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-HOOKS",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt first-stderr hook diagnostics, PreToolUse updatedInput propagation, and hook-requested turn stops.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "Hook authors do not receive the newest input mutation and cannot reliably stop a turn with upstream diagnostics.",
-      "acceptance_criteria": "Carry hook mutations and stop decisions through the existing permission/tool pipeline, redact credential-bearing values, and test command plus HTTP hooks.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-PERMISSIONS-AUTH",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt auth-straddle token-consumption hardening and failure poisoning, explicit narrow auto-permission grants, and Auto-mode user-intent context.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "A boundary failure can reuse consumed auth state, while explicit grants and user-intent security context differ from upstream.",
-      "acceptance_criteria": "Match upstream authorization behavior while keeping xAI, Codex, Kimi, and custom credentials isolated and sensitive headers redacted.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-TUI-INPUT",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt Flameshot/file image paste, unfocused drag/paste routing, startup typeahead, wrapped-word and paragraph selection, and queued-row pager editing commands.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "Terminal-native image/input and text-selection workflows differ from the current Grok UI contract.",
-      "acceptance_criteria": "Match keyboard, mouse, paste, drag, selection, queue-edit, and focus behavior across supported terminals with PTY evidence.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-TUI-STATUS",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt legacy Ctrl+4 dashboard access, display-refresh cadence, copyable and draggable session-info, tool-writing activity, free-tier/Plus upgrade UI, session-search disablement, and the bundled grok-4.6 default presentation.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "Dashboard, status, settings, session information, subscription messaging, and default-model presentation lag upstream.",
-      "acceptance_criteria": "Match observable TUI status and command behavior without replacing Enhanced branding, fork update routes, or catalog authority.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-HARNESS",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt session-root scan avoidance, post-cancel framed interjections, scheduled-task silent-expiry transcripts, plan-draft preservation, browser verification/project rules, Direct Mode retirement, and bound-session filesystem/metadata behavior.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "Session startup, cancellation recovery, scheduled runs, planning, and harness instructions can diverge on preserved surfaces.",
-      "acceptance_criteria": "Adopt the behavior inside the Grok agent/session architecture and prove TUI, headless, scheduler, and ACP parity.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-WORKSPACE",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt provisioned-mount traversal for prompt/graph/fsnotify, boundary commits for dirty trees, and Workspace EnsureBinding, MergeToMain, Push, start-from-bindings, and bound-cwd filesystem operations.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "Workspace binding, dirty-boundary, mount, and remote operation behavior can produce different repositories or filesystem scopes.",
-      "acceptance_criteria": "Implement the upstream RPC and workspace semantics with dirty-tree preservation, explicit repo binding, and path-scope tests.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-TOOLS-MCP",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt GROK_SESSION_ID tool/MCP propagation, MCP 2025-11-25, cancellable ripgrep reaping, bound toolOverrides echo, web-search domain configuration, and inline-citation suppression for backend search.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "Tools and MCP clients lack new context/protocol/config behavior and can leak child processes after cancellation.",
-      "acceptance_criteria": "Match upstream tool and MCP behavior while never exporting provider credentials or cross-provider state; test cancellation, env filtering, protocol, and domain filters.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-PROVIDER-XAI",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt PromptMetadata feature unification, Responses prompt_cache_key conversation identity, image-capability metadata, grok-4.6 catalog integration, and xAI subscription/up-sell response handling.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "xAI catalog, request metadata, caching, and subscription-state behavior are behind the preserved upstream provider surface.",
-      "acceptance_criteria": "Implement only for xAI identity, preserve Codex/Kimi/custom adapter isolation, and prove exact request/catalog/subscription behavior.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-INTEGRATION",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Integrate the remaining crate graph, platform paths including USERPROFILE Grok home, tests, generated manifests, documentation, and feature wiring required by the eb267 behavior groups.",
-      "closure_evidence": [],
-      "owner": "Grok eb267 preserved-surface adoption",
-      "impact": "Partial ports can compile on one platform while omitting feature wiring or behavior on another preserved surface.",
-      "acceptance_criteria": "Land all thematic groups as reviewable commits, regenerate manifests through the documented process, retain licenses/notices, and pass cross-platform plus strict ownership validation.",
-      "intended_tests": [
-        "focused unit and PTY tests for the named surface",
-        "CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage"
-      ],
-      "blocker": "The two-commit upstream range spans 594 raw paths and depends on the still-unvalidated earlier Grok adoption campaign; landing it independently would create an unreviewable mixed boundary.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-EB26-RELEASE",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Upstream SOURCE_REV, official xAI versions, installer routes, and release-only metadata do not replace fork-owned release and update identities.",
@@ -939,42 +816,25 @@
       "id": "CDX-6BED-THREAD-USAGE",
       "source_id": "openai-codex",
       "source_revision": "c4941302c73c6322b153bba13ac0a9f4396301d6",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Fetch and expose authoritative per-thread Codex usage totals, credits, USD, and model/reasoning/speed groups from the subscription usage endpoint.",
-      "closure_evidence": [],
-      "owner": "OpenAI Codex usage adapter",
-      "impact": "Enhanced exposes local provider-qualified token accounting but not authoritative subscription thread credits.",
-      "acceptance_criteria": "Query with the active Codex account/thread identity, isolate and redact account state, handle unsupported/failed responses, and label authoritative versus estimated values.",
-      "intended_tests": [
-        "mock authenticated thread usage query",
-        "account and thread isolation test",
-        "credential/header redaction test",
-        "status rendering test"
-      ],
-      "blocker": "No provider-isolated authoritative thread-usage client exists yet.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "test:xai-grok-shell thread_usage_query_is_exact_account_bound_and_sanitized",
+        "test:xai-grok-shell thread_usage_unsupported_status_is_none_without_body_reflection",
+        "test:xai-grok-pager codex_summary_labels_authoritative_thread_totals_and_groups"
+      ]
     },
     {
       "id": "CDX-6BED-CATALOG",
       "source_id": "openai-codex",
       "source_revision": "c4941302c73c6322b153bba13ac0a9f4396301d6",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Consume Codex model retirement/upgrade timing and catalog-supplied multi-agent instructions within the adapted Grok harness.",
-      "closure_evidence": [],
-      "owner": "OpenAI Codex catalog adapter",
-      "impact": "Model retirement guidance and server-authored multi-agent instructions are absent from the direct subscription experience.",
-      "acceptance_criteria": "Parse optional fields fail-soft, cache them under the authenticated Codex account generation, display retirement guidance, and apply instructions only to Codex turns.",
-      "intended_tests": [
-        "catalog optional metadata parse/cache tests",
-        "account generation isolation test",
-        "Codex-only harness instruction test"
-      ],
-      "blocker": "The current catalog schema does not model these fields.",
-      "deadline": "2026-08-21",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "test:xai-grok-shell Codex catalog retirement, collaboration, cache, and credential-generation regressions"
+      ]
     },
     {
       "id": "CDX-6BED-ETAG",
@@ -1092,171 +952,111 @@
     {
       "id": "GB-D6A2-ACP-REASONING",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Pass reasoning effort through ACP session/new and session/load metadata while preserving model/provider validation.",
-      "closure_evidence": [],
-      "owner": "ACP and model parity",
-      "impact": "ACP clients cannot select the intended reasoning effort consistently across new and resumed sessions.",
-      "acceptance_criteria": "Adopt `_meta.reasoningEffort` handling for new/load, validate supported values provider-locally, and preserve the selection through session setup.",
-      "intended_tests": [
-        "ACP session/new reasoning tests",
-        "ACP session/load reasoning tests",
-        "provider-isolation model-switch tests"
-      ],
-      "blocker": "The change crosses ACP metadata, session restoration, and provider-specific reasoning semantics.",
-      "deadline": "2026-08-22",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-D6A2-TUI-BIDI-STATUS",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Adopt logical Unicode bidi rendering and selection for Arabic/Persian, remove obsolete queue/todo badges, name writing/MCP tools in preparation status, and prevent empty-list scroll panics.",
-      "closure_evidence": [],
-      "owner": "TUI parity",
-      "impact": "RTL text can render or copy incorrectly, status can be stale, and an empty rebuilt list can panic on scroll.",
-      "acceptance_criteria": "Port bidi transformation with logical-copy preservation, status updates, and bounds-safe list scrolling with focused PTY/unit regressions.",
-      "intended_tests": [
-        "RTL bidi drag/copy PTY test",
-        "list-pane empty rebuild scroll test",
-        "status preparation rendering tests"
-      ],
-      "blocker": "Requires reconciling upstream rendering changes with Enhanced theme and status customizations.",
-      "deadline": "2026-08-22",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-D6A2-CONFIG-HOME",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Support GROK_CONFIG and GROK_CONFIG_PATH, consolidate standard Grok-home lookup, and adopt typed memory configuration without breaking ~/.grok compatibility.",
-      "closure_evidence": [],
-      "owner": "Configuration parity",
-      "impact": "Users cannot relocate configuration through the new upstream contract and home/memory resolution can diverge across commands.",
-      "acceptance_criteria": "Adopt shared home/config resolution and typed memory settings while preserving existing paths, overrides, and provider credential isolation.",
-      "intended_tests": [
-        "config environment overlay tests",
-        "cross-platform Grok-home tests",
-        "memory configuration round-trip tests"
-      ],
-      "blocker": "Touches shared configuration layering, CLI compatibility, storage, and platform-specific home lookup.",
-      "deadline": "2026-08-22",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-D6A2-PERMISSIONS-MCP",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Harden managed MCP allow/deny name and URL matching, apply pre-session permission mode, classify OpenCode dynamic edit input as Edit, and validate bracketed IPv6 allow-entry ports.",
-      "closure_evidence": [],
-      "owner": "Permissions and MCP parity",
-      "impact": "Managed policy can match too broadly or classify an edit incorrectly before a session is fully established.",
-      "acceptance_criteria": "Port exact managed matching and permission classification with fail-closed malformed-input behavior and no provider credential crossover.",
-      "intended_tests": [
-        "managed MCP allow/deny tests",
-        "pre-session permission mode tests",
-        "OpenCode edit permission taxonomy tests",
-        "IPv6 allow-entry validation tests"
-      ],
-      "blocker": "Requires security review across managed settings, MCP resolution, tool taxonomy, and session startup.",
-      "deadline": "2026-08-22",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-D6A2-AGENT-SUBAGENT",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Report hook-denied turns accurately, raise the doom-loop default to 64, tolerate closed inspect stdout, cache a null descriptor safely, and evict/reload finished subagent transcript media on demand.",
-      "closure_evidence": [],
-      "owner": "Agent runtime parity",
-      "impact": "Denied turns can be mislabeled, long productive loops may stop early, closed pipes can panic, and retained subagent media can waste memory.",
-      "acceptance_criteria": "Adopt the runtime behaviors with bounded resource handling, accurate completion reasons, transcript reload integrity, and platform tests.",
-      "intended_tests": [
-        "hook-denied completion tests",
-        "doom-loop threshold test",
-        "closed inspect stdout test",
-        "subagent eviction and media reload tests",
-        "null-descriptor platform tests"
-      ],
-      "blocker": "Spans turn completion, subprocess lifetime, persistence, inline media, and platform-specific process behavior.",
-      "deadline": "2026-08-22",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-D6A2-GATEWAY-WORKSPACE",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Accept and forward computer_sessions git_source, create response.create atomically with its embedded item, and apply sharing settings at publish time during workspace deployment.",
-      "closure_evidence": [],
-      "owner": "Gateway and workspace parity",
-      "impact": "Gateway clients can lose source metadata or observe partially created responses, and deployment sharing may be applied at the wrong phase.",
-      "acceptance_criteria": "Port versioned gateway/workspace fields and atomicity while preserving backward compatibility and fork permission boundaries.",
-      "intended_tests": [
-        "gateway computer-session git_source tests",
-        "atomic response creation tests",
-        "workspace publish/deploy sharing tests"
-      ],
-      "blocker": "Requires coordinated protocol, workspace, fsnotify, and deployment compatibility work.",
-      "deadline": "2026-08-22",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-D6A2-TELEMETRY",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
       "behavior": "Always identify interactive versus headless client mode and support managed mTLS settings for external OTEL export without exposing provider credentials.",
-      "closure_evidence": [],
-      "owner": "Telemetry parity",
-      "impact": "Usage cannot be partitioned by client mode and managed external telemetry cannot use the upstream mTLS contract.",
-      "acceptance_criteria": "Adopt the client-mode header and bounded managed mTLS configuration with sensitive material redaction and provider-isolation regressions.",
-      "intended_tests": [
-        "interactive/headless client-mode tests",
-        "external OTEL mTLS accept/reject tests",
-        "telemetry redaction tests"
-      ],
-      "blocker": "Needs security review for managed certificate material and isolation from authentication headers.",
-      "deadline": "2026-08-22",
-      "target": "before the next source refresh"
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-D6A2-INTEGRATION",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
-      "classification": "temporarily deferred",
-      "state": "open",
-      "behavior": "Integrate the August 15 upstream crate graph, generated manifests, documentation, release-neutral tests, and CI portability supporting the associated behavior groups.",
-      "closure_evidence": [],
-      "owner": "Integration parity",
-      "impact": "The preserved behaviors cannot land safely until their shared dependencies and generated surfaces are reconciled.",
-      "acceptance_criteria": "Regenerate through documented processes and pass focused suites, cargo check, Windows-relevant checks, and strict ownership validation.",
-      "intended_tests": [
-        "cargo fmt",
-        "cargo check -p xai-grok-pager-bin",
-        "check_manifest.py --strict-coverage",
-        "relevant cross-platform CI"
-      ],
-      "blocker": "Depends on completion of the eight thematic August 15 Grok adoption groups.",
-      "deadline": "2026-08-22",
-      "target": "before the next source refresh"
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+      "classification": "adopt",
+      "state": "closed",
+      "behavior": "Integrate the August 15 upstream crate graph, generated manifests, documentation, release-neutral tests, and CI portability supporting the associated behavior groups, plus the post-d6a22 memory telemetry, message anchors and input provenance, queue semantics, consent, worktree garbage collection, team environment, model-family, media-cap, resource-release, title/recap, interleaved-thinking, PTY-fold, session-info, expanded-output, yanked-prompt rewind, and goal-attempt behavior through 9fab.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-17-9fab.md",
+        "test:xai-grok-pager --lib (8576 passed; 10 ignored)",
+        "test:CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin"
+      ]
     },
     {
       "id": "GB-D6A2-RELEASE",
       "source_id": "grok-build-upstream",
-      "source_revision": "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e",
+      "source_revision": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Upstream SOURCE_REV, official xAI release metadata, CI publishing policy, and installer routes cannot replace fork-owned Enhanced release identities.",
