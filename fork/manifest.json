@@ -411,6 +411,22 @@
           "path": "docs/upstream-refresh-2026-08-07-afbc.md",
           "sha256": "475f59faa797c6eef70a27a53cac97970b510e3e9d86e02d025c411292880d1c"
         }
+      },
+      {
+        "source_id": "grok-build-upstream",
+        "commit": "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+        "tree": "668a9b611622a7571c7b86297bcc80838e5c02e3",
+        "reviewed_from": {
+          "commit": "afbc0fb710320c7add294c2106d447ecc3e3af2e",
+          "tree": "99e3e7c4d8a6c0214101c99e5cedded0325e96be"
+        },
+        "target_parents": [
+          "5163763e703c319e4554c2f455535c5adb6e51e8"
+        ],
+        "evidence": {
+          "path": "docs/upstream-refresh-2026-08-17-9fab.md",
+          "sha256": "37eb3152780c60a946f07b5ad0e0e151b0a954d8bc95bee7b074cbdf17bd6f5c"
+        }
       }
     ]
   },
@@ -6097,8 +6113,6 @@
         "crates/codegen/xai-grok-shell/src/session/persistence.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/mod.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_gate.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_gate_tests.rs",
         "crates/codegen/xai-grok-shell/src/session/testkit/synth/bench.rs",
         "crates/codegen/xai-grok-shell/src/session/testkit/synth/mod.rs",
         "crates/codegen/xai-grok-shell/src/tools/notification_bridge.rs",
@@ -6324,7 +6338,6 @@
         "crates/codegen/xai-grok-shell/src/session/storage/relocation/tests.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/replay.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/replay_tests.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_gate.rs",
         "crates/codegen/xai-grok-shell/src/util/config/hints.rs",
         "crates/codegen/xai-grok-shell/src/util/config/mcp.rs",
         "crates/codegen/xai-grok-shell/src/util/config/permissions.rs",
@@ -6402,7 +6415,6 @@
       ],
       "paths": [
         "Cargo.lock",
-        "LICENSE",
         "crates/codegen/xai-agent-lifecycle/src/lib.rs",
         "crates/codegen/xai-agent-lifecycle/src/local/contributors/turn_lifecycle.rs",
         "crates/codegen/xai-agent-lifecycle/src/send.rs",
@@ -6633,8 +6645,6 @@
         "crates/codegen/xai-grok-shell/src/session/storage/mod.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/search_content.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_gate.rs",
-        "crates/codegen/xai-grok-shell/src/session/storage/search_gate_tests.rs",
         "crates/codegen/xai-grok-shell/src/session/storage/summary_write.rs",
         "crates/codegen/xai-grok-shell/src/session/telemetry/mod.rs",
         "crates/codegen/xai-grok-shell/src/session/templates/goal_continuation_directive.md",
@@ -6709,7 +6719,6 @@
         "openai-codex"
       ],
       "paths": [
-        "LICENSE",
         "crates/codegen/xai-chat-state/src/actor/request_builder.rs",
         "crates/codegen/xai-grok-pager/src/app/actions.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/billing.rs",
@@ -6774,7 +6783,6 @@
         "exa-mcp-server"
       ],
       "paths": [
-        "LICENSE",
         "README.md",
         "UPSTREAM_VERSIONS.md",
         "docs/providers/zai-glm-coding-plan-integration-research.md",
