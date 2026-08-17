@@ -19,7 +19,7 @@ All 1,021 changed raw paths are classified. The 1,007 applicable paths are adopt
 
 The cumulative adoption covers the previously carried eb267 and d6a22 behavior groups plus the post-d6a22 integration through 9fab: memory telemetry, message anchors and input provenance, queue semantics, consent, worktree garbage collection, team environment propagation, model families, media caps, resource release, title and recap behavior, interleaved thinking, PTY folding, session information, expanded output, yanked-prompt rewind, and goal-attempt accounting. Credential and provider isolation remain downstream-owned security boundaries.
 
-Validated evidence includes the 8,576-test pager library suite, the production pager-bin check, and focused Codex metadata, safety, image-limit, thread-usage, and authoritative-usage rendering tests. The release campaign's final validation record adds the full shell suite and release contracts before acknowledgement.
+Validated evidence includes the 8,576-test pager library suite, the production pager-bin check, and focused Codex metadata, safety, image-limit, thread-usage, and authoritative-usage rendering tests. Final release validation also completed the shell library suite with 6,562 passed, zero failed, and nine credential- or subprocess-gated tests ignored. That campaign exposed and closed two integration gaps before the clean rerun: the Enhanced `/fast` command is now represented in the ordered ACP command fixture, and task-completion notifications again use the 32 KiB frame fitter for identical persisted and delivered copies. The fork checker suite passed all 80 tests, fork contracts passed, all five release-pipeline tests passed, and all 15 installer tests passed.
 
 ## Complete 1021 raw-path ledger
 
