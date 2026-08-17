@@ -41,7 +41,8 @@ note include:
 
 - model `glm-5.3` and explicit `glm-5.3[1m]` selection;
 - a 1,048,576-token context window and 131,072-token maximum output;
-- Coding Plan reasoning mappings to `low`, `high`, and `max`;
+- Coding Plan reasoning mappings to `low`, `high`, and `max`, with `max` as
+  the default and requests to disable thinking normalized to `low`;
 - the documented Codex, Anthropic-compatible, and other OpenAI-compatible
   Coding Plan base URLs;
 - Coding Plan input/cache/output credit multipliers; and

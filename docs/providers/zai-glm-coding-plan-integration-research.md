@@ -38,9 +38,10 @@ The documented compatibility surface is:
 - model ID `glm-5.3`, with `glm-5.3[1m]` as an optional explicit one-million-
   token-context selection;
 - a 1,048,576-token context window and 131,072-token maximum output;
-- reasoning levels `low`, `high`, and `max`, with Coding Plan's Codex mapping
-  treating minimal/light/low as low, medium/high as high, and
-  xhigh/max/ultra as max;
+- reasoning levels `low`, `high`, and `max`, defaulting to `max`, with Coding
+  Plan's Codex mapping treating minimal/light/low as low, medium/high as high,
+  and xhigh/max/ultra as max; disabling thinking is normalized to `low` rather
+  than turning reasoning off;
 - `https://api.z.ai/api/v1` for Codex-compatible clients,
   `https://api.z.ai/api/anthropic` for Anthropic-compatible clients, and
   `https://api.z.ai/api/coding/paas/v4` for other OpenAI-compatible clients;
