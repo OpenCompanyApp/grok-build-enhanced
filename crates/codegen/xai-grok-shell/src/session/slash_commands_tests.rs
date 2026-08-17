@@ -560,6 +560,7 @@ fn available_commands_orders_builtins_first() {
         names,
         [
             "compact",
+            "fast",
             "always-approve",
             "flush",
             "dream",

@@ -17,6 +17,7 @@ const TASK_WAKE_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::fr
 use crate::session::commands::SessionCommand;
 use crate::session::commands::{NotificationPriority, NotificationSource};
 use crate::session::persistence::{DurableAppendError, PersistenceHandle, PersistenceMsg};
+use crate::tools::task_completed_frame;
 use xai_grok_workspace::session::file_state::FileStateTracker;
 
 /// Configuration for the notification bridge.
@@ -657,17 +658,16 @@ async fn handle_notification(
                 notification.meta = meta_map.map(serde_json::Value::Object);
             }
 
-            // Persist so task completion history survives reconnect/replay.
-            let _ = config.persistence.tx.send(PersistenceMsg::Update(
-                crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
-            ));
-
-            let params = serde_json::to_value(&notification)
-                .and_then(|v| serde_json::value::to_raw_value(&v))
-                .ok();
-            if let Some(params) = params {
-                let notification: acp::ExtNotification =
-                    acp::ExtNotification::new("x.ai/task_completed", params.into());
+            if let Some(params) = task_completed_frame::encode(&mut notification) {
+                // Persist the fitted copy so reconnect/replay cannot restore a
+                // frame larger than the one originally sent to the client.
+                let _ = config.persistence.tx.send(PersistenceMsg::Update(
+                    crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
+                ));
+                let notification: acp::ExtNotification = acp::ExtNotification::new(
+                    task_completed_frame::METHOD,
+                    params.into_inner().into(),
+                );
                 config.gateway.forward_fire_and_forget(notification);
             }
 
