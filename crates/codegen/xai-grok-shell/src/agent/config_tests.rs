@@ -277,7 +277,7 @@ fn re_resolve_runtime_fields_refreshes_typed_memory_from_raw_config() {
         toml::from_str("[memory]\nenabled = true\n[memory.search]\nmax_results = 12").unwrap();
     let mut cfg = Config::new_from_toml_cfg(&initial).unwrap();
     cfg.memory_enabled_override = Some(true);
-    cfg.re_resolve_runtime_fields(&updated);
+    cfg.re_resolve_runtime_fields(&updated, None);
     assert_eq!(cfg.memory_config.unwrap().search.max_results, 12);
 }
 #[test]

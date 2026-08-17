@@ -1904,6 +1904,7 @@ mod compacted_history_shape_tests {
         let state_context = CompactionStateContext {
             cwd_generation: 0,
             destination_project_instructions: None,
+            agent_message_anchor: None,
             recent_messages: vec![],
             last_user_query: Some("fix the bug".to_string()),
             agent_edited_paths: vec!["src/main.rs".to_string()],
@@ -2116,6 +2117,7 @@ mod compacted_history_shape_tests {
         let original = CompactionStateContext {
             cwd_generation: 0,
             destination_project_instructions: None,
+            agent_message_anchor: None,
             recent_messages: vec![ConversationItem::assistant("working")],
             last_user_query: Some("fix the bug".to_string()),
             agent_edited_paths: vec!["src/main.rs".to_string()],
@@ -2145,6 +2147,7 @@ mod compacted_history_shape_tests {
         let fallback = CompactionStateContext {
             cwd_generation: original.cwd_generation,
             destination_project_instructions: original.destination_project_instructions.clone(),
+            agent_message_anchor: original.agent_message_anchor.clone(),
             recent_messages: vec![],
             last_user_query: original.last_user_query.clone(),
             agent_edited_paths: original.agent_edited_paths.clone(),

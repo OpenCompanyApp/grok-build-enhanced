@@ -34,6 +34,7 @@ impl crate::auth::refresh::TokenRefresher for WakeGapRefresher {
         if self.fail_pre_request && reason == crate::auth::refresh::RefreshReason::PreRequest {
             return crate::auth::refresh::RefreshOutcome::TransientFailure {
                 message: "simulated post-wake network gap".to_string(),
+                suspect_consumed_rt: None,
             };
         }
         crate::auth::refresh::RefreshOutcome::success(GrokAuth {

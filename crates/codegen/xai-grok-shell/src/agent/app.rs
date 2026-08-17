@@ -911,17 +911,37 @@ fn spawn_leader_relay(
     agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Rc<std::cell::RefCell<Option<crate::agent::relay::RelayHandle>>> {
-    use crate::agent::relay::spawn_relay_connection;
-
     let slot: Rc<std::cell::RefCell<Option<crate::agent::relay::RelayHandle>>> =
         Rc::new(std::cell::RefCell::new(None));
+    spawn_leader_relay_into(
+        slot.clone(),
+        relay_config,
+        relay_on_demand,
+        relay_demand_rx,
+        ws_to_agent_tx,
+        agent_to_ws_tx,
+        cancel,
+    );
+    slot
+}
+
+fn spawn_leader_relay_into(
+    slot: Rc<std::cell::RefCell<Option<crate::agent::relay::RelayHandle>>>,
+    relay_config: crate::agent::relay::RelayConfig,
+    relay_on_demand: bool,
+    mut relay_demand_rx: tokio::sync::watch::Receiver<bool>,
+    ws_to_agent_tx: mpsc::UnboundedSender<String>,
+    agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    use crate::agent::relay::spawn_relay_connection;
 
     if !relay_on_demand {
         info!("Starting relay connection (eager)");
         let (tx, handle) = spawn_relay_connection(relay_config, ws_to_agent_tx, cancel);
         *agent_to_ws_tx.lock() = Some(tx);
         *slot.borrow_mut() = Some(handle);
-        return slot;
+        return;
     }
 
     let slot_for_task = slot.clone();
@@ -948,7 +968,44 @@ fn spawn_leader_relay(
         *agent_to_ws_tx.lock() = Some(tx);
         *slot_for_task.borrow_mut() = Some(handle);
     });
-    slot
+}
+
+/// Parts retained when a leader starts without relay-eligible authentication.
+/// The config watcher consumes them only after an eligible xAI session is
+/// hot-reloaded, preserving the same shutdown-owned handle slot.
+struct DeferredRelayArm {
+    relay_on_demand: bool,
+    relay_demand_rx: tokio::sync::watch::Receiver<bool>,
+    ws_to_agent_tx: mpsc::UnboundedSender<String>,
+    agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    cancel: tokio_util::sync::CancellationToken,
+    slot: Rc<std::cell::RefCell<Option<crate::agent::relay::RelayHandle>>>,
+    grok_com_config: crate::auth::GrokComConfig,
+    alpha_test_key: Option<String>,
+}
+
+impl DeferredRelayArm {
+    fn arm_if_eligible(self, session: &GrokAuth, auth_manager: &Arc<AuthManager>) -> Option<Self> {
+        let Some(relay_config) = crate::agent::relay::RelayConfig::for_session(
+            session,
+            &self.grok_com_config,
+            self.alpha_test_key.clone(),
+            Some(auth_manager.clone()),
+        ) else {
+            return Some(self);
+        };
+        info!("Relay-eligible auth token appeared after startup; arming grok.com relay");
+        spawn_leader_relay_into(
+            self.slot,
+            relay_config,
+            self.relay_on_demand,
+            self.relay_demand_rx,
+            self.ws_to_agent_tx,
+            self.agent_to_ws_tx,
+            self.cancel,
+        );
+        None
+    }
 }
 
 /// Run the agent in leader mode, accepting IPC connections from multiple clients.
@@ -1450,19 +1507,35 @@ pub async fn run_leader(
             // connect unconditionally. Leaders auto-spawned by interactive
             // clients pass `relay_on_demand` and defer the WebSocket until the
             // first headless registration. See `spawn_leader_relay`.
-            let relay_handle_slot = if let Some(relay_config) = relay_config {
-                spawn_leader_relay(
+            let relay_handle_slot: Rc<
+                std::cell::RefCell<Option<crate::agent::relay::RelayHandle>>,
+            > = Rc::new(std::cell::RefCell::new(None));
+            let deferred_relay_arm = Rc::new(std::cell::RefCell::new(None));
+            if let Some(relay_config) = relay_config {
+                spawn_leader_relay_into(
+                    relay_handle_slot.clone(),
                     relay_config,
                     relay_on_demand,
                     relay_demand_rx,
                     ws_to_agent_tx.clone(),
                     agent_to_ws_tx.clone(),
                     cancel_clone.clone(),
-                )
+                );
             } else {
-                info!("Relay disabled: no grok.com session token (BYOK / local-only leader)");
-                Rc::new(std::cell::RefCell::new(None))
-            };
+                info!(
+                    "Relay not started: no grok.com session token; waiting for eligible hot-reload"
+                );
+                *deferred_relay_arm.borrow_mut() = Some(DeferredRelayArm {
+                    relay_on_demand,
+                    relay_demand_rx,
+                    ws_to_agent_tx: ws_to_agent_tx.clone(),
+                    agent_to_ws_tx: agent_to_ws_tx.clone(),
+                    cancel: cancel_clone.clone(),
+                    slot: relay_handle_slot.clone(),
+                    grok_com_config: agent_config.grok_com_config.clone(),
+                    alpha_test_key: agent_config.endpoints.alpha_test_key.clone(),
+                });
+            }
 
             // Spawn auto-update checker if configured.
             let update_cancel = cancel_clone.clone();
@@ -1588,7 +1661,18 @@ pub async fn run_leader(
                                     "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
                                 })),
                             );
+                            let session_for_relay = deferred_relay_arm
+                                .borrow()
+                                .is_some()
+                                .then(|| (*auth).clone());
                             auth_manager_for_config.hot_swap(*auth);
+                            if let (Some(arm), Some(session)) = (
+                                deferred_relay_arm.borrow_mut().take(),
+                                session_for_relay,
+                            ) {
+                                *deferred_relay_arm.borrow_mut() = arm
+                                    .arm_if_eligible(&session, &auth_manager_for_config);
+                            }
                             models_manager_for_config.on_auth_changed().await;
                             let line = internal_reload_request_line(
                                 "config-auth-reloaded",

@@ -1861,6 +1861,7 @@ mod tests {
             ) -> crate::auth::refresh::RefreshOutcome {
                 crate::auth::refresh::RefreshOutcome::TransientFailure {
                     message: "noop".into(),
+                    suspect_consumed_rt: None,
                 }
             }
         }

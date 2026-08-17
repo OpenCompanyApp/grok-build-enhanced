@@ -5994,6 +5994,7 @@ mod tests {
             id: id.map(|s| s.to_owned()),
             provider: xai_grok_sampling_types::ProviderId::Xai,
             model: model.to_owned(),
+            model_family: None,
             base_url: "https://test.api/v1".to_owned(),
             name: name.map(|n| n.to_owned()),
             description: None,

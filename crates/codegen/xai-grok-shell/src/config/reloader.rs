@@ -730,8 +730,7 @@ mod tests {
                 "https://test.example.com".to_owned(),
                 None,
                 tx,
-                false,
-                false,
+                None,
             ),
             rx,
         )

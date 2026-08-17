@@ -352,6 +352,10 @@ fn persist_ack_waits_for_disk_flush_before_success() {
                             turn_summary_task: std::cell::RefCell::new(None),
                             turn_summary_generation: std::cell::Cell::new(0),
                             turn_summary_enabled: false,
+                            title_refresh_task: std::cell::RefCell::new(None),
+                            title_refresh_generation: std::cell::Cell::new(0),
+                            title_refresh_enabled: false,
+                            next_title_refresh_idx: std::cell::Cell::new(0),
                             session_turn_active: std::sync::Arc::new(
                                 std::sync::atomic::AtomicBool::new(false),
                             ),

@@ -1482,7 +1482,9 @@ async fn restore_effort_via_load(
         crate::session::persistence::Summary::new(&info, acp::ModelId::new("effort-model"))
             .unwrap();
     summary.reasoning_effort = persisted;
-    agent.restore_persisted_model(&sid, &summary, initial).await;
+    agent
+        .restore_persisted_model(&sid, &summary, None, initial)
+        .await;
     agent.resident_handle(&sid).and_then(|h| h.reasoning_effort)
 }
 #[tokio::test]
