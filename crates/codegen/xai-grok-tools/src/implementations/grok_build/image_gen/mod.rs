@@ -53,6 +53,7 @@ const MAX_IMAGE_RESPONSE_BODY_BYTES: usize = 48 * 1024 * 1024;
 const MAX_GENERATED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_GENERATED_IMAGE_PIXELS: u64 = 40_000_000;
 const MAX_GENERATED_IMAGE_DIMENSION: u32 = 8192;
+const MAX_CODEX_IMAGE_ERROR_BODY_BYTES: usize = 16 * 1024;
 pub const CODEX_IMAGE_TURN_CONTEXT_FIELD: &str = "_grok_codex_image_turn";
 const X_CODEX_IMAGE_TURN_ID_HEADER: &str = "x-codex-image-turn-id";
 const MAX_CODEX_IMAGE_TURN_ID_BYTES: usize = 256;
@@ -530,6 +531,75 @@ impl ImageGenClient {
         details
     }
 
+    async fn image_http_failure(
+        &self,
+        mut response: reqwest::Response,
+    ) -> xai_tool_runtime::ToolError {
+        let status = response.status();
+        if self.backend != ImageGenBackend::OpenAiCodex
+            || status != reqwest::StatusCode::TOO_MANY_REQUESTS
+            || response
+                .headers()
+                .get("x-codex-active-limit")
+                .and_then(|value| value.to_str().ok())
+                != Some("image_gen")
+        {
+            return xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Custom,
+                format!("Image generation failed with HTTP {status}"),
+            )
+            .with_details(self.http_failure_details(status));
+        }
+
+        let header_reset_at = response
+            .headers()
+            .get("x-image-gen-primary-reset-at")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|value| *value >= 0);
+        let mut body = Vec::new();
+        while let Ok(Some(chunk)) = response.chunk().await {
+            if body.len().saturating_add(chunk.len()) > MAX_CODEX_IMAGE_ERROR_BODY_BYTES {
+                body.clear();
+                break;
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let payload = serde_json::from_slice::<serde_json::Value>(&body).ok();
+        let usage_limited = payload
+            .as_ref()
+            .and_then(|value| value.pointer("/error/type"))
+            .and_then(serde_json::Value::as_str)
+            == Some("usage_limit_reached");
+        if !usage_limited {
+            return xai_tool_runtime::ToolError::new(
+                xai_tool_runtime::ToolErrorKind::Custom,
+                format!("Image generation failed with HTTP {status}"),
+            )
+            .with_details(self.http_failure_details(status));
+        }
+
+        let reset_at = payload
+            .as_ref()
+            .and_then(|value| value.pointer("/error/resets_at"))
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| *value >= 0)
+            .or(header_reset_at);
+        let mut details = serde_json::json!({
+            "code": "usage_limit_reached",
+            "status": status.as_u16(),
+            "limit_name": "image_gen",
+        });
+        if let Some(reset_at) = reset_at {
+            details["resets_at"] = serde_json::Value::from(reset_at);
+        }
+        xai_tool_runtime::ToolError::new(
+            xai_tool_runtime::ToolErrorKind::Custom,
+            "Codex image generation usage limit reached.",
+        )
+        .with_details(details)
+    }
+
     pub async fn generate(
         &self,
         prompt: &str,
@@ -561,11 +631,7 @@ impl ImageGenClient {
         let status = response.status();
         if !status.is_success() {
             tracing::warn!(http_status = %status, "image provider generation request failed");
-            return Err(xai_tool_runtime::ToolError::new(
-                xai_tool_runtime::ToolErrorKind::Custom,
-                format!("Image generation failed with HTTP {status}"),
-            )
-            .with_details(self.http_failure_details(status)));
+            return Err(self.image_http_failure(response).await);
         }
 
         let resp_json = read_image_response(response).await?;
@@ -1890,6 +1956,114 @@ mod tests {
             server.received_requests().await.unwrap().len(),
             1,
             "a provider that cannot recover must not replay"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_image_usage_limit_is_typed_bounded_and_redacted() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let reflected = "Bearer must-not-escape selected-account";
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("x-codex-active-limit", "image_gen")
+                    .insert_header("x-image-gen-primary-reset-at", "1786150800")
+                    .set_body_json(serde_json::json!({
+                        "error": {
+                            "type": "usage_limit_reached",
+                            "message": reflected,
+                            "resets_at": 1786150800,
+                            "plan_type": "private-plan"
+                        }
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let config = ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: SharedApiKeyProvider = Arc::new(CodexTestAuth);
+        let error = ImageGenClient::new(&config, Some(provider))
+            .unwrap()
+            .generate(
+                "a lighthouse",
+                "auto",
+                Some(&CodexImageTurnContext {
+                    turn_id: "turn-image-limit".to_owned(),
+                }),
+            )
+            .await
+            .expect_err("image quota exhaustion must surface");
+
+        assert_eq!(error.detail, "Codex image generation usage limit reached.");
+        let rendered = format!("{error:?} {error}");
+        assert!(!rendered.contains(reflected));
+        assert!(!rendered.contains("private-plan"));
+        let details = error.details.expect("typed quota details");
+        assert_eq!(
+            details.get("code"),
+            Some(&serde_json::json!("usage_limit_reached"))
+        );
+        assert_eq!(
+            details.get("limit_name"),
+            Some(&serde_json::json!("image_gen"))
+        );
+        assert_eq!(
+            details.get("resets_at"),
+            Some(&serde_json::json!(1786150800_i64))
+        );
+    }
+
+    #[tokio::test]
+    async fn non_image_or_non_codex_429_remains_generic() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("x-codex-active-limit", "codex")
+                    .set_body_json(serde_json::json!({
+                        "error": {"type": "usage_limit_reached", "resets_at": 1}
+                    })),
+            )
+            .mount(&server)
+            .await;
+        let config = ImageGenConfig::OpenAiCodex {
+            base_url: server.uri(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+        };
+        let provider: SharedApiKeyProvider = Arc::new(CodexTestAuth);
+        let error = ImageGenClient::new(&config, Some(provider))
+            .unwrap()
+            .generate(
+                "a lighthouse",
+                "auto",
+                Some(&CodexImageTurnContext {
+                    turn_id: "turn-other-limit".to_owned(),
+                }),
+            )
+            .await
+            .expect_err("non-image quota must stay generic");
+        assert_eq!(
+            error.detail,
+            "Image generation failed with HTTP 429 Too Many Requests"
+        );
+        assert_eq!(
+            error
+                .details
+                .and_then(|details| details.get("code").cloned()),
+            Some(serde_json::json!("http_failure"))
         );
     }
 
