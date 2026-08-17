@@ -12,12 +12,14 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 
 /// Identity of a media file's contents at load time, keying the failed-load
-/// negative cache. On Unix, inode + ctime also catch a same-length in-place
-/// rewrite whose mtime is too coarse to move.
+/// negative cache. On Unix, inode + ctime catch most same-length in-place
+/// rewrites whose mtime is too coarse to move. The bounded prefix probe also
+/// covers filesystems whose ctime has the same coarse resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MediaFileStamp {
     len: u64,
     modified: std::time::SystemTime,
+    prefix_probe: u64,
     #[cfg(unix)]
     ino: u64,
     #[cfg(unix)]
@@ -28,8 +30,17 @@ impl MediaFileStamp {
     /// `None` when the platform reports no mtime: a `(len, no-mtime)` marker
     /// would match every future rewrite of the same length, so such failures
     /// are never negative-cached (the load is retried instead).
-    fn from_metadata(meta: &std::fs::Metadata) -> Option<Self> {
+    fn from_path_and_metadata(path: &std::path::Path, meta: &std::fs::Metadata) -> Option<Self> {
+        use std::hash::{Hash, Hasher};
+        use std::io::Read;
+
         let modified = meta.modified().ok()?;
+        let mut prefix = [0_u8; 4096];
+        let mut file = std::fs::File::open(path).ok()?;
+        let prefix_len = file.read(&mut prefix).ok()?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        prefix[..prefix_len].hash(&mut hasher);
+        let prefix_probe = hasher.finish();
         #[cfg(unix)]
         let (ino, ctime) = {
             use std::os::unix::fs::MetadataExt;
@@ -38,6 +49,7 @@ impl MediaFileStamp {
         Some(Self {
             len: meta.len(),
             modified,
+            prefix_probe,
             #[cfg(unix)]
             ino,
             #[cfg(unix)]
@@ -158,7 +170,7 @@ impl AgentView {
             // caught mid-write self-heals; a genuinely broken one doesn't
             // re-run decode/extraction every frame. No stamp (no mtime) means
             // no change signal: never negative-cache, keep retrying.
-            let stamp = MediaFileStamp::from_metadata(&meta);
+            let stamp = MediaFileStamp::from_path_and_metadata(path, &meta);
             if let Some(stamp) = stamp
                 && self.inline_media_load_failed.get(path) == Some(&stamp)
             {

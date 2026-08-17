@@ -158,6 +158,10 @@
         use crate::app::app_view::InputOutcome;
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+        // This race belongs to the leader-owned shared queue. Make that
+        // routing precondition explicit instead of inheriting the
+        // process-global follow-up behavior from an unrelated test.
+        app.leader_mode = true;
         {
             let agent = app.agents.get_mut(&AgentId(0)).unwrap();
             agent.session.state = crate::app::agent::AgentState::TurnRunning;
@@ -652,6 +656,7 @@
         use crate::app::actions::{Action, Effect, TaskResult};
 
         let mut app = make_app_with_agent("sess-1");
+        app.leader_mode = true;
         let id = AgentId(0);
 
         // p1: idle submit → drains locally, turn running.
@@ -764,6 +769,7 @@
         }
 
         let mut app = make_app_with_agent("sess-1");
+        app.leader_mode = true;
         let id = AgentId(0);
 
         // p1 from idle; its echo consumes the armed skip, so the 2nd handoff
