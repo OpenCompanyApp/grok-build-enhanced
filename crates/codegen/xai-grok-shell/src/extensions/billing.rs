@@ -116,6 +116,10 @@ pub struct BillingConfigResponse {
     /// provider or a Codex-backed session. Never populated on the xAI path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_usage: Option<crate::auth::codex::CodexUsageSnapshot>,
+    /// Authoritative estimated totals for the active Codex thread. Absent for
+    /// pre-session requests and accounts where the endpoint is unsupported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_thread_usage: Option<crate::auth::codex::CodexThreadUsage>,
     /// Authoritative Kimi Code plan limits for a Kimi-backed session. Never
     /// populated on xAI or Codex paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -304,6 +308,32 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
                 }),
             _ => None,
         };
+        let codex_thread_usage = match (request.session_id.as_ref(), session_sampling.as_ref()) {
+            (Some(session_id), Some(sampling)) => {
+                let expected_binding = sampling.credential_binding.as_ref().ok_or_else(|| {
+                    acp::Error::auth_required().data(
+                        "OpenAI Codex session credential binding is unavailable; restart or select the model again",
+                    )
+                })?;
+                match crate::auth::codex::fetch_codex_thread_usage_for_session(
+                    &manager,
+                    expected_binding,
+                    session_id.0.as_ref(),
+                )
+                .await
+                {
+                    Ok(usage) => usage,
+                    Err(_) => {
+                        // Thread usage is an optional authoritative supplement.
+                        // Never include a thread/account identifier or upstream
+                        // body in diagnostics, and keep plan usage available.
+                        tracing::warn!("billing: OpenAI Codex thread usage is unavailable");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
 
         // Do not log the usage snapshot, account identity, or API-equivalent
         // estimate. The response is rendered only for the requesting client.
@@ -311,6 +341,7 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
         return to_raw_response(&BillingConfigResponse {
             config: None,
             codex_usage: Some(codex_usage),
+            codex_thread_usage,
             kimi_usage: None,
             codex_api_equivalent_cost,
             on_demand_enabled: None,
@@ -366,6 +397,7 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
         return to_raw_response(&BillingConfigResponse {
             config: None,
             codex_usage: None,
+            codex_thread_usage: None,
             kimi_usage: Some(kimi_usage),
             codex_api_equivalent_cost: None,
             on_demand_enabled: None,
@@ -381,6 +413,7 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
         return to_raw_response(&BillingConfigResponse {
             config: None,
             codex_usage: None,
+            codex_thread_usage: None,
             kimi_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: None,
@@ -678,6 +711,7 @@ mod tests {
                 ],
             }),
             codex_usage: None,
+            codex_thread_usage: None,
             kimi_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: Some(true),
@@ -726,6 +760,7 @@ mod tests {
         let resp = BillingConfigResponse {
             config: Some(config),
             codex_usage: None,
+            codex_thread_usage: None,
             kimi_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: None,

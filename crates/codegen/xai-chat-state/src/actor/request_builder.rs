@@ -106,6 +106,8 @@ impl ChatStateActor {
             x_grok_agent_id: None,
             x_grok_deployment_id: None,
             x_grok_user_id: None,
+            codex_sandbox_mode: None,
+            codex_root_turn_id: None,
             trace,
             prompt_cache_key: None,
             reasoning_effort: self.state.sampling_config.reasoning_effort,

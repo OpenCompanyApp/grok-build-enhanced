@@ -102,6 +102,7 @@ fn completed_event(request_id: &RequestId) -> SamplingEvent {
             raw_stop_reason: None,
             stop_sequence: None,
             provider_end_turn: Some(false),
+            provider_safety_buffering: None,
         }),
         metrics: InferenceLatencyStats::default(),
     }

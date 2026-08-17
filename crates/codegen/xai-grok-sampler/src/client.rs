@@ -1508,6 +1508,7 @@ impl SamplingClient {
             || compact.contains("clientidentifier")
             || lower == "x-openai-fedramp"
             || lower == CODEX_TURN_STATE_HEADER
+            || lower == codex_headers::CODEX_TURN_METADATA_HEADER
     }
 
     /// Mark every credential- or identity-like value sensitive at the HTTP
@@ -2420,6 +2421,15 @@ impl SamplingClient {
         // it in post-serialize. This is the last surviving piece of the
         // old raw_output machinery.
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        let codex_turn_metadata = codex_responses::apply_codex_turn_metadata(
+            self.defaults.provider,
+            request.x_grok_session_id.as_deref(),
+            request.x_grok_conv_id.as_deref(),
+            request.x_grok_req_id.as_deref(),
+            request.codex_root_turn_id.as_deref(),
+            request.codex_sandbox_mode.as_deref(),
+            &mut request_body,
+        )?;
         let grok_headers = GrokRequestHeaders {
             conv_id: x_grok_conv_id,
             req_id: x_grok_req_id,
@@ -2436,9 +2446,19 @@ impl SamplingClient {
         let prepared = self.post(self.endpoint("responses")).await?;
         let request_sent_credential = prepared.sent_credential;
         let request_credential = prepared.credential_binding;
-        let http_request = self
-            .apply_provider_request_headers(prepared.builder, &grok_headers)?
-            .json(&request_body);
+        let mut http_request =
+            self.apply_provider_request_headers(prepared.builder, &grok_headers)?;
+        if let Some(metadata) = codex_turn_metadata {
+            let mut value = HeaderValue::from_bytes(metadata.as_bytes()).map_err(|_| {
+                SamplingError::InvalidConfiguration("Codex turn metadata was not a valid header")
+            })?;
+            value.set_sensitive(true);
+            http_request = http_request.header(
+                HeaderName::from_static(codex_headers::CODEX_TURN_METADATA_HEADER),
+                value,
+            );
+        }
+        let http_request = http_request.json(&request_body);
 
         let response = http_request
             .send()
@@ -2617,6 +2637,15 @@ impl SamplingClient {
         )?;
         append_response_includes(&mut request_body, &self.defaults.extra_response_includes);
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        let codex_turn_metadata = codex_responses::apply_codex_turn_metadata(
+            self.defaults.provider,
+            request.x_grok_session_id.as_deref(),
+            request.x_grok_conv_id.as_deref(),
+            request.x_grok_req_id.as_deref(),
+            request.codex_root_turn_id.as_deref(),
+            request.codex_sandbox_mode.as_deref(),
+            &mut request_body,
+        )?;
         let grok_headers = GrokRequestHeaders {
             conv_id: x_grok_conv_id,
             req_id: x_grok_req_id,
@@ -2646,6 +2675,16 @@ impl SamplingClient {
         let mut http_request = self
             .apply_provider_request_headers(prepared.builder, &grok_headers)?
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        if let Some(metadata) = codex_turn_metadata {
+            let mut value = HeaderValue::from_bytes(metadata.as_bytes()).map_err(|_| {
+                SamplingError::InvalidConfiguration("Codex turn metadata was not a valid header")
+            })?;
+            value.set_sensitive(true);
+            http_request = http_request.header(
+                HeaderName::from_static(codex_headers::CODEX_TURN_METADATA_HEADER),
+                value,
+            );
+        }
         if doom_loop.is_some()
             && self.defaults.provider == ProviderId::Xai
             && self.defaults.xai_trusted_origin
@@ -3443,6 +3482,8 @@ impl SamplingClient {
         let x_grok_session_id = request.x_grok_session_id.clone();
         let x_grok_turn_idx = request.x_grok_turn_idx.clone();
         let x_grok_agent_id = request.x_grok_agent_id.clone();
+        let codex_sandbox_mode = request.codex_sandbox_mode.clone();
+        let codex_root_turn_id = request.codex_root_turn_id.clone();
         let wire_reasoning_effort = request.reasoning_effort;
 
         // The hosted tools travel as raw JSON, spliced in after serialization by
@@ -3462,6 +3503,8 @@ impl SamplingClient {
         wrapper.x_grok_session_id = x_grok_session_id;
         wrapper.x_grok_turn_idx = x_grok_turn_idx;
         wrapper.x_grok_agent_id = x_grok_agent_id;
+        wrapper.codex_sandbox_mode = codex_sandbox_mode;
+        wrapper.codex_root_turn_id = codex_root_turn_id;
         wrapper.extra_tool_entries = extra_tools;
         wrapper.wire_reasoning_effort = wire_reasoning_effort;
 
@@ -3499,6 +3542,8 @@ impl SamplingClient {
         let x_grok_session_id = request.x_grok_session_id.clone();
         let x_grok_turn_idx = request.x_grok_turn_idx.clone();
         let x_grok_agent_id = request.x_grok_agent_id.clone();
+        let codex_sandbox_mode = request.codex_sandbox_mode.clone();
+        let codex_root_turn_id = request.codex_root_turn_id.clone();
         let wire_reasoning_effort = request.reasoning_effort;
 
         // Keep non-streaming Responses on the same request-copy capability
@@ -3515,6 +3560,8 @@ impl SamplingClient {
         wrapper.x_grok_session_id = x_grok_session_id;
         wrapper.x_grok_turn_idx = x_grok_turn_idx;
         wrapper.x_grok_agent_id = x_grok_agent_id;
+        wrapper.codex_sandbox_mode = codex_sandbox_mode;
+        wrapper.codex_root_turn_id = codex_root_turn_id;
         wrapper.wire_reasoning_effort = wire_reasoning_effort;
         wrapper.extra_tool_entries = extra_tools;
 

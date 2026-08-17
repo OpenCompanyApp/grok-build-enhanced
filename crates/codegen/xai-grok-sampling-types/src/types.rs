@@ -1182,6 +1182,11 @@ pub struct CreateResponseWrapper {
     pub x_grok_deployment_id: Option<String>,
     pub x_grok_user_id: Option<String>,
 
+    /// Provider-scoped Codex turn metadata retained outside the public
+    /// Responses request schema until final serialization.
+    pub codex_sandbox_mode: Option<String>,
+    pub codex_root_turn_id: Option<String>,
+
     /// Optional tracing context (e.g., where to persist the finalized request payload).
     pub trace: Option<Box<dyn TraceContext>>,
 
@@ -1209,6 +1214,8 @@ impl CreateResponseWrapper {
             x_grok_agent_id: None,
             x_grok_deployment_id: None,
             x_grok_user_id: None,
+            codex_sandbox_mode: None,
+            codex_root_turn_id: None,
             trace: None,
             extra_tool_entries: vec![],
             wire_reasoning_effort: None,

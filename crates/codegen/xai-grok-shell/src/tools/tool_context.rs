@@ -145,6 +145,10 @@ pub struct ToolContext {
     pub cwd: AbsPathBuf,
     pub file_state_handle: Option<FileStateHandle>,
     pub session_env: Arc<HashMap<String, String>>,
+    /// Process-local Codex causal root for this session. Top-level turns
+    /// replace it with their request id; child sessions inherit the exact
+    /// parent root without exposing it to subprocess environments or history.
+    pub(crate) codex_root_turn_id: Arc<parking_lot::Mutex<Option<String>>>,
     pub hunk_tracker_handle: HunkTrackerHandle,
     /// Whether hunk tracking is active for this session. `false` when the
     /// resolved mode is `off`/`disabled` — `hunk_tracker_handle` is then a
@@ -287,6 +291,7 @@ impl ToolContext {
             cwd,
             file_state_handle: None,
             session_env: Arc::new(session_env),
+            codex_root_turn_id: Arc::new(parking_lot::Mutex::new(None)),
             hunk_tracker_handle,
             hunk_tracking_enabled: true,
             prompt_index: Arc::new(tokio::sync::Mutex::new(0)),
@@ -379,6 +384,7 @@ mod tests {
                 cwd,
                 file_state_handle: None,
                 session_env: Arc::new(HashMap::new()),
+                codex_root_turn_id: Arc::new(parking_lot::Mutex::new(None)),
                 hunk_tracker_handle: HunkTrackerHandle::noop(),
                 hunk_tracking_enabled: true,
                 prompt_index: Arc::new(tokio::sync::Mutex::new(0)),

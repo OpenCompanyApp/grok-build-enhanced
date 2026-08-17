@@ -40,8 +40,9 @@ pub use request_auth::{CodexAuthSnapshot, CodexAuthSnapshotError};
 pub use storage::CodexCredentialStore;
 pub use usage::{
     CodexAdditionalRateLimit, CodexCreditStatus, CodexRateLimit, CodexRateLimitReachedType,
-    CodexResetCredits, CodexSpendControl, CodexSpendControlLimit, CodexUsageError,
-    CodexUsageSnapshot, CodexUsageWindow, fetch_codex_usage, fetch_codex_usage_for_current,
+    CodexResetCredits, CodexSpendControl, CodexSpendControlLimit, CodexThreadUsage,
+    CodexThreadUsageGroup, CodexUsageError, CodexUsageSnapshot, CodexUsageWindow,
+    fetch_codex_thread_usage_for_session, fetch_codex_usage, fetch_codex_usage_for_current,
     fetch_codex_usage_for_session,
 };
 

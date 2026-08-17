@@ -774,6 +774,10 @@ pub(crate) fn stream_responses_tracked<'a>(
             .is_openai_codex()
             .then(|| codex_responses::take_end_turn(&mut response))
             .flatten();
+        let provider_safety_buffering = provider
+            .is_openai_codex()
+            .then(|| codex_responses::take_safety_buffering(&mut response))
+            .flatten();
 
         let status = response.status.clone();
 
@@ -843,6 +847,7 @@ pub(crate) fn stream_responses_tracked<'a>(
             raw_stop_reason: None,
             stop_sequence: None,
             provider_end_turn,
+            provider_safety_buffering,
         };
 
         yield SamplingEvent::Completed {

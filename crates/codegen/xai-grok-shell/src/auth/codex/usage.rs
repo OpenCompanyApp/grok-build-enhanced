@@ -104,6 +104,49 @@ pub struct CodexUsageSnapshot {
     pub rate_limit_reset_credits: Option<CodexResetCredits>,
 }
 
+/// Authoritative subscription usage for one Codex thread, expressed in
+/// integer millionths exactly as reported by the ChatGPT backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexThreadUsage {
+    pub thread_id: String,
+    pub estimated_usage_credits_micros: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_usage_usd_micros: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<CodexThreadUsageGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexThreadUsageGroup {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+    pub estimated_usage_credits_micros: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_new_input_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct CodexThreadUsageRequest<'a> {
+    thread_ids: [&'a str; 1],
+}
+
+#[derive(Deserialize)]
+struct CodexThreadUsageResponse {
+    threads: Vec<CodexThreadUsage>,
+}
+
 impl CodexUsageSnapshot {
     pub fn highest_used_percent(&self) -> Option<f64> {
         self.rate_limit
@@ -214,6 +257,10 @@ fn codex_usage_http_client_builder() -> reqwest::ClientBuilder {
 /// Refusing redirects here keeps the complete provider-auth snapshot bound to
 /// the one exact URL selected by this module.
 async fn codex_usage_http_client() -> Result<reqwest::Client, CodexUsageError> {
+    codex_usage_http_client_for_url(OPENAI_CODEX_USAGE_URL).await
+}
+
+async fn codex_usage_http_client_for_url(url: &str) -> Result<reqwest::Client, CodexUsageError> {
     static CLIENTS: std::sync::OnceLock<xai_grok_provider_http::OpenAiCodexClientPool> =
         std::sync::OnceLock::new();
     CLIENTS
@@ -223,7 +270,7 @@ async fn codex_usage_http_client() -> Result<reqwest::Client, CodexUsageError> {
                 codex_usage_http_client_builder,
             )
         })
-        .client_for_url(OPENAI_CODEX_USAGE_URL)
+        .client_for_url(url)
         .await
         .map_err(|_| CodexUsageError::ProxyRoute)
 }
@@ -704,6 +751,126 @@ pub async fn fetch_codex_usage_for_session(
         cache,
     )
     .await
+}
+
+const MAX_THREAD_USAGE_BODY_BYTES: usize = 1024 * 1024;
+const MAX_THREAD_USAGE_GROUPS: usize = 128;
+const MAX_THREAD_USAGE_LABEL_BYTES: usize = 128;
+
+fn valid_thread_usage(usage: &CodexThreadUsage, requested_thread: &str) -> bool {
+    fn valid_optional_number(value: Option<i64>) -> bool {
+        value.is_none_or(|value| value >= 0)
+    }
+    fn valid_label(value: Option<&str>) -> bool {
+        value.is_none_or(|value| {
+            !value.is_empty()
+                && value.len() <= MAX_THREAD_USAGE_LABEL_BYTES
+                && !value.chars().any(char::is_control)
+        })
+    }
+
+    usage.thread_id == requested_thread
+        && usage.estimated_usage_credits_micros >= 0
+        && valid_optional_number(usage.estimated_usage_usd_micros)
+        && usage.groups.len() <= MAX_THREAD_USAGE_GROUPS
+        && usage.groups.iter().all(|group| {
+            group.estimated_usage_credits_micros >= 0
+                && valid_label(group.model.as_deref())
+                && valid_label(group.reasoning_effort.as_deref())
+                && valid_label(group.speed.as_deref())
+                && valid_optional_number(group.net_new_input_tokens)
+                && valid_optional_number(group.cached_input_tokens)
+                && valid_optional_number(group.input_tokens)
+                && valid_optional_number(group.output_tokens)
+                && valid_optional_number(group.total_tokens)
+        })
+}
+
+async fn bounded_thread_usage_body(
+    mut response: reqwest::Response,
+) -> Result<Vec<u8>, CodexUsageError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(CodexUsageError::Transport)? {
+        if body.len().saturating_add(chunk.len()) > MAX_THREAD_USAGE_BODY_BYTES {
+            return Err(CodexUsageError::InvalidResponse);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn fetch_codex_thread_usage_from_url<A: UsageAuthProvider + ?Sized>(
+    client: &reqwest::Client,
+    auth_provider: &A,
+    url: &str,
+    expected: &CredentialBinding,
+    thread_id: &str,
+) -> Result<Option<CodexThreadUsage>, CodexUsageError> {
+    if uuid::Uuid::parse_str(thread_id).is_err() {
+        return Err(CodexUsageError::InvalidResponse);
+    }
+    validate_binding(expected)?;
+    for attempt in 0..=1 {
+        let auth = auth_provider.auth_snapshot().await?;
+        validate_auth_binding(&auth, expected)?;
+        let rejected = auth.credential_binding().clone();
+        let response = client
+            .post(url)
+            .headers(request_headers(&auth)?)
+            .json(&CodexThreadUsageRequest {
+                thread_ids: [thread_id],
+            })
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(CodexUsageError::Transport)?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            if attempt == 0 {
+                match auth_provider.recover_unauthorized(rejected).await {
+                    Ok(true) => continue,
+                    Ok(false) | Err(_) => return Err(CodexUsageError::CredentialRejected),
+                }
+            }
+            return Err(CodexUsageError::CredentialRejected);
+        }
+        if matches!(
+            response.status(),
+            reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::NOT_FOUND
+        ) {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(CodexUsageError::HttpStatus(response.status().as_u16()));
+        }
+
+        let body = bounded_thread_usage_body(response).await?;
+        let response: CodexThreadUsageResponse =
+            serde_json::from_slice(&body).map_err(|_| CodexUsageError::InvalidResponse)?;
+        let usage = response
+            .threads
+            .into_iter()
+            .find(|usage| usage.thread_id == thread_id)
+            .filter(|usage| valid_thread_usage(usage, thread_id))
+            .ok_or(CodexUsageError::InvalidResponse)?;
+        let _identity_lease = auth_provider.attest_binding(&rejected).await?;
+        return Ok(Some(usage));
+    }
+    unreachable!("the bounded Codex thread-usage retry loop always returns")
+}
+
+/// Fetch authoritative usage for the exact active Codex session identity.
+/// Unsupported subscription accounts return `Ok(None)`; credentials and raw
+/// provider bodies never enter the result or diagnostics.
+pub async fn fetch_codex_thread_usage_for_session(
+    manager: &CodexAuthManager,
+    expected: &CredentialBinding,
+    thread_id: &str,
+) -> Result<Option<CodexThreadUsage>, CodexUsageError> {
+    verify_session_usage_binding(manager, expected)?;
+    let url = format!("{OPENAI_CODEX_USAGE_URL}/thread_usage/query");
+    let client = codex_usage_http_client_for_url(&url).await?;
+    fetch_codex_thread_usage_from_url(&client, manager, &url, expected, thread_id).await
 }
 
 #[cfg(test)]

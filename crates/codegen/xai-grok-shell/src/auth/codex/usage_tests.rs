@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::http::header::{HeaderName, LOCATION};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use chrono::{Duration, Utc};
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -91,6 +91,52 @@ async fn usage_fixture(State(state): State<MockState>, headers: HeaderMap) -> im
             "type": "workspace_member_usage_limit_reached"
         },
         "rate_limit_reset_credits": { "available_count": 3 }
+    }))
+    .into_response()
+}
+
+#[derive(Clone)]
+struct ThreadUsageState {
+    requests: Arc<parking_lot::Mutex<Vec<(HeaderMap, serde_json::Value)>>>,
+    status: StatusCode,
+    requested_thread: String,
+}
+
+async fn thread_usage_fixture(
+    State(state): State<ThreadUsageState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    state.requests.lock().push((headers, body));
+    if !state.status.is_success() {
+        return (state.status, "discarded-thread-credential-reflection").into_response();
+    }
+    axum::Json(json!({
+        "threads": [
+            {
+                "thread_id": "018f47f2-4e73-7a15-ae54-32f5e6ef2da9",
+                "estimated_usage_credits_micros": 999,
+                "estimated_usage_usd_micros": null,
+                "groups": []
+            },
+            {
+                "thread_id": state.requested_thread,
+                "estimated_usage_credits_micros": 1_250_000,
+                "estimated_usage_usd_micros": 375_000,
+                "groups": [{
+                    "model": "gpt-5.6",
+                    "reasoning_effort": "high",
+                    "speed": "fast",
+                    "estimated_usage_credits_micros": 1_250_000,
+                    "net_new_input_tokens": 900,
+                    "cached_input_tokens": 100,
+                    "input_tokens": 1000,
+                    "output_tokens": 200,
+                    "total_tokens": 1200,
+                    "reflected_secret": "must-not-survive"
+                }]
+            }
+        ]
     }))
     .into_response()
 }
@@ -537,6 +583,85 @@ fn usage_headers_come_only_from_the_common_sensitive_snapshot() {
     let rendered = format!("{headers:?}");
     assert!(!rendered.contains("sentinel-access-token"));
     assert!(!rendered.contains("sentinel-account-id"));
+}
+
+#[tokio::test]
+async fn thread_usage_query_is_exact_account_bound_and_sanitized() {
+    let thread_id = "018f47f2-4e73-7a15-ae54-32f5e6ef2da8";
+    let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let state = ThreadUsageState {
+        requests: requests.clone(),
+        status: StatusCode::OK,
+        requested_thread: thread_id.to_owned(),
+    };
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = Router::new()
+        .route(
+            "/backend-api/wham/usage/thread_usage/query",
+            post(thread_usage_fixture),
+        )
+        .with_state(state);
+    let task = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+    let url = format!("http://{address}/backend-api/wham/usage/thread_usage/query");
+    let auth = FakeAuth::new();
+    let usage = fetch_codex_thread_usage_from_url(
+        &reqwest::Client::new(),
+        &auth,
+        &url,
+        &binding("record-id", 1),
+        thread_id,
+    )
+    .await
+    .unwrap()
+    .expect("supported thread usage");
+    task.abort();
+
+    assert_eq!(usage.thread_id, thread_id);
+    assert_eq!(usage.estimated_usage_credits_micros, 1_250_000);
+    assert_eq!(usage.groups.len(), 1);
+    let serialized = serde_json::to_string(&usage).unwrap();
+    assert!(!serialized.contains("must-not-survive"));
+
+    let requests = requests.lock();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].1, json!({"thread_ids": [thread_id]}));
+    assert!(requests[0].0.contains_key("authorization"));
+    assert!(requests[0].0.contains_key("chatgpt-account-id"));
+}
+
+#[tokio::test]
+async fn thread_usage_unsupported_status_is_none_without_body_reflection() {
+    let thread_id = "018f47f2-4e73-7a15-ae54-32f5e6ef2da8";
+    for status in [StatusCode::FORBIDDEN, StatusCode::NOT_FOUND] {
+        let state = ThreadUsageState {
+            requests: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            status,
+            requested_thread: thread_id.to_owned(),
+        };
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = Router::new()
+            .route("/thread", post(thread_usage_fixture))
+            .with_state(state);
+        let task = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+        let auth = FakeAuth::new();
+        let usage = fetch_codex_thread_usage_from_url(
+            &reqwest::Client::new(),
+            &auth,
+            &format!("http://{address}/thread"),
+            &binding("record-id", 1),
+            thread_id,
+        )
+        .await
+        .unwrap();
+        task.abort();
+        assert!(usage.is_none());
+    }
 }
 
 #[tokio::test]

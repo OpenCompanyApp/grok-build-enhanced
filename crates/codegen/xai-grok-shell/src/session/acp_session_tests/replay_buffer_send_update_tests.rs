@@ -680,6 +680,7 @@ async fn completed_event_clears_slot_keeps_prior_uncommitted_segments() {
                     request_id: req,
                     response: Box::new(ConversationResponse {
                         provider_end_turn: None,
+                        provider_safety_buffering: None,
                         items: vec![ConversationItem::assistant("Answer".to_string())],
                         usage: None,
                         stop_reason: None,
@@ -759,6 +760,7 @@ async fn completed_event_releases_stream_drain_barrier() {
                     request_id: req,
                     response: Box::new(ConversationResponse {
                         provider_end_turn: None,
+                        provider_safety_buffering: None,
                         items: vec![ConversationItem::assistant("blocks".to_string())],
                         usage: None,
                         stop_reason: None,
@@ -895,6 +897,7 @@ async fn observe_only_confident_completion_stays_warn_only() {
                 .await;
             let response = xai_grok_sampling_types::ConversationResponse {
                 provider_end_turn: None,
+                provider_safety_buffering: None,
                 items: vec![xai_grok_sampling_types::ConversationItem::assistant(
                     "answer kept as-is",
                 )],
@@ -999,6 +1002,7 @@ async fn doom_loop_recovery_stamps_capture_segments_and_counters() {
                 .await;
             let response = xai_grok_sampling_types::ConversationResponse {
                 provider_end_turn: None,
+                provider_safety_buffering: None,
                 items: vec![xai_grok_sampling_types::ConversationItem::assistant(
                     "still looping answer",
                 )],

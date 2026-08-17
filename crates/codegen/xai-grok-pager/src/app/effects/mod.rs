@@ -4323,6 +4323,7 @@ pub(crate) fn execute(
                     };
                     let subscription_tier = billing.subscription_tier;
                     let codex_usage = billing.codex_usage;
+                    let codex_thread_usage = billing.codex_thread_usage;
                     let kimi_usage = billing.kimi_usage;
                     let codex_api_equivalent_cost = billing.codex_api_equivalent_cost;
                     let balance = billing.config.map(credit_balance_from_config);
@@ -4337,6 +4338,7 @@ pub(crate) fn execute(
                         agent_id,
                         balance,
                         codex_usage,
+                        codex_thread_usage,
                         kimi_usage,
                         codex_api_equivalent_cost,
                         silent,

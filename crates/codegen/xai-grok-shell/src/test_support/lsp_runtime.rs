@@ -81,6 +81,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
             acp::SessionId::new("test"),
         )),
         session_env: Arc::new(HashMap::new()),
+        codex_root_turn_id: None,
         memory_config: None,
         web_search_sampling_config: None,
         codex_web_search_settings: Default::default(),

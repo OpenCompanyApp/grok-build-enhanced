@@ -13,6 +13,7 @@ pub(crate) const CODEX_THREAD_ID_HEADER: &str = "thread-id";
 pub(crate) const CODEX_CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
 pub(crate) const CODEX_ROUTING_HINT_HEADER: &str = "x-codex-routing-hint";
 pub(crate) const CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
+pub(crate) const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 pub(crate) const CODEX_AUTH_CONFIGURATION_INVALID: &str =
     "OpenAI Codex authentication configuration is invalid";
 const CODEX_AUTH_UNAVAILABLE: &str = "OpenAI Codex authentication is unavailable";
@@ -91,6 +92,7 @@ pub(crate) fn is_provider_identity_header(name: &HeaderName) -> bool {
             | CODEX_CLIENT_REQUEST_ID_HEADER
             | CODEX_ROUTING_HINT_HEADER
             | CODEX_TURN_STATE_HEADER
+            | CODEX_TURN_METADATA_HEADER
     )
 }
 
@@ -138,6 +140,7 @@ pub(crate) fn seal_after_request_auth(
         CODEX_CLIENT_REQUEST_ID_HEADER,
         CODEX_ROUTING_HINT_HEADER,
         CODEX_TURN_STATE_HEADER,
+        CODEX_TURN_METADATA_HEADER,
         "originator",
         "version",
     ] {

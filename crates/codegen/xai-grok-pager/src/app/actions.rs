@@ -2955,6 +2955,7 @@ pub enum TaskResult {
         /// Authoritative ChatGPT Codex subscription limits, separate from xAI
         /// billing and from the hypothetical API-equivalent estimate below.
         codex_usage: Option<xai_grok_shell::auth::codex::CodexUsageSnapshot>,
+        codex_thread_usage: Option<xai_grok_shell::auth::codex::CodexThreadUsage>,
         /// Authoritative Kimi Code plan limits, separate from xAI billing.
         kimi_usage: Option<xai_grok_shell::auth::kimi_code::KimiCodeUsageSnapshot>,
         codex_api_equivalent_cost:

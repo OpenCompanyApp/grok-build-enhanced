@@ -5,6 +5,7 @@ use xai_grok_sampling_types::{ConversationItem, ConversationResponse, TokenUsage
 fn response_with_usage(total_tokens: u32) -> ConversationResponse {
     ConversationResponse {
         provider_end_turn: None,
+        provider_safety_buffering: None,
         items: vec![ConversationItem::assistant("ok")],
         stop_reason: None,
         usage: Some(TokenUsage {
@@ -29,6 +30,7 @@ fn response_with_usage(total_tokens: u32) -> ConversationResponse {
 fn response_without_usage() -> ConversationResponse {
     ConversationResponse {
         provider_end_turn: None,
+        provider_safety_buffering: None,
         items: vec![ConversationItem::assistant("ok")],
         stop_reason: None,
         usage: None,

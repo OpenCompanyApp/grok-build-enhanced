@@ -653,6 +653,12 @@ pub struct ConversationRequest {
     pub x_grok_agent_id: Option<String>,
     pub x_grok_deployment_id: Option<String>,
     pub x_grok_user_id: Option<String>,
+    /// Codex-only sandbox classification for the current request. This is
+    /// process-local provider metadata and is never persisted in history.
+    pub codex_sandbox_mode: Option<String>,
+    /// Codex-only causal root for the current user turn. Callers must omit it
+    /// when the root is ambiguous; the sampler then sends no turn metadata.
+    pub codex_root_turn_id: Option<String>,
     /// Optional opaque tracing context (e.g., where to persist the finalized request payload).
     /// Consumers downcast via `trace.as_ref().unwrap().as_any().downcast_ref::<T>()`.
     pub trace: Option<Box<dyn TraceContext>>,
@@ -976,6 +982,19 @@ pub struct ConversationResponse {
     /// not contain a client-executable tool call. Other providers leave it
     /// `None` and retain the existing content/tool-call completion behavior.
     pub provider_end_turn: Option<bool>,
+    /// Sanitized Codex safety-buffering state observed during this response.
+    /// It is process-local provider state and is not persisted into history.
+    pub provider_safety_buffering: Option<CodexSafetyBuffering>,
+}
+
+/// Bounded subset of the ChatGPT Codex safety-buffering signal. Arbitrary
+/// provider metadata is discarded before this crosses the adapter boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexSafetyBuffering {
+    pub use_cases: Vec<String>,
+    pub reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faster_model: Option<String>,
 }
 
 /// Normalize a wire cost-ticks value at capture.
@@ -7626,6 +7645,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert!(response.is_empty());
 
@@ -7642,6 +7662,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert!(!response.is_empty());
 
@@ -7662,6 +7683,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert!(!response.is_empty());
     }
@@ -7689,6 +7711,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert!(
             response.is_empty(),
@@ -7715,6 +7738,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert!(
             !response.is_empty(),
@@ -7745,6 +7769,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert!(
             !response.is_empty(),
@@ -7777,6 +7802,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
 
         let calls = response.tool_calls();
@@ -7801,6 +7827,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert_eq!(
             response.fallback_text().as_deref(),
@@ -7824,6 +7851,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert!(response.fallback_text().is_none());
     }
@@ -7843,6 +7871,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert!(response.fallback_text().is_none());
     }
@@ -7866,6 +7895,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert_eq!(
             response.fallback_text().as_deref(),
@@ -7892,6 +7922,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert!(response.fallback_text().is_none());
     }
@@ -9521,6 +9552,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         }
     }
 
@@ -9586,6 +9618,7 @@ mod tests {
             doom_loop_signals: Vec::new(),
             stop_message: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
         assert_eq!(
             response.empty_reason(),

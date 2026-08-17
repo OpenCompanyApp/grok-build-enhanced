@@ -255,6 +255,14 @@ pub fn format_codex_usage_summary(
     usage: &xai_grok_shell::auth::codex::CodexUsageSnapshot,
     estimate: Option<&xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
 ) -> String {
+    format_codex_usage_summary_with_thread(usage, None, estimate)
+}
+
+pub fn format_codex_usage_summary_with_thread(
+    usage: &xai_grok_shell::auth::codex::CodexUsageSnapshot,
+    thread_usage: Option<&xai_grok_shell::auth::codex::CodexThreadUsage>,
+    estimate: Option<&xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
+) -> String {
     let mut lines = vec!["OpenAI Codex subscription usage".to_owned()];
     if let Some(plan) = usage.plan_type.as_deref().filter(|plan| !plan.is_empty()) {
         let display_plan = match plan {
@@ -319,6 +327,37 @@ pub fn format_codex_usage_summary(
                 additional.limit_name,
                 window.used_percent.floor() as i64,
                 codex_window_label(window.limit_window_seconds),
+            ));
+        }
+    }
+
+    if let Some(thread) = thread_usage {
+        lines.push(String::new());
+        lines.push("Authoritative active-thread estimate".to_owned());
+        lines.push(format!(
+            "Subscription credits: {:.6}",
+            thread.estimated_usage_credits_micros as f64 / 1_000_000.0
+        ));
+        if let Some(usd_micros) = thread.estimated_usage_usd_micros {
+            lines.push(format!(
+                "Estimated USD: ${:.6}",
+                usd_micros as f64 / 1_000_000.0
+            ));
+        }
+        for group in &thread.groups {
+            let model = group.model.as_deref().unwrap_or("unknown model");
+            let effort = group
+                .reasoning_effort
+                .as_deref()
+                .unwrap_or("default effort");
+            let speed = group.speed.as_deref().unwrap_or("standard speed");
+            let tokens = group
+                .total_tokens
+                .map(|tokens| format!(", {tokens} tokens"))
+                .unwrap_or_default();
+            lines.push(format!(
+                "{model} / {effort} / {speed}: {:.6} credits{tokens}",
+                group.estimated_usage_credits_micros as f64 / 1_000_000.0
             ));
         }
     }
@@ -616,6 +655,34 @@ mod tests {
         assert!(summary.contains("Standard API comparison: $6.200000"));
         assert!(summary.contains("Pricing basis gpt-5.6-sol"));
         assert!(!summary.contains("Subscription spend: $"));
+    }
+
+    #[test]
+    fn codex_summary_labels_authoritative_thread_totals_and_groups() {
+        use xai_grok_shell::auth::codex::{CodexThreadUsage, CodexThreadUsageGroup};
+        let thread = CodexThreadUsage {
+            thread_id: "018f47f2-4e73-7a15-ae54-32f5e6ef2da8".to_owned(),
+            estimated_usage_credits_micros: 1_250_000,
+            estimated_usage_usd_micros: Some(375_000),
+            groups: vec![CodexThreadUsageGroup {
+                model: Some("gpt-5.6".to_owned()),
+                reasoning_effort: Some("high".to_owned()),
+                speed: Some("fast".to_owned()),
+                estimated_usage_credits_micros: 1_250_000,
+                net_new_input_tokens: Some(900),
+                cached_input_tokens: Some(100),
+                input_tokens: Some(1_000),
+                output_tokens: Some(200),
+                total_tokens: Some(1_200),
+            }],
+        };
+
+        let summary = format_codex_usage_summary_with_thread(&codex_usage(), Some(&thread), None);
+        assert!(summary.contains("Authoritative active-thread estimate"));
+        assert!(summary.contains("Subscription credits: 1.250000"));
+        assert!(summary.contains("Estimated USD: $0.375000"));
+        assert!(summary.contains("gpt-5.6 / high / fast: 1.250000 credits, 1200 tokens"));
+        assert!(!summary.contains(&thread.thread_id));
     }
 
     #[test]

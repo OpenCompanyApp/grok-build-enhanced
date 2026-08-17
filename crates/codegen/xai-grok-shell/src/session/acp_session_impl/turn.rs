@@ -2458,6 +2458,29 @@ impl SessionActor {
             // user's conversation. Recompute on every loop iteration so
             // switching into or out of Ultra takes effect immediately.
             let sampling_config = self.chat_state_handle.get_sampling_config().await;
+            if sampling_config.as_ref().is_some_and(|config| {
+                config.provider == xai_grok_sampling_types::ProviderId::OpenAiCodex
+            }) {
+                // A single `req_id` spans every sampler pass in this user turn,
+                // including tool follow-ups. A subagent inherits the exact
+                // parent root through process-local session state; if that
+                // state is absent, fail closed instead of inventing a root.
+                let root_turn_id = if self.startup_hints.is_subagent {
+                    self.tool_context.codex_root_turn_id.lock().clone()
+                } else {
+                    Some(req_id.to_owned())
+                };
+                *self.tool_context.codex_root_turn_id.lock() = root_turn_id.clone();
+                request.codex_root_turn_id = root_turn_id;
+                request.codex_sandbox_mode = Some(
+                    if self.permissions.is_yolo_mode() {
+                        "danger-full-access"
+                    } else {
+                        "workspace-write"
+                    }
+                    .to_owned(),
+                );
+            }
             crate::session::provider::inject_codex_multi_agent_policy(
                 &self.models_manager,
                 sampling_config.as_ref(),

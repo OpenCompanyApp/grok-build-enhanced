@@ -444,6 +444,9 @@ impl MvpAgent {
                 Arc::new(crate::auth::manager::SharedAuthKeyProvider(am.clone()))
                     as xai_grok_tools::types::SharedApiKeyProvider
             });
+        let codex_root_turn_id = parent_handle
+            .as_ref()
+            .and_then(|handle| handle.tool_context.codex_root_turn_id.lock().clone());
         Some(crate::agent::subagent::SubagentSpawnContext {
             lsp: parent_lsp,
             process_scope: parent_process_scope,
@@ -477,6 +480,7 @@ impl MvpAgent {
             fs,
             terminal,
             session_env,
+            codex_root_turn_id,
             memory_config: self.memory_config.clone(),
             web_search_sampling_config: self.prepare_web_search_sampling_config(),
             codex_web_search_settings: self.cfg.borrow().web_search.clone(),

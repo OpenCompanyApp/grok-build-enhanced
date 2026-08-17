@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use xai_grok_sampling_types::{Result, rs};
+use xai_grok_sampling_types::{CodexSafetyBuffering, Result, rs};
 
 use super::{errors, responses};
 
@@ -20,6 +20,7 @@ pub(crate) struct CodexSseDecoder {
     item_output_indexes: HashMap<String, u32>,
     active_output_index: Option<u32>,
     active_item_id: Option<String>,
+    safety_buffering: Option<CodexSafetyBuffering>,
 }
 
 impl CodexSseDecoder {
@@ -36,6 +37,7 @@ impl CodexSseDecoder {
             item_output_indexes: HashMap::new(),
             active_output_index: None,
             active_item_id: None,
+            safety_buffering: None,
         }
     }
 
@@ -69,6 +71,8 @@ impl CodexSseDecoder {
         if kind == "response.incomplete" {
             return Err(errors::incomplete_stream());
         }
+
+        self.observe_safety_buffering(&value, &kind);
 
         let supported = matches!(
             kind.as_str(),
@@ -123,6 +127,11 @@ impl CodexSseDecoder {
                     .get_mut("response")
                     .ok_or_else(errors::invalid_stream_event)?;
                 normalize_codex_response(response, &self.fallback_model, status)?;
+                if kind == "response.completed"
+                    && let Some(buffering) = self.safety_buffering.as_ref()
+                {
+                    attach_safety_buffering(response, buffering)?;
+                }
             }
             "response.output_item.added" | "response.output_item.done" => {
                 let output_index = self.item_output_index(&value);
@@ -334,6 +343,86 @@ impl CodexSseDecoder {
         self.active_item_id = Some(item_id.clone());
         item_id
     }
+
+    fn observe_safety_buffering(&mut self, value: &serde_json::Value, kind: &str) {
+        let top_level_present = value
+            .as_object()
+            .is_some_and(|object| object.contains_key("safety_buffering"));
+        let candidate = if top_level_present {
+            value.get("safety_buffering")
+        } else if kind == "response.metadata" {
+            value.get("metadata").filter(|metadata| {
+                metadata.get("type").and_then(serde_json::Value::as_str) == Some("safety_buffering")
+            })
+        } else {
+            None
+        };
+        if let Some(buffering) = candidate.and_then(parse_safety_buffering) {
+            self.safety_buffering = Some(buffering);
+        }
+    }
+}
+
+const MAX_SAFETY_BUFFERING_VALUES: usize = 16;
+const MAX_SAFETY_BUFFERING_VALUE_BYTES: usize = 256;
+const MAX_SAFETY_BUFFERING_MODEL_BYTES: usize = 128;
+
+fn parse_safety_buffering(value: &serde_json::Value) -> Option<CodexSafetyBuffering> {
+    let object = value.as_object()?;
+    let bounded_strings = |key: &str| -> Option<Vec<String>> {
+        let values = object.get(key)?.as_array()?;
+        if values.len() > MAX_SAFETY_BUFFERING_VALUES {
+            return None;
+        }
+        values
+            .iter()
+            .map(|value| {
+                let value = value.as_str()?;
+                (value.len() <= MAX_SAFETY_BUFFERING_VALUE_BYTES
+                    && !value.chars().any(char::is_control))
+                .then(|| value.to_owned())
+            })
+            .collect()
+    };
+    let faster_model = match object.get("retry_model") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => {
+            let value = value.as_str()?;
+            if value.is_empty()
+                || value.len() > MAX_SAFETY_BUFFERING_MODEL_BYTES
+                || !value.bytes().all(|byte| byte.is_ascii_graphic())
+            {
+                return None;
+            }
+            Some(value.to_owned())
+        }
+    };
+    Some(CodexSafetyBuffering {
+        use_cases: bounded_strings("use_cases")?,
+        reasons: bounded_strings("reasons")?,
+        faster_model,
+    })
+}
+
+fn attach_safety_buffering(
+    response: &mut serde_json::Value,
+    buffering: &CodexSafetyBuffering,
+) -> Result<()> {
+    let response = response
+        .as_object_mut()
+        .ok_or_else(errors::invalid_stream_event)?;
+    let metadata = response
+        .entry("metadata")
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+    let metadata = metadata
+        .as_object_mut()
+        .ok_or_else(errors::invalid_stream_event)?;
+    let encoded = serde_json::to_string(buffering).map_err(|_| errors::invalid_stream_event())?;
+    metadata.insert(
+        responses::CODEX_SAFETY_BUFFERING_METADATA_KEY.to_owned(),
+        serde_json::Value::String(encoded),
+    );
+    Ok(())
 }
 
 fn json_u32(value: Option<&serde_json::Value>) -> Option<u32> {
@@ -852,6 +941,80 @@ mod tests {
 
         let data = format!(r#"{{"type":"response.future_event","value":"{reflected}"}}"#);
         assert!(decoder.decode(&data).expect("unknown is ignored").is_none());
+    }
+
+    #[test]
+    fn codex_decoder_carries_bounded_nested_safety_buffering_to_completion() {
+        let mut decoder = CodexSseDecoder::new("gpt-5.6");
+        let metadata = serde_json::json!({
+            "type": "response.metadata",
+            "metadata": {
+                "type": "safety_buffering",
+                "use_cases": ["cyber"],
+                "reasons": ["additional review"],
+                "retry_model": "gpt-5.6-mini"
+            }
+        });
+        assert!(decoder.decode(&metadata.to_string()).unwrap().is_none());
+
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "response": {"id": "resp_1", "output": []}
+        });
+        let Some(rs::ResponseStreamEvent::ResponseCompleted(mut completed)) =
+            decoder.decode(&completed.to_string()).unwrap()
+        else {
+            panic!("expected response.completed");
+        };
+        let buffering = responses::take_safety_buffering(&mut completed.response)
+            .expect("sanitized safety buffering");
+        assert_eq!(buffering.use_cases, ["cyber"]);
+        assert_eq!(buffering.reasons, ["additional review"]);
+        assert_eq!(buffering.faster_model.as_deref(), Some("gpt-5.6-mini"));
+    }
+
+    #[test]
+    fn codex_safety_buffering_top_level_presence_wins_without_fallback() {
+        let mut decoder = CodexSseDecoder::new("gpt-5.6");
+        let event = serde_json::json!({
+            "type": "response.metadata",
+            "safety_buffering": false,
+            "metadata": {
+                "type": "safety_buffering",
+                "use_cases": ["must-not-fallback"],
+                "reasons": [],
+                "retry_model": "gpt-5.6-mini"
+            }
+        });
+        assert!(decoder.decode(&event.to_string()).unwrap().is_none());
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "response": {"id": "resp_1", "output": []}
+        });
+        let Some(rs::ResponseStreamEvent::ResponseCompleted(mut completed)) =
+            decoder.decode(&completed.to_string()).unwrap()
+        else {
+            panic!("expected response.completed");
+        };
+        assert!(responses::take_safety_buffering(&mut completed.response).is_none());
+    }
+
+    #[test]
+    fn codex_safety_buffering_rejects_malformed_or_unbounded_values() {
+        for safety in [
+            serde_json::json!({"use_cases": "not-an-array", "reasons": []}),
+            serde_json::json!({
+                "use_cases": ["ok"],
+                "reasons": ["x".repeat(MAX_SAFETY_BUFFERING_VALUE_BYTES + 1)]
+            }),
+            serde_json::json!({
+                "use_cases": ["ok"],
+                "reasons": [],
+                "retry_model": "bad model"
+            }),
+        ] {
+            assert!(parse_safety_buffering(&safety).is_none());
+        }
     }
 
     #[test]

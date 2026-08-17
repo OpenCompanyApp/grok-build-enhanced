@@ -1,11 +1,82 @@
 use std::collections::BTreeMap;
 
-use xai_grok_sampling_types::{ProviderId, ReasoningEffort, Result, SamplingError, rs};
+use xai_grok_sampling_types::{
+    CodexSafetyBuffering, ProviderId, ReasoningEffort, Result, SamplingError, rs,
+};
+
+use super::headers::CODEX_TURN_METADATA_HEADER;
 
 /// Private typed-response metadata seam for the sparse Codex terminal flag.
 /// The pinned Responses type has no `end_turn` field; the layer-2 stream
 /// transformer removes this value before producing the public response.
 pub(crate) const CODEX_END_TURN_METADATA_KEY: &str = "__grok_codex_end_turn";
+pub(crate) const CODEX_SAFETY_BUFFERING_METADATA_KEY: &str = "__grok_codex_safety_buffering";
+const MAX_CODEX_TURN_ID_BYTES: usize = 128;
+
+/// Add the bounded, provider-owned Codex turn envelope at the final JSON
+/// boundary. The closed field set is intentional: callers cannot override
+/// reserved Codex keys, and an ambiguous or malformed identity fails closed by
+/// omitting the entire envelope.
+pub(crate) fn apply_codex_turn_metadata(
+    provider: ProviderId,
+    session_id: Option<&str>,
+    thread_id: Option<&str>,
+    turn_id: Option<&str>,
+    root_turn_id: Option<&str>,
+    sandbox_mode: Option<&str>,
+    body: &mut serde_json::Value,
+) -> Result<Option<String>> {
+    if !provider.is_openai_codex() {
+        return Ok(None);
+    }
+    let (Some(session_id), Some(thread_id), Some(turn_id), Some(root_turn_id), Some(sandbox_mode)) =
+        (session_id, thread_id, turn_id, root_turn_id, sandbox_mode)
+    else {
+        return Ok(None);
+    };
+    if [session_id, thread_id, turn_id, root_turn_id]
+        .into_iter()
+        .any(|value| {
+            value.is_empty()
+                || value.len() > MAX_CODEX_TURN_ID_BYTES
+                || !value.bytes().all(|byte| byte.is_ascii_graphic())
+        })
+        || !matches!(
+            sandbox_mode,
+            "read-only" | "workspace-write" | "danger-full-access"
+        )
+    {
+        return Ok(None);
+    }
+
+    let payload = serde_json::json!({
+        "session_id": session_id,
+        "thread_id": thread_id,
+        "turn_id": turn_id,
+        "root_turn_id": root_turn_id,
+        "request_kind": "turn",
+        "sandbox_mode": sandbox_mode,
+    });
+    let encoded = serde_json::to_string(&payload).map_err(SamplingError::Serialization)?;
+    let Some(root) = body.as_object_mut() else {
+        return Err(SamplingError::InvalidConfiguration(
+            "Responses request body must be a JSON object",
+        ));
+    };
+    let client_metadata = root
+        .entry("client_metadata")
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+    let Some(client_metadata) = client_metadata.as_object_mut() else {
+        return Err(SamplingError::InvalidConfiguration(
+            "Responses client_metadata must be a JSON object",
+        ));
+    };
+    client_metadata.insert(
+        CODEX_TURN_METADATA_HEADER.to_owned(),
+        serde_json::Value::String(encoded.clone()),
+    );
+    Ok(Some(encoded))
+}
 
 /// Inject Codex reasoning tiers newer than the pinned `async-openai` request
 /// type at the final JSON boundary. Current openai/codex treats `ultra` as a
@@ -433,6 +504,15 @@ pub(crate) fn take_end_turn(response: &mut rs::Response) -> Option<bool> {
         .and_then(|value| value.parse::<bool>().ok())
 }
 
+/// Consume the sanitized safety signal inserted by the Codex SSE decoder.
+pub(crate) fn take_safety_buffering(response: &mut rs::Response) -> Option<CodexSafetyBuffering> {
+    response
+        .metadata
+        .as_mut()
+        .and_then(|metadata| metadata.remove(CODEX_SAFETY_BUFFERING_METADATA_KEY))
+        .and_then(|value| serde_json::from_str(&value).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,6 +723,72 @@ mod tests {
             apply_codex_responses_lite_contract(ProviderId::Xai, true, None, &mut xai).unwrap_err();
         assert!(error.to_string().contains("OpenAI Codex provider"));
         assert_eq!(xai, original);
+    }
+
+    #[test]
+    fn codex_turn_metadata_is_canonical_bounded_and_provider_scoped() {
+        let mut body = serde_json::json!({"model": "gpt-5.6"});
+        let header = apply_codex_turn_metadata(
+            ProviderId::OpenAiCodex,
+            Some("session-1"),
+            Some("thread-1"),
+            Some("turn-1"),
+            Some("root-1"),
+            Some("workspace-write"),
+            &mut body,
+        )
+        .unwrap()
+        .expect("complete Codex identity");
+        assert_eq!(
+            body.pointer("/client_metadata/x-codex-turn-metadata")
+                .and_then(serde_json::Value::as_str),
+            Some(header.as_str())
+        );
+        let decoded: serde_json::Value = serde_json::from_str(&header).unwrap();
+        assert_eq!(decoded["session_id"], "session-1");
+        assert_eq!(decoded["thread_id"], "thread-1");
+        assert_eq!(decoded["turn_id"], "turn-1");
+        assert_eq!(decoded["root_turn_id"], "root-1");
+        assert_eq!(decoded["request_kind"], "turn");
+        assert_eq!(decoded["sandbox_mode"], "workspace-write");
+
+        let original = serde_json::json!({"model": "grok-4"});
+        let mut non_codex = original.clone();
+        assert_eq!(
+            apply_codex_turn_metadata(
+                ProviderId::Xai,
+                Some("session-1"),
+                Some("thread-1"),
+                Some("turn-1"),
+                Some("root-1"),
+                Some("workspace-write"),
+                &mut non_codex,
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(non_codex, original);
+    }
+
+    #[test]
+    fn codex_turn_metadata_fails_closed_for_ambiguous_or_invalid_roots() {
+        for root in [None, Some("root with spaces"), Some("r\nsecret")] {
+            let mut body = serde_json::json!({"model": "gpt-5.6"});
+            assert_eq!(
+                apply_codex_turn_metadata(
+                    ProviderId::OpenAiCodex,
+                    Some("session-1"),
+                    Some("thread-1"),
+                    Some("turn-1"),
+                    root,
+                    Some("workspace-write"),
+                    &mut body,
+                )
+                .unwrap(),
+                None
+            );
+            assert!(body.get("client_metadata").is_none());
+        }
     }
 
     #[test]

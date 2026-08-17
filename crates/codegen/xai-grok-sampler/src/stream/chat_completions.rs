@@ -383,6 +383,7 @@ pub fn stream_chat_completions<'a>(
             raw_stop_reason: None,
             stop_sequence: None,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
 
         yield SamplingEvent::Completed {

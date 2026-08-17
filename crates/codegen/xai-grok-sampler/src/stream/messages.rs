@@ -632,6 +632,7 @@ pub(crate) fn stream_messages_for_provider<'a>(
             raw_stop_reason: final_raw_stop_reason,
             stop_sequence: final_stop_sequence,
             provider_end_turn: None,
+            provider_safety_buffering: None,
         };
 
         yield SamplingEvent::Completed {

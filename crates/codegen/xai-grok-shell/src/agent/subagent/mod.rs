@@ -177,6 +177,9 @@ pub(crate) struct SubagentSpawnContext {
     /// Parent's session environment variables (.envrc + color settings).
     /// Shared so the child inherits the same env without re-loading.
     pub session_env: Arc<HashMap<String, String>>,
+    /// Provider-owned causal root inherited without entering the environment,
+    /// persisted session data, or another provider's request path.
+    pub codex_root_turn_id: Option<String>,
     /// Parent's memory config — shared so the child can access the same
     /// cross-session memory store.
     pub memory_config: Option<crate::config::MemoryConfig>,

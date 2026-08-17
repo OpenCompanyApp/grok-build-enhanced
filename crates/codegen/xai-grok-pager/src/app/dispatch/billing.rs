@@ -378,6 +378,7 @@ pub(super) fn handle_billing_fetched(
     agent_id: AgentId,
     balance: Option<crate::views::credit_bar::CreditBalance>,
     codex_usage: Option<xai_grok_shell::auth::codex::CodexUsageSnapshot>,
+    codex_thread_usage: Option<xai_grok_shell::auth::codex::CodexThreadUsage>,
     kimi_usage: Option<xai_grok_shell::auth::kimi_code::KimiCodeUsageSnapshot>,
     codex_api_equivalent_cost: Option<xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
     silent: bool,
@@ -423,10 +424,13 @@ pub(super) fn handle_billing_fetched(
             state.billing_error = None;
             state.ctx.subscription_tier = tier_now;
             state.provider_usage_text = match (&codex_usage, &kimi_usage) {
-                (Some(usage), _) => Some(crate::views::credit_bar::format_codex_usage_summary(
-                    usage,
-                    codex_api_equivalent_cost.as_ref(),
-                )),
+                (Some(usage), _) => Some(
+                    crate::views::credit_bar::format_codex_usage_summary_with_thread(
+                        usage,
+                        codex_thread_usage.as_ref(),
+                        codex_api_equivalent_cost.as_ref(),
+                    ),
+                ),
                 (None, Some(usage)) => {
                     Some(crate::views::credit_bar::format_kimi_usage_summary(usage))
                 }
@@ -435,10 +439,13 @@ pub(super) fn handle_billing_fetched(
         }
         if !silent && !agent.chat_kind {
             let msg = match (&codex_usage, &kimi_usage, &balance) {
-                (Some(usage), _, _) => crate::views::credit_bar::format_codex_usage_summary(
-                    usage,
-                    codex_api_equivalent_cost.as_ref(),
-                ),
+                (Some(usage), _, _) => {
+                    crate::views::credit_bar::format_codex_usage_summary_with_thread(
+                        usage,
+                        codex_thread_usage.as_ref(),
+                        codex_api_equivalent_cost.as_ref(),
+                    )
+                }
                 (None, Some(usage), _) => {
                     crate::views::credit_bar::format_kimi_usage_summary(usage)
                 }
