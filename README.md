@@ -28,7 +28,7 @@ responsive Grok braille symbol remain compatible.
 | Bundled Warp themes and theme UX | Implemented |
 | Kimi Code plan provider | Implemented and experimental: isolated API-key login, dynamic models, Chat/Messages inference, plan usage, and hosted web tools; the current Chat/K3/usage/web matrix was live-qualified on 2026-07-19 |
 | Z.AI GLM Coding Plan | Research only: GLM-5.3 availability, model selection, endpoints, and reasoning controls are recorded for interoperability evaluation; no runtime provider, login, credential scope, model catalog, usage surface, or hosted tools ship in Enhanced |
-| Enhanced release artifacts | Fork-owned stable `v0.3.9` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
+| Enhanced release artifacts | Fork-owned stable `v0.3.10` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
 | Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
 
 ## Fork-owned terminal preview
@@ -119,7 +119,7 @@ Pin an exact stable or prerelease version with strict SemVer:
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://raw.githubusercontent.com/OpenCompanyApp/grok-build-enhanced/main/install.sh \
-  | sh -s -- --version 0.3.8
+  | sh -s -- --version 0.3.10
 ```
 
 Useful installer options are:
@@ -157,7 +157,7 @@ auto_update = false
 GitHub CLI users can additionally verify the attestation for a retained binary:
 
 ```sh
-gh attestation verify "$HOME/.grok/downloads/grok-0.3.8-macos-aarch64" \
+gh attestation verify "$HOME/.grok/downloads/grok-0.3.10-macos-aarch64" \
   --repo OpenCompanyApp/grok-build-enhanced
 ```
 
