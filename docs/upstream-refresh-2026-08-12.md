@@ -342,4 +342,3 @@ All 211 paths are classified exactly once.
 | 209 | `M` `100644->100644` `crates/common/xai-tool-protocol/src/frames.rs` | temporarily deferred | `GB-B13-WIRE` |
 | 210 | `M` `100644->100644` `crates/common/xai-tool-types/src/lib.rs` | temporarily deferred | `GB-BE71-SUBAGENT-TOOLS` |
 | 211 | `M` `100644->100644` `crates/common/xai-tool-types/src/task.rs` | temporarily deferred | `GB-BE71-SUBAGENT-TOOLS` |
-
