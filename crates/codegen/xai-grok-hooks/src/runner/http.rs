@@ -144,7 +144,7 @@ fn build_hook_client(timeout_ms: u64) -> reqwest::Client {
 pub async fn run_http_hook(
     spec: &HookSpec,
     envelope: &HookEventEnvelope,
-    _ctx: &RunContext<'_>,
+    ctx: &RunContext<'_>,
     mode: GateKind,
 ) -> HookRunOutput {
     let start = Instant::now();
@@ -157,23 +157,22 @@ pub async fn run_http_hook(
         );
     };
 
-    // Expand `${VAR}` / `$VAR` in the URL right before validation. We
-    // re-run expansion here (in addition to the load-time pass in
-    // `parse_hook_file`) because plugin URLs can reference plugin-injected
-    // vars (e.g. `${CLAUDE_PLUGIN_ROOT}/check`) that only land in
-    // `spec.extra_env` after the plugin adapter wires them in.
-    //
-    // For plugin hooks specifically: the load-time pass in
-    // `parse_hook_file` runs BEFORE the plugin adapter populates
-    // `extra_env` with plugin keys, so `${CLAUDE_PLUGIN_ROOT}` etc.
-    // survive that pass and are resolved here at runtime. For
-    // non-plugin hooks the load-time pass already resolved everything
-    // resolvable, and this pass is effectively a no-op.
-    //
-    // Unset refs are preserved verbatim, so `validate_hook_url` will
-    // reject them with an "invalid URL" error rather than silently
-    // smuggling a literal `${VAR}` past validation.
-    let expanded_url = crate::env_expand::expand_env_vars_with_extra(raw_url, &spec.extra_env);
+    // Re-expand the URL here (in addition to the load-time pass) because plugin
+    // vars (e.g. `${CLAUDE_PLUGIN_ROOT}/check`) only land in `extra_env` after
+    // the plugin adapter runs. Runtime fields are added without mutating the
+    // persisted spec. Unset refs are preserved so `validate_hook_url` rejects
+    // them rather than smuggling a literal `${VAR}` past validation.
+    let mut url_env = spec.extra_env.clone();
+    for (k, v) in [
+        ("GROK_HOOK_EVENT", envelope.hook_event_name.to_string()),
+        ("GROK_HOOK_NAME", spec.name.clone()),
+        ("GROK_SESSION_ID", ctx.session_id.to_string()),
+        ("GROK_WORKSPACE_ROOT", ctx.workspace_root.to_string()),
+        ("CLAUDE_PROJECT_DIR", ctx.workspace_root.to_string()),
+    ] {
+        url_env.insert(k.to_string(), v);
+    }
+    let expanded_url = crate::env_expand::expand_env_vars_with_extra(raw_url, &url_env);
     let url: &str = &expanded_url;
     // For tracing/log purposes prefer the pre-expansion source so
     // resolved values from the user `env` map (which may contain
