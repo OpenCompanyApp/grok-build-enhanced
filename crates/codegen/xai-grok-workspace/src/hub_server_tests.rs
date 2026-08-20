@@ -2134,6 +2134,7 @@ async fn dispatch_knows_every_typed_method() {
     use crate::workspace_ops::*;
     use crate::worktree::{ApplyWorktreeRequest, CreateWorktreeRequest, RemoveWorktreeRequest};
     use xai_grok_workspace_types::rpc::git::{GitBranchInfoReq, GitMetadataReq};
+    use xai_grok_workspace_types::rpc::repos::ReposListReq;
     use xai_grok_workspace_types::rpc::search::FuzzyStatusReq;
     use xai_grok_workspace_types::rpc::skills::DiscoverPluginsReq;
     use xai_grok_workspace_types::rpc::workspace::{

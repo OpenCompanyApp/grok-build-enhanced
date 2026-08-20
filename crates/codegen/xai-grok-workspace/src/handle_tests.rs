@@ -3470,6 +3470,7 @@ fn workspace_shared_auth_provider_uses_workspace_config() {
         server_id: Some("server-1".to_string()),
         alpha_test_key: None,
         allow_insecure_ws: true,
+        ready_file: None,
         diag: None,
     };
     let config = WorkspaceConfig::new_for_proxy(

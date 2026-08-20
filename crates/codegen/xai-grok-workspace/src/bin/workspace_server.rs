@@ -817,7 +817,10 @@ mod tests {
             args.pid_file,
             PathBuf::from(daemonize::DEFAULT_PIDFILE_PATH)
         );
-        assert_eq!(args.ready_file, None);
+        assert_eq!(
+            args.ready_file,
+            PathBuf::from(daemonize::DEFAULT_READY_PATH)
+        );
     }
     #[test]
     fn should_set_reset_child_oom_truth_table() {
@@ -839,10 +842,10 @@ mod tests {
         assert!(args.oom_protect);
     }
     #[test]
-    fn ready_file_is_accepted_as_a_deprecated_no_op() {
+    fn ready_file_override_is_parsed() {
         let args =
             Args::try_parse_from(["xai-workspace-server", "--ready-file", "/tmp/x.ready"]).unwrap();
-        assert_eq!(args.ready_file, Some(PathBuf::from("/tmp/x.ready")));
+        assert_eq!(args.ready_file, PathBuf::from("/tmp/x.ready"));
     }
     #[test]
     fn invalid_server_id_produces_the_marker_line() {
