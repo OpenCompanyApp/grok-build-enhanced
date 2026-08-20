@@ -4970,7 +4970,6 @@
         "crates/codegen/xai-ratatui-textarea/src/textarea.rs",
         "crates/codegen/xai-ratatui-textarea/src/textarea_tests.rs",
         "crates/common/xai-tool-types/src/task.rs",
-        "docs/getting-started.md",
         "docs/upstream-refresh-2026-08-20-19d4.md",
         "docs/upstream-refresh-2026-08-20-providers.md",
         "fork/manifest.json",
