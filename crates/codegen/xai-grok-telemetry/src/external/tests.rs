@@ -675,6 +675,8 @@ fn tool_decision_snapshot() {
             subagent_type: None,
             manager_prompt_attempted: None,
             prompt_outcome: None,
+            prompt_outcome_detail: None,
+            remember_tool_approvals: None,
             decision_reason: None,
             classifier_source: None,
             classifier_verdict: None,
