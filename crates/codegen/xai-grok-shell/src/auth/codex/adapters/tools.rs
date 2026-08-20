@@ -121,6 +121,9 @@ fn canonical_tool_header_name(name: &reqwest::header::HeaderName) -> Option<&'st
         Some("ChatGPT-Account-ID")
     } else if name == reqwest::header::HeaderName::from_static("x-openai-fedramp") {
         Some("X-OpenAI-Fedramp")
+    } else if name == reqwest::header::HeaderName::from_static("x-openai-internal-codex-residency")
+    {
+        Some("X-OpenAI-Internal-Codex-Residency")
     } else {
         None
     }

@@ -9,6 +9,8 @@ use super::{CodexAuthError, CodexAuthManager, CodexCredentials};
 
 const CHATGPT_ACCOUNT_ID: HeaderName = HeaderName::from_static("chatgpt-account-id");
 const OPENAI_FEDRAMP: HeaderName = HeaderName::from_static("x-openai-fedramp");
+pub(crate) const OPENAI_CODEX_RESIDENCY: HeaderName =
+    HeaderName::from_static("x-openai-internal-codex-residency");
 
 /// A failure while obtaining or validating provider-scoped Codex request auth.
 ///
@@ -35,6 +37,7 @@ pub struct CodexAuthSnapshot {
     authorization: HeaderValue,
     account_id: HeaderValue,
     fedramp: Option<HeaderValue>,
+    residency: Option<HeaderValue>,
     catalog_cache_identity: [u8; 32],
     credential_binding: CredentialBinding,
 }
@@ -51,6 +54,24 @@ impl CodexAuthSnapshot {
         chatgpt_user_id: Option<&str>,
         credential_binding: CredentialBinding,
         fedramp: bool,
+    ) -> Result<Self, CodexAuthSnapshotError> {
+        Self::new_with_residency(
+            access_token,
+            chatgpt_account_id,
+            chatgpt_user_id,
+            credential_binding,
+            fedramp,
+            None,
+        )
+    }
+
+    fn new_with_residency(
+        access_token: &str,
+        chatgpt_account_id: &str,
+        chatgpt_user_id: Option<&str>,
+        credential_binding: CredentialBinding,
+        fedramp: bool,
+        residency: Option<&str>,
     ) -> Result<Self, CodexAuthSnapshotError> {
         let credential_id = credential_binding
             .record_id
@@ -77,17 +98,30 @@ impl CodexAuthSnapshot {
             value.set_sensitive(true);
             value
         });
+        let residency = residency
+            .map(HeaderValue::from_str)
+            .transpose()
+            .map_err(|_| CodexAuthSnapshotError::Unavailable)?
+            .map(|mut value| {
+                value.set_sensitive(true);
+                value
+            });
 
         let mut scope = Hasher::new_derive_key("grok-build-codex catalog credential scope v1");
         hash_len_prefixed(&mut scope, credential_id.unwrap_or_default().as_bytes());
         hash_len_prefixed(&mut scope, chatgpt_account_id.as_bytes());
         hash_len_prefixed(&mut scope, chatgpt_user_id.unwrap_or_default().as_bytes());
         scope.update(&[u8::from(fedramp.is_some())]);
+        hash_len_prefixed(
+            &mut scope,
+            residency.as_ref().map_or(&[], HeaderValue::as_bytes),
+        );
 
         Ok(Self {
             authorization,
             account_id,
             fedramp,
+            residency,
             catalog_cache_identity: *scope.finalize().as_bytes(),
             credential_binding,
         })
@@ -96,12 +130,15 @@ impl CodexAuthSnapshot {
     pub(super) fn from_credentials(
         credentials: &CodexCredentials,
     ) -> Result<Self, CodexAuthSnapshotError> {
-        Self::new(
+        let residency =
+            super::credentials::access_token_compute_residency(credentials.access_token());
+        Self::new_with_residency(
             credentials.access_token(),
             credentials.account_id(),
             credentials.user_id(),
             credentials.credential_binding(),
             credentials.is_fedramp,
+            residency.as_deref(),
         )
     }
 
@@ -110,11 +147,14 @@ impl CodexAuthSnapshot {
     /// The cloned values retain `HeaderValue::is_sensitive()`. No adapter may
     /// append provider-specific auth headers outside this common source.
     pub(crate) fn request_headers(&self) -> HeaderMap {
-        let mut headers = HeaderMap::with_capacity(3);
+        let mut headers = HeaderMap::with_capacity(4);
         headers.insert(AUTHORIZATION, self.authorization.clone());
         headers.insert(CHATGPT_ACCOUNT_ID, self.account_id.clone());
         if let Some(fedramp) = &self.fedramp {
             headers.insert(OPENAI_FEDRAMP, fedramp.clone());
+        }
+        if let Some(residency) = &self.residency {
+            headers.insert(OPENAI_CODEX_RESIDENCY, residency.clone());
         }
         headers
     }
@@ -257,5 +297,48 @@ mod tests {
         ] {
             assert_eq!(rejected.unwrap_err(), CodexAuthSnapshotError::Unavailable);
         }
+    }
+
+    #[test]
+    fn residency_is_sensitive_and_scopes_provider_routes() {
+        let with_residency = CodexAuthSnapshot::new_with_residency(
+            "token",
+            "account",
+            None,
+            binding(Some("record"), 1),
+            false,
+            Some("us"),
+        )
+        .unwrap();
+        let without_residency =
+            CodexAuthSnapshot::new("token", "account", None, binding(Some("record"), 1), false)
+                .unwrap();
+
+        let headers = with_residency.request_headers();
+        assert_eq!(headers[&OPENAI_CODEX_RESIDENCY], "us");
+        assert!(headers[&OPENAI_CODEX_RESIDENCY].is_sensitive());
+        assert_ne!(
+            with_residency.catalog_cache_identity(),
+            without_residency.catalog_cache_identity()
+        );
+        let rendered = format!("{with_residency:?} {headers:?}");
+        assert!(!rendered.contains("us"));
+        assert!(rendered.contains("Sensitive"));
+    }
+
+    #[test]
+    fn invalid_residency_header_fails_closed() {
+        assert_eq!(
+            CodexAuthSnapshot::new_with_residency(
+                "token",
+                "account",
+                None,
+                binding(Some("record"), 1),
+                false,
+                Some("us\ninvalid"),
+            )
+            .unwrap_err(),
+            CodexAuthSnapshotError::Unavailable
+        );
     }
 }

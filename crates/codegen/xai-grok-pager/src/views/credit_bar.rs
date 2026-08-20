@@ -269,6 +269,8 @@ pub fn format_codex_usage_summary_with_thread(
             // OpenAI's July 2026 enterprise workspace code. Preserve the raw
             // value in the provider snapshot, but present its public plan name.
             "ent26" => "Enterprise",
+            "edu_plus" => "Edu Plus",
+            "edu_pro" => "Edu Pro",
             "self_serve_business_prolite" => "Self Serve Business ProLite",
             "enterprise_cbp_automation" => "Enterprise (Automation)",
             plan => plan,
@@ -702,6 +704,17 @@ mod tests {
             ("self_serve_business_prolite", "Self Serve Business ProLite"),
             ("enterprise_cbp_automation", "Enterprise (Automation)"),
         ] {
+            let mut usage = codex_usage();
+            usage.plan_type = Some(raw.to_owned());
+            let summary = format_codex_usage_summary(&usage, None);
+            assert!(summary.contains(&format!("Plan: {label}")));
+            assert!(!summary.contains(raw));
+        }
+    }
+
+    #[test]
+    fn codex_education_plan_codes_have_friendly_labels() {
+        for (raw, label) in [("edu_plus", "Edu Plus"), ("edu_pro", "Edu Pro")] {
             let mut usage = codex_usage();
             usage.plan_type = Some(raw.to_owned());
             let summary = format_codex_usage_summary(&usage, None);

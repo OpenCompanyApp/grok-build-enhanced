@@ -32,6 +32,9 @@ impl xai_grok_sampler::RequestAuth for CodexSamplerRequestAuth {
         let request_headers = snapshot.request_headers();
         let has_fedramp = request_headers
             .contains_key(reqwest::header::HeaderName::from_static("x-openai-fedramp"));
+        let has_residency = request_headers.contains_key(reqwest::header::HeaderName::from_static(
+            "x-openai-internal-codex-residency",
+        ));
         for (name, value) in request_headers {
             if let Some(name) = name {
                 headers.insert(name, value);
@@ -39,6 +42,11 @@ impl xai_grok_sampler::RequestAuth for CodexSamplerRequestAuth {
         }
         if !has_fedramp {
             headers.remove(reqwest::header::HeaderName::from_static("x-openai-fedramp"));
+        }
+        if !has_residency {
+            headers.remove(reqwest::header::HeaderName::from_static(
+                "x-openai-internal-codex-residency",
+            ));
         }
         Ok(binding)
     }

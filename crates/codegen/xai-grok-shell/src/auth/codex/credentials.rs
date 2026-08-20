@@ -309,6 +309,8 @@ struct JwtClaims {
     profile: Option<ProfileClaims>,
     #[serde(rename = "https://api.openai.com/auth", default)]
     auth: Option<AuthClaims>,
+    #[serde(default)]
+    chatgpt_compute_residency: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -329,6 +331,8 @@ struct AuthClaims {
     chatgpt_account_id: Option<String>,
     #[serde(default)]
     chatgpt_account_is_fedramp: Option<bool>,
+    #[serde(default)]
+    chatgpt_compute_residency: Option<String>,
 }
 
 struct TokenIdentity {
@@ -354,6 +358,19 @@ fn decode_claims(token: &str) -> Result<JwtClaims, CodexAuthError> {
         .decode(payload)
         .map_err(|_| CodexAuthError::InvalidJwt)?;
     serde_json::from_slice(&payload).map_err(|_| CodexAuthError::InvalidJwt)
+}
+
+/// Return the provider-managed compute residency carried by the access token.
+/// An absent, blank, or explicit `no_constraint` claim means that no routing
+/// header should be sent. The JWT is decoded only for provider routing
+/// metadata; the bearer remains authenticated by the provider.
+pub(super) fn access_token_compute_residency(access_token: &str) -> Option<String> {
+    let claims = decode_claims(access_token).ok()?;
+    let value = claims
+        .chatgpt_compute_residency
+        .or_else(|| claims.auth.and_then(|auth| auth.chatgpt_compute_residency))?;
+    let value = value.trim();
+    (!value.is_empty() && !value.eq_ignore_ascii_case("no_constraint")).then(|| value.to_owned())
 }
 
 /// Decode identity metadata from tokens returned by the TLS-protected OAuth
@@ -583,6 +600,36 @@ mod tests {
             .unwrap();
             assert_eq!(credentials.plan_type.as_deref(), Some(plan));
         }
+    }
+
+    #[test]
+    fn extracts_compute_residency_from_top_level_or_auth_claims() {
+        let top_level = jwt_for_test(serde_json::json!({
+            "chatgpt_compute_residency": "us"
+        }));
+        let nested = jwt_for_test(serde_json::json!({
+            "https://api.openai.com/auth": { "chatgpt_compute_residency": "eu" }
+        }));
+
+        assert_eq!(
+            access_token_compute_residency(&top_level).as_deref(),
+            Some("us")
+        );
+        assert_eq!(
+            access_token_compute_residency(&nested).as_deref(),
+            Some("eu")
+        );
+    }
+
+    #[test]
+    fn omits_unconstrained_or_invalid_compute_residency() {
+        for value in ["", "   ", "no_constraint", "NO_CONSTRAINT"] {
+            let token = jwt_for_test(serde_json::json!({
+                "chatgpt_compute_residency": value
+            }));
+            assert_eq!(access_token_compute_residency(&token), None);
+        }
+        assert_eq!(access_token_compute_residency("not-a-jwt"), None);
     }
 
     #[test]
