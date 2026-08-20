@@ -1188,6 +1188,7 @@ fn make_test_handle(
         chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
         signals_handle: crate::session::signals::SessionSignalsHandle::new(),
         gateway_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        status_line_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         mcp_servers: vec![],
         initial_client_mcp_servers: vec![],
         display_cwd: None,
@@ -5158,6 +5159,202 @@ fn post_auth_settings_not_coalesced_by_in_flight_reapply() {
             "post-auth must spawn on its own guard despite an in-flight reapply"
         );
         assert!(agent.post_auth_settings_in_flight.get());
+    });
+}
+/// The tier re-check work is single-flight across every caller: back-to-back
+/// gated initializes run at most one live check, and an awaited
+/// authenticate-path check skips — rather than doubles or waits out — a
+/// check already wedged on a stalled subscription endpoint. Drives the exact
+/// block `initialize` runs when `tier_allowed` is false (the full
+/// `initialize` fires once-per-process GROK_HOME cleanup work that a unit
+/// test must not run against the developer's real home).
+#[test]
+fn gated_reconnect_tier_recheck_is_single_flight() {
+    run_local_for_bridge_test(|| async {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking accept loop");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let accept_stop = stop.clone();
+        let accept_thread = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while !accept_stop.load(std::sync::atomic::Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((stream, _)) => held.push(stream),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let agent = build_minimal_agent_for_tests();
+        agent.cfg.borrow_mut().endpoints.cli_chat_proxy_base_url =
+            Some(format!("http://{addr}/v1"));
+        agent.cfg.borrow_mut().remote_settings = Some(crate::util::config::RemoteSettings {
+            allow_access: Some(false),
+            ..Default::default()
+        });
+        let auth = crate::auth::GrokAuth {
+            key: "gated-user-key".into(),
+            user_id: "user-gated".into(),
+            auth_mode: crate::auth::AuthMode::Oidc,
+            oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_owned()),
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            ..crate::auth::GrokAuth::test_default()
+        };
+        agent.auth_manager.hot_swap(auth.clone());
+        *agent.allow_access_resolved_for.borrow_mut() = Some(auth.user_id.clone());
+        agent.tier_allowed.set(false);
+        for _ in 0..2 {
+            if !agent.tier_allowed.get() {
+                agent.spawn_tier_recheck();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            agent.tier_recheck_run_count.get(),
+            1,
+            "the second spawned check must skip the claimed re-check"
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            agent.enforce_grok_code_access(&auth),
+        )
+        .await
+        .expect("an awaited check must skip, not wait out, the wedged re-check");
+        assert_eq!(
+            agent.tier_recheck_run_count.get(),
+            1,
+            "the awaited check must not run a second concurrent re-check"
+        );
+        assert!(
+            !agent.tier_allowed.get(),
+            "the gate stays until a re-check resolves"
+        );
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        accept_thread.join().expect("accept loop joins");
+    });
+}
+/// The check's own mint spawns a `/user` enrichment that can rewrite the
+/// in-memory user_id to the proxy-canonical value mid-check; the identity
+/// guard must read that normalization as the same account (it is the id the
+/// check's own bearer resolved to), while a live id matching neither the
+/// started nor the canonical id is a real switch and still discards.
+#[test]
+fn tier_recheck_identity_guard_accepts_enrichment_canonical_user_id() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let auth = crate::auth::GrokAuth {
+            key: "seeded-key".into(),
+            user_id: "canonical-user".into(),
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            ..crate::auth::GrokAuth::test_default()
+        };
+        agent.auth_manager.hot_swap(auth);
+        assert!(!agent.tier_recheck_identity_changed("seeded-user", Some("canonical-user")));
+        assert!(!agent.tier_recheck_identity_changed("canonical-user", None));
+        assert!(!agent.tier_recheck_identity_changed("canonical-user", Some("other-user")));
+        assert!(agent.tier_recheck_identity_changed("seeded-user", Some("other-user")));
+        assert!(agent.tier_recheck_identity_changed("seeded-user", None));
+        assert!(agent.tier_recheck_identity_changed("seeded-user", Some("")));
+    });
+}
+/// The other half of the reconnect paywall flash (the wedged test above
+/// locks the "gate holds while the check is in flight" half): a re-check
+/// that confirms a qualifying tier lifts `tier_allowed`, so the flash a
+/// subscribed user can see on a gated reconnect clears. Settings stay
+/// absent (the mock 404s `/settings`), modeling the remote-fetch-failed /
+/// disabled arm where the confirmed tier is the authority for the lift;
+/// the bearer's tier claim already matches the live tier, so the
+/// post-unblock mint is skipped and no refresher is needed.
+#[test]
+fn gated_reconnect_recheck_lifts_gate_clearing_paywall_flash() {
+    run_local_for_bridge_test(|| async {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking accept loop");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let accept_stop = stop.clone();
+        let accept_thread = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            while !accept_stop.load(std::sync::atomic::Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                        let mut head = Vec::new();
+                        let mut byte = [0u8; 1];
+                        while !head.ends_with(b"\r\n\r\n") {
+                            match stream.read(&mut byte) {
+                                Ok(1) => head.push(byte[0]),
+                                _ => break,
+                            }
+                        }
+                        let head = String::from_utf8_lossy(&head);
+                        let response = if head.contains("/user?include=subscription") {
+                            let body =
+                                r#"{"userId":"user-flash","subscriptionTier":"SuperGrokPro"}"#;
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                        } else {
+                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\
+                             Connection: close\r\n\r\n"
+                                .to_owned()
+                        };
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let temp_dir = tempfile::tempdir().unwrap();
+        let auth_manager = std::sync::Arc::new(crate::auth::AuthManager::new(
+            temp_dir.path(),
+            crate::auth::GrokComConfig::default(),
+        ));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let gateway = GatewaySender::new(tx);
+        let cfg = crate::agent::config::Config::default();
+        let agent = MvpAgent::new(gateway, &cfg, auth_manager, None).expect("valid test config");
+        agent.cfg.borrow_mut().endpoints.cli_chat_proxy_base_url =
+            Some(format!("http://{addr}/v1"));
+        let auth = crate::auth::GrokAuth {
+            key: jwt_with_tier(5),
+            user_id: "user-flash".into(),
+            auth_mode: crate::auth::AuthMode::Oidc,
+            oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_owned()),
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            ..crate::auth::GrokAuth::test_default()
+        };
+        agent.auth_manager.hot_swap(auth);
+        agent.tier_allowed.set(false);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            agent.retry_subscription_check(),
+        )
+        .await
+        .expect("re-check must finish well inside its bounded awaits");
+        assert!(
+            agent.tier_allowed.get(),
+            "a confirmed qualifying tier must lift the gate — the reconnect paywall flash clears"
+        );
+        assert_eq!(
+            agent.tier_recheck_run_count.get(),
+            1,
+            "the lift came from exactly one claimed re-check"
+        );
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        accept_thread.join().expect("accept loop joins");
     });
 }
 /// Agent with pre-loaded auth, a gateway receiver (to assert emitted

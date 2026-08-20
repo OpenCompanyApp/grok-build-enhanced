@@ -7731,3 +7731,39 @@ fn shell_environment_policy_known_keys_track_the_policy_struct() {
         include_only: _,
     } = ShellEnvironmentPolicyKnownKeys::default();
 }
+
+#[test]
+fn a_status_line_the_parser_could_not_read_in_full_reaches_grok_inspect() {
+    use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
+    let raw_config: toml::Value = toml::from_str(
+        r#"
+            [ui]
+            theme = "kanagawa"
+
+            [ui.status_line]
+            type = "disabled"
+            padding = "2"
+            colour = "red"
+            "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw_config).expect("a typo must not fail the config");
+    let warnings = |path: &str, kind: ConfigWarningKind| {
+        cfg.config_warnings
+            .iter()
+            .filter(|w| {
+                w.kind == kind
+                    && matches!(&w.target, WarningTarget::ConfigKey { path: p } if p == path)
+            })
+            .count()
+    };
+    assert_eq!(
+        warnings("ui.status_line", ConfigWarningKind::InvalidValue),
+        1
+    );
+    assert_eq!(
+        warnings("ui.status_line.colour", ConfigWarningKind::UnknownField),
+        1
+    );
+    assert_eq!(cfg.ui.theme.as_deref(), Some("kanagawa"));
+}

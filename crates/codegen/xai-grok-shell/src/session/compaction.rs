@@ -533,6 +533,10 @@ pub(crate) struct AutoCompactTriggerInfo {
     pub context_window: u64,
     pub percentage: u8,
 }
+/// The lossy summarization budget used when compatibility compaction must fit.
+fn lossy_input_budget(context_window: u64, tool_tokens: u64) -> u64 {
+    (context_window.saturating_mul(7) / 10).saturating_sub(tool_tokens)
+}
 /// Why auto-compaction was suppressed after a classified failure.
 /// [`SuppressReason::as_str`] is a stable telemetry value (BQ/OTLP/dashboards key
 /// off it) — don't rename the strings.
@@ -630,6 +634,11 @@ fn project_preserved_reseed_tokens(
     ((preserved_estimate as f64 * ratio).round() as u64).min(tokens_before)
 }
 impl SessionActor {
+    /// Where the transcript would be, without asking the filesystem: callers on
+    /// a hot path do the `exists()` themselves, off the actor's thread.
+    pub(crate) fn transcript_path(&self) -> std::path::PathBuf {
+        crate::session::persistence::session_dir(&self.session_info).join("updates.jsonl")
+    }
     /// Path to the raw `updates.jsonl` transcript if it exists, else `None`.
     /// `pub(crate)` so the `Transcript`-mode dispatch in `compaction_segments`
     /// and transcript-location pointers can both reuse it.
@@ -638,8 +647,7 @@ impl SessionActor {
     /// nested sub-agent) never wrote one -- the hint is simply omitted rather
     /// than dangling.
     pub(crate) fn get_transcript_path(&self) -> Option<String> {
-        let path =
-            crate::session::persistence::session_dir(&self.session_info).join("updates.jsonl");
+        let path = self.transcript_path();
         if path.exists() {
             Some(path.to_string_lossy().into_owned())
         } else {
@@ -736,6 +744,7 @@ impl SessionActor {
                 user_context,
                 None,
                 xai_grok_telemetry::events::CompactionTrigger::Manual,
+                false,
                 None,
             )
             .await
@@ -757,6 +766,7 @@ impl SessionActor {
             summary_preview: None,
         })
         .await;
+        self.emit_status_snapshot_detached();
         Ok(())
     }
 
@@ -1025,6 +1035,7 @@ impl SessionActor {
         user_context: Option<String>,
         auto_continue: Option<crate::extensions::notification::AutoContinueInfo>,
         trigger: xai_grok_telemetry::events::CompactionTrigger,
+        lossy_input: bool,
         previous_codex_model: Option<&crate::session::compaction_config::PreviousModelInfo>,
     ) -> Result<(), acp::Error> {
         let (cancel, _cancel_scope) = self.compaction.cancel.enter();
@@ -1103,8 +1114,8 @@ impl SessionActor {
                     .filter_map(ConversationItem::external_content),
             );
         const SUMMARY_BUDGET_RESERVE_TOKENS: u64 = 32_768;
-        let verbatim_input_enabled = self.compaction.verbatim_input;
-        let simplified_messages = if verbatim_input_enabled {
+        let verbatim_input_enabled = self.compaction.verbatim_input && !lossy_input;
+        let mut simplified_messages = if verbatim_input_enabled {
             xai_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
                 full_conversation,
                 summary_strips_reasoning,
@@ -1177,6 +1188,12 @@ impl SessionActor {
             } else {
                 Vec::new()
             };
+        if lossy_input {
+            simplified_messages = xai_chat_state::compaction_utils::fit_conversation_to_budget(
+                simplified_messages,
+                lossy_input_budget(context_window, compaction_tool_tokens),
+            );
+        }
         tracing::info!(
             model = %sampling_config.model,
             fallback_model = fallback_sampling
@@ -1348,17 +1365,16 @@ impl SessionActor {
                                         summary_strips_reasoning,
                                     );
                                     xai_chat_state::compaction_utils::fit_conversation_to_budget(
-                                        verbatim, budget,
+                                        verbatim,
+                                        budget,
                                     )
                                 }
                                 InputStage::Lossy => {
-                                    let lossy_budget = (context_window.saturating_mul(7) / 10)
-                                        .saturating_sub(compaction_tool_tokens);
                                     xai_chat_state::compaction_utils::fit_conversation_to_budget(
                                         xai_chat_state::compaction_utils::prepare_conversation_for_summarization(
                                             conv,
                                         ),
-                                        lossy_budget,
+                                        lossy_input_budget(context_window, compaction_tool_tokens),
                                     )
                                 }
                                 InputStage::Verbatim => {
@@ -2180,7 +2196,7 @@ impl SessionActor {
                     .to_owned(),
             ));
         }
-        self.run_compact_only(trigger_info).await?;
+        self.run_compact_only(trigger_info, false).await?;
         Ok(true)
     }
     /// On a model change, clear stale suppression the switch can resolve (sticky
@@ -2248,7 +2264,7 @@ impl SessionActor {
         let previous_codex_model =
             (!provider_changed && cfg.provider.is_openai_codex()).then_some(&prev);
         if let Err(e) = self
-            .run_compact_only_with_previous_codex_model(trigger_info, previous_codex_model)
+            .run_compact_only_with_previous_codex_model(trigger_info, false, previous_codex_model)
             .await
         {
             tracing::error!(error = % e, "Model-switch compaction failed");
@@ -2272,8 +2288,9 @@ impl SessionActor {
     pub(crate) async fn run_compact_only(
         self: &Arc<Self>,
         trigger_info: AutoCompactTriggerInfo,
+        lossy_input: bool,
     ) -> Result<(), acp::Error> {
-        self.run_compact_only_with_previous_codex_model(trigger_info, None)
+        self.run_compact_only_with_previous_codex_model(trigger_info, lossy_input, None)
             .await
     }
 
@@ -2294,6 +2311,7 @@ impl SessionActor {
     async fn run_compact_only_with_previous_codex_model(
         self: &Arc<Self>,
         trigger_info: AutoCompactTriggerInfo,
+        lossy_input: bool,
         previous_codex_model: Option<&crate::session::compaction_config::PreviousModelInfo>,
     ) -> Result<(), acp::Error> {
         use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
@@ -2326,6 +2344,7 @@ impl SessionActor {
                 None,
                 None,
                 xai_grok_telemetry::events::CompactionTrigger::Auto,
+                lossy_input,
                 previous_codex_model,
             )
             .await;
@@ -2343,6 +2362,7 @@ impl SessionActor {
                     summary_preview: None,
                 })
                 .await;
+                self.emit_status_snapshot_detached();
                 Ok(())
             }
             Err(e) => {
@@ -2599,6 +2619,7 @@ mod inline_auto_compact_flow_tests {
         );
         chat_state_handle.record_token_usage(total_tokens);
         SessionActor {
+            status_wake: Default::default(),
             unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
             session_info: SessionInfo {
                 id: acp::SessionId::new("test-auto-compact"),
@@ -2702,6 +2723,7 @@ mod inline_auto_compact_flow_tests {
             agent: std::cell::RefCell::new(test_agent_default().await),
             last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             git_head_enabled: false,
+            status_line_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             models_manager: Default::default(),
             display_cwd: std::sync::OnceLock::new(),
             active_agent_type: parking_lot::Mutex::new(None),
@@ -3193,11 +3215,14 @@ mod inline_auto_compact_flow_tests {
                     "manual /compact (even without args) must never set auto-compact suppression"
                 );
                 let result = actor
-                    .run_compact_only(AutoCompactTriggerInfo {
-                        tokens_used: 180_000,
-                        context_window: 200_000,
-                        percentage: 90,
-                    })
+                    .run_compact_only(
+                        AutoCompactTriggerInfo {
+                            tokens_used: 180_000,
+                            context_window: 200_000,
+                            percentage: 90,
+                        },
+                        false,
+                    )
                     .await;
                 assert!(result.is_err(), "mock 400 must fail the compaction");
                 assert_ne!(

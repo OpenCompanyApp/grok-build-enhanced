@@ -765,6 +765,15 @@ impl ModelsManager {
         self.inner.models.read().clone()
     }
 
+    /// One name without cloning the catalog, for callers on a hot path.
+    pub fn display_name(&self, id: &str) -> Option<String> {
+        self.inner
+            .models
+            .read()
+            .get(id)
+            .and_then(|entry| entry.info.name.clone())
+    }
+
     pub fn endpoints(&self) -> config::EndpointsConfig {
         self.inner.cfg.read().endpoints.clone()
     }

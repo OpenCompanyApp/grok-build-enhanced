@@ -125,6 +125,7 @@ xai-grok-paths = { path = "../xai-grok-paths" }
 xai-grok-shell-base = { workspace = true }
 xai-grok-shell-session-support = { workspace = true }
 xai-grok-shared = { workspace = true }
+xai-grok-status-line = { workspace = true }
 xai-tracing-macros = { path = "../xai-tracing-macros" }
 xai-fsnotify = { path = "../xai-fsnotify" }
 xai-codebase-graph = { path = "../xai-codebase-graph" }
@@ -194,6 +195,8 @@ siphasher = { workspace = true }
 windows = { workspace = true }
 
 [dev-dependencies]
+# The fixture that builds a `[ui.status_line]` section field by field.
+xai-grok-status-line = { workspace = true, features = ["test-support"] }
 criterion = { workspace = true }
 # Pre-main unified-log redirect used by parallel-safe telemetry tests.
 ctor = "0.4"

@@ -1638,7 +1638,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 header_injector: None,
             };
             let _ = actor
-                .handle_set_session_model(cfg, false, false, true, 85)
+                .handle_set_session_model(cfg, false, false, false, true, 85)
                 .await;
 
             assert!(
@@ -1680,7 +1680,7 @@ async fn switching_to_xai_replaces_the_rotating_custom_provider_key() {
             };
 
             actor
-                .handle_set_session_model(xai, false, false, true, 85)
+                .handle_set_session_model(xai, false, false, false, true, 85)
                 .await
                 .expect("model switch succeeds");
 

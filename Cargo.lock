@@ -13742,6 +13742,7 @@ dependencies = [
  "xai-grok-sampling-types",
  "xai-grok-sandbox",
  "xai-grok-shell",
+ "xai-grok-status-line",
  "xai-grok-telemetry",
  "xai-grok-test-support",
  "xai-grok-tools",
@@ -14094,6 +14095,7 @@ dependencies = [
  "wl-clipboard-rs",
  "xai-grok-config-types",
  "xai-grok-models",
+ "xai-grok-status-line",
  "xai-grok-tools",
  "xai-tty-utils",
 ]
@@ -14226,6 +14228,7 @@ dependencies = [
  "xai-grok-shared",
  "xai-grok-shell-base",
  "xai-grok-shell-session-support",
+ "xai-grok-status-line",
  "xai-grok-subagent-resolution",
  "xai-grok-telemetry",
  "xai-grok-test-support",
@@ -14287,6 +14290,16 @@ dependencies = [
  "xai-file-utils",
  "xai-grok-http",
  "xai-grok-version",
+]
+
+[[package]]
+name = "xai-grok-status-line"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "strum 0.27.2",
+ "toml",
 ]
 
 [[package]]

@@ -1304,10 +1304,19 @@ pub struct ShellTrueNoop {
     pub tool_name: String,
 }
 
+/// Harness nudged the model to break a run of identical tool calls.
+#[derive(Serialize)]
+pub struct ActionStationarityNudge {
+    pub problematically_repeating: bool,
+    pub run_len: u32,
+    pub tool_name: String,
+}
+
 /// Harness hard-stopped a turn after identical tool thrash (silent EndTurn).
 #[derive(Serialize)]
 pub struct ActionStationarityStop {
     pub true_noop: bool,
+    pub problematically_repeating: bool,
     pub run_len: u32,
     pub tool_name: String,
 }
@@ -1788,6 +1797,29 @@ pub struct ExternalOtelExportHealth {
     pub export_successes: u64,
 }
 
+/// Once per session. Carries no command string or script output.
+#[derive(Serialize)]
+pub struct StatusLineConfigured {
+    pub kind: &'static str,
+    pub row_shows_a_problem: bool,
+    pub items: String,
+    pub custom_items: bool,
+    pub custom_refresh_interval: bool,
+    pub has_retired_refresh_interval_ms: bool,
+}
+
+/// Aggregate status-line health emitted at shutdown.
+#[derive(Serialize)]
+pub struct StatusLineHealth {
+    pub kind: &'static str,
+    pub had_content: bool,
+    pub runs_ok: u64,
+    pub runs_failed: u64,
+    pub runs_timed_out: u64,
+    pub runs_abandoned: u64,
+    pub slowest_ms: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Credit limit
 // ---------------------------------------------------------------------------
@@ -2107,6 +2139,7 @@ telemetry_event!(
     external = crate::external::schema::map_turn_completed
 );
 telemetry_event!(ShellTrueNoop, "shell_true_noop");
+telemetry_event!(ActionStationarityNudge, "action_stationarity_nudge");
 telemetry_event!(ActionStationarityStop, "action_stationarity_stop");
 telemetry_event!(
     ToolCallCompleted,
@@ -2163,6 +2196,8 @@ telemetry_event!(CreditLimitHit, "credit_limit_hit");
 telemetry_event!(CreditLimitUpsellShown, "credit_limit_upsell_shown");
 telemetry_event!(CreditLimitUpsellClicked, "credit_limit_upsell_clicked");
 telemetry_event!(SubscriptionActivated, "subscription_activated");
+telemetry_event!(StatusLineConfigured, "status_line_configured");
+telemetry_event!(StatusLineHealth, "status_line_health");
 telemetry_event!(
     ApiError,
     "api_error",

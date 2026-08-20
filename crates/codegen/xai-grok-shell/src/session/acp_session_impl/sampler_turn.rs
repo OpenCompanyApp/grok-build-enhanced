@@ -1423,7 +1423,7 @@ impl SessionActor {
                     context_window: cw,
                     percentage,
                 };
-                self.run_compact_only(trigger_info).await?;
+                self.run_compact_only(trigger_info, false).await?;
                 return Ok(SamplerFailureRecovery::CompactAndResubmit);
             }
         }
@@ -1431,7 +1431,7 @@ impl SessionActor {
             .kimi_request_size_compaction_trigger(&error.message, allow_kimi_size_recovery)
             .await
         {
-            self.run_compact_only(trigger_info).await?;
+            self.run_compact_only(trigger_info, false).await?;
             return Ok(SamplerFailureRecovery::CompactAndResubmit);
         }
         let detailed_message = error.message.clone();

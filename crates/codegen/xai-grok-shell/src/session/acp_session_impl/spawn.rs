@@ -345,6 +345,7 @@ pub(crate) async fn spawn_session_actor(
     codebase_indexes: std::sync::Arc<parking_lot::Mutex<CodebaseIndexManager>>,
     code_nav_enabled: bool,
     fs_watch_caps: fs_watch::FsWatchCapabilities,
+    status_line_enabled: Arc<std::sync::atomic::AtomicBool>,
     feedback_proxy_url: Option<String>,
     feedback_user_token: Option<String>,
     feedback_alpha_test_key: Option<String>,
@@ -1815,6 +1816,7 @@ pub(crate) async fn spawn_session_actor(
         );
     }
     let session = Arc::new_cyclic(|weak: &std::sync::Weak<SessionActor>| SessionActor {
+        status_wake: Default::default(),
         session_info: session_info.clone(),
         auth_method_id,
         model_auth_memo: std::cell::RefCell::new(None),
@@ -1929,6 +1931,7 @@ pub(crate) async fn spawn_session_actor(
         agent: std::cell::RefCell::new(agent),
         last_reported_branch: Arc::new(Mutex::new(None)),
         git_head_enabled: fs_watch_caps.git_head,
+        status_line_enabled: status_line_enabled.clone(),
         models_manager,
         display_cwd: {
             let lock = std::sync::OnceLock::new();
@@ -2361,6 +2364,7 @@ pub(crate) async fn spawn_session_actor(
             chat_state_handle: chat_state_handle_for_handle,
             signals_handle,
             gateway_enabled,
+            status_line_enabled,
             mcp_servers,
             initial_client_mcp_servers,
             display_cwd: None,
@@ -2486,6 +2490,7 @@ pub(crate) async fn spawn_session_on_thread(
     codebase_indexes: std::sync::Arc<parking_lot::Mutex<CodebaseIndexManager>>,
     code_nav_enabled: bool,
     fs_watch_caps: fs_watch::FsWatchCapabilities,
+    status_line_enabled: Arc<std::sync::atomic::AtomicBool>,
     feedback_proxy_url: Option<String>,
     feedback_user_token: Option<String>,
     feedback_alpha_test_key: Option<String>,
@@ -2656,6 +2661,7 @@ pub(crate) async fn spawn_session_on_thread(
                         codebase_indexes,
                         code_nav_enabled,
                         fs_watch_caps,
+                        status_line_enabled,
                         feedback_proxy_url,
                         feedback_user_token,
                         feedback_alpha_test_key,
