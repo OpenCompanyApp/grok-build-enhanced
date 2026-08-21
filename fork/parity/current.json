@@ -1,26 +1,26 @@
 {
   "schema_version": 1,
-  "campaign": "2026-08-20-upstream-refresh",
+  "campaign": "2026-08-21-upstream-refresh",
   "inventory": {
-    "count": 107,
-    "sha256": "d245126ede7e57ef8ac3903833cacc967c4378e707b2bee286da3c50040e9bf8"
+    "count": 118,
+    "sha256": "fb676de93dd7b2001749809ce045a8a2780ee41916d5a10da5b83d0ca6b4fb0d"
   },
   "target_sources": {
     "grok-build-upstream": "19d42e35c07a9c9244f03f6df0c4c353f970d4f9",
-    "openai-codex": "478dbe9df0a33141d265db5977947cc432e7fe85",
-    "opencode": "b155b15694dbcc6768f11d2f25cc2bdd1f738ab4",
+    "openai-codex": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
+    "opencode": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
     "opencode-codex-auth": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
-    "oh-my-pi": "72000acfeb902e21816252699482887f34d1a5a4",
-    "warp-themes": "82e51dcf9b47912d551107748ba3297a21b2eff3",
-    "kimi-code": "3899079a2c851bd0b3f1cbf1d3d2fd9026fc6abb",
+    "oh-my-pi": "9350b7990d26ebf69a604edc82d8558ef04adf30",
+    "warp-themes": "6cc44d7b32baaf979a249056e35fff834cb39547",
+    "kimi-code": "d4e0ad4b2d04d676b6d139ee320ea162289d3f4b",
     "kimi-cli": "cbc15c076d17f70fec9f89c90c0502e68657f505",
     "zai-sdk-python": "ca5109c0aa9bf173839be391b4b14aeadf9a9bf9",
     "zai-coding-plugins": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254",
     "glm-5": "25206af860c4ac10f6411c597c574f9b1c00e53c",
-    "codexbar": "e92d89ab20037e4b3ba2028e22a4f5aef2929ab1",
+    "codexbar": "f74117aeb7a9ee02a78c0f08ca354ff26b2292e0",
     "zai-usage-helper": "54cd1f33a703c417f2492ee1f21f22b3633a43c4",
-    "models-dev": "4b494b2702c0155e596765ea3f0d007a688f7fbb",
-    "exa-mcp-server": "66bacbe4afd35a7e1671be9ab55c2b6bf60aff34"
+    "models-dev": "a166d7e2bec7603d54e2ed1c4a79432089c4a657",
+    "exa-mcp-server": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed"
   },
   "obligations": [
     {
@@ -183,7 +183,7 @@
     {
       "id": "CDX-F2A6-METADATA",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Send bounded provider-owned Responses turn metadata, including sandbox mode, without reserved-key override.",
@@ -194,7 +194,7 @@
     {
       "id": "CDX-F2A6-SAFETY",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Parse safety-buffering signals from the current response.metadata event shape.",
@@ -205,7 +205,7 @@
     {
       "id": "CDX-F2A6-IMAGE-LIMIT",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Surface image-generation quota exhaustion with reset metadata.",
@@ -216,7 +216,7 @@
     {
       "id": "CDX-F2A6-MODEL-HISTORY",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Retain model identity needed when history spans model switches and compaction.",
@@ -228,7 +228,7 @@
     {
       "id": "OC-0D92-SCOPE",
       "source_id": "opencode",
-      "source_revision": "b155b15694dbcc6768f11d2f25cc2bdd1f738ab4",
+      "source_revision": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The range changes DeepSeek, Muse, default-model UI and generated assets, not Codex OAuth or wire behavior.",
@@ -239,7 +239,7 @@
     {
       "id": "KIMI-6195-SCOPE",
       "source_id": "kimi-code",
-      "source_revision": "3899079a2c851bd0b3f1cbf1d3d2fd9026fc6abb",
+      "source_revision": "d4e0ad4b2d04d676b6d139ee320ea162289d3f4b",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Per-session profile isolation is already owned locally; remaining V2 agent, TUI and KAP architecture does not change the Kimi provider contract.",
@@ -250,7 +250,7 @@
     {
       "id": "OMP-D3B2-PARITY",
       "source_id": "oh-my-pi",
-      "source_revision": "72000acfeb902e21816252699482887f34d1a5a4",
+      "source_revision": "9350b7990d26ebf69a604edc82d8558ef04adf30",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Enhanced already applies Responses Lite all_turns for opaque model IDs and catalog-driven automatic reasoning summaries; remaining harness changes are non-normative.",
@@ -272,7 +272,7 @@
     {
       "id": "CODEXBAR-E552-SCOPE",
       "source_id": "codexbar",
-      "source_revision": "e92d89ab20037e4b3ba2028e22a4f5aef2929ab1",
+      "source_revision": "f74117aeb7a9ee02a78c0f08ca354ff26b2292e0",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "CodexBar quota and application changes remain Z.AI usage research and do not authorize an Enhanced runtime provider.",
@@ -283,7 +283,7 @@
     {
       "id": "MODELS-1D0F-SCOPE",
       "source_id": "models-dev",
-      "source_revision": "4b494b2702c0155e596765ea3f0d007a688f7fbb",
+      "source_revision": "a166d7e2bec7603d54e2ed1c4a79432089c4a657",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Third-party catalog additions and corrections do not override authenticated first-party catalogs.",
@@ -294,7 +294,7 @@
     {
       "id": "EXA-E64C-SCOPE",
       "source_id": "exa-mcp-server",
-      "source_revision": "66bacbe4afd35a7e1671be9ab55c2b6bf60aff34",
+      "source_revision": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The Exa change adds openWorldHint annotations without changing request, response or credential wire behavior.",
@@ -494,7 +494,7 @@
     {
       "id": "CDX-D6EE-ROOT-TURN",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Carry a reserved, provider-owned root_turn_id across delegated Codex requests while failing closed for ambiguous roots.",
@@ -506,7 +506,7 @@
     {
       "id": "CDX-D6EE-HARNESS-HISTORY",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Preserve Codex harness metadata through history normalization, compaction, fork, resume, and export.",
@@ -517,7 +517,7 @@
     {
       "id": "CDX-D6EE-STORE",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "All Codex Responses requests already send store=false, matching the new upstream invariant.",
@@ -528,7 +528,7 @@
     {
       "id": "CDX-D6EE-WORKLOAD",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Workload-identity federation and external authentication are distinct enterprise routes and do not alter the direct ChatGPT subscription adapter.",
@@ -539,7 +539,7 @@
     {
       "id": "CDX-D6EE-SCOPE",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "App-server, gRPC code mode, Guardian, plugin analytics, Windows sandbox, MCP OAuth registration, and TUI architecture do not alter the scoped direct provider contract.",
@@ -550,7 +550,7 @@
     {
       "id": "OC-39FB-SCOPE",
       "source_id": "opencode",
-      "source_revision": "b155b15694dbcc6768f11d2f25cc2bdd1f738ab4",
+      "source_revision": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The range changes console usage, retry jitter, Copilot PDF support, generated catalogs, and non-Codex providers; it does not change Codex OAuth or Responses wire behavior.",
@@ -561,7 +561,7 @@
     {
       "id": "KIMI-719D-RETRY",
       "source_id": "kimi-code",
-      "source_revision": "3899079a2c851bd0b3f1cbf1d3d2fd9026fc6abb",
+      "source_revision": "d4e0ad4b2d04d676b6d139ee320ea162289d3f4b",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Kimi's SDK-internal retry is disabled in favor of cancellable engine-owned retry; Enhanced is already equivalent because reqwest performs no hidden SDK retry and the sampler actor owns bounded retry.",
@@ -572,7 +572,7 @@
     {
       "id": "OMP-06AE-SCOPE",
       "source_id": "oh-my-pi",
-      "source_revision": "72000acfeb902e21816252699482887f34d1a5a4",
+      "source_revision": "9350b7990d26ebf69a604edc82d8558ef04adf30",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "External scratchpad reasoning-off controls, generic Responses chaining, tar handling, and replacement-harness changes are non-normative for Enhanced; no direct Codex subscription contract changed.",
@@ -583,7 +583,7 @@
     {
       "id": "CODEXBAR-FC57-SCOPE",
       "source_id": "codexbar",
-      "source_revision": "e92d89ab20037e4b3ba2028e22a4f5aef2929ab1",
+      "source_revision": "f74117aeb7a9ee02a78c0f08ca354ff26b2292e0",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Codex fork-cost caching, Azure budgets, UI layout, and release changes do not change the Z.AI research boundary.",
@@ -594,7 +594,7 @@
     {
       "id": "MODELS-4005-SCOPE",
       "source_id": "models-dev",
-      "source_revision": "4b494b2702c0155e596765ea3f0d007a688f7fbb",
+      "source_revision": "a166d7e2bec7603d54e2ed1c4a79432089c4a657",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Third-party model and pricing catalog changes, including Grok 4.6 and Kimi metadata, do not override authenticated first-party provider catalogs.",
@@ -605,7 +605,7 @@
     {
       "id": "CDX-3D7B-SCOPE",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Node REPL policy metadata and active-cell layout caching belong to Codex Node REPL, app-server, and TUI surfaces; Enhanced advertises no Node REPL and preserves the Grok TUI.",
@@ -616,7 +616,7 @@
     {
       "id": "OC-DAB2-COMPACTION",
       "source_id": "opencode",
-      "source_revision": "b155b15694dbcc6768f11d2f25cc2bdd1f738ab4",
+      "source_revision": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "OpenCode compaction prompting, message partitioning, and tail-retention defaults are replacement-harness behavior and do not alter Codex OAuth or provider wire interoperability.",
@@ -627,7 +627,7 @@
     {
       "id": "CODEXBAR-EE29-RELEASE",
       "source_id": "codexbar",
-      "source_revision": "e92d89ab20037e4b3ba2028e22a4f5aef2929ab1",
+      "source_revision": "f74117aeb7a9ee02a78c0f08ca354ff26b2292e0",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Opening the CodexBar 0.49.4 development version changes no Z.AI usage protocol or Enhanced runtime scope.",
@@ -638,7 +638,7 @@
     {
       "id": "MODELS-0370-CATALOG",
       "source_id": "models-dev",
-      "source_revision": "4b494b2702c0155e596765ea3f0d007a688f7fbb",
+      "source_revision": "a166d7e2bec7603d54e2ed1c4a79432089c4a657",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The added OpenRouter Liquid model entry is a third-party catalog record and does not override Enhanced's authenticated first-party provider catalogs.",
@@ -803,7 +803,7 @@
     {
       "id": "CDX-6BED-PARALLEL",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Send parallel_tool_calls for direct Codex subscription requests now that Codex enables it independently of model catalog metadata.",
@@ -815,7 +815,7 @@
     {
       "id": "CDX-6BED-THREAD-USAGE",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Fetch and expose authoritative per-thread Codex usage totals, credits, USD, and model/reasoning/speed groups from the subscription usage endpoint.",
@@ -828,7 +828,7 @@
     {
       "id": "CDX-6BED-CATALOG",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Consume Codex model retirement/upgrade timing and catalog-supplied multi-agent instructions within the adapted Grok harness.",
@@ -839,7 +839,7 @@
     {
       "id": "CDX-6BED-ETAG",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Authenticated model discovery already stores provider ETags, sends conditional requests, reuses 304 caches, and isolates renewal by live credential generation.",
@@ -851,7 +851,7 @@
     {
       "id": "CDX-6BED-SCOPE",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Guardian V2, replacement app server/TUI, gRPC code mode, Bedrock, workload identity, Windows sandbox, plugin analytics, and SDK architecture are outside the scoped direct subscription adapter.",
@@ -862,7 +862,7 @@
     {
       "id": "OC-4643-XAI-REASONING",
       "source_id": "opencode",
-      "source_revision": "b155b15694dbcc6768f11d2f25cc2bdd1f738ab4",
+      "source_revision": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Enhanced accepts catalog-driven reasoning strings and maps the existing xAI Max level to the xhigh wire value while keeping Codex-only Ultra rejected for xAI.",
@@ -874,7 +874,7 @@
     {
       "id": "OC-4643-GO-WEB",
       "source_id": "opencode",
-      "source_revision": "b155b15694dbcc6768f11d2f25cc2bdd1f738ab4",
+      "source_revision": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "OpenCode Go web search is already available through the provider-independent Exa backend with fail-closed domain filtering and no provider credential reuse.",
@@ -886,7 +886,7 @@
     {
       "id": "OC-4643-SCOPE",
       "source_id": "opencode",
-      "source_revision": "b155b15694dbcc6768f11d2f25cc2bdd1f738ab4",
+      "source_revision": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "OpenCode's Kimi prompt selection, Grok endpoint docs, generated catalogs, UI, release, and replacement harness changes do not supersede Grok surfaces or first-party provider contracts.",
@@ -897,7 +897,7 @@
     {
       "id": "KIMI-D96C-SCOPE",
       "source_id": "kimi-code",
-      "source_revision": "3899079a2c851bd0b3f1cbf1d3d2fd9026fc6abb",
+      "source_revision": "d4e0ad4b2d04d676b6d139ee320ea162289d3f4b",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Kimi agent-core-v2, swarm/session RPC, OAuth application flow, KAP marketplace, auto-title, TUI, and generated web assets do not change the experimental API-key adapter contract.",
@@ -908,7 +908,7 @@
     {
       "id": "OMP-FFD5-CODEX-REF",
       "source_id": "oh-my-pi",
-      "source_revision": "72000acfeb902e21816252699482887f34d1a5a4",
+      "source_revision": "9350b7990d26ebf69a604edc82d8558ef04adf30",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Oh My Pi's remote_compaction_v2 beta header is tied to its explicit V2 endpoint and is non-normative; it does not establish a Codex wire contract for Enhanced.",
@@ -919,7 +919,7 @@
     {
       "id": "OMP-FFD5-HARNESS",
       "source_id": "oh-my-pi",
-      "source_revision": "72000acfeb902e21816252699482887f34d1a5a4",
+      "source_revision": "9350b7990d26ebf69a604edc82d8558ef04adf30",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Static model aliases, replacement usage/cache behavior, hosted-search/PDF/LSP/DAP features, and harness/TUI changes remain non-normative evaluation material.",
@@ -930,7 +930,7 @@
     {
       "id": "CODEXBAR-24BE-RESEARCH",
       "source_id": "codexbar",
-      "source_revision": "e92d89ab20037e4b3ba2028e22a4f5aef2929ab1",
+      "source_revision": "f74117aeb7a9ee02a78c0f08ca354ff26b2292e0",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The advancing CodexBar range contains no Z.AI/GLM usage-protocol change; its Codex, Claude, Grok, OpenCode, and UI changes are outside the tracked Z.AI research surface.",
@@ -941,7 +941,7 @@
     {
       "id": "MODELS-A25D-CATALOG",
       "source_id": "models-dev",
-      "source_revision": "4b494b2702c0155e596765ea3f0d007a688f7fbb",
+      "source_revision": "a166d7e2bec7603d54e2ed1c4a79432089c4a657",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Third-party Kimi, Grok, GLM, and other catalog entries are research hints; authenticated first-party catalogs remain authoritative and no Z.AI runtime provider is established.",
@@ -1067,7 +1067,7 @@
     {
       "id": "CDX-C494-SCOPE",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Persistent exec pagination, workload identity, Guardian permissions, hook/plugin runtime, environment ownership, TUI startup, gRPC, sandbox, and application architecture changes do not alter the scoped direct ChatGPT Codex subscription wire contract.",
@@ -1078,7 +1078,7 @@
     {
       "id": "KIMI-6B72-RESUME",
       "source_id": "kimi-code",
-      "source_revision": "3899079a2c851bd0b3f1cbf1d3d2fd9026fc6abb",
+      "source_revision": "d4e0ad4b2d04d676b6d139ee320ea162289d3f4b",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Printing and copying Kimi Code's application-specific fork-resume command is TUI behavior outside the isolated API-key provider adapter.",
@@ -1089,7 +1089,7 @@
     {
       "id": "CODEXBAR-F15F-RESEARCH",
       "source_id": "codexbar",
-      "source_revision": "e92d89ab20037e4b3ba2028e22a4f5aef2929ab1",
+      "source_revision": "f74117aeb7a9ee02a78c0f08ca354ff26b2292e0",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The advancing CodexBar range changes Codex, Cursor, Grok, widget, release, and UI behavior; it contains no new Z.AI usage contract and remains research-only.",
@@ -1100,7 +1100,7 @@
     {
       "id": "MODELS-65DB-GLM53",
       "source_id": "models-dev",
-      "source_revision": "4b494b2702c0155e596765ea3f0d007a688f7fbb",
+      "source_revision": "a166d7e2bec7603d54e2ed1c4a79432089c4a657",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Third-party NanoGPT GLM-5.3 Preview catalog rows corroborate public model research but do not establish a Z.AI runtime provider or override first-party documentation.",
@@ -1111,7 +1111,7 @@
     {
       "id": "MODELS-65DB-CATALOG",
       "source_id": "models-dev",
-      "source_revision": "4b494b2702c0155e596765ea3f0d007a688f7fbb",
+      "source_revision": "a166d7e2bec7603d54e2ed1c4a79432089c4a657",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Other third-party generated catalog changes do not override authenticated first-party catalogs or expand the fork's provider scope.",
@@ -1218,7 +1218,7 @@
     {
       "id": "CDX-478D-PLAN-RESIDENCY",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Present education plan labels and keep managed compute residency inside the sensitive, account-bound Codex request snapshot and route identity.",
@@ -1230,7 +1230,7 @@
     {
       "id": "CDX-478D-EQUIVALENCE",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Provider-authoritative metadata, stable turn state, auth recovery, ultra reasoning, usage, compaction, prompt-cache, and credential isolation remain equivalent.",
@@ -1242,7 +1242,7 @@
     {
       "id": "CDX-478D-SCOPE",
       "source_id": "openai-codex",
-      "source_revision": "478dbe9df0a33141d265db5977947cc432e7fe85",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Codex app-server, TUI, Guardian, gRPC, WebSocket, sandbox, workload identity, persistent exec, and official release architecture remain outside the isolated subscription adapter.",
@@ -1253,7 +1253,7 @@
     {
       "id": "OC-B155-EQUIVALENCE",
       "source_id": "opencode",
-      "source_revision": "b155b15694dbcc6768f11d2f25cc2bdd1f738ab4",
+      "source_revision": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Authenticated catalog replacement, bounded provider reasoning, credential-generation invalidation, and negative cross-provider routing remain equivalent.",
@@ -1265,7 +1265,7 @@
     {
       "id": "OC-B155-SCOPE",
       "source_id": "opencode",
-      "source_revision": "b155b15694dbcc6768f11d2f25cc2bdd1f738ab4",
+      "source_revision": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "OpenCode application OAuth and arbitrary environment-derived provider authentication headers do not expand Enhanced wire contracts.",
@@ -1276,7 +1276,7 @@
     {
       "id": "KIMI-3899-EQUIVALENCE",
       "source_id": "kimi-code",
-      "source_revision": "3899079a2c851bd0b3f1cbf1d3d2fd9026fc6abb",
+      "source_revision": "d4e0ad4b2d04d676b6d139ee320ea162289d3f4b",
       "classification": "already equivalent",
       "state": "closed",
       "behavior": "Typed empty-output failure, hosted web behavior, API-key catalogs, bounded reasoning, video projection, and ZDR presentation remain equivalent.",
@@ -1288,12 +1288,146 @@
     {
       "id": "KIMI-3899-SCOPE",
       "source_id": "kimi-code",
-      "source_revision": "3899079a2c851bd0b3f1cbf1d3d2fd9026fc6abb",
+      "source_revision": "d4e0ad4b2d04d676b6d139ee320ea162289d3f4b",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "Kimi application server, OAuth UI, CLI resume, and arbitrary custom authentication headers remain outside the API-key adapter.",
       "closure_evidence": [
         "raw-path:docs/upstream-refresh-2026-08-20-providers.md"
+      ]
+    },
+    {
+      "id": "CDX-E482-CONTEXT-WINDOW-ID",
+      "source_id": "openai-codex",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
+      "classification": "temporarily deferred",
+      "state": "open",
+      "behavior": "Send one provider-owned context_window_id across every request in a model-visible context and rotate it only after successful compaction.",
+      "closure_evidence": [],
+      "owner": "Codex adapter and compaction",
+      "impact": "Provider-side policy and diagnostics cannot distinguish pre- and post-compaction model-visible contexts.",
+      "acceptance_criteria": "Generate one opaque process-local ID per model-visible context; reuse it for normal turns, tool follow-ups, and compaction; rotate after successful compaction; omit it for non-Codex providers; reserve the metadata key; and never persist or log the ID.",
+      "intended_tests": [
+        "Codex normal-turn and tool-follow-up context-window metadata tests",
+        "Codex compaction rotation and resume/fork lifecycle tests",
+        "malformed metadata and non-Codex negative tests"
+      ],
+      "blocker": "The Grok session and compaction paths do not yet expose one shared context-window generation to all sampler calls.",
+      "deadline": "2026-08-28",
+      "target": "next refresh or v0.3.13"
+    },
+    {
+      "id": "CDX-E482-EQUIVALENCE",
+      "source_id": "openai-codex",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
+      "classification": "already equivalent",
+      "state": "closed",
+      "behavior": "Retain authenticated model metadata at compatibility version 0.144.0, provider-scoped usage accounting, opaque tool outputs, and account-bound compaction and cache behavior.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-21-providers.md",
+        "test:existing Codex catalog, usage, tool-result, and compaction suites"
+      ]
+    },
+    {
+      "id": "CDX-E482-SCOPE",
+      "source_id": "openai-codex",
+      "source_revision": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Codex app-server, realtime, Guardian, unified-exec, executor MCP, sandbox, analytics, Bedrock, and official release architecture remain outside the isolated subscription adapter.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-21-providers.md"
+      ]
+    },
+    {
+      "id": "OC-1B93-RETRY",
+      "source_id": "opencode",
+      "source_revision": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
+      "classification": "already equivalent",
+      "state": "closed",
+      "behavior": "Continue unknown provider finish variants and bound retries for raw transport and xAI capacity errors without crossing provider credentials.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-21-providers.md",
+        "test:existing sampler stream and retry classification suites"
+      ]
+    },
+    {
+      "id": "OC-1B93-SCOPE",
+      "source_id": "opencode",
+      "source_revision": "1b937c860b6fd8a83e69f916b1236515aa17ea0d",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "OpenCode application, subagent, UI, hosted-product, and generated catalog changes do not replace Grok surfaces or authenticated provider catalogs.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-21-providers.md"
+      ]
+    },
+    {
+      "id": "OMP-9350-EQUIVALENCE",
+      "source_id": "oh-my-pi",
+      "source_revision": "9350b7990d26ebf69a604edc82d8558ef04adf30",
+      "classification": "already equivalent",
+      "state": "closed",
+      "behavior": "Use one sensitive account-bound Codex residency snapshot across sampler, catalog, search, image, and tool requests and preserve explicit refresh recovery without persisting credential headers.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-21-providers.md",
+        "test:existing Codex auth snapshot, adapter, catalog-cache, and refresh suites"
+      ]
+    },
+    {
+      "id": "WARP-6CC4-PAPER-BOTANICAL",
+      "source_id": "warp-themes",
+      "source_revision": "6cc44d7b32baaf979a249056e35fff834cb39547",
+      "classification": "adopt",
+      "state": "closed",
+      "behavior": "Bundle the Paper Botanical light and dark YAML themes in the byte-preserved Warp corpus without shipping upstream previews.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-21-providers.md",
+        "test:vendor_warp_themes.py --check --revision 6cc44d7b32baaf979a249056e35fff834cb39547"
+      ]
+    },
+    {
+      "id": "KIMI-D4E0-SCOPE",
+      "source_id": "kimi-code",
+      "source_revision": "d4e0ad4b2d04d676b6d139ee320ea162289d3f4b",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Kimi tower, subagent, session, TUI, marketplace, generated web, and server-documentation changes do not alter the isolated API-key provider contract.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-21-providers.md"
+      ]
+    },
+    {
+      "id": "CODEXBAR-F741-SCOPE",
+      "source_id": "codexbar",
+      "source_revision": "f74117aeb7a9ee02a78c0f08ca354ff26b2292e0",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "CodexBar xAI spend and Z.AI balance additions remain usage research and do not authorize a new Enhanced runtime provider or credential scope.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-21-providers.md"
+      ]
+    },
+    {
+      "id": "MODELS-A166-SCOPE",
+      "source_id": "models-dev",
+      "source_revision": "a166d7e2bec7603d54e2ed1c4a79432089c4a657",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Third-party catalog additions, pricing edits, and gateway splits do not override Enhanced authenticated first-party catalogs.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-21-providers.md"
+      ]
+    },
+    {
+      "id": "EXA-15FF-SCOPE",
+      "source_id": "exa-mcp-server",
+      "source_revision": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed",
+      "classification": "not applicable",
+      "state": "closed",
+      "behavior": "Exa package and AgentCore release-workflow changes do not alter Enhanced MCP request, response, capability, or credential behavior.",
+      "closure_evidence": [
+        "raw-path:docs/upstream-refresh-2026-08-21-providers.md"
       ]
     }
   ]
