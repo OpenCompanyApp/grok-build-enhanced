@@ -160,7 +160,7 @@
       "remote": "https://github.com/openai/codex.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "478dbe9df0a33141d265db5977947cc432e7fe85"
+        "commit": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36"
       },
       "latest_fetched": {
         "commit": "e482cc66aeeedcb9f333a1f5a0a554eb5aea4b36"
@@ -172,7 +172,7 @@
       "remote": "https://github.com/anomalyco/opencode.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "b155b15694dbcc6768f11d2f25cc2bdd1f738ab4"
+        "commit": "1b937c860b6fd8a83e69f916b1236515aa17ea0d"
       },
       "latest_fetched": {
         "commit": "1b937c860b6fd8a83e69f916b1236515aa17ea0d"
@@ -208,7 +208,7 @@
       "remote": "https://github.com/can1357/oh-my-pi.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "72000acfeb902e21816252699482887f34d1a5a4"
+        "commit": "9350b7990d26ebf69a604edc82d8558ef04adf30"
       },
       "latest_fetched": {
         "commit": "9350b7990d26ebf69a604edc82d8558ef04adf30"
@@ -220,7 +220,7 @@
       "remote": "https://github.com/warpdotdev/themes.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "82e51dcf9b47912d551107748ba3297a21b2eff3"
+        "commit": "6cc44d7b32baaf979a249056e35fff834cb39547"
       },
       "latest_fetched": {
         "commit": "6cc44d7b32baaf979a249056e35fff834cb39547"
@@ -232,7 +232,7 @@
       "remote": "https://github.com/MoonshotAI/kimi-code.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "3899079a2c851bd0b3f1cbf1d3d2fd9026fc6abb"
+        "commit": "d4e0ad4b2d04d676b6d139ee320ea162289d3f4b"
       },
       "latest_fetched": {
         "commit": "d4e0ad4b2d04d676b6d139ee320ea162289d3f4b"
@@ -292,7 +292,7 @@
       "remote": "https://github.com/steipete/CodexBar.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "e92d89ab20037e4b3ba2028e22a4f5aef2929ab1"
+        "commit": "f74117aeb7a9ee02a78c0f08ca354ff26b2292e0"
       },
       "latest_fetched": {
         "commit": "f74117aeb7a9ee02a78c0f08ca354ff26b2292e0"
@@ -316,7 +316,7 @@
       "remote": "https://github.com/sst/models.dev.git",
       "tracked_ref": "dev",
       "reviewed": {
-        "commit": "4b494b2702c0155e596765ea3f0d007a688f7fbb"
+        "commit": "a166d7e2bec7603d54e2ed1c4a79432089c4a657"
       },
       "latest_fetched": {
         "commit": "a166d7e2bec7603d54e2ed1c4a79432089c4a657"
@@ -328,7 +328,7 @@
       "remote": "https://github.com/exa-labs/exa-mcp-server.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "66bacbe4afd35a7e1671be9ab55c2b6bf60aff34"
+        "commit": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed"
       },
       "latest_fetched": {
         "commit": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed"
@@ -1680,6 +1680,7 @@
         "crates/codegen/xai-grok-pager-render/assets/terminal-ansi.tmTheme",
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/**",
         "crates/codegen/xai-grok-pager-render/build.rs",
+        "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
         "crates/codegen/xai-grok-pager-render/src/theme/cache.rs",
         "crates/codegen/xai-grok-pager-render/src/theme/mod.rs",
         "crates/codegen/xai-grok-pager-render/src/theme/resolved.rs",
@@ -7081,6 +7082,71 @@
       "integration_paths": [
         "UPSTREAM_VERSIONS.md",
         "docs/upstream-refresh-2026-08-17-9fab.md",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "august21-warp-paper-botanical",
+      "description": "Deterministically vendors the Warp Paper Botanical light and dark themes, advances the audited corpus lock to 343 themes, and updates the crate-local attribution and catalog tests.",
+      "source_ids": [
+        "warp-themes"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
+        "crates/codegen/xai-grok-pager-render/build.rs",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/UPSTREAM_REVISION",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/VENDOR_MANIFEST.json",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/standard/paper_botanical.yaml",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/standard/paper_botanical_dark.yaml",
+        "crates/codegen/xai-grok-pager-render/src/theme/selection.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/warp/catalog.rs",
+        "fork/manifest.json",
+        "fork/scripts/check_fork_contracts.py"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager-render/build.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/warp/catalog.rs",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "august21-provider-refresh-release",
+      "description": "Audits the August 21 Codex, OpenCode, Kimi, Oh My Pi, CodexBar, models.dev, Exa, and prior-refresh deltas; carries one explicit Codex context-window metadata obligation; and prepares the fork-owned 0.3.12 release.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "opencode",
+        "opencode-codex-auth",
+        "oh-my-pi",
+        "warp-themes",
+        "kimi-code",
+        "kimi-cli",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper",
+        "models-dev",
+        "exa-mcp-server"
+      ],
+      "paths": [
+        "README.md",
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-08-21-providers.md",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-08-21-providers.md",
         "fork/manifest.json",
         "fork/parity/current.json"
       ],

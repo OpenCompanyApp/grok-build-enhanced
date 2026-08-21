@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "source": "https://github.com/warpdotdev/themes.git",
-  "revision": "82e51dcf9b47912d551107748ba3297a21b2eff3",
-  "theme_count": 341,
+  "revision": "6cc44d7b32baaf979a249056e35fff834cb39547",
+  "theme_count": 343,
   "category_counts": {
     "base16": 178,
-    "standard": 135,
+    "standard": 137,
     "special_edition": 8,
     "stradicat": 1,
     "warp_bundled": 19
@@ -1370,6 +1370,16 @@
       "path": "standard/panda_syntax.yaml",
       "bytes": 596,
       "sha256": "90e1a2a3e52d6760ee07ecaa029818a533a7a34564e1147feea730044a5ff0fb"
+    },
+    {
+      "path": "standard/paper_botanical.yaml",
+      "bytes": 490,
+      "sha256": "d57ce71a40bdb7cb86ccca24e924efbb3934cf6c56e009b24ee226c2b8dd3597"
+    },
+    {
+      "path": "standard/paper_botanical_dark.yaml",
+      "bytes": 494,
+      "sha256": "8e131f97df3e3c83a933a055b82fc3ac80e72626aa79e748d3124a0d80859c83"
     },
     {
       "path": "standard/papercolor_light.yaml",

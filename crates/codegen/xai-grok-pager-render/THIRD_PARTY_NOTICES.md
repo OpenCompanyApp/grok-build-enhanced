@@ -2,9 +2,9 @@
 
 ## warpdotdev/themes
 
-This crate embeds 341 YAML/YML theme definitions from
+This crate embeds 343 YAML/YML theme definitions from
 [`warpdotdev/themes`](https://github.com/warpdotdev/themes) at revision
-`82e51dcf9b47912d551107748ba3297a21b2eff3`. Preview SVGs and background image
+`6cc44d7b32baaf979a249056e35fff834cb39547`. Preview SVGs and background image
 files are excluded. The upstream Apache License 2.0 text is preserved at
 `assets/warp-themes/LICENSE`. Binary NPM packages ship the same full text as
 `WARP_THEMES_LICENSE` and include this notice in `THIRD_PARTY_NOTICES.md`.

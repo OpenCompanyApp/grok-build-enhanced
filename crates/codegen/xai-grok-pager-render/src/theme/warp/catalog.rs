@@ -102,8 +102,8 @@ mod tests {
 
     #[test]
     fn complete_catalog_parses() {
-        assert_eq!(EMBEDDED_WARP_THEMES.len(), 341);
-        assert_eq!(all().len(), 341);
+        assert_eq!(EMBEDDED_WARP_THEMES.len(), 343);
+        assert_eq!(all().len(), 343);
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
         let mut ids = all().iter().map(|theme| theme.id).collect::<Vec<_>>();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 341);
+        assert_eq!(ids.len(), 343);
     }
 
     #[test]
@@ -126,5 +126,13 @@ mod tests {
         assert!(fancy.data.is_gradient());
         let leafy = find("warp_bundled/leafy").expect("Leafy");
         assert!(leafy.data.has_background_image);
+    }
+
+    #[test]
+    fn paper_botanical_pair_is_bundled() {
+        let light = find("standard/paper_botanical").expect("Paper Botanical");
+        let dark = find("standard/paper_botanical_dark").expect("Paper Botanical Dark");
+        assert_eq!(light.data.details.as_deref(), Some("lighter"));
+        assert_eq!(dark.data.details.as_deref(), Some("darker"));
     }
 }

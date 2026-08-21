@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "fork/manifest.json"
-WARP_REVISION = "82e51dcf9b47912d551107748ba3297a21b2eff3"
+WARP_REVISION = "6cc44d7b32baaf979a249056e35fff834cb39547"
 DOTSLASH_ACTION = (
     "facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a"
 )
