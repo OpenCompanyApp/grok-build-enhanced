@@ -378,17 +378,19 @@ Normal Codex defaults include:
 - removal of `temperature` from every Codex Responses request;
 - a stable `prompt_cache_key` derived from conversation ID, falling back to
   session ID;
-- `parallel_tool_calls: true` for every Codex model prompt, independent of
-  catalog metadata; and
+- `parallel_tool_calls: true` for ordinary Codex model prompts, independent of
+  catalog metadata, and `false` for Responses Lite; and
 - provider-specific reasoning/service-tier normalization at the final JSON
   boundary.
 
-Temperature removal, prompt-cache-key insertion, and parallel tool-call
-capability happen for Codex Responses whether or not the selected model uses
-Responses Lite. The prompt cache key is stable across OAuth refresh, 401
-recovery, request IDs, and ordinary turns in the same conversation. It
-intentionally changes with a new conversation/session rather than including
-token or account material.
+Temperature removal and prompt-cache-key insertion happen for Codex Responses
+whether or not the selected model uses Responses Lite. Parallel tool calls are
+enabled for ordinary Responses, while the provider's final request constructor
+explicitly disables them for Responses Lite; sending `true` with the Lite
+`additional_tools` envelope can be rejected as a bad request. The prompt cache
+key is stable across OAuth refresh, 401 recovery, request IDs, and ordinary
+turns in the same conversation. It intentionally changes with a new
+conversation/session rather than including token or account material.
 
 ### Responses Lite shaping
 
@@ -401,6 +403,7 @@ additionally:
 - marks function schemas `strict: false`;
 - moves instructions into a developer message;
 - uses `tool_choice: "auto"` only when tools exist; and
+- sets `parallel_tool_calls: false`; and
 - sets `reasoning.context: "all_turns"`.
 
 Auxiliary tool-free requests retain an empty `additional_tools` item but omit

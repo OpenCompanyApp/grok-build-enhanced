@@ -198,10 +198,12 @@ fn codex_native_browsing_policy(advertised: &[&str]) -> Option<String> {
 }
 
 /// Apply the Codex Responses transport contract at the final provider JSON
-/// boundary. The stable prompt cache key and parallel tool-call capability
-/// belong to every Codex Responses request; the remaining rewrite is gated by
-/// Responses Lite so Grok Build's conversation, tool registry, persistence,
-/// and execution loop remain intact.
+/// boundary. The stable prompt cache key belongs to every Codex Responses
+/// request. Parallel tool calls are enabled for ordinary Codex Responses but
+/// must remain disabled for Responses Lite, matching the provider's request
+/// constructor. The remaining rewrite is gated by Responses Lite so Grok
+/// Build's conversation, tool registry, persistence, and execution loop remain
+/// intact.
 pub(crate) fn apply_codex_responses_lite_contract(
     provider: ProviderId,
     enabled: bool,
@@ -234,11 +236,13 @@ pub(crate) fn apply_codex_responses_lite_contract(
         );
     }
     // Codex enables parallel tool calls for every model prompt independently
-    // of catalog metadata. Keep the capability provider-scoped at the final
-    // JSON boundary so xAI and custom Responses requests remain unchanged.
+    // of catalog metadata, but its final request constructor deliberately
+    // disables the field for Responses Lite. Sending `true` with the Lite
+    // `additional_tools` envelope is rejected by the ChatGPT backend with 400.
+    // Keep the compatibility rule provider-scoped at the final JSON boundary.
     root.insert(
         "parallel_tool_calls".to_string(),
-        serde_json::Value::Bool(true),
+        serde_json::Value::Bool(!enabled),
     );
     if !enabled {
         return Ok(());
@@ -620,7 +624,7 @@ mod tests {
         assert!(body.get("instructions").is_none());
         assert!(body.get("temperature").is_none());
         assert_eq!(body["prompt_cache_key"], "conversation-cache-key");
-        assert_eq!(body["parallel_tool_calls"], true);
+        assert_eq!(body["parallel_tool_calls"], false);
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["reasoning"]["effort"], "ultra");
         assert_eq!(body["reasoning"]["context"], "all_turns");
