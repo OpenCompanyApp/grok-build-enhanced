@@ -6033,6 +6033,7 @@ mod tests {
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            subagent_rate_limit_max_attempts: None,
             laziness_detector: config::LazinessDetectorPerModelConfig::default(),
         }
     }

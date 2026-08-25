@@ -108,7 +108,7 @@ pub(crate) const AUTH_LOCK_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 /// Lock timeout for `refresh_chain`, held across the IdP call to prevent
 /// refresh-token reuse. Followers fail transiently instead of waiting out a
 /// degraded IdP's complete retry ladder.
-const REFRESH_LOCK_TIMEOUT: StdDuration = StdDuration::from_secs(25);
+pub(crate) const REFRESH_LOCK_TIMEOUT: StdDuration = StdDuration::from_secs(25);
 
 /// RPC-path budget for a healthy OIDC exchange plus flock margin.
 pub(crate) const BEST_EFFORT_REFRESH_TIMEOUT: StdDuration = StdDuration::from_secs(20);

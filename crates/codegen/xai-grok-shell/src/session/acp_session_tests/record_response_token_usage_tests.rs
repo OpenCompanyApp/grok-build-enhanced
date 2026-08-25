@@ -98,9 +98,11 @@ async fn response_reasoning_does_not_inflate_model_reported_context() {
                 message_id: None,
                 raw_stop_reason: None,
                 stop_sequence: None,
+                provider_end_turn: None,
+                provider_safety_buffering: None,
             };
 
-            actor.record_response_token_usage(&response, None);
+            actor.record_response_token_usage(&response, None).await;
             let usage_reported = response.usage.is_some();
             actor
                 .record_response_items(response.items, usage_reported)
@@ -173,9 +175,11 @@ async fn response_without_usage_keeps_model_output_as_estimated_growth() {
                 message_id: None,
                 raw_stop_reason: None,
                 stop_sequence: None,
+                provider_end_turn: None,
+                provider_safety_buffering: None,
             };
 
-            actor.record_response_token_usage(&response, None);
+            actor.record_response_token_usage(&response, None).await;
             let usage_reported = response.usage.is_some();
             actor
                 .record_response_items(response.items, usage_reported)

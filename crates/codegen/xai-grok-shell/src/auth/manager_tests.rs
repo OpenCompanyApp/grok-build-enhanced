@@ -67,7 +67,7 @@ async fn refresh_path_lock_acquire_attaches_the_heartbeat() {
         .acquire_refresh_lock_or_adopt(RefreshReason::PreRequest)
         .await
         .expect("uncontended refresh-lock acquire");
-    let super::refresh_chain::LockOutcome::Held(guard) = outcome else {
+    let LockOutcome::Held(guard) = outcome else {
         panic!("an empty auth dir has no sibling token to adopt");
     };
     assert!(
@@ -108,7 +108,7 @@ async fn lock_loss_revalidation_adopts_the_sibling_token() {
         .revalidate_lock_or_reacquire(guard, RefreshReason::PreRequest)
         .await
         .expect("lock-loss revalidation must re-acquire on the live inode");
-    let super::refresh_chain::LockOutcome::Adopted(adopted) = outcome else {
+    let LockOutcome::Adopted(adopted) = outcome else {
         panic!("a sibling token persisted during lock loss must be adopted");
     };
     assert_eq!(adopted.key, "fresh-key-from-sibling");
@@ -6060,8 +6060,9 @@ async fn sentinel_is_scoped_other_scope_neither_gated_nor_clears() {
     // Any scope may clear a scope-less sentinel (worst case is the old,
     // scope-blind behavior).
     let lock = mgr_b
-        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT)
+        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT, lock::Heartbeat::Attach)
         .await
+        .into_guard()
         .expect("test must hold the auth.json lock");
     mgr_b.clear_consumed_sentinel("test_legacy", &lock);
     assert!(mgr_a.read_consumed_sentinel().is_none());
@@ -6156,8 +6157,9 @@ async fn sentinel_election_dropped_unstamped_does_not_consume_cooldown() {
         "test",
     ));
     let lock = mgr
-        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT)
+        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT, lock::Heartbeat::Attach)
         .await
+        .into_guard()
         .expect("test must hold the auth.json lock");
 
     // Win the election, then drop it unstamped — what refresh_chain does when
@@ -6319,8 +6321,9 @@ async fn sentinel_rewrite_over_existing_file_succeeds() {
 
     // Stamp over the existing file (the election write path).
     let lock = mgr
-        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT)
+        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT, lock::Heartbeat::Attach)
         .await
+        .into_guard()
         .expect("test must hold the auth.json lock");
     let election = mgr
         .check_consumed_sentinel_gate(TokenType::OidcSession, RefreshReason::PreRequest, &lock)
@@ -6474,8 +6477,9 @@ async fn dead_lock_after_election_aborts_instead_of_presenting() {
         "test",
     ));
     let lock = mgr
-        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT)
+        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT, lock::Heartbeat::Attach)
         .await
+        .into_guard()
         .expect("test must hold the auth.json lock");
     let election = mgr
         .check_consumed_sentinel_gate(TokenType::OidcSession, RefreshReason::PreRequest, &lock)
@@ -6502,8 +6506,9 @@ async fn dead_lock_after_election_aborts_instead_of_presenting() {
     // A sibling elects immediately under a fresh lock.
     drop(lock);
     let fresh = mgr
-        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT)
+        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT, lock::Heartbeat::Attach)
         .await
+        .into_guard()
         .expect("fresh lock must be acquirable");
     let election = mgr
         .check_consumed_sentinel_gate(TokenType::OidcSession, RefreshReason::PreRequest, &fresh)
@@ -6525,8 +6530,9 @@ async fn stamp_write_failure_aborts_instead_of_presenting() {
         "test",
     ));
     let lock = mgr
-        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT)
+        .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT, lock::Heartbeat::Attach)
         .await
+        .into_guard()
         .expect("test must hold the auth.json lock");
     let election = mgr
         .check_consumed_sentinel_gate(TokenType::OidcSession, RefreshReason::PreRequest, &lock)

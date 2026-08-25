@@ -12,6 +12,47 @@ use xai_grok_subagent_resolution::resolve_effective_overrides;
 use xai_grok_tools::implementations::grok_build::task::coordinator::{
     ChildCompletion, CompletionDisposition,
 };
+
+struct DummyLspDispatch;
+
+#[async_trait::async_trait]
+impl xai_grok_tools::implementations::lsp::LspBackend for DummyLspDispatch {
+    fn ensure_started_background(&self) {}
+
+    async fn ensure_ready(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn is_ready(&self) -> bool {
+        true
+    }
+
+    async fn dispatch(
+        &self,
+        _input: &xai_grok_tools::implementations::lsp::LspToolInput,
+    ) -> xai_grok_tools::implementations::lsp::LspToolResult {
+        xai_grok_tools::implementations::lsp::LspToolResult {
+            text: String::new(),
+            is_error: false,
+        }
+    }
+
+    async fn drain_diagnostics(
+        &self,
+        _timeout: std::time::Duration,
+    ) -> Option<xai_grok_tools::implementations::lsp::DiagnosticsSummary> {
+        None
+    }
+
+    async fn notify_file_changed(&self, _path: &std::path::Path, _content: &str) {}
+
+    async fn read_diagnostics(
+        &self,
+        _paths: &[std::path::PathBuf],
+    ) -> Vec<xai_grok_tools::implementations::lsp::FileDiagnosticEntry> {
+        Vec::new()
+    }
+}
 #[test]
 fn canonical_total_tokens_does_not_double_count_reasoning() {
     let totals = xai_chat_state::UsageTotals {

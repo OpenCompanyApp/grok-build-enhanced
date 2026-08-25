@@ -1616,7 +1616,7 @@ mod compacted_history_shape_tests {
         discovered_agents_md: &[std::path::PathBuf],
     ) -> Vec<ConversationItem> {
         let system_reminder =
-            to_system_reminder_sync(state_context, discovered_agents_md, &[], None, None);
+            to_system_reminder_sync(state_context, discovered_agents_md, &[], None, None, None);
         build_compacted_history_shared(CompactedHistoryInput {
             system_message: ConversationItem::system(system_prompt),
             user_message_prefix: user_message_prefix.to_string(),
@@ -1985,7 +1985,7 @@ mod compacted_history_shape_tests {
             cancel: "kill_command_or_subagent".into(),
         };
         let system_reminder =
-            to_system_reminder_sync(&state_context, &[], &[], Some(&tool_names), None);
+            to_system_reminder_sync(&state_context, &[], &[], Some(&tool_names), None, None);
         let reminder = system_reminder.expect("should produce a system-reminder");
         assert!(
             reminder.contains("## Running Subagents"),
@@ -2069,7 +2069,7 @@ mod compacted_history_shape_tests {
             },
         )
         .await;
-        let reminder = to_system_reminder_sync(&state_context, &[], &[], None, None)
+        let reminder = to_system_reminder_sync(&state_context, &[], &[], None, None, None)
             .expect("should produce a system-reminder");
         assert!(
             reminder.contains("## Running Background Tasks"),
@@ -2108,7 +2108,7 @@ mod compacted_history_shape_tests {
             },
         )
         .await;
-        let system_reminder = to_system_reminder_sync(&state_context, &[], &[], None, None);
+        let system_reminder = to_system_reminder_sync(&state_context, &[], &[], None, None, None);
         let reminder = system_reminder.expect("should produce a system-reminder for edited files");
         assert!(
             !reminder.contains("## Running Subagents"),

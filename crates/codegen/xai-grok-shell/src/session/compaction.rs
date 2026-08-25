@@ -2683,7 +2683,7 @@ mod inline_auto_compact_flow_tests {
             file_state_tracker: Arc::new(FileStateTracker::new()),
             rewind_pending_prompt: std::sync::Mutex::new(None),
             delivery_tools: std::cell::RefCell::new(Vec::new()),
-            attach_non_interactive: std::cell::Cell::new(false),
+            attach_non_interactive: std::cell::Cell::new(false).into(),
             startup_hints: StartupHints::default(),
             forked_tool_override: None,
             compaction: crate::session::compaction_config::CompactionConfig {
@@ -2726,6 +2726,7 @@ mod inline_auto_compact_flow_tests {
             session_start: std::time::Instant::now(),
             inference_idle_timeout: std::time::Duration::from_secs(300),
             max_retries: 3,
+            rate_limit_waits: crate::session::acp_session::RateLimitWaitConfig::default(),
             max_turns: None,
             pending_interjections: InterjectionBuffer::new(),
             turn_report: Default::default(),

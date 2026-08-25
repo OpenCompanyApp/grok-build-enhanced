@@ -1355,13 +1355,14 @@ impl SessionActor {
         error: xai_grok_sampler::SamplingErrorInfo,
         rate_limit_waits: u32,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
-        self.handle_sampling_failure_with_codex_policy(error, true, true)
+        self.handle_sampling_failure_with_codex_policy(error, rate_limit_waits, true, true)
             .await
     }
 
     async fn handle_sampling_failure_with_codex_policy(
         self: &Arc<Self>,
         error: xai_grok_sampler::SamplingErrorInfo,
+        rate_limit_waits: u32,
         _allow_codex_recovery: bool,
         allow_kimi_size_recovery: bool,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
@@ -1476,7 +1477,7 @@ impl SessionActor {
             if request_provider == xai_grok_sampling_types::ProviderId::Xai {
                 self.send_xai_notification(XaiSessionUpdate::RetryState(
                     crate::extensions::notification::RetryState::Exhausted {
-                        attempts: 0,
+                        attempts: rate_limit_waits,
                         reason: detailed_message.clone(),
                         is_rate_limited: true,
                     },
@@ -1786,11 +1787,10 @@ impl SessionActor {
             )),
         )
     }
-    /// Drive a single turn through the sampler-based path.
+    /// Drive one turn through the sampler, pacing a subagent's 429s via
+    /// `budget` while retaining provider-specific recovery budgets.
     ///
-    /// Calls `prepare_sampler_for_turn` first (auth refresh + config
-    /// push), then submits via `SamplerHandle::submit_and_collect` and
-    /// returns:
+    /// Returns:
     /// * `Ok(SamplerTurnOutcome::Response(_))` - model responded.
     /// * `Ok(SamplerTurnOutcome::CompactAndResubmit)` - compaction
     ///    ran, the outer turn loop should `continue`.
@@ -1801,24 +1801,73 @@ impl SessionActor {
     pub(crate) async fn run_turn_via_sampler(
         self: &Arc<Self>,
         mut request: ConversationRequest,
+        budget: &mut RateLimitWaitBudget,
         allow_codex_auth_recovery: bool,
         allow_kimi_size_recovery: bool,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
+        self.prepare_sampler_for_turn().await?;
+        self.resolve_request_image_capability(&mut request).await;
+        if !budget.can_wait() {
+            return match self.submit_turn_request(request).await {
+                Ok(outcome) => Ok(outcome),
+                Err(info) => {
+                    self.recover_from_sampling_failure(
+                        info,
+                        budget,
+                        allow_codex_auth_recovery,
+                        allow_kimi_size_recovery,
+                    )
+                    .await
+                }
+            };
+        }
+        loop {
+            match self.submit_turn_request(request.clone()).await {
+                Ok(outcome) => {
+                    budget.record_submission_accepted();
+                    return Ok(outcome);
+                }
+                Err(info) => {
+                    let decision = budget.decide(&info);
+                    let RateLimitWaitDecision::Wait { attempt, backoff } = decision else {
+                        self.log_rate_limit_budget_spent(decision, &info);
+                        return self
+                            .recover_from_sampling_failure(
+                                info,
+                                budget,
+                                allow_codex_auth_recovery,
+                                allow_kimi_size_recovery,
+                            )
+                            .await;
+                    };
+                    self.notify_rate_limit_wait(attempt, budget, backoff).await;
+                    sleep(backoff).await;
+                    self.prepare_sampler_for_turn().await?;
+                    self.resolve_request_image_capability(&mut request).await;
+                }
+            }
+        }
+    }
+
+    async fn resolve_request_image_capability(&self, request: &mut ConversationRequest) {
+        // Resolve against the active provider/model and the live authenticated
+        // catalog immediately before handing this request-copy to Responses.
+        if let Some(sampling) = self.chat_state_handle.get_sampling_config().await {
+            request.image_input_capability = self
+                .models_manager
+                .codex_image_input_capability_for_request(sampling.provider, &sampling.model);
+        }
+    }
+
+    async fn submit_turn_request(
+        self: &Arc<Self>,
+        request: ConversationRequest,
+    ) -> Result<SamplerTurnOutcome, xai_grok_sampler::SamplingErrorInfo> {
         struct DrainBarrier<'a>(&'a parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
         impl Drop for DrainBarrier<'_> {
             fn drop(&mut self) {
                 self.0.lock().take();
             }
-        }
-        self.prepare_sampler_for_turn().await?;
-        // Resolve against the active provider/model and the live authenticated
-        // catalog immediately before handing this request-copy to Responses.
-        // Every loop iteration (including after a model/provider switch) gets a
-        // fresh decision; the chat-state conversation is never rewritten.
-        if let Some(sampling) = self.chat_state_handle.get_sampling_config().await {
-            request.image_input_capability = self
-                .models_manager
-                .codex_image_input_capability_for_request(sampling.provider, &sampling.model);
         }
         let (_barrier, stream_drained_rx) = {
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1857,22 +1906,32 @@ impl SessionActor {
             }
             Err(rich_err) => {
                 self.turn_stream_drained.lock().take();
-                let info = xai_grok_sampler::SamplingErrorInfo::from(&rich_err);
-                match self
-                    .handle_sampling_failure_with_codex_policy(
-                        info,
-                        allow_codex_auth_recovery,
-                        allow_kimi_size_recovery,
-                    )
-                    .await?
-                {
-                    SamplerFailureRecovery::CompactAndResubmit => {
-                        Ok(SamplerTurnOutcome::CompactAndResubmit)
-                    }
-                    SamplerFailureRecovery::RefreshAuthAndResubmit { credential, store } => {
-                        Ok(SamplerTurnOutcome::RefreshAuthAndResubmit { credential, store })
-                    }
-                }
+                Err(xai_grok_sampler::SamplingErrorInfo::from(&rich_err))
+            }
+        }
+    }
+
+    async fn recover_from_sampling_failure(
+        self: &Arc<Self>,
+        info: xai_grok_sampler::SamplingErrorInfo,
+        budget: &RateLimitWaitBudget,
+        allow_codex_auth_recovery: bool,
+        allow_kimi_size_recovery: bool,
+    ) -> Result<SamplerTurnOutcome, acp::Error> {
+        match self
+            .handle_sampling_failure_with_codex_policy(
+                info,
+                budget.attempts_used(),
+                allow_codex_auth_recovery,
+                allow_kimi_size_recovery,
+            )
+            .await?
+        {
+            SamplerFailureRecovery::CompactAndResubmit => {
+                Ok(SamplerTurnOutcome::CompactAndResubmit)
+            }
+            SamplerFailureRecovery::RefreshAuthAndResubmit { credential, store } => {
+                Ok(SamplerTurnOutcome::RefreshAuthAndResubmit { credential, store })
             }
         }
     }

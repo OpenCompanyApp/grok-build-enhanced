@@ -2062,6 +2062,7 @@ async fn test_append_feedback_creates_file_and_persists() {
             context_window_tokens: None,
             terminal_info: None,
             unified_log_url: None,
+            images: vec![],
         }),
     });
     adapter.append_feedback(&info, &user_entry).await.unwrap();

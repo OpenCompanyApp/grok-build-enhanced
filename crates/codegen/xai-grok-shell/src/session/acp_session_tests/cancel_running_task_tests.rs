@@ -196,7 +196,7 @@ fn persist_ack_waits_for_disk_flush_before_success() {
                             rewind_pending_prompt: std::sync::Mutex::new(None),
                             startup_hints: StartupHints::default(),
                             delivery_tools: std::cell::RefCell::new(Vec::new()),
-                            attach_non_interactive: std::cell::Cell::new(false),
+                            attach_non_interactive: std::cell::Cell::new(false).into(),
                             forked_tool_override: None,
                             compaction: crate::session::compaction_config::CompactionConfig {
                                 threshold_percent: std::cell::Cell::new(85),
@@ -243,6 +243,8 @@ fn persist_ack_waits_for_disk_flush_before_success() {
                             session_start: std::time::Instant::now(),
                             inference_idle_timeout: Duration::from_secs(300),
                             max_retries: 3,
+                            rate_limit_waits:
+                                crate::session::acp_session::RateLimitWaitConfig::default(),
                             max_turns: None,
                             pending_interjections: InterjectionBuffer::new(),
                             pending_skill_reminders: Mutex::new(Vec::new()),

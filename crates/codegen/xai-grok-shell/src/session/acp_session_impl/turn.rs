@@ -2304,6 +2304,7 @@ impl SessionActor {
         let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut todo_gate_fires: u32 = 0;
         let mut auth_retry_schedule = AuthRetrySchedule::new();
+        let mut rate_limit_waits = self.rate_limit_wait_budget();
         let mut codex_auth_retry_attempted = false;
         let mut kimi_size_recovery_attempted = false;
         let mut turn_span_totals = TurnSpanTotals::default();
@@ -2587,6 +2588,7 @@ impl SessionActor {
             let (response, latency) = match self
                 .run_turn_via_sampler(
                     request.clone(),
+                    &mut rate_limit_waits,
                     !codex_auth_retry_attempted,
                     !kimi_size_recovery_attempted,
                 )

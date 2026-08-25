@@ -790,7 +790,7 @@ async fn codex_401_uses_provider_scoped_auth_label_and_login_commands() {
             );
 
             let result = actor
-                .handle_sampling_failure(unauthorized_401_error())
+                .handle_sampling_failure(unauthorized_401_error(), 0)
                 .await;
             let err = match result {
                 Err(error) => error,
@@ -878,9 +878,10 @@ async fn non_xai_429_keeps_provider_detail_and_never_uses_xai_billing_code() {
             actor.chat_state_handle.update_sampling_config(sampling);
 
             let error = match actor
-                .handle_sampling_failure(rate_limited_error(
-                    "Kimi provider capacity is temporarily unavailable",
-                ))
+                .handle_sampling_failure(
+                    rate_limited_error("Kimi provider capacity is temporarily unavailable"),
+                    0,
+                )
                 .await
             {
                 Err(error) => error,
@@ -929,7 +930,7 @@ async fn kimi_401_does_not_run_xai_auth_recovery() {
             sampling.base_url = xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned();
             actor.chat_state_handle.update_sampling_config(sampling);
 
-            let result = actor.handle_sampling_failure(auth_error()).await;
+            let result = actor.handle_sampling_failure(auth_error(), 0).await;
 
             assert!(result.is_err(), "Kimi 401 must remain terminal");
             assert!(
@@ -958,7 +959,7 @@ async fn kimi_401_surfaces_provider_scoped_reauthentication_details() {
             sampling.base_url = xai_grok_sampling_types::KIMI_CODE_BASE_URL.to_owned();
             actor.chat_state_handle.update_sampling_config(sampling);
 
-            let error = match actor.handle_sampling_failure(auth_error()).await {
+            let error = match actor.handle_sampling_failure(auth_error(), 0).await {
                 Err(error) => error,
                 Ok(_) => panic!("Kimi 401 must be terminal"),
             };
@@ -1872,7 +1873,7 @@ async fn custom_provider_401_with_no_key_mints_before_resubmission() {
             credentials.api_key = None;
             actor.chat_state_handle.update_credentials(credentials);
 
-            let result = actor.handle_sampling_failure(auth_error()).await;
+            let result = actor.handle_sampling_failure(auth_error(), 0).await;
 
             assert!(matches!(
                 result,
@@ -1921,7 +1922,7 @@ async fn custom_provider_401_remints_once_without_xai_recovery() {
                 std::time::Duration::from_secs(60),
             );
 
-            let result = actor.handle_sampling_failure(auth_error()).await;
+            let result = actor.handle_sampling_failure(auth_error(), 0).await;
             assert!(matches!(
                 result,
                 Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
@@ -1955,7 +1956,7 @@ async fn non_auth_kind_401_still_uses_custom_provider_recovery() {
 
             let mut error = auth_error();
             error.kind = xai_grok_sampler::SamplingErrorKind::Api;
-            let result = actor.handle_sampling_failure(error).await;
+            let result = actor.handle_sampling_failure(error, 0).await;
             assert!(matches!(
                 result,
                 Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
@@ -1989,7 +1990,12 @@ async fn fresh_rejected_custom_provider_token_surfaces_and_is_cleared() {
                     .await;
             seed_provider_memo(&actor, provider).await;
 
-            assert!(actor.handle_sampling_failure(auth_error()).await.is_err());
+            assert!(
+                actor
+                    .handle_sampling_failure(auth_error(), 0)
+                    .await
+                    .is_err()
+            );
             assert_eq!(
                 actor.chat_state_handle.get_credentials().await.api_key,
                 None,
