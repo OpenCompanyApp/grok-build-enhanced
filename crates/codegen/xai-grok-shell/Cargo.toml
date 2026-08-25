@@ -12,9 +12,14 @@ test-support = []
 test-util = []
 # Local Computer Hub workspace_server (own/attach + crash-restart). Requires
 local-workspace = []
+# CI default set (preferred over cargo `default` for hermetic CI builds):
+# `config-docs` is on this set (not cargo `default`) so hermetic lib tests
+# parse the committed config-reference page.
+config-docs = []
 default-bazel = [
     "local-workspace",
     "test-support",
+    "config-docs",
 ]
 
 [dependencies]
@@ -40,6 +45,7 @@ futures = { workspace = true }
 glob = { workspace = true }
 globset = { workspace = true }
 kanal = "0.1"
+loom = { workspace = true, optional = true }
 regex = { workspace = true }
 # rmcp 2.1 + reqwest 0.13 are quarantined inside `xai-grok-mcp`. The remaining
 # MCP code in this crate (extensions/mcp.rs, mcp_doctor.rs) reaches rmcp model
@@ -77,7 +83,7 @@ tracing-subscriber = { workspace = true, features = [
     "time",
 ] }
 obfstr = { workspace = true }
-tokio-util = { workspace = true, features = ["compat"] }
+tokio-util = { workspace = true, features = ["compat", "rt"] }
 tokio-retry = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v5", "v7"] }
 xai-acp-lib = { workspace = true }
@@ -96,7 +102,6 @@ rustls = { version = "0.23", default-features = false, features = [
     "std",
     "tls12",
 ] }
-rustls-native-certs = "0.8"
 futures-util = { workspace = true }
 urlencoding = { workspace = true }
 gethostname = { workspace = true }
@@ -137,6 +142,7 @@ xai-chat-state = { path = "../xai-chat-state" }
 # Segment markdown rendering + the `compaction/` store path convention.
 xai-compaction-transcript = { workspace = true }
 xai-grok-compaction = { path = "../../common/xai-grok-compaction" }
+xai-grok-extra-ca = { workspace = true }
 xai-grok-provider-http = { path = "../xai-grok-provider-http" }
 xai-grok-sampler = { path = "../xai-grok-sampler" }
 # Session FTS search; owns this crate's only rusqlite/bundled-SQLite use.

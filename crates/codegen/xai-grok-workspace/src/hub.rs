@@ -39,7 +39,8 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use url::Url;
 use xai_computer_hub_sdk::{
-    AuthProvider, ClientError, HubConnectionPool, ToolServer, ToolServerBuilder, ToolServerHandler,
+    AuthProvider, CLOSE_CODE_SANDBOX_TERMINATED, ClientError, HubConnectionPool, ToolServer,
+    ToolServerBuilder, ToolServerHandler,
 };
 use xai_grok_diag_server::DiagHandle;
 use xai_grok_tools::registry::types::ToolConfig;

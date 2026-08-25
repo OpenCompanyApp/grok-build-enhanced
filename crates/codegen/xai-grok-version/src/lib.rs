@@ -29,6 +29,9 @@ pub const VERSION: &str = match option_env!("GROK_VERSION") {
     None => env!("CARGO_PKG_VERSION"),
 };
 
+/// Release builds inject `GROK_VERSION`; source builds use the crate version.
+pub const IS_DEV_BUILD: bool = option_env!("GROK_VERSION").is_none();
+
 /// Audited Grok Build package version this fork was based on. Unlike
 /// [`VERSION`], this is never replaced by a downstream release tag.
 pub const UPSTREAM_BASE_VERSION: &str = env!("CARGO_PKG_VERSION");

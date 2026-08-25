@@ -381,6 +381,7 @@ impl SessionActor {
         self: &Arc<Self>,
         request: TurnInputRequest,
     ) -> PromptTurnResult {
+        let _active = xai_grok_telemetry::activity::TURNS_ACTIVE.enter();
         let TurnInputRequest {
             prompt_id,
             input_origin,
@@ -1725,7 +1726,7 @@ impl SessionActor {
             None,
         )
         .await;
-        self.record_assistant_response(ConversationItem::assistant(text))
+        self.record_assistant_response(ConversationItem::assistant(text), false)
             .await;
     }
 
@@ -2892,16 +2893,9 @@ impl SessionActor {
                 stop_reason == Some(xai_grok_sampling_types::StopReason::ContentFilter);
             let refusal_explanation = response.stop_message.clone();
             let final_answer_text = json_schema.is_some().then(|| response.assistant_text());
-            for item in response.items {
-                match item {
-                    xai_grok_sampling_types::ConversationItem::Assistant(_) => {
-                        self.record_assistant_response(item).await;
-                    }
-                    _ => {
-                        self.chat_state_handle.push_tool_result(item);
-                    }
-                }
-            }
+            let usage_reported = response.usage.is_some();
+            self.record_response_items(response.items, usage_reported)
+                .await;
             if let Some(text) = fallback_text {
                 tracing::warn!(
                     text_len = text.len(),

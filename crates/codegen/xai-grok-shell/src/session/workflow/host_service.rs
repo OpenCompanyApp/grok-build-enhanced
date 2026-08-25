@@ -73,6 +73,7 @@ pub(crate) struct WorkflowHostParams {
     >,
     pub parent_session_id: String,
     pub allow_fork_context: bool,
+    pub effort: Option<xai_grok_sampling_types::ReasoningEffort>,
     pub templates: std::collections::HashMap<String, String>,
     pub telemetry: TelemetryHook,
     pub stats: Arc<WorkflowAgentStats>,
@@ -443,6 +444,19 @@ impl HostService {
             );
         }
 
+        let reasoning_effort = opts
+            .effort
+            .as_deref()
+            .map(|effort| {
+                effort
+                    .parse::<xai_grok_sampling_types::ReasoningEffort>()
+                    .map_err(|error| {
+                        HostError::Failed(format!("invalid workflow agent effort: {error}"))
+                    })
+            })
+            .transpose()?
+            .or(self.params.effort);
+
         let id = uuid::Uuid::now_v7().to_string();
         let explicit_label = opts.label.clone();
         let capability_mode = match opts.capability_mode.as_deref() {
@@ -507,6 +521,7 @@ impl HostService {
                     cwd: None,
                     runtime_overrides: SubagentRuntimeOverrides {
                         model: opts.model.clone(),
+                        reasoning_effort: reasoning_effort.map(|effort| effort.to_string()),
                         output_token_budget: None,
                         model_override_provenance: ModelOverrideProvenance::Tool,
                         capability_mode,

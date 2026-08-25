@@ -2,7 +2,9 @@
 //! session. Split from `acp_agent.rs`, whose trait impl delegates all four.
 //!
 //! [session setup]: https://agentclientprotocol.com/protocol/v1/session-setup
-use super::reasoning_effort::{EffortTarget, NewSessionEffort, split_new_session_effort};
+use super::reasoning_effort::{
+    EffortTarget, NewSessionEffort, resolve_new_session_effort_hint, split_new_session_effort,
+};
 use super::*;
 use super::acp_agent::{
     is_strict_kimi_code_model_id, is_strict_open_code_go_model_id,
@@ -413,7 +415,10 @@ impl MvpAgent {
         });
         let effort_route = split_new_session_effort(
             resolved_custom_model,
-            parse_reasoning_effort_meta(arguments.meta.as_ref()),
+            resolve_new_session_effort_hint(
+                parse_reasoning_effort_meta(arguments.meta.as_ref()),
+                self.models_manager.current_reasoning_effort(),
+            ),
         );
         let spawn_effort = match effort_route {
             NewSessionEffort::Spawn(effort) => Some(effort),

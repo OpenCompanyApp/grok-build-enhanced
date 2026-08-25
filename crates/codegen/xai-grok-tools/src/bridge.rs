@@ -545,6 +545,13 @@ impl ToolBridge {
         let _ = self.registry.update_resource(resource).await;
     }
 
+    pub async fn update_resources_with(
+        &self,
+        seed: impl FnOnce(&mut crate::types::resources::Resources),
+    ) {
+        self.registry.update_resources_with(seed).await;
+    }
+
     /// Remove a typed resource when a provider switch invalidates it.
     pub async fn remove_resource<T: Send + Sync + 'static>(&self) -> Option<T> {
         self.registry.remove_resource::<T>().await

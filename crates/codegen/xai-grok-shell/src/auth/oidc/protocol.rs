@@ -791,6 +791,8 @@ mod tests {
             code_verifier: "v".into(),
             code_challenge: "c".into(),
         };
+        let nonce = test_nonce();
+        let nonce_q = format!("nonce={nonce}");
         let url = build_authorize_url(
             &config,
             None,
@@ -798,7 +800,7 @@ mod tests {
             "http://127.0.0.1:9999/callback",
             &pkce,
             "state123",
-            "nonce123",
+            &nonce,
         );
         for required in [
             "response_type=code",
@@ -806,7 +808,7 @@ mod tests {
             "code_challenge=c",
             "code_challenge_method=S256",
             "state=state123",
-            "nonce=nonce123",
+            nonce_q.as_str(),
             "scope=openid",
             "audience=api",
             "referrer=grok-build",
@@ -852,7 +854,7 @@ mod tests {
             "http://127.0.0.1:9999/callback",
             &pkce,
             "state123",
-            "nonce123",
+            &test_nonce(),
         );
         assert!(url.contains("principal_type=Team"));
         assert!(url.contains("principal_id=team-123"));
@@ -896,7 +898,7 @@ mod tests {
             "http://127.0.0.1:9999/callback",
             &pkce,
             "state123",
-            "nonce123",
+            &test_nonce(),
         );
         assert!(url.contains("referrer=grok-desktop"));
         assert!(!url.contains("referrer=grok-build"));
@@ -919,7 +921,7 @@ mod tests {
             &discovery,
             "https://example.okta.com",
             "test-client",
-            "nonce123",
+            &test_nonce(),
             Some("Team"),
             Some("team-123"),
             None,
@@ -983,7 +985,7 @@ mod tests {
             &discovery,
             &issuer,
             "wrong-client",
-            TEST_NONCE,
+            &test_nonce(),
             None,
             None,
             None,

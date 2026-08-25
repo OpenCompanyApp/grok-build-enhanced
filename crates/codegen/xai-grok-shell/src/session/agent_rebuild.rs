@@ -48,8 +48,8 @@ use xai_grok_agent::prompt::context::PromptAudience;
 use xai_grok_agent::prompt::skills::SkillsConfig;
 use xai_grok_agent::{Agent, AgentBuilder, CompactionPolicy, ReminderPolicy};
 use xai_grok_tools::computer::types::{AsyncFileSystem, TerminalBackend};
+use xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployerConfig;
 use xai_grok_tools::implementations::grok_build::ask_user_question::types::UserQuestionRequest;
-use xai_grok_tools::implementations::grok_build::deploy_app::AppBuilderDeployerConfig;
 use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
 use xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventBuffer;
 use xai_grok_tools::implementations::grok_build::task::types::{SubagentEvent, TaskModelValidator};
@@ -171,7 +171,8 @@ impl AgentRebuildSpec {
         self: &Arc<Self>,
         definition: AgentDefinition,
     ) -> Result<Agent, AgentBuildError> {
-        self.build_agent_inner(definition, None, None).await
+        let (agent, _build_elapsed) = self.build_agent_inner(definition, None, None).await?;
+        Ok(agent)
     }
     /// Build an agent with optional one-shot overrides for initial spawn.
     ///
@@ -184,12 +185,16 @@ impl AgentRebuildSpec {
     ///
     /// Both are consumed once — the rebuild path (`build_agent`) passes
     /// `None` for both so zero-turn model switches get fresh discovery.
+    /// Returns the built agent and the pure construction time (entry to
+    /// `SB_BUILDER_DONE`, before the batched resource seed), so the caller can
+    /// attribute `AgentBuild` and `ToolSetup` phases to the same boundaries the
+    /// waterfall marks use.
     pub(crate) async fn build_agent_with_initial_overrides(
         self: &Arc<Self>,
         definition: AgentDefinition,
         persisted_skill_names: Option<std::collections::HashSet<String>>,
         preloaded_skills: Option<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>>,
-    ) -> Result<Agent, AgentBuildError> {
+    ) -> Result<(Agent, std::time::Duration), AgentBuildError> {
         self.build_agent_inner(definition, persisted_skill_names, preloaded_skills)
             .await
     }
@@ -199,7 +204,8 @@ impl AgentRebuildSpec {
         definition: AgentDefinition,
         persisted_skill_names: Option<std::collections::HashSet<String>>,
         preloaded_skills: Option<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>>,
-    ) -> Result<Agent, AgentBuildError> {
+    ) -> Result<(Agent, std::time::Duration), AgentBuildError> {
+        let build_phase_start = std::time::Instant::now();
         let Self {
             working_directory,
             terminal_backend,
@@ -266,6 +272,8 @@ impl AgentRebuildSpec {
         let _ = codex_web_search_settings;
         let _ = web_search_disabled;
         let _ = web_search_provider;
+        let _ = user_question_tx;
+        let _ = managed_gateway_tool_client;
         #[allow(unused_variables)]
         let is_cursor_template =
             crate::session::is_cursor_system_template(&definition.system_prompt);
@@ -361,6 +369,8 @@ impl AgentRebuildSpec {
             builder = builder.with_preloaded_skills(skills);
         }
         let agent = builder.build().await?;
+        crate::waterfall::mark(session_id_str, crate::waterfall::stage::SB_BUILDER_DONE);
+        let agent_build_elapsed = build_phase_start.elapsed();
         let model_validator = models_manager.clone();
         agent
             .tool_bridge()
@@ -424,17 +434,7 @@ impl AgentRebuildSpec {
                 *scheduler_background_loops,
             ))
             .await;
-        if let Some(client) = managed_gateway_tool_client.clone() {
-            agent.tool_bridge().update_resource(client).await;
-        }
-        {
-            use xai_grok_tools::implementations::grok_build::ask_user_question::UserQuestionSender;
-            agent
-                .tool_bridge()
-                .update_resource(UserQuestionSender(user_question_tx.clone()))
-                .await;
-        }
-        Ok(agent)
+        Ok((agent, agent_build_elapsed))
     }
 }
 /// Build a stub [`AgentRebuildSpec`] for unit tests.

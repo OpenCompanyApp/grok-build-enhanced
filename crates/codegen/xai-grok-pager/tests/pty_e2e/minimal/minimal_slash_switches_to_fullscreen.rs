@@ -2,9 +2,8 @@
 #[allow(unused_imports)]
 use crate::common::*;
 
-/// `/fullscreen` from a minimal session re-execs the pager without `--minimal`
-/// and with `--resume <id>`, reopening the same conversation under the
-/// fullscreen alt-screen TUI. The reverse of `minimal_slash_switches_from_fullscreen`.
+/// `/fullscreen` from a minimal session switches in place (no re-exec); the
+/// in-memory conversation renders in the alt-screen scrollback pane.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn minimal_slash_switches_to_fullscreen() {
@@ -26,22 +25,18 @@ async fn minimal_slash_switches_to_fullscreen() {
         .wait_for_full_text(&sentinel, Duration::from_secs(30))
         .expect("turn committed in minimal");
 
-    // Switch back to fullscreen. Wait for the dropdown row so Enter confirms
-    // the command (not a bare paste of the text).
     inject_keys_paced(&mut harness, b"/fullscreen");
     harness
         .wait_for_text(
-            "Reopen this session in fullscreen mode",
+            "Switch this session to fullscreen mode",
             Duration::from_secs(5),
         )
         .expect("slash dropdown offers /fullscreen");
     harness.update(Duration::from_millis(150));
     harness.inject_keys(b"\r").expect("submit /fullscreen");
 
-    // Prior turn content is already on the minimal screen, so we cannot use
-    // `wait_for_text(sentinel)` as the transition signal — it would return
-    // immediately. Wait until the minimal idle status line is gone (proves we
-    // left scrollback-native mode) while the prior turn remains visible.
+    // The sentinel is already visible pre-switch, so the transition signal is
+    // the minimal idle status disappearing while history stays present.
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
         harness.update(Duration::from_millis(100));

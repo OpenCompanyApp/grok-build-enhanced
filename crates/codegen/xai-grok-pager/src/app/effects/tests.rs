@@ -2025,6 +2025,19 @@ fn to_meta_emits_auto_mode_when_enabled() {
              back to the shell's connect-time default / leader injection)"
         );
 }
+#[test]
+fn create_permission_override_replaces_global_permission_seeds() {
+    let flags = SessionFlags {
+        yolo_mode: true,
+        auto_mode: false,
+        ..Default::default()
+    };
+    let mut meta = flags.to_meta();
+    apply_permission_mode_override(&mut meta, Some(PermissionModeKind::Auto));
+    let meta = meta.expect("permission metadata");
+    assert_eq!(meta["yoloMode"], false);
+    assert_eq!(meta["autoMode"], true);
+}
 /// yoloMode must ride the meta explicitly for BOTH polarities — absent
 /// key ≠ off (see the emit-site comment in `to_meta`). Pins the
 /// pre-session Always-Approve → Normal cycle not creating a yolo session.

@@ -1,7 +1,7 @@
 //! Auxiliary model-call concern for `SessionActor`: side questions, recap
 //! generation, and AI-suggest.
 
-use super::side_call::{AuxCall, log_prompt_cache_hit};
+use super::side_call::{AuxCall, log_prompt_cache_usage};
 use super::*;
 
 use crate::session::SideQuestionError;
@@ -144,7 +144,7 @@ impl SessionActor {
 
         match result {
             Ok(response) => {
-                log_prompt_cache_hit("btw", sampling_client.api_backend(), &response);
+                log_prompt_cache_usage("btw", sampling_client.api_backend(), &response);
                 let content = response.assistant_text();
                 if content.is_empty() {
                     let err = SideQuestionError::EmptyResponse;
@@ -327,7 +327,7 @@ impl SessionActor {
             }
         };
 
-        log_prompt_cache_hit("recap", setup.client.api_backend(), &response);
+        log_prompt_cache_usage("recap", setup.client.api_backend(), &response);
         let raw_response = response.assistant_text();
         let summary = session_recap::clean_recap_text(&raw_response);
         if summary.is_empty() {

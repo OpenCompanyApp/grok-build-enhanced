@@ -36,9 +36,18 @@ impl StreamingSttSession {
     pub async fn connect(config: &VoiceConfig, bearer: &str) -> Result<Self, VoiceError> {
         let request = build_stt_request(config, bearer)?;
 
+        // The default connector never sees the shared trust config.
+        let connector =
+            tokio_tungstenite::Connector::Rustls(xai_grok_extra_ca::rustls_client_config());
+        let disable_nagle = false;
         let (ws, _) = tokio::time::timeout(
             Duration::from_secs(15),
-            tokio_tungstenite::connect_async(request),
+            tokio_tungstenite::connect_async_tls_with_config(
+                request,
+                None,
+                disable_nagle,
+                Some(connector),
+            ),
         )
         .await
         .map_err(|_| VoiceError::WebSocket("connect timed out".into()))?

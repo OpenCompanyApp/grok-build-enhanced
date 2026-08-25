@@ -1053,6 +1053,7 @@ mod tests {
     }
 }
 
+#[allow(clippy::disallowed_methods)] // test clients hit localhost mocks
 #[cfg(test)]
 mod forbidden_tests {
     use super::*;

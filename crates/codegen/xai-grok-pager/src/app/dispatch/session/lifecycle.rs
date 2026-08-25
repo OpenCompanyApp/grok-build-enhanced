@@ -468,6 +468,7 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
         agent_id,
         cwd: effective_cwd,
         model_id,
+        permission_mode_override: None,
         preferred_session_id,
         chat_kind,
     });
@@ -998,6 +999,7 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
         label,
         git_ref,
         model_id,
+        permission_mode_override: None,
         preferred_session_id,
         chat_kind,
     }];
@@ -1103,6 +1105,7 @@ pub(in crate::app::dispatch) fn skip_picker_and_create_session(
         agent_id,
         cwd: app.cwd.clone(),
         model_id: None,
+        permission_mode_override: None,
         preferred_session_id,
         chat_kind,
     }]
@@ -1124,7 +1127,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
             && let Some(cmd) = switch_hint
         {
             agent.scrollback.push_block(RenderBlock::system(format!(
-                "Session {} \u{2014} use {cmd} to switch between sessions",
+                "Session {}, use {cmd} to switch between sessions",
                 session_id_clone.0,
             )));
         } else if agent_count > 1 {
@@ -1182,7 +1185,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
             agent_id,
             session_id: Some(session_id_clone.clone()),
             silent: true,
-            nonce: 0,
+            nonce: Default::default(),
         });
         if let Some(switch) = deferred {
             effects.push(Effect::SwitchModel {
@@ -1291,7 +1294,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
             agent_id,
             session_id: Some(session_id_clone.clone()),
             silent: true,
-            nonce: 0,
+            nonce: Default::default(),
         });
         if let Some(switch) = deferred {
             effects.push(Effect::SwitchModel {

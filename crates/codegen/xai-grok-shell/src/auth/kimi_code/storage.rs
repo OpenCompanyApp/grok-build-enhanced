@@ -49,9 +49,13 @@ impl KimiCodeCredentialStore {
 
     pub async fn save(&self, credentials: KimiCodeCredentials) -> Result<(), KimiCodeAuthError> {
         credentials.validate_persisted()?;
-        let lock = try_lock_auth_file_async(&self.auth_path, AUTH_FILE_LOCK_TIMEOUT)
-            .await
-            .ok_or(KimiCodeAuthError::LockTimeout)?;
+        let lock = try_lock_auth_file_async(
+            &self.auth_path,
+            AUTH_FILE_LOCK_TIMEOUT,
+            crate::auth::manager::lock::Heartbeat::Skip,
+        )
+        .await
+        .ok_or(KimiCodeAuthError::LockTimeout)?;
         if !lock.still_live(&self.auth_path) {
             return Err(KimiCodeAuthError::LockTimeout);
         }
@@ -62,9 +66,13 @@ impl KimiCodeCredentialStore {
     }
 
     pub async fn remove(&self) -> Result<bool, KimiCodeAuthError> {
-        let lock = try_lock_auth_file_async(&self.auth_path, AUTH_FILE_LOCK_TIMEOUT)
-            .await
-            .ok_or(KimiCodeAuthError::LockTimeout)?;
+        let lock = try_lock_auth_file_async(
+            &self.auth_path,
+            AUTH_FILE_LOCK_TIMEOUT,
+            crate::auth::manager::lock::Heartbeat::Skip,
+        )
+        .await
+        .ok_or(KimiCodeAuthError::LockTimeout)?;
         if !lock.still_live(&self.auth_path) {
             return Err(KimiCodeAuthError::LockTimeout);
         }

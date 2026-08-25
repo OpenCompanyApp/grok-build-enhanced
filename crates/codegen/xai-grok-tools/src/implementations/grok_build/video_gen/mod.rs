@@ -198,6 +198,10 @@ pub struct VideoGenClient {
     tier_restricted: bool,
     /// See [`VideoGenConfig::Enabled`]'s `zdr_restricted`.
     zdr_restricted: bool,
+    /// Per-request session-id header; kept off `default_headers` so the
+    /// transport stays session-independent and cacheable.
+    session_header: Option<HeaderValue>,
+    defaults_have_session_header: bool,
 }
 
 impl VideoGenClient {
@@ -220,6 +224,8 @@ impl VideoGenClient {
         };
 
         let headers = video_default_headers(api_key, extra_headers)?;
+        let defaults_have_session_header =
+            headers.contains_key(super::image_gen::SESSION_ID_HEADER);
 
         let http = xai_grok_provider_http::with_extra_root_certificates(reqwest::Client::builder())
             .default_headers(headers)
@@ -253,7 +259,39 @@ impl VideoGenClient {
             attribution_callback: None,
             tier_restricted: *tier_restricted,
             zdr_restricted: *zdr_restricted,
+            session_header: None,
+            defaults_have_session_header,
         })
+    }
+
+    /// Attach the session-id header per start/poll request; a
+    /// caller-provided `extra_headers` value is never overridden.
+    /// Every Imagine video API request goes through here so no call site
+    /// can miss the bearer or per-request session header (the presigned
+    /// download client stays separate: its URLs carry their own auth).
+    fn request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        sent_bearer: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let mut req = self.http.request(method, url);
+        if let Some(key) = sent_bearer {
+            req = req.header(AUTHORIZATION, format!("Bearer {key}"));
+        }
+        if let Some(ref session) = self.session_header {
+            req = req.header(super::image_gen::SESSION_ID_HEADER, session.clone());
+        }
+        req
+    }
+
+    pub fn with_session_id(mut self, session_id: &str) -> Self {
+        if !self.defaults_have_session_header
+            && let Ok(value) = HeaderValue::from_str(session_id)
+        {
+            self.session_header = Some(value);
+        }
+        self
     }
 
     /// Whether the current user's tier (free / X Basic) is zero-limited on
@@ -326,8 +364,7 @@ impl VideoGenClient {
 
         let sent_bearer = self.current_bearer().await;
         let mut req = self
-            .http
-            .post(&start_url)
+            .request(reqwest::Method::POST, &start_url, sent_bearer.as_deref())
             .timeout(std::time::Duration::from_secs(VIDEO_START_TIMEOUT_SECS))
             .json(&payload);
         if let Some(ref key) = sent_bearer {
@@ -1321,6 +1358,43 @@ impl xai_tool_runtime::Tool for ReferenceToVideoTool {
 
 #[cfg(test)]
 mod tests {
+    // Mirrors image_gen's post_json pinning: every start/poll request must
+    // route through request(), which attaches both bearer and session id.
+    #[tokio::test]
+    async fn request_attaches_session_and_bearer_headers() {
+        let cfg = VideoGenConfig::Enabled {
+            api_key: "k".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            extra_headers: indexmap::IndexMap::new(),
+            zdr_video_output_s3: None,
+            tier_restricted: false,
+            zdr_restricted: false,
+        };
+        let client = VideoGenClient::new(&cfg, None)
+            .unwrap()
+            .with_session_id("sess-7");
+        let req = client
+            .request(
+                reqwest::Method::POST,
+                "https://api.x.ai/v1/videos",
+                Some("tok"),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            req.headers()
+                .get(super::super::image_gen::SESSION_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("sess-7")
+        );
+        assert_eq!(
+            req.headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer tok")
+        );
+    }
+
     use super::*;
     use crate::types::tool_metadata::test_ctx_with_call_id;
 

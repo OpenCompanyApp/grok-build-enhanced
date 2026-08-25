@@ -21,7 +21,7 @@ mod remedy;
 #[path = "manager/sleep_gate.rs"]
 mod sleep_gate;
 
-use lock::try_lock_auth_file_async;
+use lock::{LockAcquire, try_lock_auth_file_async};
 pub(crate) use remedy::{AuthRemedy, BoundedRefresh, SilentRefresh};
 use sleep_gate::{InFlightGuard, SleepGate};
 
@@ -327,12 +327,6 @@ impl ScopeRemoval {
     }
 }
 
-/// Outcome of [`AuthManager::acquire_refresh_lock_or_adopt`] and
-/// [`AuthManager::revalidate_lock_or_reacquire`]: the `auth.json` file lock is
-/// proven live (or re-acquired) before the irreversible IdP call, so the RAII
-/// guard outlives the exchange and no refresh token is double-spent; `Adopted`
-/// means a sibling's freshly rotated token landed and the caller should return
-/// it without refreshing.
 enum LockOutcome {
     Held(AuthFileLock),
     Adopted(Box<GrokAuth>),
@@ -1489,8 +1483,9 @@ impl AuthManager {
     pub(crate) async fn try_lock_auth_file_async(
         &self,
         timeout: StdDuration,
-    ) -> Option<AuthFileLock> {
-        try_lock_auth_file_async(&self.path, timeout).await
+        heartbeat: lock::Heartbeat,
+    ) -> LockAcquire {
+        try_lock_auth_file_async(&self.path, timeout, heartbeat).await
     }
 
     // ── Refresher setup ─────────────────────────────────────────────
@@ -2044,7 +2039,11 @@ impl AuthManager {
         reason: RefreshReason,
     ) -> Result<LockOutcome, AuthError> {
         let lock_started = std::time::Instant::now();
-        let Some(file_lock) = self.try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT).await else {
+        let Some(file_lock) = self
+            .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT, lock::Heartbeat::Attach)
+            .await
+            .into_option()
+        else {
             tracing::warn!("auth: file lock timed out, waiting for sibling to finish");
             xai_grok_telemetry::unified_log::warn(
                 "auth.refresh.lock_timeout",
@@ -2181,7 +2180,11 @@ impl AuthManager {
             Some(serde_json::json!({ "reason": format!("{reason:?}") })),
         );
         drop(file_lock);
-        let Some(relock) = self.try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT).await else {
+        let Some(relock) = self
+            .try_lock_auth_file_async(REFRESH_LOCK_TIMEOUT, lock::Heartbeat::Attach)
+            .await
+            .into_option()
+        else {
             return Err(AuthError::transient_reason(
                 TransientReason::LockTimeout,
                 "refresh lock lost across suspend and re-acquire \

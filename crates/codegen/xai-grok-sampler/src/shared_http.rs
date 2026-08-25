@@ -1,12 +1,12 @@
-//! Process-wide shared `reqwest::Client`s for sampling requests.
+//! Process-wide shared `reqwest::Client`s for sampling.
 //!
-//! Sharing one client across all `SamplingClient` instances is safe because
-//! the builders below take no config-derived input: auth, extra headers, base
-//! URL, and User-Agent are all applied per-request in `SamplingClient::post`.
-//! Stale-connection exposure is bounded by HTTP/2 keepalive pings (15s
-//! interval, 5s timeout, while idle), the 90s idle-pool eviction, and the
-//! first-retry HTTP/1.1 rebuild escape hatch (that client never pools, so
-//! every use opens a fresh connection).
+//! Safe to share because the builders take no config-derived input: auth,
+//! extra headers, base URL, and User-Agent are applied per-request in
+//! `SamplingClient::post`. Stale connections are bounded by h2 keepalive
+//! (15s ping / 5s timeout while idle), 90s idle-pool eviction, and the
+//! pool-less HTTP/1.1 first-retry rebuild; connections whose per-session
+//! runtime died are discarded by hyper's checkout ready-check, with the
+//! retry loop covering the rest.
 //!
 //! Wire-level behavior (connection reuse, header isolation, pool-less http1
 //! fallback, kill switch) is pinned by the `shared_http_wire` and
@@ -136,6 +136,7 @@ fn build_http_client_http1() -> Result<reqwest::Client, reqwest::Error> {
         .build()
 }
 
+#[allow(clippy::disallowed_methods)] // test clients hit localhost mocks
 #[cfg(test)]
 mod tests {
     use std::sync::OnceLock;

@@ -159,6 +159,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         session_start: std::time::Instant::now(),
         inference_idle_timeout: Duration::from_secs(300),
         max_retries: 3,
+        rate_limit_waits: crate::session::acp_session::RateLimitWaitConfig::default(),
         max_turns: None,
         pending_interjections: InterjectionBuffer::new(),
         pending_skill_reminders: Mutex::new(Vec::new()),
@@ -1274,7 +1275,7 @@ async fn reasoning_only_doomloop_turn_captures_every_generation_as_segments() {
                     error: error.clone(),
                 })
                 .await;
-            let Err(_terminal) = actor.handle_sampling_failure(error).await else {
+            let Err(_terminal) = actor.handle_sampling_failure(error, 0).await else {
                 panic!("a reasoning_only empty response must be a terminal error, not recoverable");
             };
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();

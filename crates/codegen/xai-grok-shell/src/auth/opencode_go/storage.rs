@@ -47,9 +47,13 @@ impl OpenCodeGoCredentialStore {
         credentials: OpenCodeGoCredentials,
     ) -> Result<(), OpenCodeGoAuthError> {
         credentials.validate_persisted()?;
-        let lock = try_lock_auth_file_async(&self.auth_path, AUTH_FILE_LOCK_TIMEOUT)
-            .await
-            .ok_or(OpenCodeGoAuthError::LockTimeout)?;
+        let lock = try_lock_auth_file_async(
+            &self.auth_path,
+            AUTH_FILE_LOCK_TIMEOUT,
+            crate::auth::manager::lock::Heartbeat::Skip,
+        )
+        .await
+        .ok_or(OpenCodeGoAuthError::LockTimeout)?;
         if !lock.still_live(&self.auth_path) {
             return Err(OpenCodeGoAuthError::LockTimeout);
         }
@@ -60,9 +64,13 @@ impl OpenCodeGoCredentialStore {
     }
 
     pub async fn remove(&self) -> Result<bool, OpenCodeGoAuthError> {
-        let lock = try_lock_auth_file_async(&self.auth_path, AUTH_FILE_LOCK_TIMEOUT)
-            .await
-            .ok_or(OpenCodeGoAuthError::LockTimeout)?;
+        let lock = try_lock_auth_file_async(
+            &self.auth_path,
+            AUTH_FILE_LOCK_TIMEOUT,
+            crate::auth::manager::lock::Heartbeat::Skip,
+        )
+        .await
+        .ok_or(OpenCodeGoAuthError::LockTimeout)?;
         if !lock.still_live(&self.auth_path) {
             return Err(OpenCodeGoAuthError::LockTimeout);
         }

@@ -1207,6 +1207,7 @@ impl SessionActor {
                     tool_name: prepared.tool_name.clone(),
                     outcome: tool_outcome,
                     duration_ms,
+                    tool_result_size_bytes,
                     file_path: ext_file_path,
                     parameters: ext_parameters,
                 },
@@ -1221,7 +1222,7 @@ impl SessionActor {
                     segment_index = artifact.segment_index().map(|i| i as i64),
                     success = matches!(tool_outcome, crate::session::events::ToolOutcome::Success),
                     duration_ms = duration_ms as i64,
-                    tool_result_size_bytes = tool_result_size_bytes,
+                    tool_result_size_bytes,
                 )
                 .in_scope(|| {});
             }
@@ -2580,11 +2581,14 @@ impl SessionActor {
         );
         self.signals_handle().record_tool_failure(function_name);
         let message = build_tool_parse_error_message(function_name, &err, raw_arguments);
+        let title = (err.kind == xai_tool_runtime::ToolErrorKind::NotFound)
+            .then(|| format!("Agent tried calling a tool that doesn't exist: {function_name}"));
         self.send_update(
             acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
                 tool_call_id.clone(),
                 acp::ToolCallUpdateFields::new()
                     .status(Some(acp::ToolCallStatus::Failed))
+                    .title(title)
                     .content(Some(vec![acp::ToolCallContent::from(
                         acp::ContentBlock::Text(acp::TextContent::new(message.clone())),
                     )])),

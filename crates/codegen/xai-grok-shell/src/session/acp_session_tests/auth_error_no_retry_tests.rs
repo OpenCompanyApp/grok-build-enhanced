@@ -188,7 +188,7 @@ async fn no_emit_when_auth_manager_is_none() {
         .run_until(async {
             let (actor, _rx) = make_actor_with_auth_manager(None).await;
             crate::auth::attribution::reset_test_emit_count();
-            let _ = actor.handle_sampling_failure(auth_error()).await;
+            let _ = actor.handle_sampling_failure(auth_error(), 0).await;
             assert_eq!(
                 crate::auth::attribution::test_emit_count(),
                 0,
@@ -214,7 +214,7 @@ async fn no_recovery_without_auth_manager() {
             )
             .await;
             crate::auth::attribution::reset_test_emit_count();
-            let result = actor.handle_sampling_failure(auth_error()).await;
+            let result = actor.handle_sampling_failure(auth_error(), 0).await;
             assert!(
                 result.is_err(),
                 "no auth manager must fall through to terminal error"
@@ -241,7 +241,7 @@ async fn sampler_401_recovery_returns_refresh_and_retry() {
                 });
             let (_dir, am) = auth_manager_with_refresher(refresher);
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
-            let result = actor.handle_sampling_failure(auth_error()).await;
+            let result = actor.handle_sampling_failure(auth_error(), 0).await;
             assert!(
                 matches!(
                     result,
@@ -282,7 +282,7 @@ async fn sampler_401_with_api_key_auth_skips_refresh_and_surfaces_error() {
             )
             .await;
 
-            let result = actor.handle_sampling_failure(auth_error()).await;
+            let result = actor.handle_sampling_failure(auth_error(), 0).await;
 
             assert!(
                 result.is_err(),
@@ -639,7 +639,9 @@ async fn legacy_auth_hint_on_404_model_not_found() {
             });
 
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
-            let result = actor.handle_sampling_failure(model_not_found_error()).await;
+            let result = actor
+                .handle_sampling_failure(model_not_found_error(), 0)
+                .await;
             let err = match result {
                 Err(e) => e,
                 Ok(_) => panic!("expected Err from handle_sampling_failure"),
@@ -720,7 +722,7 @@ async fn legacy_auth_hint_on_401_unauthorized() {
 
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
             let result = actor
-                .handle_sampling_failure(unauthorized_401_error())
+                .handle_sampling_failure(unauthorized_401_error(), 0)
                 .await;
             let err = match result {
                 Err(e) => e,
@@ -996,7 +998,7 @@ async fn no_legacy_hint_on_401_for_oidc_auth() {
 
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
             let result = actor
-                .handle_sampling_failure(unauthorized_401_error())
+                .handle_sampling_failure(unauthorized_401_error(), 0)
                 .await;
             let err = match result {
                 Err(e) => e,
@@ -1037,7 +1039,9 @@ async fn no_legacy_hint_for_oidc_auth() {
             });
 
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
-            let result = actor.handle_sampling_failure(model_not_found_error()).await;
+            let result = actor
+                .handle_sampling_failure(model_not_found_error(), 0)
+                .await;
             let err = match result {
                 Err(e) => e,
                 Ok(_) => panic!("expected Err from handle_sampling_failure"),
@@ -1109,7 +1113,7 @@ async fn sampler_401_session_method_with_stale_api_key_auth_type_still_recovers(
             )
             .await;
 
-            let result = actor.handle_sampling_failure(auth_error()).await;
+            let result = actor.handle_sampling_failure(auth_error(), 0).await;
 
             assert!(
                 matches!(
@@ -1149,7 +1153,7 @@ async fn sampler_401_oidc_method_with_stale_api_key_auth_type_still_recovers() {
             )
             .await;
 
-            let result = actor.handle_sampling_failure(auth_error()).await;
+            let result = actor.handle_sampling_failure(auth_error(), 0).await;
 
             assert!(
                 matches!(

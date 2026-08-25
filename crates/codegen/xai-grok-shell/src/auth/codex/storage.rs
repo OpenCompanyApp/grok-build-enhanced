@@ -101,9 +101,13 @@ impl CodexCredentialStore {
         &self,
         credentials: CodexCredentials,
     ) -> Result<(), CodexAuthError> {
-        let lock = try_lock_auth_file_async(&self.auth_path, AUTH_FILE_LOCK_TIMEOUT)
-            .await
-            .ok_or(CodexAuthError::LockTimeout)?;
+        let lock = try_lock_auth_file_async(
+            &self.auth_path,
+            AUTH_FILE_LOCK_TIMEOUT,
+            crate::auth::manager::lock::Heartbeat::Skip,
+        )
+        .await
+        .ok_or(CodexAuthError::LockTimeout)?;
         if !lock.still_live(&self.auth_path) {
             return Err(CodexAuthError::LockTimeout);
         }
@@ -119,9 +123,13 @@ impl CodexCredentialStore {
     }
 
     pub(super) async fn remove_locked(&self) -> Result<Option<CodexCredentials>, CodexAuthError> {
-        let lock = try_lock_auth_file_async(&self.auth_path, AUTH_FILE_LOCK_TIMEOUT)
-            .await
-            .ok_or(CodexAuthError::LockTimeout)?;
+        let lock = try_lock_auth_file_async(
+            &self.auth_path,
+            AUTH_FILE_LOCK_TIMEOUT,
+            crate::auth::manager::lock::Heartbeat::Skip,
+        )
+        .await
+        .ok_or(CodexAuthError::LockTimeout)?;
         if !lock.still_live(&self.auth_path) {
             return Err(CodexAuthError::LockTimeout);
         }

@@ -188,6 +188,40 @@ impl DiagHandle {
         inner.state_changed_at = now_ms();
     }
 
+    /// Drop a latched terminal close so a deliberate revival (SDK reconnect
+    /// after embedder opt-in, or remint/reexec) can publish connected again.
+    /// No-op after [`Self::set_failed`] or [`Self::set_shutting_down`]:
+    /// those states stay terminal. Does not change `state` — callers
+    /// follow with [`Self::set_connected`] once the new hub hello settles.
+    pub fn clear_terminal_close(&self) {
+        let mut inner = self.lock();
+        if inner.is_failed() || inner.shutting_down {
+            return;
+        }
+        inner.last_close_code = None;
+        inner.state_changed_at = now_ms();
+    }
+
+    /// Atomic clear + connected for a deliberate revival (the epoch-guarded
+    /// reconnect settle). One lock, so a racing [`Self::set_terminal_close`]
+    /// serializes wholly before or after. Only codes in `revivable` are
+    /// cleared: a newer non-revivable latch survives a stale settle. No-op
+    /// after failed/shutting-down.
+    pub fn revive_connected(&self, revivable: &[u16]) {
+        let mut inner = self.lock();
+        if inner.is_failed() || inner.shutting_down {
+            return;
+        }
+        if let Some(code) = inner.last_close_code
+            && !revivable.contains(&code)
+        {
+            return;
+        }
+        inner.last_close_code = None;
+        inner.state = DiagState::Connected;
+        inner.state_changed_at = now_ms();
+    }
+
     /// Latch disconnected for process shutdown; later `set_connected` no-ops.
     /// No-op after [`Self::set_failed`].
     pub fn set_shutting_down(&self) {

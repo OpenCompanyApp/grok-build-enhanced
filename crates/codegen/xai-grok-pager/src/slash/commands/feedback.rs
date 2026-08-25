@@ -27,12 +27,50 @@ impl SlashCommand for FeedbackCommand {
         Some("[feedback text]")
     }
 
-    fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
+    fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         let trimmed = args.trim();
-        if trimmed.is_empty() {
-            CommandResult::Action(Action::OpenFeedbackPane)
+        // Composer images ride the action, but dispatch attaches them (the
+        // command layer never sees the prompt), so they start empty here.
+        let result = if ctx.screen_mode.is_minimal() {
+            if trimmed.is_empty() {
+                CommandResult::Action(Action::OpenFeedbackPane {
+                    prefill: None,
+                    images: Default::default(),
+                })
+            } else {
+                CommandResult::Action(Action::SendFeedback {
+                    text: trimmed.to_string(),
+                    images: Default::default(),
+                    // Minimal mode never shows the trace-consent card.
+                    trace: None,
+                })
+            }
         } else {
-            CommandResult::Action(Action::SendFeedback(trimmed.to_string()))
-        }
+            CommandResult::Action(Action::OpenFeedbackPane {
+                prefill: (!trimmed.is_empty()).then(|| trimmed.to_string()),
+                images: Default::default(),
+            })
+        };
+        let action = match &result {
+            CommandResult::Action(Action::OpenFeedbackPane { prefill, .. }) => {
+                if prefill.is_some() {
+                    "open_prefill"
+                } else {
+                    "open_empty"
+                }
+            }
+            CommandResult::Action(Action::SendFeedback { .. }) => "send_immediate",
+            _ => "other",
+        };
+        crate::unified_log::info(
+            "feedback.command",
+            ctx.session_id.map(|s| s.0.as_ref()),
+            Some(serde_json::json!({
+                "screen_mode": ctx.screen_mode.meta_label(),
+                "arg_chars": trimmed.chars().count(),
+                "action": action,
+            })),
+        );
+        result
     }
 }

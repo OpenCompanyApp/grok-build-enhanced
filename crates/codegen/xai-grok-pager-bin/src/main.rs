@@ -26,7 +26,6 @@ mod jemalloc_malloc_conf {
     static MALLOC_CONF: MallocConfPtr = MallocConfPtr(CONF.as_ptr());
 }
 use anyhow::Result;
-use std::env;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use tokio_util::sync::CancellationToken;
@@ -45,6 +44,47 @@ use xai_grok_shell::leader::{
 use xai_grok_shell::leader::{
     ControlPayload, LeaderClient, LeaderEnvUrls, connect_or_spawn, socket_path_for_ws_url,
 };
+use xai_grok_telemetry::process_info::{
+    Entrypoint, Interactivity, ProcessIdentity, ReleaseChannel, set_identity, set_release_channel,
+};
+fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<ProcessIdentity> {
+    use xai_grok_telemetry::process_info::LeaderMode::Standalone;
+    let (entrypoint, interactivity) = match command {
+        Some(Command::Agent(_)) => return None,
+        Some(Command::Dashboard) => return None,
+        Some(Command::Login { .. }) => (Entrypoint::Cli, Interactivity::Interactive),
+        Some(
+            Command::Inspect { .. }
+            | Command::Doctor(_)
+            | Command::Leader(_)
+            | Command::Logout { .. }
+            | Command::Mcp(_)
+            | Command::Plugin(_)
+            | Command::Memory(_)
+            | Command::Models { .. }
+            | Command::Sessions(_)
+            | Command::Setup { .. }
+            | Command::Share(_)
+            | Command::Wrap(_)
+            | Command::Export(_)
+            | Command::Trace(_)
+            | Command::Update { .. }
+            | Command::Version { .. }
+            | Command::Completions { .. }
+            | Command::Worktree(_)
+            | Command::DiskUsage(_)
+            | Command::Workspace(_),
+        ) => (Entrypoint::Cli, Interactivity::Unattended),
+        None if is_interactive => return None,
+        None => (Entrypoint::Headless, Interactivity::Unattended),
+    };
+    Some(ProcessIdentity {
+        entrypoint,
+        leader: Standalone,
+        interactivity,
+    })
+}
+use std::env;
 use xai_grok_update::{UpdateConfig, auto_update, enforce_version_policy_or_exit};
 /// Apply headless args to an existing config, only overriding values that are
 /// explicitly set. This allows environment defaults to be preserved when
@@ -1866,7 +1906,7 @@ fn version_report_lines(fork_revision: Option<&str>, channel_label: &str) -> Vec
 }
 
 async fn async_main(args: PagerArgs) -> Result<()> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    xai_grok_extra_ca::ensure_default_crypto_provider();
     let mut args = args.apply_cwd()?;
     if let Some(ref mode) = args.compaction_mode {
         unsafe { std::env::set_var("GROK_COMPACTION_MODE", mode) };
@@ -1931,6 +1971,9 @@ async fn async_main(args: PagerArgs) -> Result<()> {
     } else {
         xai_grok_workspace::permission::ClientType::Generic
     });
+    if let Some(identity) = process_identity(args.command.as_ref(), is_interactive) {
+        set_identity(identity);
+    }
     let update_config = build_update_config();
     if let Some(command) = args.command.take() {
         match command {

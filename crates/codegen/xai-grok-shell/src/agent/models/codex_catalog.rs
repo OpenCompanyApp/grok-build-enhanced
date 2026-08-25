@@ -909,6 +909,7 @@ impl CodexCatalogController {
                             agent_type: config::default_agent_type(),
                             inference_idle_timeout_secs: None,
                             max_retries: None,
+                            subagent_rate_limit_max_attempts: None,
                             hidden,
                             user_selectable: addressable,
                             supported_in_api: model.supported_in_api,

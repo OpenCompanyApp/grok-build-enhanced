@@ -224,6 +224,44 @@ pub enum CompactionTrigger {
     Auto,
 }
 
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionModeLabel {
+    Summary,
+    Transcript,
+    Segments,
+}
+
+#[derive(Serialize)]
+pub struct AuthLockWait {
+    pub wait_ms: u64,
+    pub budget_ms: u64,
+}
+
+#[derive(Serialize)]
+pub struct AuthLockTimeout {
+    pub budget_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder_state: Option<&'static str>,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitWaitOutcome {
+    Recovered,
+    BudgetSpent,
+    Unresolved,
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct SubagentRateLimitWaited {
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub waited_ms: u64,
+    pub budget_ms: u64,
+    pub outcome: RateLimitWaitOutcome,
+}
+
 #[derive(Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
@@ -399,6 +437,8 @@ pub enum LoginFailureKind {
     TransportInterrupted,
     /// Client-side request construction / redirect policy defect.
     TransportPermanent,
+    CertificateUntrusted,
+    CertificateInvalid,
     Decode,
 }
 
@@ -662,6 +702,18 @@ pub struct SubagentCompleted {
     pub tool_calls: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_used: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_wait_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawn_prepare_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_bootstrap_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_build_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_setup_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ready_to_first_turn_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -904,6 +956,7 @@ pub enum ExtensionsModalTab {
     Plugins,
     Marketplace,
     Skills,
+    Workflows,
     McpServers,
 }
 
@@ -1261,6 +1314,8 @@ pub struct ProcessResourceUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub footprint_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocated_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open_files: Option<u64>,
@@ -1280,6 +1335,12 @@ pub struct PromptLatency {
     pub mcp_tools_registered: u32,
     pub mcp_strategy: McpStrategy,
     pub model_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttft_ms: Option<u64>,
+    pub ttlb_ms: u64,
+    pub attempts: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1330,6 +1391,7 @@ pub struct ToolCallCompleted {
     pub tool_name: String,
     pub outcome: xai_grok_session_events::types::ToolOutcome,
     pub duration_ms: u64,
+    pub tool_result_size_bytes: i64,
     /// Primary file path of the call, for the external stream only
     /// (`#[serde(skip)]`: never serialized to product events/Mixpanel). Always reduced to
     /// `file_extension`; the full path rides the `OTEL_LOG_TOOL_DETAILS` gate.
@@ -1513,6 +1575,9 @@ pub struct AnnouncementCtaClicked {
 pub enum CodingDataConsentSource {
     PrivacyBanner,
     Settings,
+    /// "Opt in" on the `/feedback` trace-consent card while individually
+    /// opted out.
+    FeedbackTraceCard,
 }
 
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
@@ -1534,6 +1599,25 @@ pub struct CodingDataConsentSelected {
     pub choice: CodingDataConsentChoice,
     pub previous_choice: CodingDataConsentChoice,
     pub changed: bool,
+}
+
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackTraceConsentChoice {
+    TurnOn,
+    NoUpload,
+    NeverAsk,
+}
+
+#[derive(Serialize)]
+pub struct FeedbackTraceCardShown {
+    pub reenables_sharing: bool,
+}
+
+#[derive(Serialize)]
+pub struct FeedbackTraceConsentSelected {
+    pub choice: FeedbackTraceConsentChoice,
+    pub reenables_sharing: bool,
 }
 
 /// Flat snapshot of the terminal environment for telemetry.
@@ -2033,6 +2117,8 @@ telemetry_event!(
     external = crate::external::schema::map_tool_decision
 );
 telemetry_event!(AutoCompactFired, "auto_compact_fired");
+telemetry_event!(AuthLockWait, "auth_lock_wait");
+telemetry_event!(AuthLockTimeout, "auth_lock_timeout");
 telemetry_event!(CompactionTriggered, "compaction_triggered");
 telemetry_event!(
     CompactionCompleted,
@@ -2052,6 +2138,7 @@ telemetry_event!(
     external = crate::external::schema::map_subagent_completed
 );
 telemetry_event!(SubagentLimitHit, "subagent_limit_hit");
+telemetry_event!(SubagentRateLimitWaited, "subagent_rate_limit_waited");
 telemetry_event!(WorkflowRunStarted, "workflow_run_started");
 telemetry_event!(WorkflowRunEnded, "workflow_run_ended");
 telemetry_event!(
@@ -2175,6 +2262,11 @@ telemetry_event!(SuperGrokUpsellClicked, "supergrok_upsell_clicked");
 telemetry_event!(AnnouncementCtaShown, "announcement_cta_shown");
 telemetry_event!(AnnouncementCtaClicked, "announcement_cta_clicked");
 telemetry_event!(CodingDataConsentSelected, "coding_data_consent_selected");
+telemetry_event!(FeedbackTraceCardShown, "feedback_trace_card_shown");
+telemetry_event!(
+    FeedbackTraceConsentSelected,
+    "feedback_trace_consent_selected"
+);
 telemetry_event!(TerminalTelemetry, "terminal_context");
 telemetry_event!(DisplayRefreshProbe, "display_refresh_probe");
 telemetry_event!(BackspaceNoEffect, "backspace_no_effect");

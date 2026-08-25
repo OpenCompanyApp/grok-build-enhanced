@@ -491,7 +491,7 @@ pub fn render_persona_detail(
                         y += 1;
                         if y < max_y {
                             let hint = format!(
-                                "  ... ({} more lines \u{2014} e to expand, j/k to scroll)",
+                                "  ... ({} more lines: e to expand, j/k to scroll)",
                                 total - max_collapsed
                             );
                             buf.set_string(

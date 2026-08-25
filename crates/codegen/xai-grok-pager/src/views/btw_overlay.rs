@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn error_state_wraps_long_message_across_rows() {
-        let error = "Rate limited (429) — you've hit the rate limit for your \
+        let error = "Rate limited (429): you've hit the rate limit for your \
                      plan. Try again later or upgrade for higher limits.";
         let state = BtwOverlayState::Error {
             question: "q".to_string(),

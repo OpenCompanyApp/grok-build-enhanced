@@ -235,6 +235,8 @@ pub struct ToolServerBuilder {
     ws_ping_interval: Option<std::time::Duration>,
     ws_liveness_deadline: Option<std::time::Duration>,
     reconnect_backoff: Option<Arc<[std::time::Duration]>>,
+    reconnect_after_terminal_close_codes: Vec<u16>,
+    initial_connect_attempt_timeout: Option<std::time::Duration>,
     session_handler_resolver: Option<SessionHandlerResolver>,
     binary_version: Option<String>,
     image_capabilities: Vec<String>,
@@ -318,6 +320,35 @@ impl ToolServerBuilder {
     pub fn with_reconnect_backoff(mut self, schedule: Vec<std::time::Duration>) -> Self {
         self.reconnect_backoff = Some(schedule.into());
         self
+    }
+
+    /// Allowlist specific restorable 4100–4199 terminal close codes to reconnect after.
+    pub fn reconnect_after_terminal_close_codes(
+        mut self,
+        codes: impl IntoIterator<Item = u16>,
+    ) -> Self {
+        let mut codes: Vec<u16> = codes.into_iter().collect();
+        codes.sort_unstable();
+        codes.dedup();
+        self.reconnect_after_terminal_close_codes = codes;
+        self
+    }
+
+    /// Override the per-attempt initial WebSocket and handshake timeout.
+    pub fn with_initial_connect_attempt_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.initial_connect_attempt_timeout = Some(timeout);
+        self
+    }
+
+    pub(crate) fn connection_tuning(&self) -> ConnectionTuning {
+        ConnectionTuning {
+            ws_ping_interval: self.ws_ping_interval,
+            ws_liveness_deadline: self.ws_liveness_deadline,
+            reconnect_backoff: self.reconnect_backoff.clone(),
+            reconnect_attempt_reset_after: None,
+            reconnect_after_terminal_close_codes: self.reconnect_after_terminal_close_codes.clone(),
+            initial_connect_attempt_timeout: self.initial_connect_attempt_timeout,
+        }
     }
 
     /// Connection pool to attach to. Required.
@@ -468,6 +499,7 @@ impl ToolServerBuilder {
     /// every successfully-bound session before returning the original
     /// error, so a failed `build()` does not leak server-side state.
     pub async fn build(self) -> Result<ToolServer, ClientError> {
+        let tuning = self.connection_tuning();
         let pool = self
             .pool
             .ok_or_else(|| ClientError::InvalidConfig("missing pool".to_owned()))?;
@@ -522,11 +554,6 @@ impl ToolServerBuilder {
             }
         }));
 
-        let tuning = ConnectionTuning {
-            ws_ping_interval: self.ws_ping_interval,
-            ws_liveness_deadline: self.ws_liveness_deadline,
-            reconnect_backoff: self.reconnect_backoff,
-        };
         let borrow = ConnectionBorrow::acquire(
             pool,
             url,

@@ -450,11 +450,7 @@ impl AgentView {
                     }
                     Some(AgentPane::Queue) => {
                         if let Some(id) = self.queue.delete_click(mouse.column, mouse.row) {
-                            let row = self.queue.row_ref(id);
-                            let is_server = matches!(
-                                row.as_ref().map(|r| r.origin),
-                                Some(crate::views::queue_pane::QueueRowOrigin::Server)
-                            );
+                            let (is_server, row) = self.resolve_queue_row(id);
                             if is_server {
                                 if let (Some(_sid), Some(row)) =
                                     (self.session.session_id.as_ref(), row)
@@ -488,11 +484,7 @@ impl AgentView {
                             && (!matches!(self.prompt_mode, PromptMode::EditingQueued { .. })
                                 || self.set_active_pane(AgentPane::Queue, false))
                         {
-                            let row = self.queue.row_ref(id);
-                            let is_server = matches!(
-                                row.as_ref().map(|r| r.origin),
-                                Some(crate::views::queue_pane::QueueRowOrigin::Server)
-                            );
+                            let (is_server, row) = self.resolve_queue_row(id);
                             self.enter_queue_edit(id, is_server, row);
                             return InputOutcome::Changed;
                         }

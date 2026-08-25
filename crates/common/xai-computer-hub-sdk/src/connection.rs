@@ -20,7 +20,7 @@
 //! 1. Drains every parked response waiter with
 //!    [`crate::ClientError::NetworkError`] so callers can fast-fail
 //!    instead of deadlocking.
-//! 2. Reconnects with exponential backoff (capped).
+//! 2. Reconnects with exponential backoff, full jitter, capped at the last slot.
 //! 3. Re-runs the `hello` handshake.
 //! 4. The ToolServer replays `serve{session_id, tools}` per active
 //!    session via the on_reconnect callback. The server auto-registers
@@ -37,6 +37,7 @@ use futures::{SinkExt, Stream, StreamExt};
 use http::HeaderName;
 use http::header::HeaderValue;
 use serde_json::Value;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::net::TcpStream;
@@ -66,8 +67,12 @@ const PRIORITY_OUTBOUND_CAPACITY: usize = 16;
 /// peer with a full TCP send buffer must not block Pause/Resume forever.
 const WRITER_CLOSE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 /// Backoff schedule (in ms) for reconnect attempts. The last value is
-/// reused for any further attempts so the cap is `10s`.
+/// reused for any further attempts and is the documented cap (`10s`).
+/// Each wait is `Uniform(0, min(cap, max(slot, SPREAD_FLOOR)))`.
 const RECONNECT_BACKOFF_MS: &[u64] = &[100, 200, 500, 1_000, 2_000, 5_000, 10_000];
+const RECONNECT_SPREAD_FLOOR: Duration = Duration::from_secs(1);
+const RECONNECT_ATTEMPT_RESET_AFTER: Duration = Duration::from_secs(10);
+static NEXT_RECONNECT_JITTER_SEED: AtomicU64 = AtomicU64::new(1);
 /// Floor for the per-attempt reconnect budget: a small liveness override
 /// must not shrink it below what a WAN handshake + session replay needs,
 /// or the retry loop would livelock aborting every attempt at the bound.
@@ -77,6 +82,17 @@ const RECONNECT_ATTEMPT_MIN_BUDGET: Duration = Duration::from_secs(30);
 fn reconnect_attempt_budget(liveness_deadline: Duration) -> Duration {
     liveness_deadline.max(RECONNECT_ATTEMPT_MIN_BUDGET)
 }
+/// Per-attempt budget for the initial connect (WebSocket upgrade +
+/// hello/hello_ack). Neither `connect_async` nor the hello_ack wait is
+/// otherwise bounded, so a peer that accepts the socket but never answers
+/// (e.g. a hub instance draining mid-roll) would hang the caller
+/// indefinitely, burning the embedder's own readiness budget on one dead
+/// attempt.
+const INITIAL_CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Initial-connect attempts before the error surfaces to the caller. Waits
+/// between attempts come from the reconnect backoff schedule (jittered), so
+/// a fleet cold-starting into a degraded hub de-phases its retries.
+const INITIAL_CONNECT_MAX_ATTEMPTS: u32 = 3;
 /// Default WebSocket keepalive ping cadence when a connection does not
 /// override [`ConnectionTuning::ws_ping_interval`].
 const DEFAULT_WS_PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -294,6 +310,9 @@ fn resolve_reconnect_backoff(configured: Option<Arc<[Duration]>>) -> Arc<[Durati
         _ => default_reconnect_backoff(),
     }
 }
+pub(crate) fn resolve_attempt_reset_after(configured: Option<Duration>) -> Duration {
+    configured.unwrap_or(RECONNECT_ATTEMPT_RESET_AFTER)
+}
 /// Resolve the keepalive ping cadence, clamping an unset *or zero* value to
 /// [`DEFAULT_WS_PING_INTERVAL`]. `tokio::time::interval` panics on a zero
 /// period, so a configured `Duration::ZERO` (e.g. via
@@ -304,6 +323,23 @@ fn resolve_ws_ping_interval(configured: Option<Duration>) -> Duration {
         Some(interval) if !interval.is_zero() => interval,
         _ => DEFAULT_WS_PING_INTERVAL,
     }
+}
+/// Resolve the per-attempt initial-connect budget, clamping an unset *or
+/// zero* value to [`INITIAL_CONNECT_ATTEMPT_TIMEOUT`] — a zero budget would
+/// abort every attempt before the upgrade could complete.
+fn resolve_initial_connect_attempt_timeout(configured: Option<Duration>) -> Duration {
+    match configured {
+        Some(timeout) if !timeout.is_zero() => timeout,
+        _ => INITIAL_CONNECT_ATTEMPT_TIMEOUT,
+    }
+}
+/// Whether an initial-connect failure is worth another attempt. Transport
+/// failures (including the per-attempt timeout, which surfaces as
+/// `NetworkError`) and server closes are transient; auth, config, protocol,
+/// and insecure-scheme failures are deterministic and must surface
+/// immediately.
+fn initial_connect_retryable(err: &ClientError) -> bool {
+    matches!(err, ClientError::NetworkError(_) | ClientError::Closed(_))
 }
 /// Resolve the inbound-liveness deadline, clamping an unset *or zero* value
 /// to `min(4× ping, 120s)` — 120s at the default 30s ping, still under the
@@ -342,6 +378,9 @@ pub struct ConnectionTuning {
     /// the built-in [`RECONNECT_BACKOFF_MS`] table. Stored as
     /// `Arc<[Duration]>` so it is shared (not deep-copied) per reconnect.
     pub reconnect_backoff: Option<Arc<[Duration]>>,
+    pub reconnect_attempt_reset_after: Option<Duration>,
+    pub reconnect_after_terminal_close_codes: Vec<u16>,
+    pub initial_connect_attempt_timeout: Option<Duration>,
 }
 /// Pool dedup key. Two connections are pooled together iff their
 /// `(url, principal)` match.
@@ -495,6 +534,10 @@ struct HubConnectionInner {
     /// Resolved reconnect backoff schedule (configured override or the
     /// built-in table). Resolved once at connect; shared per reconnect.
     reconnect_backoff: Arc<[Duration]>,
+    reconnect_jitter_seed: u64,
+    attempt_reset_after: Duration,
+    reconnect_after_terminal_close_codes: Vec<u16>,
+    outage_seq: AtomicU32,
     /// Outbound frames waiting to be written. Filled by `send_*`
     /// helpers; drained by the writer half of the actor.
     outbound_tx: mpsc::Sender<String>,
@@ -532,7 +575,6 @@ impl HubConnection {
     /// The pool is the canonical caller; outside callers MAY use this
     /// for tests or one-shot programs but lose pool dedup.
     pub async fn connect(config: ConnectionConfig) -> Result<Arc<Self>, ClientError> {
-        let initial_cred = config.credential.current();
         let key = ConnKey {
             url: config.url.as_str().to_owned(),
             principal: config.credential.principal_key(),
@@ -548,6 +590,8 @@ impl HubConnection {
             );
         }
         let reconnect_backoff = resolve_reconnect_backoff(config.tuning.reconnect_backoff);
+        let attempt_reset_after =
+            resolve_attempt_reset_after(config.tuning.reconnect_attempt_reset_after);
         let buffer = config.outbound_buffer.unwrap_or(OUTBOUND_BUFFER);
         let (outbound_tx, outbound_rx) = mpsc::channel::<String>(buffer);
         let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
@@ -556,24 +600,58 @@ impl HubConnection {
         let bound_sessions = Arc::new(RefCountedSet::<SessionId>::new());
         let connection_id = Arc::new(Mutex::new(None));
         let shutdown = CancellationToken::new();
-        let ws = open_socket(
-            &config.url,
-            &initial_cred,
-            config.kind,
-            config.alpha_test_key.as_deref(),
-            config.allow_insecure_ws,
-        )
-        .await?;
-        let (sink, stream) = ws.split();
-        let (sink, stream, ack) = run_handshake(
-            sink,
-            stream,
-            config.kind,
-            config.server_id.clone(),
-            config.server_description.clone(),
-            config.server_metadata.clone(),
-        )
-        .await?;
+        let budget =
+            resolve_initial_connect_attempt_timeout(config.tuning.initial_connect_attempt_timeout);
+        let initial_jitter_seed = new_reconnect_jitter_seed();
+        let mut attempt: u32 = 0;
+        let (sink, stream, ack) = loop {
+            attempt += 1;
+            let cred = config.credential.current();
+            let attempt_result = match tokio::time::timeout(budget, async {
+                let ws = open_socket(
+                    &config.url,
+                    &cred,
+                    config.kind,
+                    config.alpha_test_key.as_deref(),
+                    config.allow_insecure_ws,
+                )
+                .await?;
+                let (sink, stream) = ws.split();
+                run_handshake(
+                    sink,
+                    stream,
+                    config.kind,
+                    config.server_id.clone(),
+                    config.server_description.clone(),
+                    config.server_metadata.clone(),
+                )
+                .await
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(ClientError::NetworkError(format!(
+                    "initial connect attempt timed out after {budget:?}"
+                ))),
+            };
+            match attempt_result {
+                Ok(parts) => break parts,
+                Err(err) => {
+                    if attempt >= INITIAL_CONNECT_MAX_ATTEMPTS || !initial_connect_retryable(&err) {
+                        return Err(err);
+                    }
+                    let wait = backoff_for(attempt, &reconnect_backoff, initial_jitter_seed, 0);
+                    warn!(
+                        url = %config.url,
+                        attempt,
+                        ?wait,
+                        error = %err,
+                        "initial connect attempt failed; retrying"
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+            }
+        };
         *connection_id.lock().await = Some(ack.connection_id.clone());
         info!(
             url = %config.url,
@@ -599,6 +677,15 @@ impl HubConnection {
             allow_insecure_ws: config.allow_insecure_ws,
             on_fatal: config.on_fatal,
             reconnect_backoff,
+            reconnect_jitter_seed: new_reconnect_jitter_seed(),
+            attempt_reset_after,
+            reconnect_after_terminal_close_codes: {
+                let mut codes = config.tuning.reconnect_after_terminal_close_codes.clone();
+                codes.sort_unstable();
+                codes.dedup();
+                codes
+            },
+            outage_seq: AtomicU32::new(0),
             outbound_tx,
             demux: demux.clone(),
             bound_sessions: bound_sessions.clone(),
@@ -1057,9 +1144,15 @@ fn rearm_liveness(deadline: &mut std::pin::Pin<&mut tokio::time::Sleep>, livenes
         .unwrap_or_else(|| now + Duration::from_secs(86400 * 365 * 30));
     deadline.as_mut().reset(rearm);
 }
+/// Terminal close code for a hibernated-but-restorable sandbox the hub
+/// reaped; the only 4100–4199 code that is safe to reconnect after.
+pub const CLOSE_CODE_SANDBOX_TERMINATED: u16 = 4103;
 /// Map a websocket close frame's code to the connected-phase exit. Close
-/// codes 4100-4199 are terminal (the server intentionally ended the
-/// connection: eviction, session expiry, admin disconnect, rate limit).
+/// codes 4100-4199 are terminal by protocol contract (the server
+/// intentionally ended the connection: eviction, session expiry, admin
+/// disconnect, rate limit). The actor still stops on these unless the
+/// embedder allowlisted the specific code via
+/// [`ConnectionTuning::reconnect_after_terminal_close_codes`].
 /// The range is deliberately wide so new terminal codes added server-side
 /// are recognised without a client update.
 fn exit_for_close_code(code: Option<u16>) -> ConnectedExit {
@@ -1431,7 +1524,12 @@ async fn run_reader_actor(
         .await
         {
             ConnectedExit::Stop => break,
-            ConnectedExit::TerminalClose(code) => {
+            ConnectedExit::TerminalClose(code)
+                if inner
+                    .reconnect_after_terminal_close_codes
+                    .binary_search(&code)
+                    .is_err() =>
+            {
                 info!(code, url = %url, "server sent terminal close; not reconnecting");
                 fire_on_terminal_close(inner.as_ref(), code);
                 fire_on_disconnect(inner.as_ref());
@@ -1441,15 +1539,34 @@ async fn run_reader_actor(
                 inner.demux.drain_progress();
                 break;
             }
-            ConnectedExit::SocketClosed(cause) => {
+            exit => {
+                let (cause, already_notified) = match exit {
+                    ConnectedExit::Stop => {
+                        unreachable!("Stop is handled by the arm above")
+                    }
+                    ConnectedExit::TerminalClose(code) => {
+                        info!(
+                            code,
+                            url = %url,
+                            "server sent terminal close; reconnecting (embedder opt-in)"
+                        );
+                        fire_on_terminal_close(inner.as_ref(), code);
+                        fire_on_disconnect(inner.as_ref());
+                        inner.demux.drain_waiters_with(|| {
+                            ClientError::Closed(format!("server terminal close (code {code})"))
+                        });
+                        inner.demux.drain_progress();
+                        (DisconnectCause::CloseFrame(Some(code)), true)
+                    }
+                    ConnectedExit::SocketClosed(cause) => (cause, false),
+                };
                 let detected_at = Instant::now();
+                let prev_conn_age = detected_at.duration_since(connected_at);
                 let health = inner.health.snapshot();
                 let prev_connection_id = inner.connection_id.lock().await.clone();
                 let outage = OutageInfo {
                     prev_connection_id,
-                    prev_connection_duration_ms: detected_at
-                        .duration_since(connected_at)
-                        .as_millis() as u64,
+                    prev_connection_duration_ms: prev_conn_age.as_millis() as u64,
                     last_inbound: health.last_inbound,
                     detect_ms: detected_at.duration_since(health.last_inbound).as_millis() as u64,
                     since_last_probe_monotonic_ms: health.since_last_probe_monotonic_ms,
@@ -1470,7 +1587,9 @@ async fn run_reader_actor(
                     clock_jump_ms = outage.clock_jump_ms,
                     "server connection lost; scheduling reconnect"
                 );
-                fire_on_disconnect(inner.as_ref());
+                if !already_notified {
+                    fire_on_disconnect(inner.as_ref());
+                }
                 if matches!(outage.cause, DisconnectCause::LivenessDeadline)
                     && writer_ctl_tx
                         .send(WriterControl::Close {
@@ -1489,10 +1608,14 @@ async fn run_reader_actor(
                     ClientError::NetworkError("socket dropped during in-flight call".to_owned())
                 });
                 inner.demux.drain_progress();
+                if prev_conn_age >= inner.attempt_reset_after {
+                    attempt = 0;
+                }
+                inner.begin_reconnect_outage();
                 let mut backoff_total = Duration::ZERO;
                 loop {
                     attempt = attempt.saturating_add(1);
-                    let backoff = backoff_for(attempt, &inner.reconnect_backoff);
+                    let backoff = inner.reconnect_delay(attempt);
                     info!(?backoff, attempt, url = %url, "reconnecting server connection");
                     tokio::select! {
                         _ = stop_rx.recv() => break 'actor,
@@ -1777,11 +1900,81 @@ async fn reconnect_and_replay(
 /// via [`resolve_reconnect_backoff`]); the lookup is nonetheless
 /// self-contained — an empty slice yields `Duration::ZERO` rather than
 /// panicking.
-fn backoff_for(attempt: u32, schedule: &[Duration]) -> Duration {
+impl HubConnectionInner {
+    fn begin_reconnect_outage(&self) {
+        self.outage_seq.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn reconnect_delay(&self, attempt: u32) -> Duration {
+        backoff_for(
+            attempt,
+            &self.reconnect_backoff,
+            self.reconnect_jitter_seed,
+            self.outage_seq.load(Ordering::Relaxed),
+        )
+    }
+}
+
+fn backoff_for(attempt: u32, schedule: &[Duration], jitter_seed: u64, outage: u32) -> Duration {
+    let Some(&cap) = schedule.last() else {
+        return Duration::ZERO;
+    };
     let idx = (attempt as usize)
         .saturating_sub(1)
         .min(schedule.len().saturating_sub(1));
-    schedule.get(idx).copied().unwrap_or_default()
+    let base = schedule.get(idx).copied().unwrap_or_default();
+    apply_reconnect_jitter(
+        backoff_window(base, cap),
+        jitter_roll(jitter_seed, attempt, outage),
+    )
+}
+
+fn duration_nanos_u64(d: Duration) -> u64 {
+    u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+fn jitter_roll(seed: u64, attempt: u32, outage: u32) -> u64 {
+    splitmix64(
+        seed ^ u64::from(attempt).wrapping_mul(0xD1B5_4A32_D192_ED03)
+            ^ u64::from(outage).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+    )
+}
+
+fn derive_jitter_seed(counter: u64, pid: u64, nanos: u64) -> u64 {
+    splitmix64(
+        nanos
+            .wrapping_add(pid.wrapping_shl(32))
+            .wrapping_add(counter.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+    )
+}
+
+fn new_reconnect_jitter_seed() -> u64 {
+    let n = NEXT_RECONNECT_JITTER_SEED.fetch_add(1, Ordering::Relaxed);
+    let pid = u64::from(std::process::id());
+    let nanos = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    derive_jitter_seed(n, pid, nanos)
+}
+
+fn backoff_window(base: Duration, cap: Duration) -> Duration {
+    base.max(RECONNECT_SPREAD_FLOOR).min(cap)
+}
+
+fn apply_reconnect_jitter(window: Duration, roll: u64) -> Duration {
+    let window_ns = duration_nanos_u64(window);
+    if window_ns == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_nanos(roll % window_ns)
 }
 #[cfg(test)]
 #[path = "connection_tests.rs"]

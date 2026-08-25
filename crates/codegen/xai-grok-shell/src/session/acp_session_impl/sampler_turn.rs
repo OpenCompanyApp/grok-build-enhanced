@@ -1353,6 +1353,7 @@ impl SessionActor {
     pub(crate) async fn handle_sampling_failure(
         self: &Arc<Self>,
         error: xai_grok_sampler::SamplingErrorInfo,
+        rate_limit_waits: u32,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
         self.handle_sampling_failure_with_codex_policy(error, true, true)
             .await
@@ -1803,6 +1804,12 @@ impl SessionActor {
         allow_codex_auth_recovery: bool,
         allow_kimi_size_recovery: bool,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
+        struct DrainBarrier<'a>(&'a parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+        impl Drop for DrainBarrier<'_> {
+            fn drop(&mut self) {
+                self.0.lock().take();
+            }
+        }
         self.prepare_sampler_for_turn().await?;
         // Resolve against the active provider/model and the live authenticated
         // catalog immediately before handing this request-copy to Responses.
@@ -1813,10 +1820,10 @@ impl SessionActor {
                 .models_manager
                 .codex_image_input_capability_for_request(sampling.provider, &sampling.model);
         }
-        let stream_drained_rx = {
+        let (_barrier, stream_drained_rx) = {
             let (tx, rx) = tokio::sync::oneshot::channel();
             *self.turn_stream_drained.lock() = Some(tx);
-            rx
+            (DrainBarrier(&self.turn_stream_drained), rx)
         };
         let request_id = xai_grok_sampler::RequestId::random();
         let request_id_str = request_id.as_str().to_string();
@@ -1838,7 +1845,6 @@ impl SessionActor {
                     .await
                     .is_err()
                 {
-                    self.turn_stream_drained.lock().take();
                     tracing::warn!(
                         "stream-drain barrier timed out; proceeding to emit tool \
                          calls (eventId ordering may be imperfect this turn)"
@@ -1869,6 +1875,66 @@ impl SessionActor {
                 }
             }
         }
+    }
+    /// Mirror the auth-retry path's `RetryState::Retrying` marker so the paced
+    /// wait is observable to the client.
+    async fn notify_rate_limit_wait(
+        &self,
+        attempt: u32,
+        budget: &RateLimitWaitBudget,
+        backoff: Duration,
+    ) {
+        tracing::debug!(
+            attempt,
+            delay_ms = backoff.as_millis() as u64,
+            "subagent turn rate limited; waiting for sampling capacity"
+        );
+        xai_grok_telemetry::unified_log::info(
+            "shell.turn.subagent_rate_limit_backoff",
+            Some(self.session_info.id.0.as_ref()),
+            Some(serde_json::json!({
+                "attempt": attempt,
+                "max_attempts": budget.max_attempts(),
+                "delay_ms": backoff.as_millis() as u64,
+            })),
+        );
+        let announced = Duration::from_secs(backoff.as_secs_f64().round().max(1.0) as u64);
+        self.send_xai_notification(XaiSessionUpdate::RetryState(
+            crate::extensions::notification::RetryState::Retrying {
+                attempt,
+                max_retries: budget.max_attempts(),
+                reason: format!(
+                    "Too many requests in flight; waiting {} before trying again",
+                    human_duration(announced)
+                ),
+            },
+        ))
+        .await;
+    }
+    fn log_rate_limit_budget_spent(
+        &self,
+        decision: RateLimitWaitDecision,
+        error: &xai_grok_sampler::SamplingErrorInfo,
+    ) {
+        let RateLimitWaitDecision::BudgetSpent { attempts, limit } = decision else {
+            return;
+        };
+        tracing::warn!(
+            attempts,
+            cause = limit.as_str(),
+            retry_after_secs = ?error.retry_after_secs,
+            "subagent stopped waiting out rate limits; failing the turn"
+        );
+        xai_grok_telemetry::unified_log::warn(
+            "shell.turn.subagent_rate_limit_exhausted",
+            Some(self.session_info.id.0.as_ref()),
+            Some(serde_json::json!({
+                "attempts": attempts,
+                "cause": limit.as_str(),
+                "retry_after_secs": error.retry_after_secs,
+                "status_code": error.status_code,
+            })),
+        );
     }
     /// Proactively refresh the auth token if near expiry.
     pub(super) async fn refresh_token_if_expired(&self) -> Result<(), acp::Error> {
@@ -2110,7 +2176,28 @@ impl SessionActor {
             });
         }
     }
-    pub(super) async fn record_assistant_response(&self, assistant_item: ConversationItem) {
+    /// Persist one response's items without re-estimating model output when
+    /// provider usage already includes it.
+    pub(super) async fn record_response_items(
+        &self,
+        items: Vec<ConversationItem>,
+        usage_reported: bool,
+    ) {
+        for item in items {
+            match item {
+                ConversationItem::Assistant(_) => {
+                    self.record_assistant_response(item, usage_reported).await;
+                }
+                _ if usage_reported => self.chat_state_handle.push_model_output(item),
+                _ => self.chat_state_handle.push_tool_result(item),
+            }
+        }
+    }
+    pub(super) async fn record_assistant_response(
+        &self,
+        assistant_item: ConversationItem,
+        usage_reported: bool,
+    ) {
         self.signals_handle().record_assistant_message();
         if let ConversationItem::Assistant(ref a) = assistant_item {
             tracing::info!(
@@ -2122,8 +2209,13 @@ impl SessionActor {
         {
             tracing::info!("Assistant requested tool call: {}", first_call.id);
         }
-        self.chat_state_handle
-            .push_assistant_response(assistant_item);
+        if usage_reported {
+            self.chat_state_handle
+                .push_assistant_response(assistant_item);
+        } else {
+            self.chat_state_handle
+                .push_unreported_model_output(assistant_item);
+        }
     }
 }
 

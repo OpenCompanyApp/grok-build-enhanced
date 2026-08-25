@@ -1168,7 +1168,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             agent_id,
             session_id: Some(hydrate_sid.clone()),
             silent: true,
-            nonce: 0,
+            nonce: Default::default(),
         });
         if let Some(switch) = deferred {
             agent.session.model_switch_pending = true;
@@ -1194,7 +1194,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             cwd: agent.session.cwd.display().to_string(),
         });
         notify_session_ready(&app.notification_service, agent);
-        crate::memory_release::release_retained_memory_with("session-load-replay");
+        crate::memory_release::release_retained_memory("session-load-replay");
         note_peek_page_flip(app, agent_id, page_flip_entry);
         return effects;
     }

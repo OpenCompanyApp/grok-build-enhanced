@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::acp_command::AcpSlashCommand;
-use super::command::{CommandProvenance, SlashCommand};
+use super::command::{CommandProvenance, SlashCommand, WorkflowChoice};
 use super::mode_support::ModeSupport;
 
 /// Shell ACP names the pager never offers (unified `/hooks` / `/plugins` UI,
@@ -152,6 +152,10 @@ pub struct CommandRegistry {
     ///   Commands whose `required_tools()` are not all present in the
     ///   set are hidden, the same way `hidden` hides commands by name.
     available_tools: Option<HashSet<String>>,
+    /// Launchable workflow definitions from the last ACP catalog sync.
+    /// Extracted from `_meta.workflowSource` on the incoming list (including
+    /// names skipped as reserved/claimed) so `/workflow` can suggest them.
+    saved_workflows: Vec<WorkflowChoice>,
 }
 
 impl CommandRegistry {
@@ -189,6 +193,7 @@ impl CommandRegistry {
             menu_hidden,
             restricted: HashSet::new(),
             available_tools: None,
+            saved_workflows: Vec::new(),
         };
         reg.rebuild_triggers();
         reg
@@ -502,6 +507,11 @@ impl CommandRegistry {
         self.rebuild_triggers();
     }
 
+    /// Saved / built-in workflow definitions from the last ACP catalog.
+    pub fn saved_workflows(&self) -> &[WorkflowChoice] {
+        &self.saved_workflows
+    }
+
     fn apply_acp_commands(&mut self, commands: &[agent_client_protocol::AvailableCommand]) {
         if commands
             .iter()
@@ -750,6 +760,63 @@ mod tests {
         assert_eq!(registry.command_count(), 1);
         assert!(registry.get("exit").is_some());
         assert!(registry.get("flush").is_none());
+    }
+
+    fn acp_workflow(
+        name: &str,
+        description: &str,
+        source: &str,
+    ) -> agent_client_protocol::AvailableCommand {
+        agent_client_protocol::AvailableCommand::new(name.to_string(), description.to_string())
+            .meta(
+                serde_json::json!({ "workflowSource": source })
+                    .as_object()
+                    .cloned()
+                    .expect("object"),
+            )
+    }
+
+    #[test]
+    fn set_acp_commands_extracts_saved_workflows_sorted() {
+        let mut registry = CommandRegistry::new(vec![Arc::new(DummyCommand {
+            name: "exit",
+            aliases: &[],
+        })]);
+        registry.set_acp_commands(&[
+            agent_client_protocol::AvailableCommand::new(
+                "flush".to_string(),
+                "Flush memory".to_string(),
+            ),
+            acp_workflow("zeta-wf", "Workflow: Zeta", "user"),
+            acp_workflow("alpha-wf", "Workflow: Alpha", "project"),
+        ]);
+        let names: Vec<&str> = registry
+            .saved_workflows()
+            .iter()
+            .map(|w| w.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha-wf", "zeta-wf"]);
+        assert_eq!(registry.saved_workflows()[0].description, "Alpha");
+        assert_eq!(registry.saved_workflows()[1].description, "Zeta");
+
+        registry.set_acp_commands(&[]);
+        assert!(registry.saved_workflows().is_empty());
+    }
+
+    #[test]
+    fn saved_workflows_include_names_skipped_as_reserved() {
+        let mut registry = CommandRegistry::new(vec![Arc::new(DummyCommand {
+            name: "theme",
+            aliases: &[],
+        })]);
+        registry.set_acp_commands(&[acp_workflow("theme", "Workflow: colliding name", "user")]);
+        assert!(
+            registry.get("theme").is_some(),
+            "pager builtin keeps the name"
+        );
+        assert_eq!(registry.saved_workflows().len(), 1);
+        assert_eq!(registry.saved_workflows()[0].name, "theme");
+        assert_eq!(registry.saved_workflows()[0].description, "colliding name");
     }
 
     #[test]

@@ -601,7 +601,7 @@ pub(super) fn handle_credit_limit_recheck_complete(
         agent_id,
         session_id: agent.session.session_id.clone(),
         silent: true,
-        nonce: 0,
+        nonce: Default::default(),
     });
     note_peek_page_flip(app, agent_id, drain.page_flip_entry);
     drain.effects

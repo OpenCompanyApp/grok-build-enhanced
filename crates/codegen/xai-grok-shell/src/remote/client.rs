@@ -388,7 +388,7 @@ impl BackendClient {
         Ok(share_url(&share_response.permission_id))
     }
     /// Build auth + identity headers.
-    /// Must include X-XAI-Token-Auth so nginx auth subrequest routes to authenticate_xai_grok_cli_token.
+    /// Must include X-XAI-Token-Auth so nginx auth subrequest routes to OAuth.
     /// See: crates/codegen/xai-grok-shell/src/agent/app.rs:run_headless
     async fn auth_header_map(&self) -> Result<reqwest::header::HeaderMap, BackendError> {
         use reqwest::header::{HeaderMap, HeaderValue};
@@ -913,6 +913,9 @@ pub(crate) fn parse_remote_model_value(
             .or_else(|| get_u64(obj, "inference_idle_timeout_secs")),
         max_retries: get_u64(obj, "maxRetries")
             .or_else(|| get_u64(obj, "max_retries"))
+            .and_then(|v| u32::try_from(v).ok()),
+        subagent_rate_limit_max_attempts: get_u64(obj, "subagentRateLimitMaxAttempts")
+            .or_else(|| get_u64(obj, "subagent_rate_limit_max_attempts"))
             .and_then(|v| u32::try_from(v).ok()),
         hidden: obj
             .get("hidden")

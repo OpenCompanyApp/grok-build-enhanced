@@ -24,13 +24,13 @@ pub struct ScreenModeSwitchCommand {
 
 impl ScreenModeSwitchCommand {
     /// `/minimal`: offered in the full TUI (alt-screen or `--no-alt-screen`
-    /// inline), relaunches with `--minimal`.
+    /// inline), switches this session to scrollback-native rendering.
     pub const fn minimal() -> Self {
         Self { to_minimal: true }
     }
 
-    /// `/fullscreen` (alias `/full`): offered in minimal, relaunches without
-    /// `--minimal`.
+    /// `/fullscreen` (alias `/full`): offered in minimal, switches this
+    /// session to the alt-screen TUI.
     pub const fn fullscreen() -> Self {
         Self { to_minimal: false }
     }

@@ -114,6 +114,10 @@ pub struct ImageGenClient {
     /// HTTP call and return the SuperGrok upsell prose instead. See
     /// [`ImageGenClient::is_tier_restricted`].
     tier_restricted: bool,
+    /// Per-request [`SESSION_ID_HEADER`]; kept off `default_headers` so the
+    /// transport stays session-independent and cacheable.
+    session_header: Option<HeaderValue>,
+    defaults_have_session_header: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -237,6 +241,7 @@ impl ImageGenClient {
             headers.insert(header_name, header_value);
             Ok::<(), xai_tool_runtime::ToolError>(())
         })?;
+        let defaults_have_session_header = headers.contains_key(SESSION_ID_HEADER);
 
         let http = if backend == ImageGenBackend::OpenAiCodex {
             None
@@ -281,7 +286,21 @@ impl ImageGenClient {
             api_key_provider,
             attribution_callback: None,
             tier_restricted,
+            session_header: None,
+            defaults_have_session_header,
         })
+    }
+
+    /// Attach the xAI session identifier per request without contaminating
+    /// the shared transport or the isolated Codex provider route.
+    pub fn with_session_id(mut self, session_id: &str) -> Self {
+        if self.backend == ImageGenBackend::XaiImagine
+            && !self.defaults_have_session_header
+            && let Ok(value) = HeaderValue::from_str(session_id)
+        {
+            self.session_header = Some(value);
+        }
+        self
     }
 
     async fn http(
@@ -420,7 +439,10 @@ impl ImageGenClient {
         codex_turn_header: Option<&HeaderValue>,
     ) -> Result<(reqwest::Response, Option<RequestCredentialSnapshot>), xai_tool_runtime::ToolError>
     {
-        let request = self.http(url).await?.post(url).json(payload);
+        let mut request = self.http(url).await?.post(url).json(payload);
+        if let Some(ref session) = self.session_header {
+            request = request.header(SESSION_ID_HEADER, session.clone());
+        }
         let (request, credential_snapshot) = match self.backend {
             ImageGenBackend::OpenAiCodex => {
                 let provider = self.api_key_provider.as_ref().ok_or_else(|| {
