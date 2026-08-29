@@ -10,10 +10,9 @@ carefully scoped provider, theme, tool, and user-experience enhancements.
 > **Unofficial and independent.** Grok Build Enhanced is an unofficial
 > daily-driver fork maintained independently by OpenCompanyApp. It is not
 > affiliated with, endorsed by, or supported by xAI, SpaceXAI, OpenAI,
-> Moonshot AI, Z.AI, or their affiliates. ChatGPT Codex subscription and Kimi
-> Code support use experimental backend contracts that may change without
-> notice. Z.AI GLM Coding Plan material is public-source interoperability
-> research only and is not a shipped provider.
+> Moonshot AI, Z.AI, or their affiliates. ChatGPT Codex subscription, Kimi
+> Code, and Z.AI GLM Coding Plan support use experimental backend contracts
+> that may change without notice.
 
 The executable remains `grok`. Existing `~/.grok` configuration, sessions,
 model IDs, environment variables, Agent Client Protocol (ACP) identity, and the
@@ -27,7 +26,7 @@ responsive Grok braille symbol remain compatible.
 | Custom OpenAI-compatible endpoint path | Retained with explicit provider identity; custom entries use only their own configured credentials |
 | Bundled Warp themes and theme UX | Implemented |
 | Kimi Code plan provider | Implemented and experimental: isolated API-key login, dynamic models, Chat/Messages inference, plan usage, and hosted web tools; the current Chat/K3/usage/web matrix was live-qualified on 2026-07-19 |
-| Z.AI GLM Coding Plan | Research only: GLM-5.3 availability, model selection, endpoints, and reasoning controls are recorded for interoperability evaluation; no runtime provider, login, credential scope, model catalog, usage surface, or hosted tools ship in Enhanced |
+| Z.AI GLM Coding Plan | Implemented and experimental: isolated API-key login, audited static GLM-5.3 catalog, and Chat Completions inference; usage and hosted tools are not enabled |
 | Enhanced release artifacts | Fork-owned stable `v0.3.14` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
 | Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
 
@@ -347,6 +346,46 @@ and the
 [authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)
 for current qualification boundaries and credential-handling details.
 
+### Z.AI GLM Coding Plan provider (experimental)
+
+Z.AI Coding Plan uses its own API key and the global Coding Plan endpoint. It
+does not reuse Z.AI Open Platform pay-as-you-go, BigModel China, xAI, Codex,
+Kimi, OpenCode, or custom-provider credentials.
+
+Store a key without placing it in a command argument:
+
+```sh
+secure-key-command | grok login --provider zai-coding-plan
+```
+
+`Z_AI_API_KEY` is also accepted as a provider-scoped runtime fallback. List the
+audited catalog and select a route with:
+
+```sh
+grok models --provider zai-coding-plan
+grok -m 'zai-coding-plan/glm-5.3'
+grok -m 'zai-coding-plan/glm-5.3-flash[1m]'
+```
+
+The catalog contains `glm-5.3`, `glm-5.3[1m]`, `glm-5.3-flash`, and
+`glm-5.3-flash[1m]`. All use the OpenAI-compatible Chat Completions endpoint,
+a one-million-token context window, a 131,072-token output limit, and `low`,
+`high`, or `max` reasoning (default `max`). GLM-5.3 is text-only;
+GLM-5.3-Flash accepts image input. Thinking is always enabled, as required by
+the provider contract.
+
+Disconnect it independently with:
+
+```sh
+grok logout --provider zai-coding-plan
+```
+
+The adapter has offline request, auth-store, header-isolation, and bounded-
+response coverage. No entitled credential was available for live inference in
+this refresh. Usage endpoints and Z.AI-hosted MCP tools are deliberately not
+enabled until their current contracts are separately audited and tested. See
+the [provider reference](docs/providers/zai-glm-coding-plan-integration.md).
+
 ### Themes, tools, and UX
 
 Enhanced includes the packaged Warp theme corpus, provider-scoped Codex and
@@ -368,12 +407,13 @@ handling. See the [pinned evaluation](docs/inspiration/oh-my-pi-2026-08-04.md).
 Kimi Code is an experimental runtime provider. An entitled plan key
 live-qualified its current Chat/K3 inference, usage, hosted-search, and
 hosted-fetch matrix on 2026-07-19; broader interactive and forced-failure
-testing remains. Z.AI GLM Coding Plan is research-only under the fork's current
-scope. Its GLM-5.3 availability and public compatibility contracts are tracked
-without creating a runtime identity or accepting Z.AI credentials:
+testing remains. Z.AI GLM Coding Plan is also an experimental runtime provider.
+It uses a dedicated API-key scope and the global OpenAI-compatible Coding Plan
+endpoint for four audited GLM-5.3 routes. The implementation is offline-tested;
+live inference remains credential-gated:
 
 - [Kimi Code provider reference and research — implemented, experimental](docs/providers/kimi-code-integration-research.md)
-- [Z.AI GLM Coding Plan interoperability research — GLM-5.3 tracked, not implemented](docs/providers/zai-glm-coding-plan-integration-research.md)
+- [Z.AI GLM Coding Plan provider reference — implemented, experimental](docs/providers/zai-glm-coding-plan-integration.md)
 - [Provider documentation index](docs/providers/README.md)
 - [Reviewed upstream revisions](UPSTREAM_VERSIONS.md)
 

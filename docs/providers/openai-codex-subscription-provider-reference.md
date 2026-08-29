@@ -100,10 +100,10 @@ target/debug/xai-grok-pager logout --provider openai-codex
 | Current client compatibility version | `0.144.0` |
 
 The provider and credential source are explicit Rust types in
-[`xai-grok-sampling-types/src/provider.rs`][provider-types]. The auth/model CLI
-accepts only `xai` and `openai-codex`; Kimi, Z.AI, and OpenCode are not CLI or
-runtime provider identities. The generic `custom` runtime variant is distinct
-and cannot acquire Codex subscription credentials.
+[`xai-grok-sampling-types/src/provider.rs`][provider-types]. Kimi Code, Z.AI
+Coding Plan, and OpenCode Go use separate CLI/runtime identities and credential
+scopes. The generic `custom` runtime variant is distinct and cannot acquire
+Codex subscription credentials.
 
 A caller-selected base URL cannot turn another provider into Codex or cause
 Codex credentials to be sent elsewhere. Production inference, catalog, search,

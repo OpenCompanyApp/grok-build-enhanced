@@ -1,6 +1,6 @@
 # Upstream versions
 
-Last checked: 2026-08-25
+Last checked: 2026-08-29
 
 This file records both the source revision last reviewed for this fork and the
 newest fetched revision. A difference is a review queue, not permission to
@@ -20,7 +20,7 @@ blindly copy upstream code.
 | Kimi CLI (legacy reference) | `https://github.com/MoonshotAI/kimi-cli.git` `main` | [`cbc15c076d17f70fec9f89c90c0502e68657f505`](https://github.com/MoonshotAI/kimi-cli/commit/cbc15c076d17f70fec9f89c90c0502e68657f505) | same |
 | Z.AI Python SDK | `https://github.com/zai-org/z-ai-sdk-python.git` `main` | [`ca5109c0aa9bf173839be391b4b14aeadf9a9bf9`](https://github.com/zai-org/z-ai-sdk-python/commit/ca5109c0aa9bf173839be391b4b14aeadf9a9bf9) | same |
 | Z.AI coding plugins | `https://github.com/zai-org/zai-coding-plugins.git` `main` | [`0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254`](https://github.com/zai-org/zai-coding-plugins/commit/0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254) | same |
-| GLM-5 model reference | `https://github.com/zai-org/GLM-5.git` `main` | [`25206af860c4ac10f6411c597c574f9b1c00e53c`](https://github.com/zai-org/GLM-5/commit/25206af860c4ac10f6411c597c574f9b1c00e53c) | same |
+| GLM-5 model reference | `https://github.com/zai-org/GLM-5.git` `main` | Reviewed [`414ad9eb891b05b5d7d51d573939bfe9ce538223`](https://github.com/zai-org/GLM-5/commit/414ad9eb891b05b5d7d51d573939bfe9ce538223) | same |
 | CodexBar Z.AI usage reference | `https://github.com/steipete/CodexBar.git` `main` | Reviewed [`4b14ed9c57d3506d1455b2736a1d1a8ff2b9c718`](https://github.com/steipete/CodexBar/commit/4b14ed9c57d3506d1455b2736a1d1a8ff2b9c718) | same |
 | Z.AI usage browser reference | `https://github.com/nniicckk6/zai-extention.git` `main` | [`54cd1f33a703c417f2492ee1f21f22b3633a43c4`](https://github.com/nniicckk6/zai-extention/commit/54cd1f33a703c417f2492ee1f21f22b3633a43c4) | same |
 
@@ -28,14 +28,12 @@ The 2026-08-23 fetch of the tracked Z.AI Python SDK URL returned `Repository
 not found`. Its immutable recorded pin was not changed, and no replacement
 repository identity was inferred.
 
-The 2026-08-23 review closes every fetched source range. Enhanced adopts the
-complete Grok `07b2f714` behavior range and corrects the ChatGPT Codex
-Responses Lite request shape so it does not force `parallel_tool_calls`.
-Provider identities and credentials remain isolated. Z.AI GLM Coding Plan and
-GLM-5.3 remain research-only because the reviewed sources do not establish an
-auditable runtime/auth contract. The exact classifications and raw hashes are
-recorded in `docs/upstream-refresh-2026-08-23-07b2.md` and
-`docs/upstream-refresh-2026-08-23-providers.md`; no source remains queued.
+The 2026-08-29 GLM review advances the GLM-5 model reference and authorizes
+an offline-qualified, provider-isolated Z.AI GLM Coding Plan API-key runtime
+against current first-party documentation. It ships the audited GLM-5.3 static
+catalog and Chat Completions inference without enabling unaudited usage or
+hosted-tool credential forwarding. All other source review/fetch states remain
+unchanged in this thematic provider commit.
 
 ## Refresh procedure
 

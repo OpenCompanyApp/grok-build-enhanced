@@ -2060,6 +2060,11 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                             .await
                             .map_err(anyhow::Error::from)
                     }
+                    AuthProviderArg::ZaiCodingPlan => {
+                        xai_grok_shell::auth::zai_coding_plan::run_zai_coding_plan_cli_models()
+                            .await
+                            .map_err(anyhow::Error::from)
+                    }
                     AuthProviderArg::OpenCodeGo => {
                         xai_grok_shell::auth::opencode_go::run_cli_models()
                             .await
@@ -2173,6 +2178,15 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                         }
                         xai_grok_shell::auth::kimi_code::run_kimi_code_cli_login().await?;
                     }
+                    AuthProviderArg::ZaiCodingPlan => {
+                        if oauth || device_auth || devbox {
+                            return Err(anyhow::anyhow!(
+                                "Z.AI Coding Plan uses an API key; OAuth/device/devbox login flags are not supported"
+                            ));
+                        }
+                        xai_grok_shell::auth::zai_coding_plan::run_zai_coding_plan_cli_login()
+                            .await?;
+                    }
                     AuthProviderArg::OpenCodeGo => {
                         if oauth || device_auth || devbox {
                             return Err(anyhow::anyhow!(
@@ -2209,6 +2223,10 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                     }
                     AuthProviderArg::KimiCode => {
                         xai_grok_shell::auth::kimi_code::run_kimi_code_cli_logout().await?;
+                    }
+                    AuthProviderArg::ZaiCodingPlan => {
+                        xai_grok_shell::auth::zai_coding_plan::run_zai_coding_plan_cli_logout()
+                            .await?;
                     }
                     AuthProviderArg::OpenCodeGo => {
                         xai_grok_shell::auth::opencode_go::run_cli_logout().await?;

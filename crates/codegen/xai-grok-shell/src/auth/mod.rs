@@ -22,6 +22,7 @@ pub(crate) mod single_flight;
 mod storage;
 mod token_output;
 pub(crate) mod token_type;
+pub mod zai_coding_plan;
 pub(crate) use api_key_probe::{
     DEFAULT_PROBE_TIMEOUT, first_party_env_key_allows_advertise, should_probe_first_party_env_key,
 };

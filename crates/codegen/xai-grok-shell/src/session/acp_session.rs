@@ -1602,6 +1602,9 @@ pub(crate) fn qualified_system_prompt_model_id(
             format!("openai-codex/{model}")
         }
         xai_grok_sampling_types::ProviderId::KimiCode => format!("kimi-code/{model}"),
+        xai_grok_sampling_types::ProviderId::ZaiCodingPlan => {
+            format!("zai-coding-plan/{model}")
+        }
         xai_grok_sampling_types::ProviderId::OpenCodeGo => {
             format!("opencode-go/{model}")
         }

@@ -7,7 +7,8 @@ purpose is deliberately narrow:
 
 - preserve Grok Build's agent loop, sessions, tools, permissions, TUI, headless
   mode, and Agent Client Protocol behavior;
-- add explicit, isolated ChatGPT Codex subscription and Kimi Code providers;
+- add explicit, isolated ChatGPT Codex subscription, Kimi Code, and Z.AI GLM
+  Coding Plan providers;
 - package the audited Warp theme corpus and retain terminal-native theme
   behavior;
 - present clear Enhanced branding without renaming compatibility surfaces;
@@ -22,16 +23,21 @@ braille symbol.
 
 ## Scope and non-goals
 
-- Treat direct ChatGPT Codex and Kimi Code backend integrations as
-  experimental. They are scoped provider adapters, not replacement applications
-  or embedded upstream app servers.
-- Keep xAI, OpenAI Codex, Kimi Code, and generic custom-provider identities
-  explicit. Provider auth, retry, model discovery, usage, tools, and logout must
-  never fall through to another provider's credentials or static API keys.
+- Treat direct ChatGPT Codex, Kimi Code, and Z.AI GLM Coding Plan backend
+  integrations as experimental. They are scoped provider adapters, not
+  replacement applications or embedded upstream app servers.
+- Keep xAI, OpenAI Codex, Kimi Code, Z.AI GLM Coding Plan, and generic
+  custom-provider identities explicit. Provider auth, retry, model discovery,
+  usage, tools, and logout must never fall through to another provider's
+  credentials or static API keys.
 - Kimi Code is an experimental API-key provider with authenticated catalog
-  discovery and provider-hosted web capabilities. Z.AI GLM Coding Plan remains
-  research only and does not establish a runtime provider, login command,
-  credentials, or product claims.
+  discovery and provider-hosted web capabilities. Z.AI GLM Coding Plan is an
+  experimental, explicit API-key provider. It may establish a provider-scoped
+  runtime identity, endpoint, catalog and model selection (including GLM-5.3),
+  retries, usage, and tool behavior only from audited Z.AI contracts. It does
+  not establish browser or OAuth login, and its API key must never fall through
+  to or from xAI, OpenAI Codex, Kimi Code, or generic custom-provider
+  credentials.
 - Do not introduce fork policy that suppresses or reshapes ordinary upstream
   telemetry and permission details. Users decide whether to enable supported
   telemetry. Security boundaries that prevent credentials from being logged or

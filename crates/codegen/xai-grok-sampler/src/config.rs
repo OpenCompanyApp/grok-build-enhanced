@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{
     ApiBackend, CompactionAtTokens, CompactionsRemaining, CredentialBinding, CredentialSourceId,
     DoomLoopRecoveryPolicy, KIMI_CODE_BASE_URL, OPENAI_CODEX_BASE_URL, ProviderId, ReasoningEffort,
+    ZAI_CODING_PLAN_BASE_URL,
 };
 
 use crate::attribution::SharedAttributionCallback;
@@ -257,6 +258,22 @@ impl SamplerConfig {
             model: model.into(),
             api_backend,
             auth_scheme,
+            ..Self::default()
+        }
+    }
+
+    /// Build the provider-safe baseline for a GLM Coding Plan model.
+    /// Authentication must be attached through `request_auth` before client
+    /// construction; static xAI/custom keys are never accepted on this path.
+    pub fn zai_coding_plan(model: impl Into<String>) -> Self {
+        Self {
+            provider: ProviderId::ZaiCodingPlan,
+            credential_source: CredentialSourceId::ZaiCodingPlanApiKey,
+            credential_binding: Some(CredentialBinding::zai_coding_plan(None)),
+            base_url: ZAI_CODING_PLAN_BASE_URL.to_string(),
+            model: model.into(),
+            api_backend: ApiBackend::ChatCompletions,
+            auth_scheme: AuthScheme::Bearer,
             ..Self::default()
         }
     }

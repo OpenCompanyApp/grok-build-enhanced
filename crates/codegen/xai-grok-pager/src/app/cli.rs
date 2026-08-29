@@ -179,6 +179,8 @@ pub enum AuthProviderArg {
     OpenAiCodex,
     #[value(name = "kimi-code", alias = "kimi_code")]
     KimiCode,
+    #[value(name = "zai-coding-plan", alias = "zai_coding_plan")]
+    ZaiCodingPlan,
     #[value(name = "opencode-go", alias = "opencode_go")]
     OpenCodeGo,
 }
@@ -1559,6 +1561,37 @@ mod tests {
             models.command,
             Some(Command::Models {
                 provider: AuthProviderArg::OpenAiCodex
+            })
+        ));
+    }
+    #[test]
+    fn zai_coding_plan_provider_parses_for_auth_and_models() {
+        let login = PagerArgs::try_parse_from(["grok", "login", "--provider", "zai-coding-plan"])
+            .expect("Z.AI Coding Plan login parses");
+        assert!(matches!(
+            login.command,
+            Some(Command::Login {
+                provider: AuthProviderArg::ZaiCodingPlan,
+                device_auth: false,
+                ..
+            })
+        ));
+
+        let logout = PagerArgs::try_parse_from(["grok", "logout", "--provider", "zai-coding-plan"])
+            .expect("Z.AI Coding Plan logout parses");
+        assert!(matches!(
+            logout.command,
+            Some(Command::Logout {
+                provider: AuthProviderArg::ZaiCodingPlan
+            })
+        ));
+
+        let models = PagerArgs::try_parse_from(["grok", "models", "--provider", "zai-coding-plan"])
+            .expect("Z.AI Coding Plan model listing parses");
+        assert!(matches!(
+            models.command,
+            Some(Command::Models {
+                provider: AuthProviderArg::ZaiCodingPlan
             })
         ));
     }

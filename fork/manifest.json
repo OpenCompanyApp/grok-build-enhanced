@@ -280,10 +280,10 @@
       "remote": "https://github.com/zai-org/GLM-5.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "25206af860c4ac10f6411c597c574f9b1c00e53c"
+        "commit": "414ad9eb891b05b5d7d51d573939bfe9ce538223"
       },
       "latest_fetched": {
-        "commit": "25206af860c4ac10f6411c597c574f9b1c00e53c"
+        "commit": "414ad9eb891b05b5d7d51d573939bfe9ce538223"
       }
     },
     {
@@ -7323,6 +7323,69 @@
       "legal_paths": [
         "LICENSE",
         "THIRD-PARTY-NOTICES"
+      ]
+    },
+    {
+      "id": "zai-coding-plan-runtime-glm53",
+      "description": "Restores Z.AI GLM Coding Plan as an experimental first-class API-key provider with an audited static GLM-5.3 catalog, canonical Chat Completions transport, credential isolation, session routing, and offline qualification.",
+      "source_ids": [
+        "grok-build-upstream",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper"
+      ],
+      "paths": [
+        ".grok/skills/refresh-upstreams/SKILL.md",
+        "AGENTS.md",
+        "README.md",
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md",
+        "crates/codegen/xai-grok-pager/src/app/cli.rs",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/config.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/mod.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/zai_coding_plan/mod.rs",
+        "crates/codegen/xai-grok-sampling-types/src/lib.rs",
+        "crates/codegen/xai-grok-sampling-types/src/provider.rs",
+        "crates/codegen/xai-grok-sampling-types/src/zai_coding_plan.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/auth/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/model.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/catalog.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/credentials.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/error.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/mod.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/request_auth.rs",
+        "crates/codegen/xai-grok-shell/src/auth/zai_coding_plan/storage.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs",
+        "docs/providers/README.md",
+        "docs/providers/openai-codex-subscription-provider-reference.md",
+        "docs/providers/zai-glm-coding-plan-integration-research.md",
+        "docs/providers/zai-glm-coding-plan-integration.md",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-shell/src/auth/model.rs",
+        "crates/codegen/xai-grok-shell/src/session/provider/openai_codex.rs",
+        "docs/providers/zai-glm-coding-plan-integration.md",
+        "UPSTREAM_VERSIONS.md",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
       ]
     }
   ]

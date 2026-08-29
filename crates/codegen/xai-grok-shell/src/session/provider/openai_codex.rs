@@ -10,7 +10,7 @@ use std::sync::Arc;
 use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
     ApiBackend, CredentialBinding, CredentialSourceId, KIMI_CODE_BASE_URL, OPENAI_CODEX_BASE_URL,
-    OPENAI_CODEX_RESPONSES_LITE_HEADER, OPENCODE_GO_BASE_URL, ProviderId,
+    OPENAI_CODEX_RESPONSES_LITE_HEADER, OPENCODE_GO_BASE_URL, ProviderId, ZAI_CODING_PLAN_BASE_URL,
 };
 use xai_grok_tools::types::SharedApiKeyProvider;
 
@@ -23,6 +23,10 @@ use crate::auth::kimi_code::{
 };
 use crate::auth::opencode_go::{
     OpenCodeGoAuthError, OpenCodeGoCredentialStore, shared_request_auth as opencode_go_request_auth,
+};
+use crate::auth::zai_coding_plan::{
+    ZaiCodingPlanAuthError, ZaiCodingPlanCredentialStore,
+    shared_sampler_request_auth as zai_sampler_auth,
 };
 
 /// Provider-qualified model identity carried alongside every bound auxiliary
@@ -64,16 +68,22 @@ pub(crate) enum ProviderBindingError {
     KimiCodeAuth(#[from] KimiCodeAuthError),
     #[error(transparent)]
     OpenCodeGoAuth(#[from] OpenCodeGoAuthError),
+    #[error(transparent)]
+    ZaiCodingPlanAuth(#[from] ZaiCodingPlanAuthError),
     #[error("restored OpenAI Codex credential binding is invalid")]
     InvalidRestoredBinding,
     #[error("restored Kimi Code credential binding is invalid")]
     InvalidKimiRestoredBinding,
     #[error("restored OpenCode Go credential binding is invalid")]
     InvalidOpenCodeGoRestoredBinding,
+    #[error("restored Z.AI Coding Plan credential binding is invalid")]
+    InvalidZaiRestoredBinding,
     #[error("the restored Kimi Code API-key record changed; rebuild the provider session")]
     KimiCredentialChanged,
     #[error("the restored OpenCode Go API-key record changed; rebuild the provider session")]
     OpenCodeGoCredentialChanged,
+    #[error("the restored Z.AI Coding Plan API-key record changed; rebuild the provider session")]
+    ZaiCredentialChanged,
     #[error("the restored OpenAI Codex account changed; rebuild the provider session")]
     AccountChanged,
     #[error("the restored OpenAI Codex credential generation moved backwards")]
@@ -104,6 +114,9 @@ pub(crate) async fn bind_provider_runtime(
     }
     if sampler_config.provider.is_kimi_code() {
         return bind_kimi_code(sampler_config);
+    }
+    if sampler_config.provider.is_zai_coding_plan() {
+        return bind_zai_coding_plan(sampler_config);
     }
     if !sampler_config.provider.is_openai_codex() {
         let route = ProviderModelRoute {
@@ -297,6 +310,72 @@ fn restored_kimi_binding(
         .ok_or(ProviderBindingError::InvalidKimiRestoredBinding)
 }
 
+fn bind_zai_coding_plan(
+    mut sampler_config: SamplerConfig,
+) -> Result<BoundProviderRuntime, ProviderBindingError> {
+    let grok_home = crate::util::grok_home::grok_home();
+    let store = ZaiCodingPlanCredentialStore::new(&grok_home);
+    let (credentials, current) =
+        crate::auth::zai_coding_plan::current_credentials_and_binding(&grok_home)?;
+    if let Some(expected) = restored_zai_binding(sampler_config.credential_binding.as_ref())?
+        && (!expected.same_record(&current) || current.generation < expected.generation)
+    {
+        return Err(ProviderBindingError::ZaiCredentialChanged);
+    }
+    if sampler_config.api_backend != ApiBackend::ChatCompletions {
+        return Err(ProviderBindingError::InvalidZaiRestoredBinding);
+    }
+
+    sampler_config.provider = ProviderId::ZaiCodingPlan;
+    sampler_config.credential_source = CredentialSourceId::ZaiCodingPlanApiKey;
+    sampler_config.credential_binding = Some(current.clone());
+    sampler_config.api_key = None;
+    sampler_config.base_url = ZAI_CODING_PLAN_BASE_URL.to_owned();
+    sampler_config.api_backend = ApiBackend::ChatCompletions;
+    sampler_config.auth_scheme = AuthScheme::Bearer;
+    sampler_config.extra_headers.clear();
+    sampler_config.attribution_callback = None;
+    sampler_config.bearer_resolver = None;
+    sampler_config.request_auth = Some(zai_sampler_auth(store, credentials, current));
+    sampler_config.deployment_id = None;
+    sampler_config.user_id = None;
+    sampler_config.compactions_remaining = None;
+    sampler_config.compaction_at_tokens = None;
+    sampler_config.doom_loop_recovery = None;
+
+    let route = ProviderModelRoute {
+        provider: ProviderId::ZaiCodingPlan,
+        model: sampler_config.model.clone(),
+    };
+    Ok(BoundProviderRuntime {
+        sampler_config,
+        api_key_provider: None,
+        route,
+    })
+}
+
+fn restored_zai_binding(
+    binding: Option<&CredentialBinding>,
+) -> Result<Option<&CredentialBinding>, ProviderBindingError> {
+    let Some(binding) = binding else {
+        return Ok(None);
+    };
+    let correct_owner = binding.provider == ProviderId::ZaiCodingPlan
+        && binding.source == CredentialSourceId::ZaiCodingPlanApiKey;
+    if correct_owner && binding.record_id.is_none() && binding.generation == 0 {
+        return Ok(None);
+    }
+    let complete = correct_owner
+        && binding.generation > 0
+        && binding
+            .record_id
+            .as_deref()
+            .is_some_and(|record_id| !record_id.trim().is_empty());
+    complete
+        .then_some(Some(binding))
+        .ok_or(ProviderBindingError::InvalidZaiRestoredBinding)
+}
+
 async fn bind_openai_codex_with_manager(
     mut sampler_config: SamplerConfig,
     manager: Arc<CodexAuthManager>,
@@ -361,6 +440,7 @@ pub(crate) fn pin_provider_candidate_to_active_record(
     let same_pinned_provider = (candidate.provider.is_openai_codex()
         && active_provider.is_openai_codex())
         || (candidate.provider.is_kimi_code() && active_provider.is_kimi_code())
+        || (candidate.provider.is_zai_coding_plan() && active_provider.is_zai_coding_plan())
         || (candidate.provider.is_open_code_go() && active_provider.is_open_code_go());
     candidate.credential_binding = same_pinned_provider
         .then(|| active_binding.cloned())
@@ -578,6 +658,10 @@ mod tests {
             restored_kimi_binding(Some(&codex)),
             Err(ProviderBindingError::InvalidKimiRestoredBinding)
         ));
+        assert!(matches!(
+            restored_zai_binding(Some(&codex)),
+            Err(ProviderBindingError::InvalidZaiRestoredBinding)
+        ));
         let mut candidate = SamplerConfig::openai_codex("gpt-5.4");
         pin_provider_candidate_to_active_record(
             &mut candidate,
@@ -627,6 +711,26 @@ mod tests {
 
         assert_eq!(candidate.provider, ProviderId::KimiCode);
         assert_eq!(candidate.model, "k3");
+        assert_eq!(candidate.credential_binding, Some(active));
+    }
+
+    #[test]
+    fn zai_aux_candidates_keep_the_active_api_key_record() {
+        let mut active = CredentialBinding::zai_coding_plan(Some("record-a".to_owned()));
+        active.generation = 4;
+        let mut candidate = SamplerConfig::zai_coding_plan("glm-5.3");
+        candidate.credential_binding = Some(CredentialBinding::zai_coding_plan(Some(
+            "process-current-other-record".to_owned(),
+        )));
+
+        pin_provider_candidate_to_active_record(
+            &mut candidate,
+            ProviderId::ZaiCodingPlan,
+            Some(&active),
+        );
+
+        assert_eq!(candidate.provider, ProviderId::ZaiCodingPlan);
+        assert_eq!(candidate.model, "glm-5.3");
         assert_eq!(candidate.credential_binding, Some(active));
     }
 

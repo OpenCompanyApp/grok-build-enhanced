@@ -42,6 +42,7 @@ use crate::provider::openai_codex::{
     responses as codex_responses, sse::CodexSseDecoder,
 };
 use crate::provider::opencode_go;
+use crate::provider::zai_coding_plan;
 use codex_headers::CODEX_TURN_STATE_HEADER;
 
 // Re-export ApiBackend from the shared types crate for downstream callers.
@@ -61,7 +62,11 @@ fn normalize_reasoning_effort_for_provider(
     provider: ProviderId,
     effort: ReasoningEffort,
 ) -> Result<ReasoningEffort> {
-    if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_open_code_go() {
+    if provider.is_openai_codex()
+        || provider.is_kimi_code()
+        || provider.is_zai_coding_plan()
+        || provider.is_open_code_go()
+    {
         return Ok(effort);
     }
     match effort {
@@ -830,6 +835,26 @@ impl SamplingClient {
                 ));
             }
         }
+        if config.provider.is_zai_coding_plan() {
+            zai_coding_plan::validate_config(
+                config.provider,
+                &config.base_url,
+                config.api_backend.clone(),
+            )?;
+            if config.api_key.is_some()
+                || config.bearer_resolver.is_some()
+                || config.request_auth.is_none()
+            {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Z.AI Coding Plan requires provider-scoped request authentication",
+                ));
+            }
+            if config.auth_scheme != AuthScheme::Bearer {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Z.AI Coding Plan requires bearer authentication",
+                ));
+            }
+        }
         if config.provider.is_open_code_go() {
             opencode_go::validate_config(config.provider, &config.base_url)?;
             if config.api_key.is_some()
@@ -930,6 +955,13 @@ impl SamplingClient {
                     "Kimi Code protected/provider headers cannot be set via extra_headers",
                 ));
             }
+            if config.provider.is_zai_coding_plan()
+                && zai_coding_plan::is_protected_header(&header_name)
+            {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Z.AI Coding Plan protected/provider headers cannot be set via extra_headers",
+                ));
+            }
             if config.provider.is_open_code_go() && opencode_go::is_protected_header(&header_name) {
                 return Err(SamplingError::InvalidConfiguration(
                     "OpenCode Go protected/provider headers cannot be set via extra_headers",
@@ -982,6 +1014,13 @@ impl SamplingClient {
             if config.provider.is_kimi_code() && kimi_code::is_protected_header(&header_name) {
                 return Err(SamplingError::InvalidConfiguration(
                     "Kimi Code protected/provider headers cannot be set via env_http_headers",
+                ));
+            }
+            if config.provider.is_zai_coding_plan()
+                && zai_coding_plan::is_protected_header(&header_name)
+            {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Z.AI Coding Plan protected/provider headers cannot be set via env_http_headers",
                 ));
             }
             if config.provider.is_open_code_go() && opencode_go::is_protected_header(&header_name) {
@@ -1050,6 +1089,7 @@ impl SamplingClient {
                     );
                 }
             }
+            ProviderId::ZaiCodingPlan => {}
             ProviderId::OpenCodeGo => {
                 if matches!(config.api_backend, ApiBackend::Messages) {
                     headers.insert(
@@ -1083,6 +1123,8 @@ impl SamplingClient {
             None
         } else if config.provider.is_kimi_code() {
             Some(kimi_code::http_client(config.force_http1)?)
+        } else if config.provider.is_zai_coding_plan() {
+            Some(zai_coding_plan::http_client(config.force_http1)?)
         } else if config.provider.is_open_code_go() {
             Some(opencode_go::http_client(config.force_http1)?)
         } else if config.force_http1 {
@@ -1234,6 +1276,9 @@ impl SamplingClient {
                 self.defaults.api_backend.clone(),
                 credential_binding.as_ref(),
             )?;
+        }
+        if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::seal_headers(&headers, credential_binding.as_ref())?;
         }
         if self.defaults.provider.is_open_code_go() {
             opencode_go::seal_headers(
@@ -1443,6 +1488,7 @@ impl SamplingClient {
         let auth_type = match (self.defaults.provider, self.defaults.auth_scheme, has_auth) {
             (ProviderId::OpenAiCodex, _, true) => "openai-codex-subscription",
             (ProviderId::KimiCode, _, true) => "kimi-code-api-key",
+            (ProviderId::ZaiCodingPlan, _, true) => "zai-coding-plan-api-key",
             (ProviderId::OpenCodeGo, _, true) => "opencode-go-api-key",
             (_, AuthScheme::XApiKey, true) => "x-api-key",
             (_, AuthScheme::Bearer, true) => "bearer",
@@ -1558,6 +1604,9 @@ impl SamplingClient {
         if provider.is_kimi_code() {
             return kimi_code::response_header_diagnostics(headers);
         }
+        if provider.is_zai_coding_plan() {
+            return zai_coding_plan::response_header_diagnostics(headers);
+        }
         if self.defaults.redact_response_diagnostics {
             return vec![format!("  details omitted (provider={provider})")];
         }
@@ -1608,10 +1657,14 @@ impl SamplingClient {
     }
 
     async fn read_response_bytes(&self, response: reqwest::Response) -> Result<bytes::Bytes> {
-        response
-            .bytes()
-            .await
-            .map_err(|error| self.transport_error(error))
+        if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::read_limited_response_body(response).await
+        } else {
+            response
+                .bytes()
+                .await
+                .map_err(|error| self.transport_error(error))
+        }
     }
 
     fn unauthorized_message(&self, endpoint: &str, server_message: Option<&str>) -> String {
@@ -1679,6 +1732,8 @@ impl SamplingClient {
             codex_errors::response_message(body)
         } else if self.defaults.provider.is_kimi_code() {
             kimi_code::response_message(status, body)
+        } else if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::response_message(status, body)
         } else if self.defaults.redact_response_diagnostics {
             format!(
                 "{} request failed with HTTP {status}",
@@ -1760,6 +1815,8 @@ impl SamplingClient {
             let message = self.provider_error_message(status, bytes.as_ref());
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
+            } else if self.defaults.provider.is_zai_coding_plan() {
+                zai_coding_plan::should_retry(status, bytes.as_ref(), should_retry)
             } else {
                 should_retry
             };
@@ -1771,6 +1828,12 @@ impl SamplingClient {
                 should_retry,
                 error_code: parse_error_code(bytes.as_ref()),
             });
+        }
+
+        if self.defaults.provider.is_zai_coding_plan()
+            && let Some(error) = zai_coding_plan::business_error(bytes.as_ref())
+        {
+            return Err(error);
         }
 
         let completion = if self.defaults.provider.is_kimi_code() {
@@ -1991,6 +2054,8 @@ impl SamplingClient {
         };
         let endpoint = if self.defaults.provider.is_kimi_code() {
             kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
+        } else if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::endpoint(&self.base_url)?
         } else {
             self.endpoint("chat/completions")
         };
@@ -2016,6 +2081,8 @@ impl SamplingClient {
                 false,
                 &self.kimi_reasoning_dialect,
             )?)
+        } else if self.defaults.provider.is_zai_coding_plan() {
+            request_builder.json(&zai_coding_plan::chat_body(&payload, false)?)
         } else {
             request_builder.json(&payload)
         };
@@ -2078,6 +2145,8 @@ impl SamplingClient {
         };
         let endpoint = if self.defaults.provider.is_kimi_code() {
             kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
+        } else if self.defaults.provider.is_zai_coding_plan() {
+            zai_coding_plan::endpoint(&self.base_url)?
         } else {
             self.endpoint("chat/completions")
         };
@@ -2105,6 +2174,8 @@ impl SamplingClient {
                 true,
                 &self.kimi_reasoning_dialect,
             )?)
+        } else if self.defaults.provider.is_zai_coding_plan() {
+            request_builder.json(&zai_coding_plan::chat_body(&payload, true)?)
         } else {
             request_builder.json(&streaming_request)
         };
@@ -2152,6 +2223,8 @@ impl SamplingClient {
                 );
                 let endpoint = if self.defaults.provider.is_kimi_code() {
                     kimi_code::endpoint(&self.base_url, ApiBackend::ChatCompletions)?
+                } else if self.defaults.provider.is_zai_coding_plan() {
+                    zai_coding_plan::endpoint(&self.base_url)?
                 } else {
                     self.endpoint("chat/completions")
                 };
@@ -2168,6 +2241,8 @@ impl SamplingClient {
             let bytes = self.read_response_bytes(response).await?;
             let should_retry = if self.defaults.provider.is_kimi_code() {
                 kimi_code::should_retry(status, bytes.as_ref(), should_retry)
+            } else if self.defaults.provider.is_zai_coding_plan() {
+                zai_coding_plan::should_retry(status, bytes.as_ref(), should_retry)
             } else {
                 should_retry
             };
@@ -2256,6 +2331,10 @@ impl SamplingClient {
 
                         if stream_provider.is_kimi_code()
                             && let Some(stream_error) = kimi_code::stream_error(data)
+                        {
+                            Some(Err(stream_error))
+                        } else if stream_provider.is_zai_coding_plan()
+                            && let Some(stream_error) = zai_coding_plan::stream_error(data)
                         {
                             Some(Err(stream_error))
                         } else if let Some(stream_error) = if redact_stream_diagnostics {

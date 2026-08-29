@@ -18,6 +18,7 @@ pub mod provider_error;
 pub mod serde_helpers;
 pub mod tool_overrides;
 pub mod types;
+pub mod zai_coding_plan;
 
 pub use self::conversation::*;
 pub use self::doom_loop::{
@@ -59,6 +60,10 @@ pub use self::tool_overrides::{
     ToolOverridesUpdate, WebSearchOptions, WebSearchOptionsError, XSearchOptions,
 };
 pub use self::types::*;
+pub use self::zai_coding_plan::{
+    ZAI_CODING_PLAN_API_KEY_ENV, ZAI_CODING_PLAN_AUTH_SCOPE, ZAI_CODING_PLAN_BASE_URL,
+    ZAI_CODING_PLAN_MAX_FUNCTION_TOOLS, ZAI_CODING_PLAN_MAX_RESPONSE_BYTES,
+};
 
 // Re-export async-openai crate Responses API types under `rs` namespace
 pub use async_openai::types::responses as rs;

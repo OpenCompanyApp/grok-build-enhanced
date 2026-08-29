@@ -92,7 +92,15 @@ Check authenticated catalog/model metadata, API/auth headers, request/stream sch
 
 ### Z.AI and GLM
 
-If tracked heads are unchanged, attest that and stop. If changed, inspect only established research/provider-contract surfaces. Research revisions do not authorize a new runtime provider, login flow, credentials, or product claims.
+Treat Z.AI GLM Coding Plan as an experimental first-class API-key provider.
+Audit its provider-scoped identity, global Coding Plan endpoint, static or
+authenticated catalog contract, Chat Completions request/stream schema,
+reasoning controls, retry/error behavior, usage, hosted tools, and logout
+isolation. A research reference by itself does not establish wire behavior:
+runtime changes require a current audited Z.AI contract, provider-isolation
+tests, and explicit qualification evidence. Do not infer browser/OAuth login,
+Open Platform pay-as-you-go, BigModel China, usage, or hosted-tool support from
+the existence of a Coding Plan API key.
 
 ### Other references
 

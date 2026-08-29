@@ -538,6 +538,7 @@ impl SessionActor {
         let stored_credentials_match_provider = match cfg.provider {
             xai_grok_sampling_types::ProviderId::OpenAiCodex
             | xai_grok_sampling_types::ProviderId::KimiCode
+            | xai_grok_sampling_types::ProviderId::ZaiCodingPlan
             | xai_grok_sampling_types::ProviderId::OpenCodeGo => true,
             xai_grok_sampling_types::ProviderId::Custom => {
                 creds.provider == Some(xai_grok_sampling_types::ProviderId::Custom)
@@ -672,6 +673,9 @@ impl SessionActor {
             xai_grok_sampling_types::ProviderId::KimiCode => {
                 xai_grok_sampling_types::CredentialSourceId::KimiCodeApiKey
             }
+            xai_grok_sampling_types::ProviderId::ZaiCodingPlan => {
+                xai_grok_sampling_types::CredentialSourceId::ZaiCodingPlanApiKey
+            }
             xai_grok_sampling_types::ProviderId::OpenCodeGo => {
                 xai_grok_sampling_types::CredentialSourceId::OpenCodeGoApiKey
             }
@@ -706,6 +710,7 @@ impl SessionActor {
         let request_api_key = match cfg.provider {
             xai_grok_sampling_types::ProviderId::OpenAiCodex
             | xai_grok_sampling_types::ProviderId::KimiCode
+            | xai_grok_sampling_types::ProviderId::ZaiCodingPlan
             | xai_grok_sampling_types::ProviderId::OpenCodeGo => None,
             xai_grok_sampling_types::ProviderId::Custom if custom_owns_key => creds.api_key.clone(),
             xai_grok_sampling_types::ProviderId::Custom => None,

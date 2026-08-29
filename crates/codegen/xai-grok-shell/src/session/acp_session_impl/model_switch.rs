@@ -262,6 +262,7 @@ async fn refresh_provider_memory_resource(
     match sampling_config.provider {
         xai_grok_sampling_types::ProviderId::OpenAiCodex
         | xai_grok_sampling_types::ProviderId::KimiCode
+        | xai_grok_sampling_types::ProviderId::ZaiCodingPlan
         | xai_grok_sampling_types::ProviderId::OpenCodeGo => {
             // Provider-owned subscription auth is not a general xAI
             // credential, and these scoped backends expose no supported
@@ -525,13 +526,14 @@ impl SessionActor {
                 sampling_config.service_tier = Some(previous_tier);
             }
         }
-        // A same-provider Codex/Kimi switch belongs to the existing session
+        // A same-provider first-class switch belongs to the existing session
         // record. Model resolution must not silently adopt a process-current
-        // account or Kimi API-key record.
+        // account or API-key record.
         if let Some(previous) = previous_sampling_config.as_ref()
             && previous.provider == sampling_config.provider
             && (sampling_config.provider.is_openai_codex()
                 || sampling_config.provider.is_kimi_code()
+                || sampling_config.provider.is_zai_coding_plan()
                 || sampling_config.provider.is_open_code_go())
         {
             crate::session::provider::pin_provider_candidate_to_active_record(
@@ -565,6 +567,9 @@ impl SessionActor {
             }
             xai_grok_sampling_types::ProviderId::KimiCode => {
                 acp::ModelId::new(format!("kimi-code/{}", sampling_config.model))
+            }
+            xai_grok_sampling_types::ProviderId::ZaiCodingPlan => {
+                acp::ModelId::new(format!("zai-coding-plan/{}", sampling_config.model))
             }
             xai_grok_sampling_types::ProviderId::OpenCodeGo => {
                 acp::ModelId::new(format!("opencode-go/{}", sampling_config.model))

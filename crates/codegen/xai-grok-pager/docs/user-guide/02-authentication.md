@@ -1,6 +1,6 @@
 # Authentication
 
-Grok supports several authentication methods, including interactive browser login, ChatGPT Codex subscription login, an experimental Kimi Code API key, enterprise single sign-on (SSO), and headless CI/CD runners. xAI, ChatGPT Codex, and Kimi Code credentials are stored in separate scopes and can remain signed in at the same time.
+Grok supports several authentication methods, including interactive browser login, ChatGPT Codex subscription login, experimental Kimi Code and Z.AI Coding Plan API keys, enterprise single sign-on (SSO), and headless CI/CD runners. xAI, ChatGPT Codex, Kimi Code, and Z.AI Coding Plan credentials are stored in separate scopes and can remain signed in at the same time.
 
 ---
 
@@ -30,7 +30,7 @@ Running `grok login` starts the sign-in flow again, replacing your cached sessio
 | `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
 
 To sign out of xAI, run `grok logout`. Add `--provider openai-codex`,
-`--provider kimi-code` to clear only that
+`--provider kimi-code`, or `--provider zai-coding-plan` to clear only that
 independent provider credential, as described below.
 
 ---
@@ -227,6 +227,58 @@ grok logout --provider kimi-code
 > `/usages`, hosted `/search`, and hosted `/fetch`. Messages and longer-running
 > session, cache, quota, and media cases still require qualification when the
 > relevant entitlement or test condition is available.
+
+---
+
+## Z.AI GLM Coding Plan (Experimental)
+
+Z.AI Coding Plan uses a provider-scoped API key and the global Coding Plan
+OpenAI-compatible endpoint. It does not share credentials with Z.AI Open
+Platform pay-as-you-go, BigModel China, xAI, Codex, Kimi, OpenCode, or custom
+providers.
+
+Store a key without putting it in a command argument:
+
+```bash
+secure-key-command | grok login --provider zai-coding-plan
+```
+
+Or use the dedicated environment fallback:
+
+```bash
+export Z_AI_API_KEY="$(secure-key-command)"
+grok login --provider zai-coding-plan
+unset Z_AI_API_KEY
+```
+
+The key is stored under `zai::coding-plan::global` in `~/.grok/auth.json`.
+Login validates its local bearer-header shape but does not make a speculative
+catalog call; Z.AI does not document a Coding Plan `/models` endpoint.
+
+List the audited models and start a session:
+
+```bash
+grok models --provider zai-coding-plan
+grok -m 'zai-coding-plan/glm-5.3'
+grok -m 'zai-coding-plan/glm-5.3-flash[1m]'
+```
+
+The static catalog contains GLM-5.3 and GLM-5.3-Flash, with explicit `[1m]`
+variants. All expose a one-million-token context, 131,072-token maximum output,
+and `low`, `high`, and `max` reasoning levels, defaulting to `max`.
+GLM-5.3 is text-only and GLM-5.3-Flash accepts image input. Reasoning is always
+enabled; compatibility values that request disabled/minimal reasoning map to
+the provider's `low` level.
+
+Disconnect only Z.AI Coding Plan with:
+
+```bash
+grok logout --provider zai-coding-plan
+```
+
+This adapter is offline-qualified. No entitled credential was available for
+the 2026-08-29 refresh, so live inference remains untested. Usage/quota and
+provider-hosted MCP tools are not enabled.
 
 ---
 

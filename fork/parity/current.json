@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "campaign": "2026-08-23-upstream-refresh",
+  "campaign": "2026-08-29-zai-coding-plan-runtime",
   "inventory": {
-    "count": 125,
-    "sha256": "a81eb7d78655913bbf1288a6465514952623a8d5938d73e80d2483a35d995f98"
+    "count": 126,
+    "sha256": "8ac5b2c394e6dc0b3934b8fdd7940269e1fd8e9fb4c763ea653d80ce57b86586"
   },
   "target_sources": {
     "grok-build-upstream": "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8",
@@ -16,7 +16,7 @@
     "kimi-cli": "cbc15c076d17f70fec9f89c90c0502e68657f505",
     "zai-sdk-python": "ca5109c0aa9bf173839be391b4b14aeadf9a9bf9",
     "zai-coding-plugins": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254",
-    "glm-5": "25206af860c4ac10f6411c597c574f9b1c00e53c",
+    "glm-5": "414ad9eb891b05b5d7d51d573939bfe9ce538223",
     "codexbar": "4b14ed9c57d3506d1455b2736a1d1a8ff2b9c718",
     "zai-usage-helper": "54cd1f33a703c417f2492ee1f21f22b3633a43c4",
     "models-dev": "59d624d4fb0c5c4f6fd44d1f701f17db1bd6ae4b",
@@ -261,7 +261,7 @@
     {
       "id": "GLM-2520-SCOPE",
       "source_id": "glm-5",
-      "source_revision": "25206af860c4ac10f6411c597c574f9b1c00e53c",
+      "source_revision": "414ad9eb891b05b5d7d51d573939bfe9ce538223",
       "classification": "not applicable",
       "state": "closed",
       "behavior": "The GLM-5 change updates a documentation link in a research-only source.",
@@ -1508,6 +1508,21 @@
       "behavior": "The catalog range contains no authenticated first-party Z.AI GLM-5.3 Coding Plan contract and cannot authorize a provider identity.",
       "closure_evidence": [
         "raw-path:docs/upstream-refresh-2026-08-23-providers.md"
+      ]
+    },
+    {
+      "id": "ZAI-414A-RUNTIME",
+      "source_id": "glm-5",
+      "source_revision": "414ad9eb891b05b5d7d51d573939bfe9ce538223",
+      "classification": "adopt",
+      "state": "offline-qualified",
+      "behavior": "Ship an isolated Z.AI GLM Coding Plan API-key identity, audited GLM-5.3 catalog, Chat Completions inference, CLI auth, and session routing without enabling unaudited usage or hosted tools.",
+      "closure_evidence": [
+        "raw-path:docs/providers/zai-glm-coding-plan-integration.md",
+        "test:xai-grok-sampler zai_coding_plan",
+        "test:xai-grok-shell auth::zai_coding_plan and provider binding",
+        "test:xai-grok-pager CLI provider parsing",
+        "test:cargo check -p xai-grok-pager-bin"
       ]
     }
   ]
