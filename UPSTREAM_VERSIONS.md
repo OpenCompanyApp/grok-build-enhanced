@@ -15,7 +15,7 @@ blindly copy upstream code.
 | Grok Build upstream | `https://github.com/xai-org/grok-build.git` `main` | Reviewed [`07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8`](https://github.com/xai-org/grok-build/commit/07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8) | same |
 | OpenCode Codex auth reference | `https://github.com/numman-ali/opencode-openai-codex-auth.git` `main` | [`bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016`](https://github.com/numman-ali/opencode-openai-codex-auth/commit/bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016) | same |
 | Oh My Pi coding harness | `https://github.com/can1357/oh-my-pi.git` `main` | Reviewed [`160ed439ac0df594347e7d7018b813a7ffdb5e81`](https://github.com/can1357/oh-my-pi/commit/160ed439ac0df594347e7d7018b813a7ffdb5e81) | same |
-| Warp themes | `https://github.com/warpdotdev/themes.git` `main` | Reviewed [`6cc44d7b32baaf979a249056e35fff834cb39547`](https://github.com/warpdotdev/themes/commit/6cc44d7b32baaf979a249056e35fff834cb39547) | same |
+| Warp themes | `https://github.com/warpdotdev/themes.git` `main` | Reviewed [`4154072de03bea5dd070afa947ba6a6f2310ed5d`](https://github.com/warpdotdev/themes/commit/4154072de03bea5dd070afa947ba6a6f2310ed5d) | same |
 | Kimi Code | `https://github.com/MoonshotAI/kimi-code.git` `main` | Reviewed [`ea0626ad48ee318045a22490d52c86be7d086033`](https://github.com/MoonshotAI/kimi-code/commit/ea0626ad48ee318045a22490d52c86be7d086033) | same |
 | Kimi CLI (legacy reference) | `https://github.com/MoonshotAI/kimi-cli.git` `main` | [`cbc15c076d17f70fec9f89c90c0502e68657f505`](https://github.com/MoonshotAI/kimi-cli/commit/cbc15c076d17f70fec9f89c90c0502e68657f505) | same |
 | Z.AI Python SDK | `https://github.com/zai-org/z-ai-sdk-python.git` `main` | [`ca5109c0aa9bf173839be391b4b14aeadf9a9bf9`](https://github.com/zai-org/z-ai-sdk-python/commit/ca5109c0aa9bf173839be391b4b14aeadf9a9bf9) | same |
@@ -28,12 +28,10 @@ The 2026-08-23 fetch of the tracked Z.AI Python SDK URL returned `Repository
 not found`. Its immutable recorded pin was not changed, and no replacement
 repository identity was inferred.
 
-The 2026-08-29 GLM review advances the GLM-5 model reference and authorizes
-an offline-qualified, provider-isolated Z.AI GLM Coding Plan API-key runtime
-against current first-party documentation. It ships the audited GLM-5.3 static
-catalog and Chat Completions inference without enabling unaudited usage or
-hosted-tool credential forwarding. All other source review/fetch states remain
-unchanged in this thematic provider commit.
+The 2026-08-29 GLM/Warp review advances the GLM-5 and Warp references. It
+authorizes an offline-qualified, provider-isolated Z.AI GLM Coding Plan API-key
+runtime and adopts Warp’s byte-identical Paper Botanical category move. All
+other source review/fetch states remain unchanged in these thematic commits.
 
 ## Refresh procedure
 

@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "source": "https://github.com/warpdotdev/themes.git",
-  "revision": "6cc44d7b32baaf979a249056e35fff834cb39547",
+  "revision": "4154072de03bea5dd070afa947ba6a6f2310ed5d",
   "theme_count": 343,
   "category_counts": {
     "base16": 178,
-    "standard": 137,
+    "standard": 135,
     "special_edition": 8,
     "stradicat": 1,
-    "warp_bundled": 19
+    "warp_bundled": 21
   },
   "license": {
     "path": "LICENSE",
@@ -1372,16 +1372,6 @@
       "sha256": "90e1a2a3e52d6760ee07ecaa029818a533a7a34564e1147feea730044a5ff0fb"
     },
     {
-      "path": "standard/paper_botanical.yaml",
-      "bytes": 490,
-      "sha256": "d57ce71a40bdb7cb86ccca24e924efbb3934cf6c56e009b24ee226c2b8dd3597"
-    },
-    {
-      "path": "standard/paper_botanical_dark.yaml",
-      "bytes": 494,
-      "sha256": "8e131f97df3e3c83a933a055b82fc3ac80e72626aa79e748d3124a0d80859c83"
-    },
-    {
       "path": "standard/papercolor_light.yaml",
       "bytes": 450,
       "sha256": "875e2a2c89ca4399dad022571f53504679460bd1463c38b73ff9eb5da8fce21a"
@@ -1685,6 +1675,16 @@
       "path": "warp_bundled/marble.yaml",
       "bytes": 586,
       "sha256": "286d9b98ca81604a63ada447fca12b5af8d1c26098dc5ce605ca7a4256b8eb02"
+    },
+    {
+      "path": "warp_bundled/paper_botanical.yaml",
+      "bytes": 490,
+      "sha256": "d57ce71a40bdb7cb86ccca24e924efbb3934cf6c56e009b24ee226c2b8dd3597"
+    },
+    {
+      "path": "warp_bundled/paper_botanical_dark.yaml",
+      "bytes": 494,
+      "sha256": "8e131f97df3e3c83a933a055b82fc3ac80e72626aa79e748d3124a0d80859c83"
     },
     {
       "path": "warp_bundled/pink_city.yaml",

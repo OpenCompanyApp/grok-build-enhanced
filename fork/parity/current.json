@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "campaign": "2026-08-29-zai-coding-plan-runtime",
+  "campaign": "2026-08-29-zai-warp-reviewed",
   "inventory": {
-    "count": 126,
-    "sha256": "8ac5b2c394e6dc0b3934b8fdd7940269e1fd8e9fb4c763ea653d80ce57b86586"
+    "count": 127,
+    "sha256": "0f22a03381c972a3c0661de5b26b416edfc5989405fedc750c2a87a1fb2e37f8"
   },
   "target_sources": {
     "grok-build-upstream": "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8",
@@ -11,7 +11,7 @@
     "opencode": "3a31c4ea801915c0b050df4b3842997ea62b6e93",
     "opencode-codex-auth": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
     "oh-my-pi": "160ed439ac0df594347e7d7018b813a7ffdb5e81",
-    "warp-themes": "6cc44d7b32baaf979a249056e35fff834cb39547",
+    "warp-themes": "4154072de03bea5dd070afa947ba6a6f2310ed5d",
     "kimi-code": "ea0626ad48ee318045a22490d52c86be7d086033",
     "kimi-cli": "cbc15c076d17f70fec9f89c90c0502e68657f505",
     "zai-sdk-python": "ca5109c0aa9bf173839be391b4b14aeadf9a9bf9",
@@ -1377,7 +1377,7 @@
     {
       "id": "WARP-6CC4-PAPER-BOTANICAL",
       "source_id": "warp-themes",
-      "source_revision": "6cc44d7b32baaf979a249056e35fff834cb39547",
+      "source_revision": "4154072de03bea5dd070afa947ba6a6f2310ed5d",
       "classification": "adopt",
       "state": "closed",
       "behavior": "Bundle the Paper Botanical light and dark YAML themes in the byte-preserved Warp corpus without shipping upstream previews.",
@@ -1523,6 +1523,19 @@
         "test:xai-grok-shell auth::zai_coding_plan and provider binding",
         "test:xai-grok-pager CLI provider parsing",
         "test:cargo check -p xai-grok-pager-bin"
+      ]
+    },
+    {
+      "id": "WARP-4154-CATEGORY",
+      "source_id": "warp-themes",
+      "source_revision": "4154072de03bea5dd070afa947ba6a6f2310ed5d",
+      "classification": "adopt",
+      "state": "closed",
+      "behavior": "Move the byte-identical Paper Botanical themes from standard to warp_bundled and regenerate deterministic vendor metadata.",
+      "closure_evidence": [
+        "raw-path:crates/codegen/xai-grok-pager-render/assets/warp-themes/VENDOR_MANIFEST.json",
+        "test:vendor_warp_themes.py --check --revision 4154072de03bea5dd070afa947ba6a6f2310ed5d",
+        "test:xai-grok-pager-render warp_vendor_build_validation (2 passed)"
       ]
     }
   ]

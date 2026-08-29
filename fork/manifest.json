@@ -220,10 +220,10 @@
       "remote": "https://github.com/warpdotdev/themes.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "6cc44d7b32baaf979a249056e35fff834cb39547"
+        "commit": "4154072de03bea5dd070afa947ba6a6f2310ed5d"
       },
       "latest_fetched": {
-        "commit": "6cc44d7b32baaf979a249056e35fff834cb39547"
+        "commit": "4154072de03bea5dd070afa947ba6a6f2310ed5d"
       }
     },
     {
@@ -7386,6 +7386,37 @@
         "LICENSE",
         "THIRD-PARTY-NOTICES",
         "crates/codegen/xai-grok-shell/THIRD_PARTY_NOTICES.md"
+      ]
+    },
+    {
+      "id": "warp-themes-4154-category-refresh",
+      "description": "Adopts Warp's byte-preserved Paper Botanical category move and regenerates the deterministic vendor lock at revision 4154072d.",
+      "source_ids": [
+        "warp-themes"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-pager-render/build.rs",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/UPSTREAM_REVISION",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/VENDOR_MANIFEST.json",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/standard/paper_botanical.yaml",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/standard/paper_botanical_dark.yaml",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/warp_bundled/paper_botanical.yaml",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/warp_bundled/paper_botanical_dark.yaml",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager-render/build.rs",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/UPSTREAM_REVISION",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/VENDOR_MANIFEST.json",
+        "UPSTREAM_VERSIONS.md",
+        "fork/manifest.json",
+        "fork/parity/current.json"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "crates/codegen/xai-grok-pager-render/assets/warp-themes/LICENSE"
       ]
     }
   ]
