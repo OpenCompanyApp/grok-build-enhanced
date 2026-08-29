@@ -7394,13 +7394,15 @@
       ],
       "paths": [
         "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
         "crates/codegen/xai-grok-pager-render/build.rs",
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/UPSTREAM_REVISION",
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/VENDOR_MANIFEST.json",
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/warp_bundled/paper_botanical.yaml",
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/warp_bundled/paper_botanical_dark.yaml",
         "fork/manifest.json",
-        "fork/parity/current.json"
+        "fork/parity/current.json",
+        "fork/scripts/check_fork_contracts.py"
       ],
       "integration_paths": [
         "crates/codegen/xai-grok-pager-render/build.rs",
@@ -7408,10 +7410,12 @@
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/VENDOR_MANIFEST.json",
         "UPSTREAM_VERSIONS.md",
         "fork/manifest.json",
-        "fork/parity/current.json"
+        "fork/parity/current.json",
+        "fork/scripts/check_fork_contracts.py"
       ],
       "legal_paths": [
         "LICENSE",
+        "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/LICENSE"
       ]
     },
