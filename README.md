@@ -27,7 +27,7 @@ responsive Grok braille symbol remain compatible.
 | Bundled Warp themes and theme UX | Implemented |
 | Kimi Code plan provider | Implemented and experimental: isolated API-key login, dynamic models, Chat/Messages inference, plan usage, and hosted web tools; the current Chat/K3/usage/web matrix was live-qualified on 2026-07-19 |
 | Z.AI GLM Coding Plan | Implemented and experimental: isolated API-key login, audited static GLM-5.3 catalog, and Chat Completions inference; usage and hosted tools are not enabled |
-| Enhanced release artifacts | Fork-owned stable `v0.3.15` release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
+| Enhanced release artifacts | Fork-owned stable [`v0.3.15`](https://github.com/OpenCompanyApp/grok-build-enhanced/releases/tag/v0.3.15) release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
 | Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
 
 ## Fork-owned terminal preview
@@ -56,7 +56,10 @@ The official xAI installer does **not** install Enhanced features.
 
 ### Homebrew Formula (macOS and Linux)
 
-Install the latest stable Enhanced release from the fork-owned tap:
+Install the current stable Enhanced release (`v0.3.15`) from the
+[fork-owned tap](https://github.com/OpenCompanyApp/homebrew-tap/blob/main/Formula/grok-build-enhanced.rb).
+The Formula selects the matching macOS or Linux release binary for Arm64 or
+x86-64:
 
 ```sh
 brew install --formula OpenCompanyApp/tap/grok-build-enhanced
