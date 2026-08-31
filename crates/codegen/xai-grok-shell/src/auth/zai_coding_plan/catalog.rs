@@ -287,16 +287,20 @@ mod tests {
     }
 
     #[test]
-    fn glm_53_flash_is_multimodal() {
-        let entries = map_models(vec![ZaiCodingPlanModel {
-            id: "glm-5.3-flash".to_owned(),
-            display_name: None,
-        }]);
-        assert!(
-            entries["zai-coding-plan/glm-5.3-flash"]
-                .info
-                .supports_image_input
-        );
+    fn glm_53_flash_routes_are_selectable_multimodal_models() {
+        let entries = map_models(default_models());
+        for id in ["glm-5.3-flash", "glm-5.3-flash[1m]"] {
+            let entry = &entries[&format!("zai-coding-plan/{id}")];
+            assert_eq!(entry.info.provider, ProviderId::ZaiCodingPlan);
+            assert_eq!(entry.info.api_backend, ApiBackend::ChatCompletions);
+            assert_eq!(entry.info.context_window.get(), 1_000_000);
+            assert_eq!(entry.info.max_completion_tokens, Some(131_072));
+            assert!(entry.info.supports_image_input);
+            assert!(entry.info.supported_in_api);
+            assert!(entry.info.user_selectable);
+            assert_eq!(entry.info.reasoning_effort, Some(ReasoningEffort::Max));
+            assert_eq!(entry.info.reasoning_efforts.len(), 3);
+        }
     }
 
     #[test]

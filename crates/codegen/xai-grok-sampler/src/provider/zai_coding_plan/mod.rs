@@ -408,7 +408,9 @@ pub(crate) fn response_header_diagnostics(headers: &HeaderMap) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_grok_sampling_types::{ChatRequestMessage, ToolChoice, ToolDefinition};
+    use xai_grok_sampling_types::{
+        ChatContentBlock, ChatRequestMessage, ImageUrl, MessageContent, ToolChoice, ToolDefinition,
+    };
 
     #[test]
     fn glm_53_body_uses_singular_tool_stream_and_max_reasoning() {
@@ -437,6 +439,35 @@ mod tests {
         let body = chat_body(&request, true).unwrap();
         assert_eq!(body["reasoning_effort"], "low");
         assert_eq!(body["thinking"]["type"], "enabled");
+    }
+
+    #[test]
+    fn glm_53_flash_routes_preserve_image_url_content() {
+        for model in ["glm-5.3-flash", "glm-5.3-flash[1m]"] {
+            let mut message = ChatRequestMessage::user("");
+            message.content = MessageContent::Blocks(vec![
+                ChatContentBlock::Text {
+                    text: "Describe this interface".to_owned(),
+                },
+                ChatContentBlock::ImageUrl {
+                    image_url: ImageUrl {
+                        url: "data:image/png;base64,AA==".to_owned(),
+                    },
+                },
+            ]);
+            let request = ChatCompletionRequest::new(model, vec![message]);
+            let body = chat_body(&request, true).unwrap();
+
+            assert_eq!(body["model"], model);
+            assert_eq!(body["messages"][0]["content"][1]["type"], "image_url");
+            assert_eq!(
+                body["messages"][0]["content"][1]["image_url"]["url"],
+                "data:image/png;base64,AA=="
+            );
+            assert_eq!(body["thinking"]["type"], "enabled");
+            assert_eq!(body["reasoning_effort"], "max");
+            assert_eq!(body["stream"], true);
+        }
     }
 
     #[test]

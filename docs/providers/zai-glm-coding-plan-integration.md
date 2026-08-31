@@ -55,6 +55,12 @@ grok -m 'zai-coding-plan/glm-5.3-flash[1m]'
 | `glm-5.3-flash` | text and images | 1,000,000 | 131,072 | `low`, `high`, `max` |
 | `glm-5.3-flash[1m]` | text and images | 1,000,000 | 131,072 | `low`, `high`, `max` |
 
+Z.AI now documents both Flash IDs as available to Coding Plan users. Enhanced
+qualifies text plus OpenAI-compatible `image_url` blocks (remote URLs and Base64
+data URLs) through its existing attachment path. Although the upstream model
+also advertises video and file inputs, Enhanced does not claim those input
+paths until they have separate harness and wire qualification.
+
 The default reasoning effort is `max`. Grok maps `none`, `minimal`, and `low`
 to the provider's `low`; `medium` and `high` to `high`; and `xhigh`, `max`, and
 `ultra` to `max`. It always sends `thinking.type = enabled`; GLM-5.3 does not
