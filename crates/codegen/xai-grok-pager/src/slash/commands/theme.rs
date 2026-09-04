@@ -572,7 +572,7 @@ mod tests {
                 assert!(msg.len() < 120, "guidance should stay concise: {msg}");
                 assert!(
                     !msg.contains("warp:"),
-                    "guidance must not enumerate the 340-theme catalog: {msg}"
+                    "guidance must not enumerate the full Warp catalog: {msg}"
                 );
             } else {
                 panic!("expected Error, got: {result:?}");

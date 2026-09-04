@@ -6,7 +6,7 @@ Grok Build draws all TUI colors from a central theme. You can switch themes whil
 
 ## Available Themes
 
-Grok includes five built-in themes, three terminal-native choices, system `auto`, and the complete pinned catalog of 341 official Warp themes:
+Grok includes five built-in themes, three terminal-native choices, system `auto`, and the complete pinned catalog of 343 official Warp themes:
 
 | Theme | Config Names | Description | Truecolor Required |
 |-------|-------------|-------------|--------------------|
