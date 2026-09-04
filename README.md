@@ -24,7 +24,7 @@ responsive Grok braille symbol remain compatible.
 | xAI login and models | Implemented upstream behavior; provider identity remains explicit |
 | ChatGPT Codex subscription login, catalog, usage, fast mode, web/image tools | Implemented, experimental, and isolated from xAI credentials |
 | Custom OpenAI-compatible endpoint path | Retained with explicit provider identity; custom entries use only their own configured credentials |
-| Bundled Warp themes and theme UX | Implemented |
+| Terminal theme integrations | Implemented: bundled Warp catalog plus live Warp and Herdr/Ghostty sync |
 | Kimi Code plan provider | Implemented and experimental: isolated API-key login, dynamic models, Chat/Messages inference, plan usage, and hosted web tools; the current Chat/K3/usage/web matrix was live-qualified on 2026-07-19 |
 | Z.AI GLM Coding Plan | Implemented and experimental: isolated API-key login, audited static GLM-5.3 catalog, and Chat Completions inference; usage and hosted tools are not enabled |
 | Enhanced release artifacts | Fork-owned stable [`v0.3.15`](https://github.com/OpenCompanyApp/grok-build-enhanced/releases/tag/v0.3.15) release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
@@ -391,11 +391,12 @@ the [provider reference](docs/providers/zai-glm-coding-plan-integration.md).
 
 ### Themes, tools, and UX
 
-Enhanced includes the packaged Warp theme corpus, provider-scoped Codex and
-Kimi web integrations, Codex image integration, and focused terminal UX
-additions while preserving Grok Build's existing tool names, permission model,
-sessions, and responsive braille symbol. Third-party attribution is recorded
-in [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) and crate-local notices.
+Enhanced includes the packaged Warp theme corpus, live Warp and Herdr/Ghostty
+theme sync, provider-scoped Codex and Kimi web integrations, Codex image
+integration, and focused terminal UX additions while preserving Grok Build's
+existing tool names, permission model, sessions, and responsive braille symbol.
+Third-party attribution is recorded in
+[`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) and crate-local notices.
 
 Oh My Pi is tracked as a non-normative coding-harness reference. Its reviewed
 ideas include a tool/model regression harness, deeper LSP operations,

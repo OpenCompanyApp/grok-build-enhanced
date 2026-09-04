@@ -227,6 +227,30 @@
       }
     },
     {
+      "id": "ghostty",
+      "project": "Ghostty terminal emulator",
+      "remote": "https://github.com/ghostty-org/ghostty.git",
+      "tracked_ref": "main",
+      "reviewed": {
+        "commit": "492300cad104195411d12217dd22f1cd05f31376"
+      },
+      "latest_fetched": {
+        "commit": "492300cad104195411d12217dd22f1cd05f31376"
+      }
+    },
+    {
+      "id": "herdr",
+      "project": "Herdr terminal multiplexer",
+      "remote": "https://github.com/herdrdev/herdr.git",
+      "tracked_ref": "master",
+      "reviewed": {
+        "commit": "a2b128978a154c02311b90da778ca115758f75d7"
+      },
+      "latest_fetched": {
+        "commit": "a2b128978a154c02311b90da778ca115758f75d7"
+      }
+    },
+    {
       "id": "kimi-code",
       "project": "Kimi Code",
       "remote": "https://github.com/MoonshotAI/kimi-code.git",
@@ -1526,6 +1550,8 @@
         "opencode-codex-auth",
         "oh-my-pi",
         "warp-themes",
+        "ghostty",
+        "herdr",
         "kimi-code",
         "kimi-cli",
         "zai-sdk-python",
@@ -1723,6 +1749,40 @@
         "crates/codegen/xai-grok-pager-render/THIRD_PARTY_NOTICES.md",
         "crates/codegen/xai-grok-pager-render/assets/warp-themes/LICENSE",
         "third_party/NOTICE"
+      ]
+    },
+    {
+      "id": "herdr-ghostty-theme-sync",
+      "description": "Terminal-native theme selection that follows Ghostty's effective runtime palette directly and the same host palette through Herdr's Ghostty-backed panes.",
+      "source_ids": [
+        "grok-build-upstream",
+        "ghostty",
+        "herdr"
+      ],
+      "paths": [
+        "AGENTS.md",
+        "README.md",
+        "UPSTREAM_VERSIONS.md",
+        "crates/codegen/xai-grok-pager-render/src/theme/cache.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/host_sync.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/mod.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/resolved.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/selection.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/system_appearance.rs",
+        "crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md",
+        "crates/codegen/xai-grok-pager/src/settings/defs.rs",
+        "crates/codegen/xai-grok-pager/src/settings/registry.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/theme.rs"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-pager-render/src/theme/cache.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/mod.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/resolved.rs",
+        "crates/codegen/xai-grok-pager-render/src/theme/selection.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/theme.rs"
+      ],
+      "legal_paths": [
+        "LICENSE"
       ]
     },
     {

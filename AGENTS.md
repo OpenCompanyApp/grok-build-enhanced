@@ -10,7 +10,7 @@ purpose is deliberately narrow:
 - add explicit, isolated ChatGPT Codex subscription, Kimi Code, and Z.AI GLM
   Coding Plan providers;
 - package the audited Warp theme corpus and retain terminal-native theme
-  behavior;
+  behavior, including explicit Warp and Herdr/Ghostty sync modes;
 - present clear Enhanced branding without renaming compatibility surfaces;
 - own the fork's GitHub release and update routes; and
 - keep downstream work as small thematic commits with machine-checked ownership
@@ -75,6 +75,8 @@ Primary sources and inspiration repositories are:
 | OpenCode Codex auth reference | `https://github.com/numman-ali/opencode-openai-codex-auth.git` `main` |
 | Oh My Pi coding-harness inspiration | `https://github.com/can1357/oh-my-pi.git` `main` |
 | Warp themes | `https://github.com/warpdotdev/themes.git` `main` |
+| Ghostty terminal theme contracts | `https://github.com/ghostty-org/ghostty.git` `main` |
+| Herdr Ghostty-pane contracts | `https://github.com/herdrdev/herdr.git` `master` |
 | Kimi Code provider reference | `https://github.com/MoonshotAI/kimi-code.git` `main` |
 | Kimi CLI legacy reference | `https://github.com/MoonshotAI/kimi-cli.git` `main` |
 | Z.AI SDK research | `https://github.com/zai-org/z-ai-sdk-python.git` `main` |
