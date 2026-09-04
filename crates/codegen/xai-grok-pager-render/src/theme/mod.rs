@@ -15,6 +15,7 @@ pub mod color_support;
 pub mod env_appearance;
 mod grokday;
 mod groknight;
+pub mod host_sync;
 pub mod md_style;
 pub mod osc11;
 mod oscura;
@@ -175,6 +176,7 @@ pub fn display_name_for_canonical(value: &str) -> &str {
         "rosepine-moon" => "Rose Pine Moon",
         "oscura-midnight" => "Oscura Midnight",
         "terminal" => "Terminal Native",
+        "ghostty-sync" => "Herdr / Ghostty Sync",
         "warp-sync" => "Warp Sync",
         other => other,
     }

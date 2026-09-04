@@ -142,7 +142,11 @@ pub fn dynamic_enum_choices(
             .collect(),
         DynamicEnumSource::ConcreteThemeCatalog => crate::theme::theme_choices(false)
             .into_iter()
-            .filter(|choice| choice.canonical != "warp-sync" && choice.canonical != "auto")
+            .filter(|choice| {
+                choice.canonical != "ghostty-sync"
+                    && choice.canonical != "warp-sync"
+                    && choice.canonical != "auto"
+            })
             .map(|choice| OwnedEnumChoice {
                 canonical: choice.canonical,
                 display: choice.display,

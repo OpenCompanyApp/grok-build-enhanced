@@ -95,6 +95,31 @@ pub fn detect_with_osc11_fallback() -> Option<SystemAppearance> {
     osc11.or_else(|| super::env_appearance::detect_colorfgbg_from_env_map(&env))
 }
 
+/// Detect the appearance of the terminal's effective runtime theme.
+///
+/// Unlike [`detect_with_osc11_fallback`], this deliberately asks the terminal
+/// before consulting desktop appearance. Ghostty may use a manually selected
+/// light theme on a dark desktop (or vice versa), and Herdr answers OSC 11 from
+/// its Ghostty-backed pane palette. This remains startup-only for the same raw
+/// stdin ownership reason as the regular OSC fallback.
+#[must_use]
+pub fn detect_terminal_background_preferred() -> Option<SystemAppearance> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(v) = mock_override() {
+        return v;
+    }
+
+    let env = crate::host::collect_unicode_env();
+    let osc11 = super::osc11::detect_via_osc11();
+    let _ = OSC11_STARTUP.set(osc11);
+    resolve_terminal_appearance_chain(
+        osc11,
+        super::env_appearance::detect_explicit_from_env_map(&env),
+        detect_desktop(),
+        super::env_appearance::detect_colorfgbg_from_env_map(&env),
+    )
+}
+
 /// Desktop → explicit stamps → cached OSC 11 → `COLORFGBG`.
 fn resolve_appearance_chain(
     desktop: Option<SystemAppearance>,
@@ -103,6 +128,16 @@ fn resolve_appearance_chain(
     colorfgbg: Option<SystemAppearance>,
 ) -> Option<SystemAppearance> {
     desktop.or(explicit).or(osc11).or(colorfgbg)
+}
+
+/// Runtime terminal background → explicit stamps → desktop → `COLORFGBG`.
+fn resolve_terminal_appearance_chain(
+    osc11: Option<SystemAppearance>,
+    explicit: Option<SystemAppearance>,
+    desktop: Option<SystemAppearance>,
+    colorfgbg: Option<SystemAppearance>,
+) -> Option<SystemAppearance> {
+    osc11.or(explicit).or(desktop).or(colorfgbg)
 }
 
 /// Desktop-session APIs only (no env, no OSC 11).
@@ -318,6 +353,19 @@ mod tests {
                 Some(SystemAppearance::Light),
             ),
             Some(SystemAppearance::Dark)
+        );
+    }
+
+    #[test]
+    fn terminal_theme_chain_prefers_runtime_background() {
+        assert_eq!(
+            resolve_terminal_appearance_chain(
+                Some(SystemAppearance::Light),
+                Some(SystemAppearance::Dark),
+                Some(SystemAppearance::Dark),
+                None,
+            ),
+            Some(SystemAppearance::Light)
         );
     }
 

@@ -162,13 +162,14 @@ impl ResolvedTheme {
     }
 
     pub fn requires_system_appearance_watcher(&self) -> bool {
-        matches!(
-            self.status,
-            ThemeStatus::Warp {
-                system_theme: true,
-                ..
-            }
-        )
+        self.selection.is_ghostty_sync()
+            || matches!(
+                self.status,
+                ThemeStatus::Warp {
+                    system_theme: true,
+                    ..
+                }
+            )
     }
 
     pub fn warp_watch_paths(&self) -> Vec<PathBuf> {
@@ -206,6 +207,13 @@ pub fn resolve_selection(
         ThemeSelection::TerminalNative => ResolvedTheme::terminal(
             selection,
             "Terminal Native",
+            polarity_from_appearance(appearance),
+        ),
+        ThemeSelection::GhosttySync => ResolvedTheme::terminal(
+            selection,
+            super::host_sync::detect()
+                .map(super::host_sync::HostThemeSource::display_name)
+                .unwrap_or("Herdr / Ghostty Sync"),
             polarity_from_appearance(appearance),
         ),
         ThemeSelection::WarpSync => resolve_warp_sync(selection, appearance),

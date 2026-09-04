@@ -8,6 +8,7 @@ pub enum ThemeSelection {
     BuiltIn(ThemeKind),
     Auto,
     TerminalNative,
+    GhosttySync,
     WarpSync,
     WarpCatalog(String),
     WarpFile(String),
@@ -20,6 +21,9 @@ impl ThemeSelection {
         match lower.as_str() {
             "auto" | "system" => return Some(Self::Auto),
             "terminal" | "terminal-native" | "native" => return Some(Self::TerminalNative),
+            "ghostty" | "ghostty-sync" | "herdr" | "herdr-sync" | "herdr-ghostty-sync" => {
+                return Some(Self::GhosttySync);
+            }
             "warp" | "warp-sync" => return Some(Self::WarpSync),
             _ => {}
         }
@@ -55,6 +59,7 @@ impl ThemeSelection {
             Self::BuiltIn(kind) => Cow::Borrowed(kind.display_name()),
             Self::Auto => Cow::Borrowed("auto"),
             Self::TerminalNative => Cow::Borrowed("terminal"),
+            Self::GhosttySync => Cow::Borrowed("ghostty-sync"),
             Self::WarpSync => Cow::Borrowed("warp-sync"),
             Self::WarpCatalog(id) => Cow::Owned(format!("warp:{id}")),
             Self::WarpFile(value) => Cow::Borrowed(value),
@@ -68,6 +73,10 @@ impl ThemeSelection {
             }
             Self::Auto => "Auto".to_owned(),
             Self::TerminalNative => "Terminal Native".to_owned(),
+            Self::GhosttySync => super::host_sync::detect()
+                .map(super::host_sync::HostThemeSource::display_name)
+                .unwrap_or("Herdr / Ghostty Sync")
+                .to_owned(),
             Self::WarpSync => "Warp Sync".to_owned(),
             Self::WarpCatalog(id) => catalog::find(id)
                 .map(|theme| theme.display_name.clone())
@@ -86,19 +95,26 @@ impl ThemeSelection {
         matches!(self, Self::WarpSync)
     }
 
+    pub fn is_ghostty_sync(&self) -> bool {
+        matches!(self, Self::GhosttySync)
+    }
+
     pub fn is_terminal_native(&self) -> bool {
-        matches!(self, Self::TerminalNative | Self::WarpSync)
+        matches!(
+            self,
+            Self::TerminalNative | Self::GhosttySync | Self::WarpSync
+        )
     }
 
     pub fn is_concrete_for_auto(&self) -> bool {
-        !matches!(self, Self::Auto | Self::WarpSync)
+        !matches!(self, Self::Auto | Self::GhosttySync | Self::WarpSync)
     }
 
     pub fn requires_truecolor(&self) -> bool {
         match self {
             Self::BuiltIn(kind) => kind.requires_truecolor(),
             Self::WarpCatalog(_) | Self::WarpFile(_) => true,
-            Self::Auto | Self::TerminalNative | Self::WarpSync => false,
+            Self::Auto | Self::TerminalNative | Self::GhosttySync | Self::WarpSync => false,
         }
     }
 }
@@ -152,6 +168,12 @@ fn construct_theme_choices(
             description: "Follow system dark/light appearance.".to_owned(),
         });
         let warp_display = warp_sync_display.unwrap_or("Warp Sync").to_owned();
+        choices.push(ThemeChoice {
+            canonical: "ghostty-sync".to_owned(),
+            display: "Herdr / Ghostty Sync".to_owned(),
+            description: "Follow Ghostty's runtime palette directly, including inside Herdr."
+                .to_owned(),
+        });
         choices.push(ThemeChoice {
             canonical: "warp-sync".to_owned(),
             display: warp_display,
@@ -256,6 +278,14 @@ mod tests {
             Some(ThemeSelection::TerminalNative)
         );
         assert_eq!(
+            ThemeSelection::from_name("herdr-sync"),
+            Some(ThemeSelection::GhosttySync)
+        );
+        assert_eq!(
+            ThemeSelection::from_name("GHOSTTY"),
+            Some(ThemeSelection::GhosttySync)
+        );
+        assert_eq!(
             ThemeSelection::from_name("warp"),
             Some(ThemeSelection::WarpSync)
         );
@@ -338,6 +368,15 @@ mod tests {
             }
         );
         assert_eq!(
+            choice("ghostty-sync"),
+            &ThemeChoice {
+                canonical: "ghostty-sync".to_owned(),
+                display: "Herdr / Ghostty Sync".to_owned(),
+                description: "Follow Ghostty's runtime palette directly, including inside Herdr."
+                    .to_owned(),
+            }
+        );
+        assert_eq!(
             choice("warp-sync"),
             &ThemeChoice {
                 canonical: "warp-sync".to_owned(),
@@ -374,6 +413,11 @@ mod tests {
     fn concrete_choices_exclude_meta_themes() {
         let choices = deterministic_choices(false);
         assert!(!choices.iter().any(|choice| choice.canonical == "auto"));
+        assert!(
+            !choices
+                .iter()
+                .any(|choice| choice.canonical == "ghostty-sync")
+        );
         assert!(!choices.iter().any(|choice| choice.canonical == "warp-sync"));
         assert!(choices.iter().any(|choice| choice.canonical == "terminal"));
     }

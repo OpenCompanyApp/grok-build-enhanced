@@ -6,11 +6,12 @@ Grok Build draws all TUI colors from a central theme. You can switch themes whil
 
 ## Available Themes
 
-Grok includes five built-in themes, two terminal-native choices, system `auto`, and the complete pinned catalog of 340 official Warp themes:
+Grok includes five built-in themes, three terminal-native choices, system `auto`, and the complete pinned catalog of 341 official Warp themes:
 
 | Theme | Config Names | Description | Truecolor Required |
 |-------|-------------|-------------|--------------------|
 | **Terminal Native** | `terminal`, `terminal-native`, `native` | Delegates the canvas, foreground, ANSI palette, and cursor to the terminal. | No |
+| **Herdr / Ghostty Sync** | `ghostty-sync`, `ghostty`, `herdr-sync`, `herdr` | Follows Ghostty's effective runtime palette directly, including the host palette proxied by Herdr panes. | No |
 | **Warp Sync** | `warp-sync`, `warp` | Follows Warp's current theme while preserving Warp gradients and images. | No |
 | **GrokNight** | `groknight`, `grok-night`, `dark` | Neutral dark base with a magenta accent. | No |
 | **GrokDay** | `grokday`, `grok-day`, `light`, `day` | Light theme for bright backgrounds. | No |
@@ -51,7 +52,29 @@ Set the theme in `~/.grok/config.toml`:
 theme = "tokyonight"
 ```
 
-## Warp Sync and Warp Theme Translation
+## Terminal Theme Sync
+
+### Herdr / Ghostty Sync
+
+When Grok starts directly in Ghostty or in a Herdr-managed pane and `[ui].theme`
+is unset, it defaults to `ghostty-sync`. Any explicit Grok theme setting takes
+precedence. `herdr-sync`, `herdr`, and `ghostty` are aliases for the same saved
+selection.
+
+`ghostty-sync` follows the terminal's effective foreground, background, and
+ANSI palette instead of reparsing configuration files. This preserves
+Ghostty's merged theme, included config, explicit color overrides,
+transparency, and cursor ownership. Herdr's Ghostty-backed pane runtime exposes
+the outer terminal palette to child processes, so the same mode also follows
+the real host palette through Herdr, including remote Herdr sessions.
+
+At startup Grok queries the effective terminal background to classify the
+theme as light or dark for polarity-sensitive rendering. If that query is not
+available, it falls back to the normal appearance detection chain. Runtime
+palette changes remain terminal-owned: named ANSI colors update with the host,
+and system light/dark changes trigger a full Grok repaint.
+
+### Warp Sync and Warp Theme Translation
 
 When Grok starts in a **local Warp shell** and `[ui].theme` is unset, it defaults to `warp-sync`. Any explicit Grok theme setting takes precedence.
 
@@ -143,7 +166,7 @@ Colors generated at runtime (syntax highlighting, background blending) are also 
 
 ## Cursor Color
 
-Opaque built-in and pinned themes set the cursor to the theme accent with OSC 12. Terminal Native and Warp Sync leave cursor ownership with the terminal/Warp and immediately emit OSC 112 when selected. Grok also resets the cursor with OSC 112 on exit.
+Opaque built-in and pinned themes set the cursor to the theme accent with OSC 12. Terminal Native, Herdr / Ghostty Sync, and Warp Sync leave cursor ownership with the terminal and immediately emit OSC 112 when selected. Grok also resets the cursor with OSC 112 on exit.
 
 ---
 
@@ -163,7 +186,7 @@ Use compact mode on small screens to maximize content area.
 
 ## Syntax Highlighting
 
-Grok bundles syntax themes for its built-ins plus `terminal-ansi.tmTheme`, whose colors are semantic ANSI markers. Terminal Native and Warp Sync map those markers to named ANSI slots so the host terminal owns the actual colors. Pinned Warp themes map the same markers through the selected YAML theme's normal/bright 16-color palette. Theme revisions invalidate already-highlighted streaming Markdown and edit caches, so live Warp reloads cannot leave mixed palettes on screen.
+Grok bundles syntax themes for its built-ins plus `terminal-ansi.tmTheme`, whose colors are semantic ANSI markers. Terminal Native, Herdr / Ghostty Sync, and Warp Sync map those markers to named ANSI slots so the host terminal owns the actual colors. Pinned Warp themes map the same markers through the selected YAML theme's normal/bright 16-color palette. Theme revisions invalidate already-highlighted streaming Markdown and edit caches, so live theme changes cannot leave mixed palettes on screen.
 
 ---
 

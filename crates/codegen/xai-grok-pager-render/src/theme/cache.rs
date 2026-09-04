@@ -360,23 +360,36 @@ pub fn resolve_initial_resolved() -> ResolvedTheme {
 }
 
 fn resolve_initial_resolved_inner(osc11_fallback: bool) -> ResolvedTheme {
-    let appearance = if osc11_fallback {
-        system_appearance::detect_with_osc11_fallback()
-    } else {
-        system_appearance::detect()
-    };
     let configured = env_theme_name()
         .map(str::to_owned)
         .or_else(load_raw_theme_from_disk);
+    let detect_appearance = || {
+        if osc11_fallback {
+            system_appearance::detect_with_osc11_fallback()
+        } else {
+            system_appearance::detect()
+        }
+    };
+    let detect_host_appearance = || {
+        if osc11_fallback {
+            system_appearance::detect_terminal_background_preferred()
+        } else {
+            system_appearance::detect()
+        }
+    };
     match configured {
         Some(raw) => match ThemeSelection::from_name(&raw) {
             Some(ThemeSelection::Auto) => {
                 set_auto_mode(true);
-                resolve_auto_resolved(appearance)
+                resolve_auto_resolved(detect_appearance())
+            }
+            Some(selection @ ThemeSelection::GhosttySync) => {
+                set_auto_mode(false);
+                super::resolved::resolve_selection(selection, detect_host_appearance())
             }
             Some(selection) => {
                 set_auto_mode(false);
-                super::resolved::resolve_selection(selection, appearance)
+                super::resolved::resolve_selection(selection, detect_appearance())
             }
             None => {
                 tracing::warn!(theme = %raw, "invalid configured theme; using Grok Night");
@@ -387,9 +400,16 @@ fn resolve_initial_resolved_inner(osc11_fallback: bool) -> ResolvedTheme {
                 )
             }
         },
+        None if super::host_sync::is_active() => {
+            set_auto_mode(false);
+            super::resolved::resolve_selection(
+                ThemeSelection::GhosttySync,
+                detect_host_appearance(),
+            )
+        }
         None if super::warp::settings::is_local_warp() => {
             set_auto_mode(false);
-            super::resolved::resolve_selection(ThemeSelection::WarpSync, appearance)
+            super::resolved::resolve_selection(ThemeSelection::WarpSync, detect_appearance())
         }
         None => {
             set_auto_mode(false);

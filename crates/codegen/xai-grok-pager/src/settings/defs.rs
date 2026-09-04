@@ -680,8 +680,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "light",
             ],
             kind: SettingKind::DynamicEnum {
-                // `Option<String>` — startup may choose Warp Sync when unset,
-                // while the registry's reset default remains Grok Night.
+                // `Option<String>` — startup may choose a terminal-specific
+                // sync mode when unset, while the registry reset stays Grok Night.
                 default: "groknight",
                 source: DynamicEnumSource::ThemeCatalog,
                 supports_preview: true,

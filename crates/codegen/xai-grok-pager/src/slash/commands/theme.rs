@@ -103,7 +103,7 @@ impl SlashCommand for ThemeCommand {
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         let trimmed = args.trim();
 
-        // No args: cycle only the curated set, never the 340-theme catalog.
+        // No args: cycle only the curated set, never the full Warp catalog.
         if trimmed.is_empty() {
             let mut cycle = vec![
                 ThemeSelection::TerminalNative,
@@ -117,7 +117,9 @@ impl SlashCommand for ThemeCommand {
                     .filter(|kind| !matches!(kind, ThemeKind::GrokNight | ThemeKind::GrokDay))
                     .map(ThemeSelection::BuiltIn),
             );
-            if crate::theme::warp::settings::is_local_warp() {
+            if crate::theme::host_sync::is_active() {
+                cycle.insert(0, ThemeSelection::GhosttySync);
+            } else if crate::theme::warp::settings::is_local_warp() {
                 cycle.insert(0, ThemeSelection::WarpSync);
             }
             let current = theme_cache::current_selection();
@@ -134,7 +136,7 @@ impl SlashCommand for ThemeCommand {
                 CommandResult::Action(Action::SetTheme(selection.canonical().into_owned()))
             }
             None => CommandResult::Error(format!(
-                "Unknown theme: {trimmed}. Run /theme to search built-in, installed, and official Warp themes."
+                "Unknown theme: {trimmed}. Run /theme to search sync, built-in, installed, and official Warp themes."
             )),
         }
     }
@@ -564,8 +566,8 @@ mod tests {
             if let CommandResult::Error(msg) = result {
                 assert_eq!(
                     msg,
-                    "Unknown theme: nonexistent. Run /theme to search built-in, installed, and \
-                     official Warp themes."
+                    "Unknown theme: nonexistent. Run /theme to search sync, built-in, installed, \
+                     and official Warp themes."
                 );
                 assert!(msg.len() < 120, "guidance should stay concise: {msg}");
                 assert!(
