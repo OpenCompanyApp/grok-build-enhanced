@@ -163,7 +163,7 @@
         "commit": "c9b19deb09c1841ce7acc33ddb96276030936a29"
       },
       "latest_fetched": {
-        "commit": "6478a751fde8884b2fdc76486fe23175a8e795d4"
+        "commit": "5d3f8752fc49662356832373db448f2b4bb21c34"
       }
     },
     {
@@ -175,7 +175,7 @@
         "commit": "3a31c4ea801915c0b050df4b3842997ea62b6e93"
       },
       "latest_fetched": {
-        "commit": "dc4449df0d52199704ea4989a5a993ebbc605612"
+        "commit": "9f8db119fcbd4999379129ac7734375ac23460fb"
       }
     },
     {
@@ -187,7 +187,7 @@
         "commit": "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8"
       },
       "latest_fetched": {
-        "commit": "bc7f02eddd3d84085849dc19ed216f11c23b0571"
+        "commit": "37949780c144e37df692e3d669051a21fec24f20"
       }
     },
     {
@@ -211,7 +211,7 @@
         "commit": "160ed439ac0df594347e7d7018b813a7ffdb5e81"
       },
       "latest_fetched": {
-        "commit": "33cc6b9a043a74e00a157e72ca909272796d8461"
+        "commit": "61b1b8aef634334eaf1412afd003a763e1d1b9c1"
       }
     },
     {
@@ -235,7 +235,7 @@
         "commit": "492300cad104195411d12217dd22f1cd05f31376"
       },
       "latest_fetched": {
-        "commit": "492300cad104195411d12217dd22f1cd05f31376"
+        "commit": "fde3449b348d8e36c0d52fd39bb33ea66744b958"
       }
     },
     {
@@ -247,7 +247,7 @@
         "commit": "a2b128978a154c02311b90da778ca115758f75d7"
       },
       "latest_fetched": {
-        "commit": "a2b128978a154c02311b90da778ca115758f75d7"
+        "commit": "985d3442b4b8a6f2e25a62821aab58d63d8ce2cf"
       }
     },
     {
@@ -259,7 +259,7 @@
         "commit": "ea0626ad48ee318045a22490d52c86be7d086033"
       },
       "latest_fetched": {
-        "commit": "9d2304c23ca30c781b1a39540971dcaef085a500"
+        "commit": "aad4a7df2f745cc2936ecc159df6607a74671ad0"
       }
     },
     {
@@ -271,7 +271,7 @@
         "commit": "cbc15c076d17f70fec9f89c90c0502e68657f505"
       },
       "latest_fetched": {
-        "commit": "cbc15c076d17f70fec9f89c90c0502e68657f505"
+        "commit": "86f136422a0aae6b217ea49e7ea1d2e8a1defcd2"
       }
     },
     {
@@ -307,7 +307,7 @@
         "commit": "414ad9eb891b05b5d7d51d573939bfe9ce538223"
       },
       "latest_fetched": {
-        "commit": "414ad9eb891b05b5d7d51d573939bfe9ce538223"
+        "commit": "008de4dbcc220032eb9b80a9a9802afad46a4053"
       }
     },
     {
@@ -319,7 +319,7 @@
         "commit": "4b14ed9c57d3506d1455b2736a1d1a8ff2b9c718"
       },
       "latest_fetched": {
-        "commit": "ce44713574f96ef43b3dab0c8be314135f6a05e1"
+        "commit": "5e5a9003efb26b9291e48b31a0088e7b666b65c0"
       }
     },
     {
@@ -343,7 +343,7 @@
         "commit": "59d624d4fb0c5c4f6fd44d1f701f17db1bd6ae4b"
       },
       "latest_fetched": {
-        "commit": "efdbe97a8bdb15da5d4dbbbf31cb897160cb4e01"
+        "commit": "6d4bbee7609f9225850377f68d9424067c1882eb"
       }
     },
     {
@@ -7517,6 +7517,37 @@
         "LICENSE",
         "THIRD-PARTY-NOTICES"
       ]
+    },
+    {
+      "id": "september9-refresh-fetch-checkpoint",
+      "description": "Exact fetched source identities and raw Grok range evidence; no behavior parity or source-review advancement claimed.",
+      "source_ids": [
+        "openai-codex",
+        "opencode",
+        "grok-build-upstream",
+        "opencode-codex-auth",
+        "oh-my-pi",
+        "warp-themes",
+        "ghostty",
+        "herdr",
+        "kimi-code",
+        "kimi-cli",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper",
+        "models-dev",
+        "exa-mcp-server"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-09-09.md",
+        "docs/upstream-refresh-2026-09-09-pins.json",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [],
+      "legal_paths": []
     }
   ]
 }
