@@ -7546,8 +7546,13 @@
         "docs/upstream-refresh-2026-09-09-pins.json",
         "fork/manifest.json"
       ],
-      "integration_paths": [],
-      "legal_paths": []
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
     }
   ]
 }
