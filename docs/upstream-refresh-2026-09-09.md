@@ -71,3 +71,16 @@ tap mutation was performed. Homebrew is not available on this Linux aarch64
 host, so the skill's brew style/audit/test and installed-upgrade checks have not
 run. Publication requires completed adoption and validation first; the skill
 also requires confirmation of the selected version for this run.
+
+## Checkpoint validation
+
+Passed `cargo fmt --all -- --check`, `CARGO_INCREMENTAL=0 cargo check -p
+xai-grok-pager-bin`, strict manifest coverage, fork contracts, the release
+contract for the inherited 0.3.16 candidate, all 5 release-pipeline tests, all
+15 installer tests, and the Warp vendor-lock check (343 themes). The binary
+check completed in 10m09s with existing unused-code warnings. These results
+validate the existing application and fetch metadata, not new upstream parity.
+
+The run-created Cargo target directory was removed after validation. No build
+artifacts in other worktrees were removed. The original checkout's pre-existing
+changes remain untouched.
