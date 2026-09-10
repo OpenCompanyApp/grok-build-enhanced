@@ -367,6 +367,7 @@ mod tests {
             assert!(entry.api_key.is_none());
             assert!(entry.env_key.is_none());
             assert!(entry.auth_provider.is_none());
+            assert!(!entry.has_own_credentials());
         }
         assert!(entries.contains_key("zai-coding-plan/glm-5.3-flash"));
         assert!(!entries.contains_key("zai-coding-plan/foreign-model"));
