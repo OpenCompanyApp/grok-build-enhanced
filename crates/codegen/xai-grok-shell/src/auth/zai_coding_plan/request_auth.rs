@@ -127,11 +127,117 @@ pub fn shared_sampler_request_auth(
     ))
 }
 
+#[derive(Clone)]
+pub(super) struct ZaiCodingPlanToolAuthProvider {
+    resolver: ZaiCodingPlanCredentialResolver,
+    expected: CredentialBinding,
+}
+
+impl ZaiCodingPlanToolAuthProvider {
+    fn new(
+        store: ZaiCodingPlanCredentialStore,
+        credentials: ZaiCodingPlanCredentials,
+        expected: CredentialBinding,
+    ) -> Self {
+        Self {
+            resolver: ZaiCodingPlanCredentialResolver::new(store, credentials, &expected),
+            expected,
+        }
+    }
+}
+
+impl fmt::Debug for ZaiCodingPlanToolAuthProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ZaiCodingPlanToolAuthProvider")
+            .finish_non_exhaustive()
+    }
+}
+
+impl xai_grok_tools::types::ApiKeyProvider for ZaiCodingPlanToolAuthProvider {
+    fn current_api_key(&self) -> Option<String> {
+        // Z.AI credentials are available only through the provider-marked
+        // request-auth contract below. Generic xAI tool clients must never be
+        // able to obtain this key as an unscoped bearer.
+        None
+    }
+
+    fn request_auth_provider_id(&self) -> Option<&str> {
+        Some(xai_grok_tools::types::ZAI_CODING_PLAN_PROVIDER_ID)
+    }
+
+    fn current_request_auth_async(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Option<xai_grok_tools::types::RequestAuth>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            let snapshot = resolve_pinned_snapshot(&self.resolver, &self.expected)
+                .ok()
+                .flatten()?;
+            Some(xai_grok_tools::types::RequestAuth::for_provider_snapshot(
+                xai_grok_tools::types::ZAI_CODING_PLAN_PROVIDER_ID,
+                xai_grok_tools::types::RequestCredentialSnapshot::new(
+                    snapshot
+                        .binding
+                        .record_id
+                        .unwrap_or_else(|| "zai-coding-plan".to_owned()),
+                    snapshot.binding.generation.max(1),
+                ),
+                [(
+                    "authorization".to_owned(),
+                    format!("Bearer {}", snapshot.api_key),
+                )],
+            ))
+        })
+    }
+}
+
+pub fn shared_tool_auth_provider(
+    store: ZaiCodingPlanCredentialStore,
+    credentials: ZaiCodingPlanCredentials,
+    expected: CredentialBinding,
+) -> xai_grok_tools::types::SharedApiKeyProvider {
+    Arc::new(ZaiCodingPlanToolAuthProvider::new(
+        store,
+        credentials,
+        expected,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use xai_grok_sampler::RequestAuth as _;
     use xai_grok_sampling_types::ProviderId;
+
+    #[tokio::test]
+    async fn zai_tools_cannot_supply_generic_keys_or_follow_an_account_switch() {
+        use xai_grok_tools::types::ApiKeyProvider as _;
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            ZaiCodingPlanCredentialStore::from_auth_path(directory.path().join("auth.json"));
+        let credentials = ZaiCodingPlanCredentials::new("sentinel-zai").unwrap();
+        let expected = credentials.credential_binding();
+        store.save(credentials.clone()).await.unwrap();
+        let auth = ZaiCodingPlanToolAuthProvider::new(store.clone(), credentials, expected);
+        assert!(auth.current_api_key().is_none());
+        let request = auth.current_request_auth_async().await.unwrap();
+        assert_eq!(
+            request.provider(),
+            Some(xai_grok_tools::types::ZAI_CODING_PLAN_PROVIDER_ID)
+        );
+        assert!(!format!("{auth:?} {request:?}").contains("sentinel-zai"));
+        store
+            .save(ZaiCodingPlanCredentials::new("sentinel-other").unwrap())
+            .await
+            .unwrap();
+        assert!(auth.current_request_auth_async().await.is_none());
+    }
 
     #[tokio::test]
     async fn sampler_uses_one_sensitive_bearer() {

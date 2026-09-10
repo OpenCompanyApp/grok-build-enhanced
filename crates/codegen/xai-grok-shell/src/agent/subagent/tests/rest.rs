@@ -1901,12 +1901,13 @@ async fn reconcile_dedups_replay_and_running_meta_sources() {
         );
 }
 #[test]
-fn provider_bound_subagent_resume_includes_codex_and_kimi() {
+fn provider_bound_subagent_resume_includes_codex_kimi_and_zai() {
     use super::super::handle_request::provider_requires_local_resume_binding;
 
     for provider in [
         xai_grok_sampling_types::ProviderId::OpenAiCodex,
         xai_grok_sampling_types::ProviderId::KimiCode,
+        xai_grok_sampling_types::ProviderId::ZaiCodingPlan,
     ] {
         assert!(provider_requires_local_resume_binding(provider));
     }

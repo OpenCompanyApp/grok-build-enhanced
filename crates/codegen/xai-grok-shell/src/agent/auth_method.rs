@@ -213,6 +213,13 @@ pub fn add_provider_scoped_auth_methods(
         built.methods.push(kimi_code_auth_method());
     }
 
+    if selected_provider.is_zai_coding_plan() {
+        built.methods.insert(0, zai_coding_plan_auth_method());
+        built.default_auth_method_id = Some(acp::AuthMethodId::new(ZAI_CODING_PLAN_METHOD_ID));
+    } else {
+        built.methods.push(zai_coding_plan_auth_method());
+    }
+
     if selected_provider.is_open_code_go() {
         built.methods.insert(0, open_code_go_auth_method());
         // Keep the provider gate selected even when the key is absent so ACP
@@ -350,6 +357,7 @@ pub enum AuthMethodKind {
     OpenAiCodex,
     KimiCode,
     OpenCodeGo,
+    ZaiCodingPlan,
     Unknown,
 }
 
@@ -363,6 +371,7 @@ impl AuthMethodKind {
             OPENAI_CODEX_METHOD_ID => Self::OpenAiCodex,
             KIMI_CODE_METHOD_ID => Self::KimiCode,
             OPENCODE_GO_METHOD_ID => Self::OpenCodeGo,
+            ZAI_CODING_PLAN_METHOD_ID => Self::ZaiCodingPlan,
             _ => Self::Unknown,
         }
     }
@@ -395,7 +404,10 @@ impl AuthMethodKind {
     }
 
     pub fn is_provider_scoped(self) -> bool {
-        self.is_openai_codex() || self.is_kimi_code() || self.is_open_code_go()
+        self.is_openai_codex()
+            || self.is_kimi_code()
+            || self.is_open_code_go()
+            || matches!(self, Self::ZaiCodingPlan)
     }
 
     pub fn auth_error_message(self) -> &'static str {
@@ -585,6 +597,20 @@ pub fn kimi_code_auth_method() -> acp::AuthMethod {
     )
 }
 
+pub const ZAI_CODING_PLAN_METHOD_ID: &str = "zai-coding-plan";
+
+pub fn zai_coding_plan_auth_method() -> acp::AuthMethod {
+    acp::AuthMethod::Agent(
+        acp::AuthMethodAgent::new(
+            acp::AuthMethodId::new(ZAI_CODING_PLAN_METHOD_ID),
+            "Z.AI GLM Coding Plan".to_owned(),
+        )
+        .description(Some(
+            "Use the key saved by grok login --provider zai-coding-plan".to_owned(),
+        )),
+    )
+}
+
 pub const OPENCODE_GO_METHOD_ID: &str = "opencode-go";
 
 pub fn open_code_go_auth_method() -> acp::AuthMethod {
@@ -712,6 +738,27 @@ mod tests {
 
     fn first_kind(methods: &[acp::AuthMethod]) -> Option<AuthMethodKind> {
         methods.first().map(|m| AuthMethodKind::from_id(m.id()))
+    }
+
+    #[test]
+    fn selected_zai_owns_auth_default_without_using_cached_xai() {
+        let mut built = build_auth_methods(AuthMethodsBuildInputs {
+            has_cached_token: true,
+            ..default_inputs()
+        });
+        add_provider_scoped_auth_methods(
+            &mut built,
+            xai_grok_sampling_types::ProviderId::ZaiCodingPlan,
+            false,
+        );
+        assert_eq!(
+            first_kind(&built.methods),
+            Some(AuthMethodKind::ZaiCodingPlan)
+        );
+        assert_eq!(default_id(&built), Some(ZAI_CODING_PLAN_METHOD_ID));
+        assert!(AuthMethodKind::ZaiCodingPlan.is_provider_scoped());
+        assert!(!AuthMethodKind::ZaiCodingPlan.is_api_key());
+        assert!(!AuthMethodKind::ZaiCodingPlan.is_session_based());
     }
 
     /// A selected Kimi provider must own eager ACP authentication even if an

@@ -111,6 +111,11 @@ impl ModelState {
             .is_some_and(|model| model.starts_with("kimi-code/"))
     }
 
+    pub fn current_model_is_zai_coding_plan(&self) -> bool {
+        self.current_model_id_str()
+            .is_some_and(|model| model.starts_with("zai-coding-plan/"))
+    }
+
     fn service_tier_for(&self, model_id: &acp::ModelId) -> Option<String> {
         self.available
             .get(model_id)?

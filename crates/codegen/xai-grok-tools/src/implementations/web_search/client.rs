@@ -1,3 +1,4 @@
+use super::backends::ZaiCodingPlanBackend;
 use super::backends::{ExaHostedBackend, KimiCodeBackend, OpenAiCodexBackend, ResponsesBackend};
 use super::types::{CodexWebSearchContext, WebSearchConfig};
 use crate::attribution::SharedAttributionCallback;
@@ -10,6 +11,7 @@ enum WebSearchBackend {
     OpenAiCodex(OpenAiCodexBackend),
     KimiCode(KimiCodeBackend),
     ExaHosted(ExaHostedBackend),
+    ZaiCodingPlan(ZaiCodingPlanBackend),
 }
 
 /// Provider-neutral web-search client facade.
@@ -115,6 +117,23 @@ impl WebSearchClient {
                     request_auth_provider,
                 )?)
             }
+            WebSearchConfig::ZaiCodingPlan {
+                base_url,
+                allowed_domains,
+                excluded_domains,
+            } => {
+                let provider = api_key_provider.ok_or_else(|| {
+                    super::backends::execution_error(
+                        "Z.AI Coding Plan authentication is unavailable",
+                    )
+                })?;
+                WebSearchBackend::ZaiCodingPlan(ZaiCodingPlanBackend::new(
+                    base_url,
+                    allowed_domains.clone(),
+                    excluded_domains.clone(),
+                    provider,
+                )?)
+            }
             WebSearchConfig::ExaHosted {
                 base_url,
                 allowed_domains,
@@ -143,6 +162,7 @@ impl WebSearchClient {
             WebSearchBackend::KimiCode(backend) => {
                 backend.set_attribution_callback(callback);
             }
+            WebSearchBackend::ZaiCodingPlan(backend) => backend.set_attribution_callback(callback),
             WebSearchBackend::ExaHosted(_) => {}
         }
         self
@@ -161,6 +181,9 @@ impl WebSearchClient {
                 backend.search(query, allowed_domains).await?
             }
             WebSearchBackend::KimiCode(backend) => backend.search(query, allowed_domains).await?,
+            WebSearchBackend::ZaiCodingPlan(backend) => {
+                backend.search(query, allowed_domains).await?
+            }
             WebSearchBackend::ExaHosted(backend) => backend.search(query, allowed_domains).await?,
         };
         let citations = result.citations();
@@ -180,6 +203,9 @@ impl WebSearchClient {
                 backend.search(query, allowed_domains).await?
             }
             WebSearchBackend::KimiCode(backend) => backend.search(query, allowed_domains).await?,
+            WebSearchBackend::ZaiCodingPlan(backend) => {
+                backend.search(query, allowed_domains).await?
+            }
             WebSearchBackend::ExaHosted(backend) => backend.search(query, allowed_domains).await?,
         };
         Ok((result.content, result.citation_pairs))
@@ -203,6 +229,9 @@ impl WebSearchClient {
                     .await?
             }
             WebSearchBackend::KimiCode(backend) => {
+                backend.run_commands(&commands, allowed_domains).await?
+            }
+            WebSearchBackend::ZaiCodingPlan(backend) => {
                 backend.run_commands(&commands, allowed_domains).await?
             }
             WebSearchBackend::ExaHosted(backend) => {

@@ -3277,7 +3277,7 @@ async fn coding_plan_sampling_disables_unsupported_xai_media_tools() {
     use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
 
     let agent = build_minimal_agent_for_tests();
-    for provider in [ProviderId::KimiCode] {
+    for provider in [ProviderId::KimiCode, ProviderId::ZaiCodingPlan] {
         let mut sampling = agent.sampling_config.borrow().clone();
         sampling.provider = provider;
         sampling.api_key = None;

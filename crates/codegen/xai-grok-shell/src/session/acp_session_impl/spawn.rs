@@ -51,7 +51,8 @@ fn persisted_provider_binding(
 ) -> Option<xai_grok_sampling_types::CredentialBinding> {
     (config.provider.is_openai_codex()
         || config.provider.is_kimi_code()
-        || config.provider.is_open_code_go())
+        || config.provider.is_open_code_go()
+        || config.provider.is_zai_coding_plan())
     .then(|| config.credential_binding.clone())
     .flatten()
 }
@@ -80,7 +81,11 @@ fn resolve_memory_embedding_route(
     base_url: &str,
     api_key: Option<&str>,
 ) -> MemoryEmbeddingRoute {
-    if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_open_code_go() {
+    if provider.is_openai_codex()
+        || provider.is_kimi_code()
+        || provider.is_open_code_go()
+        || provider.is_zai_coding_plan()
+    {
         return MemoryEmbeddingRoute {
             config: None,
             base_url: String::new(),
@@ -200,6 +205,14 @@ mod cli_catchall_drop_tests {
 mod provider_binding_persistence_tests {
     use super::persisted_provider_binding;
     use xai_grok_sampling_types::{ApiBackend, CredentialBinding};
+
+    #[test]
+    fn zai_session_start_persists_the_bound_api_key_record() {
+        let mut config = xai_grok_sampler::SamplerConfig::zai_coding_plan("glm-5.3-flash");
+        let binding = CredentialBinding::zai_coding_plan(Some("test-record".to_owned()));
+        config.credential_binding = Some(binding.clone());
+        assert_eq!(persisted_provider_binding(&config), Some(binding));
+    }
 
     #[test]
     fn kimi_session_start_persists_the_bound_api_key_record() {
@@ -494,7 +507,8 @@ pub(crate) async fn spawn_session_actor(
         let web_fetch_allowed_domains = web_fetch_config
             .params_for_codex_subscription(
                 sampling_config.provider.is_openai_codex()
-                    || sampling_config.provider.is_kimi_code(),
+                    || sampling_config.provider.is_kimi_code()
+                    || sampling_config.provider.is_zai_coding_plan(),
             )
             .map_or_else(Vec::new, |params| params.allowed_domains());
         let mut permission_config =
@@ -672,6 +686,16 @@ pub(crate) async fn spawn_session_actor(
                 provider = "kimi_code",
                 "web_search disabled: provider-scoped request authentication is unavailable"
             );
+            xai_grok_tools::implementations::WebSearchConfig::Disabled
+        }
+    } else if sampling_config.provider.is_zai_coding_plan() {
+        if api_key_provider.is_some() {
+            xai_grok_tools::implementations::WebSearchConfig::ZaiCodingPlan {
+                base_url: "https://api.z.ai/api/mcp/web_search_prime/mcp".to_owned(),
+                allowed_domains: None,
+                excluded_domains: None,
+            }
+        } else {
             xai_grok_tools::implementations::WebSearchConfig::Disabled
         }
     } else if sampling_config.provider.is_open_code_go() {
@@ -1213,6 +1237,9 @@ pub(crate) async fn spawn_session_actor(
             }
             xai_grok_tools::implementations::WebSearchConfig::KimiCode { .. } => {
                 Some(xai_grok_sampling_types::ProviderId::KimiCode)
+            }
+            xai_grok_tools::implementations::WebSearchConfig::ZaiCodingPlan { .. } => {
+                Some(xai_grok_sampling_types::ProviderId::ZaiCodingPlan)
             }
             xai_grok_tools::implementations::WebSearchConfig::ExaHosted { .. } => {
                 Some(xai_grok_sampling_types::ProviderId::OpenCodeGo)

@@ -124,6 +124,8 @@ pub struct BillingConfigResponse {
     /// populated on xAI or Codex paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kimi_usage: Option<crate::auth::kimi_code::KimiCodeUsageSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zai_usage: Option<crate::auth::zai_coding_plan::ZaiCodingPlanUsageSnapshot>,
     /// Informational API-price comparison from actual session token counters.
     /// This is explicitly not ChatGPT subscription spend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -343,7 +345,67 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
             codex_usage: Some(codex_usage),
             codex_thread_usage,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost,
+            on_demand_enabled: None,
+            subscription_tier: None,
+        });
+    }
+
+    if provider == xai_grok_sampling_types::ProviderId::ZaiCodingPlan {
+        let grok_home = crate::util::grok_home::grok_home();
+        let (credentials, current_binding) =
+            crate::auth::zai_coding_plan::current_credentials_and_binding(&grok_home).map_err(
+                |error| {
+                    acp::Error::auth_required()
+                        .data(format!("Z.AI Coding Plan usage unavailable: {error}"))
+                },
+            )?;
+        if let Some(sampling) = session_sampling.as_ref() {
+            let expected = sampling.credential_binding.as_ref().ok_or_else(|| {
+                acp::Error::auth_required().data(
+                    "Z.AI Coding Plan session credential binding is unavailable; restart or select the model again",
+                )
+            })?;
+            let valid = expected.provider == xai_grok_sampling_types::ProviderId::ZaiCodingPlan
+                && expected.source
+                    == xai_grok_sampling_types::CredentialSourceId::ZaiCodingPlanApiKey
+                && expected.same_record(&current_binding)
+                && current_binding.generation >= expected.generation;
+            if !valid {
+                return Err(acp::Error::auth_required().data(
+                    "Z.AI Coding Plan usage authentication changed; restart or select the model again",
+                ));
+            }
+        }
+        let zai_usage = crate::auth::zai_coding_plan::fetch_usage(&credentials)
+            .await
+            .map_err(|error| {
+                let display = error.to_string();
+                if matches!(
+                    error,
+                    crate::auth::zai_coding_plan::ZaiCodingPlanAuthError::Unavailable
+                        | crate::auth::zai_coding_plan::ZaiCodingPlanAuthError::InvalidCredential
+                        | crate::auth::zai_coding_plan::ZaiCodingPlanAuthError::Http(
+                            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+                        )
+                ) {
+                    acp::Error::auth_required().data(format!(
+                        "Z.AI Coding Plan usage authentication failed: {display}"
+                    ))
+                } else {
+                    acp::Error::internal_error()
+                        .data(format!("Failed to fetch Z.AI Coding Plan usage: {display}"))
+                }
+            })?;
+        tracing::info!("billing: fetched Z.AI Coding Plan plan limits");
+        return to_raw_response(&BillingConfigResponse {
+            config: None,
+            codex_usage: None,
+            codex_thread_usage: None,
+            zai_usage: Some(zai_usage),
+            kimi_usage: None,
+            codex_api_equivalent_cost: None,
             on_demand_enabled: None,
             subscription_tier: None,
         });
@@ -399,6 +461,7 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
             codex_usage: None,
             codex_thread_usage: None,
             kimi_usage: Some(kimi_usage),
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: None,
             subscription_tier: None,
@@ -415,6 +478,7 @@ async fn handle_get_billing(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResu
             codex_usage: None,
             codex_thread_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: None,
             subscription_tier: None,
@@ -713,6 +777,7 @@ mod tests {
             codex_usage: None,
             codex_thread_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: Some(true),
             subscription_tier: Some("SuperGrok".into()),
@@ -762,6 +827,7 @@ mod tests {
             codex_usage: None,
             codex_thread_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             on_demand_enabled: None,
             subscription_tier: None,

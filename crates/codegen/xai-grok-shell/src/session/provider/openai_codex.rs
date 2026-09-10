@@ -336,6 +336,11 @@ fn bind_zai_coding_plan(
     sampler_config.extra_headers.clear();
     sampler_config.attribution_callback = None;
     sampler_config.bearer_resolver = None;
+    let tool_auth = crate::auth::zai_coding_plan::shared_tool_auth_provider(
+        store.clone(),
+        credentials.clone(),
+        current.clone(),
+    );
     sampler_config.request_auth = Some(zai_sampler_auth(store, credentials, current));
     sampler_config.deployment_id = None;
     sampler_config.user_id = None;
@@ -349,7 +354,7 @@ fn bind_zai_coding_plan(
     };
     Ok(BoundProviderRuntime {
         sampler_config,
-        api_key_provider: None,
+        api_key_provider: Some(tool_auth),
         route,
     })
 }

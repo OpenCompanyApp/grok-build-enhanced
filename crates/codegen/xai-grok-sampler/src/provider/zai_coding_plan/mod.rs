@@ -229,7 +229,7 @@ pub(crate) fn chat_body(
         .unwrap_or("max");
     object.insert(
         "thinking".to_owned(),
-        serde_json::json!({"type": "enabled"}),
+        serde_json::json!({"type": "enabled", "clear_thinking": false}),
     );
     object.insert(
         "reasoning_effort".to_owned(),
@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(body["tool_choice"], "auto");
         assert!(body.get("stream_tool_calls").is_none());
         assert_eq!(body["reasoning_effort"], "max");
-        assert!(body["thinking"].get("clear_thinking").is_none());
+        assert_eq!(body["thinking"]["clear_thinking"], false);
     }
 
     #[test]

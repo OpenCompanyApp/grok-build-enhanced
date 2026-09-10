@@ -251,6 +251,14 @@ pub enum WebSearchConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         excluded_domains: Option<Vec<String>>,
     },
+    /// Z.AI Coding Plan Search MCP, with dynamically scoped credentials.
+    ZaiCodingPlan {
+        base_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        excluded_domains: Option<Vec<String>>,
+    },
     /// Keyless Exa hosted MCP search. This is the default search transport for
     /// OpenCode Go sessions and carries no provider credential.
     ExaHosted {
@@ -292,12 +300,16 @@ impl WebSearchConfig {
         matches!(self, Self::KimiCode { .. })
     }
 
+    pub fn is_zai_coding_plan(&self) -> bool {
+        matches!(self, Self::ZaiCodingPlan { .. })
+    }
+
     pub fn is_exa_hosted(&self) -> bool {
         matches!(self, Self::ExaHosted { .. })
     }
 
     pub fn uses_provider_scoped_web(&self) -> bool {
-        self.is_codex_subscription() || self.is_kimi_code()
+        self.is_codex_subscription() || self.is_kimi_code() || self.is_zai_coding_plan()
     }
 
     /// Apply the authoritative `[toolset.web_search]` policy to whichever
@@ -315,6 +327,11 @@ impl WebSearchConfig {
                 ..
             }
             | Self::KimiCode {
+                allowed_domains: configured_allowed,
+                excluded_domains: configured_excluded,
+                ..
+            }
+            | Self::ZaiCodingPlan {
                 allowed_domains: configured_allowed,
                 excluded_domains: configured_excluded,
                 ..
@@ -385,6 +402,15 @@ impl WebSearchConfig {
                 allowed_domains,
                 excluded_domains,
             } => Self::KimiCode {
+                base_url: sanitize_redacted_base_url(base_url),
+                allowed_domains: allowed_domains.clone(),
+                excluded_domains: excluded_domains.clone(),
+            },
+            Self::ZaiCodingPlan {
+                base_url,
+                allowed_domains,
+                excluded_domains,
+            } => Self::ZaiCodingPlan {
                 base_url: sanitize_redacted_base_url(base_url),
                 allowed_domains: allowed_domains.clone(),
                 excluded_domains: excluded_domains.clone(),

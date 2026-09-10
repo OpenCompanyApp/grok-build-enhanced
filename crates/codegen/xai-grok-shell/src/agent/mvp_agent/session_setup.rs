@@ -7,6 +7,7 @@ use super::reasoning_effort::{
 };
 use super::*;
 use super::acp_agent::{
+    is_strict_zai_coding_plan_model_id, resolve_persisted_zai_coding_plan_model_for_load,
     is_strict_kimi_code_model_id, is_strict_open_code_go_model_id,
     is_strict_openai_codex_model_id, resolve_persisted_kimi_code_model_for_load,
     resolve_persisted_open_code_go_model_for_load,
@@ -843,6 +844,11 @@ impl MvpAgent {
                 resolve_persisted_kimi_code_model_for_load(self, &summary.current_model_id)
                     .await?,
             ))
+        } else if is_strict_zai_coding_plan_model_id(&summary.current_model_id) {
+            Some((
+                xai_grok_sampling_types::ProviderId::ZaiCodingPlan,
+                resolve_persisted_zai_coding_plan_model_for_load(self, &summary.current_model_id).await?,
+            ))
         } else if is_strict_open_code_go_model_id(&summary.current_model_id) {
             Some((
                 xai_grok_sampling_types::ProviderId::OpenCodeGo,
@@ -870,6 +876,7 @@ impl MvpAgent {
         restored_sampling.credential_binding = (
             restored_sampling.provider.is_openai_codex()
                 || restored_sampling.provider.is_kimi_code()
+                || restored_sampling.provider.is_zai_coding_plan()
                 || restored_sampling.provider.is_open_code_go()
         )
             .then(|| summary.credential_binding.clone())
@@ -1393,6 +1400,8 @@ impl MvpAgent {
             if provider_model != persisted_model {
                 let (provider_name, fallback_name) = if provider.is_kimi_code() {
                     ("Kimi Code", "Kimi")
+                } else if provider.is_zai_coding_plan() {
+                    ("Z.AI Coding Plan", "Z.AI")
                 } else if provider.is_open_code_go() {
                     ("OpenCode Go", "OpenCode Go")
                 } else {

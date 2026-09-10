@@ -2,8 +2,8 @@
 
 > Status: **implemented and experimental; offline-qualified**. Grok Build
 > Enhanced ships a provider-scoped API-key adapter and audited GLM-5.3 catalog.
-> Live inference remains credential-gated. Usage and provider-hosted MCP tools
-> are not enabled.
+> Search/Reader, quota display, Zread, and opt-in Vision MCP are implemented.
+> Live subscription qualification remains credential-gated.
 
 ## Runtime contract
 
@@ -63,8 +63,8 @@ paths until they have separate harness and wire qualification.
 
 The default reasoning effort is `max`. Grok maps `none`, `minimal`, and `low`
 to the provider's `low`; `medium` and `high` to `high`; and `xhigh`, `max`, and
-`ultra` to `max`. It always sends `thinking.type = enabled`; GLM-5.3 does not
-support disabling reasoning.
+`ultra` to `max`. It sends `thinking.type = enabled` and
+`thinking.clear_thinking = false`; GLM-5.3 does not support disabling reasoning.
 
 Logout removes only this provider's record and catalog cache:
 
@@ -95,10 +95,73 @@ parsing, session binding, and credential non-fallback. The 2026-08-29 refresh
 did not have an entitled Z.AI credential, so live inference and authentication
 rejection behavior remain unqualified.
 
-Usage/quota endpoints and Z.AI-hosted Search, Reader, Zread, and Vision MCP
-services are intentionally absent. Their public existence does not authorize
-credential forwarding or product claims without a separate contract audit and
-test matrix.
+## Coding Plan tools and quota
+
+The 2026-09-10 integration keeps Grok's agent loop, tool schemas, permissions,
+headless mode, sessions, and ACP transport. It does not embed another agent.
+
+| Surface | Route and behavior |
+| --- | --- |
+| `web_search` | Z.AI Search MCP; projects structured results into Grok text and citations |
+| `web_fetch` | Z.AI Reader MCP; Grok URL/domain/SSRF checks run before the provider call |
+| `/usage` | Numeric-only Coding Plan quota rows, separate from session token totals and xAI billing |
+| `/usage manage` | Z.AI subscription management |
+| `zread_search_doc` | Search a public GitHub repository's documentation |
+| `zread_get_repo_structure` | Inspect a public repository tree |
+| `zread_read_file` | Read a repository-relative file; never a local file substitute |
+| Vision MCP | Opt-in image/video tools and `zai_vision_doctor`; native Flash images work without it |
+
+Search, Reader, and Zread use fixed `api.z.ai/api/mcp/.../mcp` endpoints,
+initialize MCP, acknowledge initialization, inspect the advertised catalog, and
+invoke only the expected tool names. Search handles the documented
+`webSearchPrime` and advertised `web_search_prime` spellings and selects
+`query` versus `search_query` from the advertised schema. Responses are bounded.
+Configured domain policy filters both rendered search text and citations;
+unsupported result shapes fail closed. Reader does not silently fall back to
+xAI, a paid Open Platform API, or an unrelated service. Navigation-only search
+commands are not supported by Z.AI Search; use `web_fetch` for URLs.
+
+Quota uses the official Z.AI usage plugin's
+`GET https://api.z.ai/api/monitor/usage/quota/limit` contract. This endpoint
+receives a sensitive **bare API key** Authorization header, unlike the Bearer
+header used for inference and MCP. No browser cookie or OAuth token is used.
+Model-token, model-credit, and MCP quota percentages are displayed without
+inventing reset dates or treating absent fields as zero usage. Optional
+model/tool historical series are not needed for the quota display.
+
+Enable Vision explicitly:
+
+```sh
+GROK_ZAI_VISION_MCP=1 grok -m 'zai-coding-plan/glm-5.3-flash'
+```
+
+Node.js 22+ and npm are required. The adapter installs
+`@z_ai/mcp-server@0.1.4` into a temporary private directory with an empty
+credential environment and lifecycle scripts disabled. It checks the package
+version, resolved tarball URL, and published SHA-512 integrity recorded by npm
+before launching node with only the scoped Z.AI key. The child has a bounded
+stdio exchange and is terminated on completion/cancellation. The package is
+not bundled in the Rust executable. Local images/videos must resolve beneath
+the workspace or session directory; remote media URLs and escaping symlinks
+are rejected. Download media through the normal permissioned, SSRF-safe tools
+first. Videos are limited to 8 MiB. This is an opt-in external process, not an
+OS sandbox or a claim that all transitive npm dependencies have been audited.
+
+Provider changes remove Zread/Vision resources and tool definitions. Resumed
+and same-provider switched sessions preserve their credential record; a
+different key requires explicit rebinding. Generic API-key readers cannot
+obtain the Z.AI key.
+
+### Remaining credential-gated acceptance
+
+No entitled credential was present on 2026-09-10. Do not infer current live
+qualification from the historical July implementation. Before claiming the
+live matrix complete, verify: Flash text/images; a streamed reasoning/tool
+roundtrip; Search, Reader and all three Zread calls; Vision doctor plus one
+image/video call when enabled; quota display; resume, provider switch,
+compaction, headless/ACP and a subagent; invalid-key/quota/entitlement error
+handling. Use synthetic inputs and retain only pass/fail evidence, never
+credentials or authenticated response captures.
 
 ## Primary sources
 
@@ -108,6 +171,9 @@ test matrix.
 - [Chat Completions API](https://docs.z.ai/api-reference/llm/chat-completion)
 - [API error codes and response shape](https://docs.z.ai/api-reference/api-code)
 - [Coding Plan quick start](https://docs.z.ai/devpack/quick-start)
+- [Search MCP](https://docs.z.ai/devpack/mcp/search-mcp-server), [Reader MCP](https://docs.z.ai/devpack/mcp/reader-mcp-server), [Zread MCP](https://docs.z.ai/devpack/mcp/zread-mcp-server), [Vision MCP](https://docs.z.ai/devpack/mcp/vision-mcp-server)
+- [Official usage plugin](https://github.com/zai-org/zai-coding-plugins/blob/main/plugins/glm-plan-usage/skills/usage-query-skill/scripts/query-usage.mjs)
+- [Pinned Vision package metadata](https://registry.npmjs.org/@z_ai%2fmcp-server/0.1.4)
 
 Repository source pins and their separate Reviewed/Latest fetched states remain
 in [`UPSTREAM_VERSIONS.md`](../../UPSTREAM_VERSIONS.md). Ignored checkouts,

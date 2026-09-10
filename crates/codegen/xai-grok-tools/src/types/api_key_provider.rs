@@ -12,6 +12,7 @@ pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
 
 /// Canonical provider identity for Kimi Code-owned tool authentication.
 pub const KIMI_CODE_PROVIDER_ID: &str = "kimi_code";
+pub const ZAI_CODING_PLAN_PROVIDER_ID: &str = "zai_coding_plan";
 
 /// Key in `ToolError::details` naming the provider that owns auth recovery
 /// for the failed request. Hosts must not route such an error through a
@@ -468,9 +469,163 @@ pub(crate) fn validate_kimi_code_request_auth(
     Ok(ValidatedKimiCodeRequestAuth { headers })
 }
 
+/// Fixed-shape failure for provider-owned Z.AI Coding Plan bearer auth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ZaiCodingPlanRequestAuthError {
+    Unavailable,
+    ProviderMismatch,
+    MissingCredentialGeneration,
+    DuplicateAuthorization,
+    InvalidAuthorization,
+    UnsupportedHeader,
+    InvalidHeader,
+}
+
+impl std::fmt::Display for ZaiCodingPlanRequestAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Z.AI Coding Plan provider authentication is unavailable")
+    }
+}
+
+impl std::error::Error for ZaiCodingPlanRequestAuthError {}
+
+#[derive(Clone)]
+pub(crate) struct ValidatedZaiCodingPlanRequestAuth {
+    headers: HeaderMap,
+}
+
+impl ValidatedZaiCodingPlanRequestAuth {
+    pub(crate) fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        request.headers(self.headers.clone())
+    }
+
+    /// Borrow only the validated bearer token for a provider-owned local
+    /// subprocess environment. The value remains private and must never be
+    /// logged, formatted, persisted, or copied into tool configuration.
+    pub(crate) fn bearer_token(&self) -> Result<&str, ZaiCodingPlanRequestAuthError> {
+        self.headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .filter(|token| !token.trim().is_empty())
+            .ok_or(ZaiCodingPlanRequestAuthError::InvalidAuthorization)
+    }
+}
+
+impl std::fmt::Debug for ValidatedZaiCodingPlanRequestAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValidatedZaiCodingPlanRequestAuth")
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) async fn resolve_zai_coding_plan_request_auth(
+    provider: &SharedApiKeyProvider,
+) -> Result<ValidatedZaiCodingPlanRequestAuth, ZaiCodingPlanRequestAuthError> {
+    if provider.request_auth_provider_id() != Some(ZAI_CODING_PLAN_PROVIDER_ID) {
+        return Err(ZaiCodingPlanRequestAuthError::ProviderMismatch);
+    }
+    let auth = provider
+        .current_request_auth_async()
+        .await
+        .ok_or(ZaiCodingPlanRequestAuthError::Unavailable)?;
+    if auth.provider() != Some(ZAI_CODING_PLAN_PROVIDER_ID) {
+        return Err(ZaiCodingPlanRequestAuthError::ProviderMismatch);
+    }
+    auth.credential_snapshot()
+        .filter(|snapshot| !snapshot.opaque_id().trim().is_empty() && snapshot.generation() > 0)
+        .ok_or(ZaiCodingPlanRequestAuthError::MissingCredentialGeneration)?;
+
+    let mut headers = HeaderMap::new();
+    let mut has_authorization = false;
+    for (name, value) in auth.headers() {
+        if !name.eq_ignore_ascii_case("authorization") {
+            return Err(ZaiCodingPlanRequestAuthError::UnsupportedHeader);
+        }
+        if has_authorization {
+            return Err(ZaiCodingPlanRequestAuthError::DuplicateAuthorization);
+        }
+        if value
+            .strip_prefix("Bearer ")
+            .is_none_or(|token| token.trim().is_empty())
+        {
+            return Err(ZaiCodingPlanRequestAuthError::InvalidAuthorization);
+        }
+        let mut value = HeaderValue::from_str(value)
+            .map_err(|_| ZaiCodingPlanRequestAuthError::InvalidHeader)?;
+        value.set_sensitive(true);
+        headers.insert(HeaderName::from_static("authorization"), value);
+        has_authorization = true;
+    }
+    if !has_authorization {
+        return Err(ZaiCodingPlanRequestAuthError::InvalidAuthorization);
+    }
+    Ok(ValidatedZaiCodingPlanRequestAuth { headers })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ZaiAuthFixture(RequestAuth);
+    impl ApiKeyProvider for ZaiAuthFixture {
+        fn current_api_key(&self) -> Option<String> {
+            None
+        }
+        fn request_auth_provider_id(&self) -> Option<&str> {
+            Some(ZAI_CODING_PLAN_PROVIDER_ID)
+        }
+        fn current_request_auth_async(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Option<RequestAuth>> + Send + '_>> {
+            Box::pin(std::future::ready(Some(self.0.clone())))
+        }
+    }
+
+    #[tokio::test]
+    async fn zai_auth_is_sensitive_and_rejects_foreign_unbound_or_extra_headers() {
+        let valid = RequestAuth::for_provider_snapshot(
+            ZAI_CODING_PLAN_PROVIDER_ID,
+            RequestCredentialSnapshot::new("test-record", 1),
+            [("authorization".to_owned(), "Bearer sentinel-zai".to_owned())],
+        );
+        let provider: SharedApiKeyProvider = Arc::new(ZaiAuthFixture(valid.clone()));
+        let auth = resolve_zai_coding_plan_request_auth(&provider)
+            .await
+            .unwrap();
+        let request = auth
+            .apply(reqwest::Client::new().get("https://api.z.ai/"))
+            .build()
+            .unwrap();
+        assert!(request.headers()["authorization"].is_sensitive());
+        assert!(!format!("{auth:?} {request:?}").contains("sentinel-zai"));
+        let mut foreign = valid.clone();
+        foreign.provider = Some(KIMI_CODE_PROVIDER_ID.to_owned());
+        let mut unbound = valid.clone();
+        unbound.credential_snapshot = None;
+        let mut extra = valid.clone();
+        extra
+            .headers
+            .push(("x-api-key".to_owned(), "sentinel-other".to_owned()));
+        let mut duplicate = valid.clone();
+        duplicate
+            .headers
+            .push(("Authorization".to_owned(), "Bearer duplicate".to_owned()));
+        for invalid in [
+            foreign,
+            unbound,
+            extra,
+            duplicate,
+            RequestAuth::bearer("unscoped"),
+        ] {
+            let provider: SharedApiKeyProvider = Arc::new(ZaiAuthFixture(invalid));
+            assert!(
+                resolve_zai_coding_plan_request_auth(&provider)
+                    .await
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn request_auth_debug_is_fixed_shape() {

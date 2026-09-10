@@ -824,6 +824,163 @@ async fn codex_401_uses_provider_scoped_auth_label_and_login_commands() {
         .await;
 }
 
+/// Z.AI authentication is provider-bound and must never enter the xAI token
+/// refresh path during per-turn preflight.
+#[tokio::test(flavor = "current_thread")]
+async fn zai_preflight_does_not_run_xai_credential_refresh() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let xai_refresh_called = Arc::new(AtomicBool::new(false));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysSucceedRefresher {
+                    called: xai_refresh_called.clone(),
+                });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor sampling config");
+            sampling.provider = xai_grok_sampling_types::ProviderId::ZaiCodingPlan;
+            sampling.model = "glm-5.3-flash".to_owned();
+            sampling.base_url = xai_grok_sampling_types::ZAI_CODING_PLAN_BASE_URL.to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+
+            actor
+                .refresh_token_if_expired()
+                .await
+                .expect("preflight refresh should succeed");
+
+            assert!(
+                !xai_refresh_called.load(Ordering::SeqCst),
+                "Z.AI preflight must never call the xAI refresher"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn zai_429_keeps_provider_detail_and_never_uses_xai_billing_code() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = make_actor_with_auth_manager(None).await;
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor sampling config");
+            sampling.provider = xai_grok_sampling_types::ProviderId::ZaiCodingPlan;
+            sampling.model = "glm-5.3-flash".to_owned();
+            sampling.base_url = xai_grok_sampling_types::ZAI_CODING_PLAN_BASE_URL.to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+
+            let error = match actor
+                .handle_sampling_failure(
+                    rate_limited_error("Z.AI provider capacity is temporarily unavailable"),
+                    0,
+                )
+                .await
+            {
+                Err(error) => error,
+                Ok(_) => panic!("non-xAI 429 should remain terminal"),
+            };
+
+            assert_ne!(
+                i32::from(error.code),
+                crate::sampling::error::RATE_LIMITED_ERROR_CODE,
+                "xAI billing/upgrade rendering code must be xAI-only"
+            );
+            let details = error.data.expect("provider error details");
+            let message = details
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| details.as_str())
+                .expect("provider error message");
+            assert!(message.contains("Z.AI provider capacity"), "{message}");
+            assert!(!message.contains("Upgrade your account"), "{message}");
+            assert!(!message.contains("purchase more credits"), "{message}");
+        })
+        .await;
+}
+
+/// A terminal Z.AI 401 must not be recovered with credentials from a
+/// simultaneously logged-in xAI account.
+#[tokio::test(flavor = "current_thread")]
+async fn zai_401_does_not_run_xai_auth_recovery() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let xai_refresh_called = Arc::new(AtomicBool::new(false));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysSucceedRefresher {
+                    called: xai_refresh_called.clone(),
+                });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor sampling config");
+            sampling.provider = xai_grok_sampling_types::ProviderId::ZaiCodingPlan;
+            sampling.model = "glm-5.3-flash".to_owned();
+            sampling.base_url = xai_grok_sampling_types::ZAI_CODING_PLAN_BASE_URL.to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+
+            let result = actor.handle_sampling_failure(auth_error(), 0).await;
+
+            assert!(result.is_err(), "Z.AI 401 must remain terminal");
+            assert!(
+                !xai_refresh_called.load(Ordering::SeqCst),
+                "Z.AI 401 must never call the xAI refresher"
+            );
+        })
+        .await;
+}
+
+/// Z.AI authentication failures should identify the selected provider and its
+/// own login command rather than xAI or Codex recovery instructions.
+#[tokio::test(flavor = "current_thread")]
+async fn zai_401_surfaces_provider_scoped_reauthentication_details() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = make_actor_with_auth_manager(None).await;
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor sampling config");
+            sampling.provider = xai_grok_sampling_types::ProviderId::ZaiCodingPlan;
+            sampling.model = "glm-5.3-flash".to_owned();
+            sampling.base_url = xai_grok_sampling_types::ZAI_CODING_PLAN_BASE_URL.to_owned();
+            actor.chat_state_handle.update_sampling_config(sampling);
+
+            let error = match actor.handle_sampling_failure(auth_error(), 0).await {
+                Err(error) => error,
+                Ok(_) => panic!("Z.AI 401 must be terminal"),
+            };
+            let details = error.data.expect("error details");
+            let message = details
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| details.as_str())
+                .expect("user-facing message");
+
+            assert!(message.contains("Auth:      zai_coding_plan"), "{message}");
+            assert!(
+                message.contains("grok login --provider zai-coding-plan"),
+                "{message}"
+            );
+            assert!(!message.contains("openai-codex"), "{message}");
+            assert!(!message.contains("Auth:      WebLogin"), "{message}");
+        })
+        .await;
+}
+
 /// Kimi authentication is provider-bound and must never enter the xAI token
 /// refresh path during per-turn preflight.
 #[tokio::test(flavor = "current_thread")]

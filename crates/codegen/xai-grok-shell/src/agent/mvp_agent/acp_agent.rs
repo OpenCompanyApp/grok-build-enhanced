@@ -9,6 +9,16 @@ use crate::leader::protocol::InternalMethod;
 
 const OPENAI_CODEX_MODEL_PREFIX: &str = "openai-codex/";
 const KIMI_CODE_MODEL_PREFIX: &str = "kimi-code/";
+pub(super) fn is_strict_zai_coding_plan_model_id(model_id: &acp::ModelId) -> bool {
+    model_id.0.starts_with("zai-coding-plan/")
+}
+
+pub(super) async fn resolve_persisted_zai_coding_plan_model_for_load(
+    agent: &MvpAgent, persisted: &acp::ModelId,
+) -> Result<acp::ModelId, acp::Error> {
+    resolve_persisted_provider_model_for_load(agent, persisted, xai_grok_sampling_types::ProviderId::ZaiCodingPlan).await
+}
+
 const OPENCODE_GO_MODEL_PREFIX: &str = "opencode-go/";
 
 pub(super) fn is_strict_openai_codex_model_id(model_id: &acp::ModelId) -> bool {
@@ -53,6 +63,9 @@ async fn resolve_explicit_model_for_selection(
             .ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::KimiCode)
             .await?;
         Some(xai_grok_sampling_types::ProviderId::KimiCode)
+    } else if is_strict_zai_coding_plan_model_id(requested) {
+        agent.ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::ZaiCodingPlan).await?;
+        Some(xai_grok_sampling_types::ProviderId::ZaiCodingPlan)
     } else if is_strict_open_code_go_model_id(requested) {
         agent
             .ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::OpenCodeGo)
@@ -774,6 +787,13 @@ impl acp::Agent for MvpAgent {
                     );
                 }
                 emit_login_span(true, auth_method::KIMI_CODE_METHOD_ID, None, None);
+                Ok(Default::default())
+            }
+            auth_method::ZAI_CODING_PLAN_METHOD_ID => {
+                self.ensure_provider_authenticated(xai_grok_sampling_types::ProviderId::ZaiCodingPlan).await?;
+                // The provider binder resolves the stored key and pins both
+                // sampler and tool auth when the session is constructed.
+                emit_login_span(true, auth_method::ZAI_CODING_PLAN_METHOD_ID, None, None);
                 Ok(Default::default())
             }
             auth_method::OPENCODE_GO_METHOD_ID => {

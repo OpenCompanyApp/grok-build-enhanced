@@ -55,6 +55,7 @@ fn dispatch_billing(
             codex_usage: None,
             codex_thread_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             silent,
             subscription_tier,
@@ -62,6 +63,38 @@ fn dispatch_billing(
             nonce: 0,
         }),
         app,
+    );
+}
+
+#[test]
+fn zai_quota_replaces_stale_xai_subscription_tier() {
+    let mut app = test_app_with_agent();
+    app.subscription_tier = Some("supergrok".to_owned());
+    dispatch(
+        Action::TaskComplete(TaskResult::BillingFetched {
+            agent_id: AgentId(0),
+            balance: None,
+            codex_usage: None,
+            codex_thread_usage: None,
+            kimi_usage: None,
+            zai_usage: Some(
+                serde_json::from_value(serde_json::json!({
+                    "limits": [{"label": "MCP tool quota", "percentage": 25.0,
+                        "used": 25, "limit": 100}]
+                }))
+                .unwrap(),
+            ),
+            codex_api_equivalent_cost: None,
+            silent: true,
+            subscription_tier: None,
+            autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
+            nonce: 0,
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        app.subscription_tier.as_deref(),
+        Some("Z.AI GLM Coding Plan")
     );
 }
 
@@ -843,6 +876,7 @@ fn billing_fetched_stores_autotopup_on_app_and_agent() {
             codex_usage: None,
             codex_thread_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             silent: true,
             subscription_tier: None,
@@ -877,6 +911,7 @@ fn billing_fetched_unchanged_autotopup_keeps_cached_rule() {
             codex_usage: None,
             codex_thread_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             silent: true,
             subscription_tier: None,
@@ -893,6 +928,7 @@ fn billing_fetched_unchanged_autotopup_keeps_cached_rule() {
             codex_usage: None,
             codex_thread_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             silent: true,
             subscription_tier: None,
@@ -920,6 +956,7 @@ fn billing_fetched_cleared_autotopup_resets_cache() {
             codex_usage: None,
             codex_thread_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             silent: true,
             subscription_tier: None,
@@ -943,6 +980,7 @@ fn billing_fetched_cleared_autotopup_resets_cache() {
             codex_usage: None,
             codex_thread_usage: None,
             kimi_usage: None,
+            zai_usage: None,
             codex_api_equivalent_cost: None,
             silent: true,
             subscription_tier: None,

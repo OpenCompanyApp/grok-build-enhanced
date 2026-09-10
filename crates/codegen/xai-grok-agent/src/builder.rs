@@ -713,7 +713,12 @@ impl AgentBuilder {
         let tool_bridge_builder = ToolBridge::get_builder();
         let state_path = self.state_path.clone().unwrap_or_default();
         let mut tool_config = definition.tool_config.clone();
-        let uses_provider_scoped_fetch = self.web_search_config.uses_provider_scoped_web();
+        let is_zai_coding_plan = self.api_key_provider.as_ref().is_some_and(|provider| {
+            provider.request_auth_provider_id()
+                == Some(xai_grok_tools::types::ZAI_CODING_PLAN_PROVIDER_ID)
+        });
+        let uses_provider_scoped_fetch =
+            self.web_search_config.uses_provider_scoped_web() || is_zai_coding_plan;
         if !definition.inject_default_tools && tool_config.tools.is_empty() {
             return Err(AgentBuildError::InvalidConfig(format!(
                 "agent '{}' declares a curated toolset (inject_default_tools = false) \
@@ -724,6 +729,17 @@ impl AgentBuilder {
             )));
         }
         if definition.inject_default_tools {
+            if is_zai_coding_plan {
+                use xai_grok_tools::implementations::grok_build;
+                tool_config.tools.extend([
+                    (&grok_build::ZreadSearchDocTool).into(),
+                    (&grok_build::ZreadGetRepoStructureTool).into(),
+                    (&grok_build::ZreadReadFileTool).into(),
+                ]);
+                if grok_build::zai_vision_mcp_enabled() {
+                    tool_config.tools.extend(grok_build::vision_tool_configs());
+                }
+            }
             if self.memory_backend.is_some() {
                 use xai_grok_tools::implementations::memory;
                 tool_config
@@ -882,7 +898,7 @@ impl AgentBuilder {
         }
         if let Some(params) = self
             .web_fetch_config
-            .params_for_codex_subscription(self.web_search_config.uses_provider_scoped_web())
+            .params_for_codex_subscription(uses_provider_scoped_fetch)
             && let Ok(params_value) = serde_json::to_value(params)
             && let Some(obj) = params_value.as_object()
         {

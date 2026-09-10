@@ -26,7 +26,7 @@ responsive Grok braille symbol remain compatible.
 | Custom OpenAI-compatible endpoint path | Retained with explicit provider identity; custom entries use only their own configured credentials |
 | Terminal theme integrations | Implemented: bundled Warp catalog plus live Warp and Herdr/Ghostty sync |
 | Kimi Code plan provider | Implemented and experimental: isolated API-key login, dynamic models, Chat/Messages inference, plan usage, and hosted web tools; the current Chat/K3/usage/web matrix was live-qualified on 2026-07-19 |
-| Z.AI GLM Coding Plan | Implemented and experimental: isolated API-key login, audited static GLM-5.3 catalog, and Chat Completions inference; usage and hosted tools are not enabled |
+| Z.AI GLM Coding Plan | Implemented and experimental: isolated Coding Plan key, GLM-5.3/Flash, Grok-native Search/Reader, quota display, Zread, and opt-in Vision MCP; live qualification remains credential-gated |
 | Enhanced release artifacts | Fork-owned stable [`v0.3.16`](https://github.com/OpenCompanyApp/grok-build-enhanced/releases/tag/v0.3.16) release for macOS/Linux, with SHA-256 checksums and GitHub artifact attestations |
 | Updates vs. upstream content | Enhanced update labels are fork-scoped; inherited announcements and release notes are labeled official xAI/upstream |
 
@@ -374,7 +374,7 @@ The catalog contains `glm-5.3`, `glm-5.3[1m]`, `glm-5.3-flash`, and
 `glm-5.3-flash[1m]`. All use the OpenAI-compatible Chat Completions endpoint,
 a one-million-token context window, a 131,072-token output limit, and `low`,
 `high`, or `max` reasoning (default `max`). GLM-5.3 is text-only;
-GLM-5.3-Flash accepts image input. Thinking is always enabled, as required by
+GLM-5.3-Flash accepts image input. Thinking is always enabled and preserved across turns, as recommended by
 the provider contract.
 
 Disconnect it independently with:
@@ -383,16 +383,30 @@ Disconnect it independently with:
 grok logout --provider zai-coding-plan
 ```
 
-The adapter has offline request, auth-store, header-isolation, and bounded-
-response coverage. No entitled credential was available for live inference in
-this refresh. Usage endpoints and Z.AI-hosted MCP tools are deliberately not
-enabled until their current contracts are separately audited and tested. See
-the [provider reference](docs/providers/zai-glm-coding-plan-integration.md).
+Grok's existing `web_search` and `web_fetch` tools use Z.AI Search and Reader
+MCP with the same provider-scoped key. `/usage` displays Coding Plan quotas;
+`/usage manage` opens Z.AI, not xAI billing. Public repository tools are
+available as `zread_search_doc`, `zread_get_repo_structure`, and `zread_read_file`.
+
+Optional image/video analysis tools use Z.AI's pinned local Vision MCP package:
+
+```sh
+GROK_ZAI_VISION_MCP=1 grok -m 'zai-coding-plan/glm-5.3-flash'
+```
+
+Vision requires Node.js 22+ and npm, downloads the pinned package without
+credentials or install scripts, verifies its recorded integrity, and gives the
+key only to the server process. Local media must be inside the workspace or
+session directory. Native Flash image attachments do not require Vision MCP.
+
+The implementation is experimental. No entitled key was available for the
+2026-09-10 live subscription matrix; offline tests cannot establish entitlement
+or live quota behavior. See the [provider reference](docs/providers/zai-glm-coding-plan-integration.md).
 
 ### Themes, tools, and UX
 
 Enhanced includes the packaged Warp theme corpus, live Warp and Herdr/Ghostty
-theme sync, provider-scoped Codex and Kimi web integrations, Codex image
+theme sync, provider-scoped Codex, Kimi, and Z.AI web integrations, Codex image
 integration, and focused terminal UX additions while preserving Grok Build's
 existing tool names, permission model, sessions, and responsive braille symbol.
 Third-party attribution is recorded in

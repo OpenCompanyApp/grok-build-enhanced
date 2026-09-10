@@ -56,6 +56,15 @@ pub enum WebFetchError {
     #[error("Kimi Code hosted fetch quota or concurrency limit was reached")]
     HostedQuota,
 
+    #[error("Z.AI Coding Plan Reader authentication was rejected")]
+    ZaiReaderAuthentication,
+    #[error("Z.AI Coding Plan Reader quota was reached")]
+    ZaiReaderQuota,
+    #[error("Z.AI Coding Plan Reader rejected the request")]
+    ZaiReaderRejected,
+    #[error("Z.AI Coding Plan Reader is unavailable or returned an invalid response")]
+    ZaiReaderUnavailable,
+
     #[error("HTTP request to {origin} failed ({kind})")]
     HttpRequest { origin: String, kind: &'static str },
 
@@ -106,6 +115,10 @@ impl WebFetchError {
             | Self::HostedAuthentication
             | Self::HostedMembership
             | Self::HostedRequestRejected { .. }
+            | Self::ZaiReaderAuthentication
+            | Self::ZaiReaderQuota
+            | Self::ZaiReaderRejected
+            | Self::ZaiReaderUnavailable
             | Self::HostedQuota
             | Self::HttpRequest { .. }
             | Self::ProxyConfigError
@@ -123,6 +136,14 @@ impl WebFetchError {
                 "tool_id": "web_fetch",
                 "status": 401,
                 "auth_recovery_provider": crate::types::KIMI_CODE_PROVIDER_ID,
+                "auth_recovery_exhausted": true,
+            })),
+            Self::ZaiReaderAuthentication => xai_tool_runtime::ToolError::unauthorized(
+                "Z.AI Coding Plan Reader API key was rejected".to_owned(),
+            )
+            .with_details(serde_json::json!({
+                "tool_id": "web_fetch", "status": 401,
+                "auth_recovery_provider": crate::types::ZAI_CODING_PLAN_PROVIDER_ID,
                 "auth_recovery_exhausted": true,
             })),
             Self::HostedMembership => xai_tool_runtime::ToolError::new(

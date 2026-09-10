@@ -63,7 +63,8 @@ pub(super) fn open_usage_info_modal(
     }
 
     let isolated_plan = agent.session.models.current_model_is_openai_codex()
-        || agent.session.models.current_model_is_kimi_code();
+        || agent.session.models.current_model_is_kimi_code()
+        || agent.session.models.current_model_is_zai_coding_plan();
     let billing_redirect_url = (!isolated_plan).then_some(redirect_url).flatten();
     let billing_reachable =
         usage_visible && !agent.chat_kind && (isolated_plan || billing_redirect_url.is_none());
@@ -429,7 +430,8 @@ pub(super) fn append_provider_usage_surface(app: &mut AppView, agent_id: AgentId
     };
     let session_id = agent.session.session_id.clone();
     let uses_isolated_plan = agent.session.models.current_model_is_openai_codex()
-        || agent.session.models.current_model_is_kimi_code();
+        || agent.session.models.current_model_is_kimi_code()
+        || agent.session.models.current_model_is_zai_coding_plan();
 
     if !uses_isolated_plan && let Some(url) = app.usage_billing_redirect_url.clone() {
         if let Some(agent) = app.agents.get_mut(&agent_id) {

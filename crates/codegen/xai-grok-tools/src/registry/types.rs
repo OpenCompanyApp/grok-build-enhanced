@@ -703,6 +703,18 @@ impl ToolRegistryBuilder {
             grok_build::web_search::WebSearchParams,
         >();
         b.register_with_params::<grok_build::WebFetchTool, grok_build::web_fetch::WebFetchParams>();
+        b.register::<grok_build::ZreadSearchDocTool>();
+        b.register::<grok_build::ZreadGetRepoStructureTool>();
+        b.register::<grok_build::ZreadReadFileTool>();
+        b.register::<grok_build::ZaiVisionDoctorTool>();
+        b.register::<grok_build::ZaiVisionUiToArtifactTool>();
+        b.register::<grok_build::ZaiVisionExtractTextTool>();
+        b.register::<grok_build::ZaiVisionDiagnoseErrorTool>();
+        b.register::<grok_build::ZaiVisionUnderstandDiagramTool>();
+        b.register::<grok_build::ZaiVisionAnalyzeDataTool>();
+        b.register::<grok_build::ZaiVisionUiDiffTool>();
+        b.register::<grok_build::ZaiVisionAnalyzeImageTool>();
+        b.register::<grok_build::ZaiVisionAnalyzeVideoTool>();
         b.register::<grok_build::LspTool>();
         b.register::<grok_build::ImageGenTool>();
         b.register::<grok_build::ImageEditTool>();
@@ -1040,6 +1052,19 @@ impl ToolRegistryBuilder {
         }
         let is_codex_subscription = ctx.web_search_config.is_codex_subscription();
         let is_kimi_code = ctx.web_search_config.is_kimi_code();
+        let is_zai_coding_plan = ctx.api_key_provider.as_ref().is_some_and(|provider| {
+            provider.request_auth_provider_id() == Some(crate::types::ZAI_CODING_PLAN_PROVIDER_ID)
+        });
+        if is_zai_coding_plan && let Some(provider) = ctx.api_key_provider.clone() {
+            if let Ok(client) = grok_build::ZaiZreadClient::new(provider.clone()) {
+                resources.insert(client);
+            }
+            if grok_build::zai_vision_mcp_enabled()
+                && let Ok(client) = grok_build::ZaiVisionClient::new(provider)
+            {
+                resources.insert(client);
+            }
+        }
         if let Ok(client) = crate::implementations::web_search::client::WebSearchClient::new(
             &ctx.web_search_config,
             ctx.api_key_provider.clone(),
@@ -1088,10 +1113,9 @@ impl ToolRegistryBuilder {
                 }
             }
         }
-        if let Some(params) = ctx
-            .web_fetch_config
-            .params_for_codex_subscription(is_codex_subscription || is_kimi_code)
-        {
+        if let Some(params) = ctx.web_fetch_config.params_for_codex_subscription(
+            is_codex_subscription || is_kimi_code || is_zai_coding_plan,
+        ) {
             match crate::implementations::grok_build::web_fetch::WebFetchClient::new(params) {
                 Ok(client) => {
                     let client = if is_kimi_code {
@@ -1101,6 +1125,10 @@ impl ToolRegistryBuilder {
                                 crate::implementations::grok_build::web_fetch::WebFetchError::HostedAuthentication,
                             ),
                         }
+                    } else if is_zai_coding_plan {
+                        ctx.api_key_provider.clone()
+                            .ok_or(crate::implementations::grok_build::web_fetch::WebFetchError::ZaiReaderAuthentication)
+                            .and_then(|provider| client.with_zai_coding_plan_reader(provider))
                     } else {
                         Ok(client)
                     };

@@ -6,13 +6,17 @@ mod credentials;
 mod error;
 mod request_auth;
 mod storage;
+mod usage;
+pub use usage::{ZaiCodingPlanUsageSnapshot, fetch_usage};
 
 pub use catalog::{ZaiCodingPlanModel, load_cached_model_entries, map_models};
 pub use credentials::{
     ZAI_CODING_PLAN_CREDENTIAL_SCHEMA_VERSION, ZaiCodingPlanCredentials, ZaiCodingPlanSecret,
 };
 pub use error::ZaiCodingPlanAuthError;
-pub use request_auth::{ZaiCodingPlanSamplerRequestAuth, shared_sampler_request_auth};
+pub use request_auth::{
+    ZaiCodingPlanSamplerRequestAuth, shared_sampler_request_auth, shared_tool_auth_provider,
+};
 pub use storage::ZaiCodingPlanCredentialStore;
 
 use std::io::{IsTerminal, Read};

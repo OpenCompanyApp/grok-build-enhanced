@@ -276,9 +276,16 @@ Disconnect only Z.AI Coding Plan with:
 grok logout --provider zai-coding-plan
 ```
 
-This adapter is offline-qualified. No entitled credential was available for
-the 2026-08-29 refresh, so live inference remains untested. Usage/quota and
-provider-hosted MCP tools are not enabled.
+Grok-native `web_search` and `web_fetch` use Z.AI Search/Reader MCP.
+`/usage` displays Coding Plan quota percentages. Public repository access is
+available through the `zread_*` tools. Set `GROK_ZAI_VISION_MCP=1` before
+launching Grok to enable the pinned Vision MCP tools (Node.js 22+ and npm
+required); native Flash image attachments do not need this opt-in.
+
+This adapter remains experimental. No entitled credential was available for
+the 2026-09-10 qualification pass, so current live subscription behavior is
+unverified. See the [provider reference](../../../../../docs/providers/zai-glm-coding-plan-integration.md)
+for endpoint, package-installation, media, and live-test boundaries.
 
 ---
 

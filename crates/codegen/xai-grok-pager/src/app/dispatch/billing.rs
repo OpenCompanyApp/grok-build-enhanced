@@ -380,6 +380,7 @@ pub(super) fn handle_billing_fetched(
     codex_usage: Option<xai_grok_shell::auth::codex::CodexUsageSnapshot>,
     codex_thread_usage: Option<xai_grok_shell::auth::codex::CodexThreadUsage>,
     kimi_usage: Option<xai_grok_shell::auth::kimi_code::KimiCodeUsageSnapshot>,
+    zai_usage: Option<xai_grok_shell::auth::zai_coding_plan::ZaiCodingPlanUsageSnapshot>,
     codex_api_equivalent_cost: Option<xai_grok_shell::auth::codex::CodexApiEquivalentCostEstimate>,
     silent: bool,
     subscription_tier: Option<String>,
@@ -403,11 +404,19 @@ pub(super) fn handle_billing_fetched(
                 .as_ref()
                 .and_then(|usage| usage.highest_used_percent())
         })
+        .or_else(|| {
+            zai_usage
+                .as_ref()
+                .and_then(|usage| usage.highest_used_percent())
+        })
         .map(|used| used >= 99.0)
         .or_else(|| balance.as_ref().map(|b| b.usage_pct >= 99.0))
         .unwrap_or(false);
     if let Some(tier) = subscription_tier {
         app.subscription_tier = Some(tier);
+    }
+    if zai_usage.is_some() {
+        app.subscription_tier = Some("Z.AI GLM Coding Plan".to_owned());
     }
     // Render the `/usage` summary from the now-current cached rule.
     let summary_topup = app.auto_topup.clone();
@@ -434,7 +443,7 @@ pub(super) fn handle_billing_fetched(
                 (None, Some(usage)) => {
                     Some(crate::views::credit_bar::format_kimi_usage_summary(usage))
                 }
-                (None, None) => None,
+                (None, None) => zai_usage.as_ref().map(|usage| usage.summary()),
             };
         }
         if !silent && !agent.chat_kind {
@@ -452,7 +461,10 @@ pub(super) fn handle_billing_fetched(
                 (None, None, Some(bal)) => {
                     crate::views::credit_bar::format_usage_summary(bal, summary_topup.as_ref())
                 }
-                (None, None, None) => "No billing data available.".to_string(),
+                (None, None, None) => zai_usage
+                    .as_ref()
+                    .map(|usage| usage.summary())
+                    .unwrap_or_else(|| "No billing data available.".to_string()),
             };
             agent.scrollback.push_block(RenderBlock::System(
                 crate::scrollback::blocks::SystemMessageBlock::new(msg),

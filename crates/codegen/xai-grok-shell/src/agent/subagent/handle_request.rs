@@ -9,7 +9,10 @@ use xai_grok_tools::implementations::{grok_build, opencode};
 pub(super) fn provider_requires_local_resume_binding(
     provider: xai_grok_sampling_types::ProviderId,
 ) -> bool {
-    provider.is_openai_codex() || provider.is_kimi_code() || provider.is_open_code_go()
+    provider.is_openai_codex()
+        || provider.is_kimi_code()
+        || provider.is_open_code_go()
+        || provider.is_zai_coding_plan()
 }
 
 pub(super) fn validate_local_resume_credential_binding(

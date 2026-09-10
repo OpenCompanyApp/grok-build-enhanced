@@ -2,6 +2,8 @@ mod exa;
 mod kimi_code;
 mod openai_codex;
 mod responses;
+mod zai_coding_plan;
+pub(super) use zai_coding_plan::ZaiCodingPlanBackend;
 
 use crate::types::output::WebSearchReference;
 

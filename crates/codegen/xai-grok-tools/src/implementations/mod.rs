@@ -13,6 +13,7 @@ pub mod skills;
 pub mod task_output;
 pub mod use_tool;
 pub mod web_search;
+pub(crate) mod zai_mcp;
 pub use grok_build::bash::{BashError, BashToolInput};
 pub use grok_build::{
     AskUserQuestionTool, BashTool, EnterPlanModeTool, ExitPlanModeTool, GrepTool, KillTaskTool,

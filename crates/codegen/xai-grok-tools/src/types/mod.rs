@@ -21,7 +21,9 @@ pub mod tool;
 pub mod tool_index;
 pub mod tool_io;
 pub mod tool_metadata;
+pub use api_key_provider::ZAI_CODING_PLAN_PROVIDER_ID;
 pub(crate) use api_key_provider::resolve_kimi_code_request_auth;
+pub(crate) use api_key_provider::resolve_zai_coding_plan_request_auth;
 pub use api_key_provider::{
     AUTH_RECOVERY_EXHAUSTED_DETAILS_KEY, AUTH_RECOVERY_PROVIDER_DETAILS_KEY, ApiKeyProvider,
     KIMI_CODE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, RequestAuth, RequestCredentialSnapshot,

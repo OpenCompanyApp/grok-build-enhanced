@@ -1725,16 +1725,16 @@
       "state": "open",
       "closure_evidence": [],
       "owner": "Z.AI usage adapter research",
-      "impact": "The shipped Z.AI provider intentionally has no plan usage display until a current contract is qualified.",
+      "impact": "Numeric plan quota display is implemented from the official Z.AI usage-plugin contract; current entitled-account behavior remains unverified.",
       "acceptance_criteria": "Identify an audited provider endpoint/schema, keep credentials endpoint-bound, add bounded/redacted parsing, and live-qualify before making a usage claim.",
       "intended_tests": [
         "Z.AI usage parsing and redaction tests",
         "endpoint and credential non-fallback tests",
         "credential-gated live usage test"
       ],
-      "blocker": "CodexBar is a presentation/reference source and does not by itself establish an authorized Coding Plan endpoint.",
-      "deadline": "2026-09-05",
-      "target": "future Z.AI usage milestone",
+      "blocker": "The official Z.AI plugin establishes the endpoint and bare-key header contract, and bounded numeric-only parsing and UI routing are implemented. No entitled Z.AI key was available on 2026-09-10; the remaining live matrix is documented in docs/providers/zai-glm-coding-plan-integration.md.",
+      "deadline": "2026-09-17",
+      "target": "credential-gated Z.AI usage qualification",
       "source_revision": "ce44713574f96ef43b3dab0c8be314135f6a05e1"
     },
     {

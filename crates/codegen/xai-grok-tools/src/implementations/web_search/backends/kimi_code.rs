@@ -25,11 +25,11 @@ pub(in crate::implementations::web_search) struct KimiCodeBackend {
     attribution_callback: Option<SharedAttributionCallback>,
 }
 
-struct SearchResult {
-    site_name: String,
-    title: String,
-    url: String,
-    snippet: String,
+pub(super) struct SearchResult {
+    pub(super) site_name: String,
+    pub(super) title: String,
+    pub(super) url: String,
+    pub(super) snippet: String,
 }
 
 impl KimiCodeBackend {
@@ -323,7 +323,7 @@ fn sanitize_markdown_text(raw: &str) -> String {
     sanitized
 }
 
-fn project_results(
+pub(super) fn project_results(
     results: Vec<SearchResult>,
     allowed_domains: Option<&[String]>,
     excluded_domains: Option<&[String]>,

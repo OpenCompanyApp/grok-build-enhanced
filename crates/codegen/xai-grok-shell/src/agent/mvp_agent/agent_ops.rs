@@ -212,6 +212,12 @@ impl MvpAgent {
                     ))
                 })
             }
+            xai_grok_sampling_types::ProviderId::ZaiCodingPlan => {
+                crate::auth::zai_coding_plan::current_credentials_and_binding(&crate::util::grok_home::grok_home())
+                    .map(|_| ()).map_err(|_| acp::Error::auth_required().data(
+                        "Z.AI Coding Plan login required. Run grok login --provider zai-coding-plan."
+                    ))
+            }
             xai_grok_sampling_types::ProviderId::OpenCodeGo => {
                 crate::auth::opencode_go::current_credentials_and_binding(
                     &crate::util::grok_home::grok_home(),
@@ -2092,6 +2098,7 @@ impl MvpAgent {
             model.info().provider,
             xai_grok_sampling_types::ProviderId::OpenAiCodex
                 | xai_grok_sampling_types::ProviderId::KimiCode
+                | xai_grok_sampling_types::ProviderId::ZaiCodingPlan
         ) {
             let cfg = self.cfg.borrow();
             let mut sampling = crate::agent::config::sampling_config_for_model(
@@ -4501,6 +4508,7 @@ impl MvpAgent {
         if self.auth_method_id.load().is_none()
             && !sampling_config.provider.is_openai_codex()
             && !sampling_config.provider.is_kimi_code()
+            && !sampling_config.provider.is_zai_coding_plan()
             && !sampling_config.provider.is_open_code_go()
         {
             return Err(acp::Error::auth_required().data("no auth method id provided"));
@@ -4594,6 +4602,11 @@ impl MvpAgent {
                 let mid = acp::ModelId::new(Arc::from(id.as_str()));
                 let codex_slug = id.strip_prefix("openai-codex/");
                 let kimi_slug = id.strip_prefix("kimi-code/");
+                let zai_slug = id.strip_prefix("zai-coding-plan/");
+                let strict_zai = zai_slug.is_some();
+                if zai_slug.is_some_and(|slug| slug.trim().is_empty()) {
+                    return Err(acp::Error::invalid_params().data("Z.AI model id must include a model slug"));
+                }
                 let open_code_go_slug = id.strip_prefix("opencode-go/");
                 let strict_codex = codex_slug.is_some();
                 let strict_kimi = kimi_slug.is_some();
@@ -4610,11 +4623,11 @@ impl MvpAgent {
                     return Err(acp::Error::invalid_params()
                         .data("agent profile OpenCode Go model id must include a model slug"));
                 }
-                if strict_codex || strict_kimi || strict_open_code_go {
+                if strict_codex || strict_kimi || strict_open_code_go || strict_zai {
                     // A provider-qualified profile pin is an explicit routing
                     // request. Authenticate provider-locally and never fall
                     // back to the process-wide xAI session model.
-                    let provider = if strict_kimi {
+                    let provider = if strict_zai { xai_grok_sampling_types::ProviderId::ZaiCodingPlan } else if strict_kimi {
                         xai_grok_sampling_types::ProviderId::KimiCode
                     } else if strict_open_code_go {
                         xai_grok_sampling_types::ProviderId::OpenCodeGo
@@ -4628,8 +4641,8 @@ impl MvpAgent {
                 }
                 match self.resolve_model_id(&mid) {
                     Ok(entry) => Some((mid, entry)),
-                    Err(_) if strict_codex || strict_kimi || strict_open_code_go => {
-                        let provider = if strict_kimi {
+                    Err(_) if strict_codex || strict_kimi || strict_open_code_go || strict_zai => {
+                        let provider = if strict_zai { "Z.AI Coding Plan" } else if strict_kimi {
                             "Kimi"
                         } else if strict_open_code_go {
                             "OpenCode Go"
@@ -4678,6 +4691,7 @@ impl MvpAgent {
         );
         if (sampling_config.provider.is_openai_codex()
             || sampling_config.provider.is_kimi_code()
+            || sampling_config.provider.is_zai_coding_plan()
             || sampling_config.provider.is_open_code_go())
             && let Some(binding) = restored_credential_binding
         {

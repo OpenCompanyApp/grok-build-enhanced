@@ -14,6 +14,20 @@ Apache License 2.0 §4(b).
 
 ## Ported source code
 
+### Z.AI Coding Plan hosted tools and optional Vision package
+
+The Z.AI MCP adapters were restored from this fork's historical implementation
+(f36a99f759ae6db3b5ef8c8bb8c791c884a51546), then modified on 2026-09-10 for current
+provider binding, domain enforcement, bounded protocol handling, and key-free
+package installation. They implement public provider protocols; no Z.AI SDK
+source is embedded.
+
+The optional external `@z_ai/mcp-server@0.1.4` package is published under
+Apache-2.0 by Z.AI. It is downloaded only when an enabled Vision tool is invoked,
+not bundled in this executable. Package metadata and its integrity are recorded
+in `src/implementations/grok_build/zai_vision.rs`.
+Reference: https://registry.npmjs.org/@z_ai%2fmcp-server/0.1.4
+
 ### openai/codex
 
 The tool implementations under `src/implementations/codex/` (`apply_patch`,

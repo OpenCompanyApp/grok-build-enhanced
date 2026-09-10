@@ -796,7 +796,10 @@ impl SessionActor {
         let bound_runtime = crate::session::provider::bind_provider_runtime(full_config, None)
             .await
             .map_err(|error| acp::Error::auth_required().data(error.to_string()))?;
-        if (is_codex || cfg.provider.is_kimi_code() || cfg.provider.is_open_code_go())
+        if (is_codex
+            || cfg.provider.is_kimi_code()
+            || cfg.provider.is_open_code_go()
+            || cfg.provider.is_zai_coding_plan())
             && state_cfg.credential_binding != bound_runtime.sampler_config.credential_binding
         {
             state_cfg.credential_binding = bound_runtime.sampler_config.credential_binding.clone();
@@ -1511,7 +1514,8 @@ impl SessionActor {
         }
         let first_party_provider_owned_auth = request_provider.is_openai_codex()
             || request_provider.is_kimi_code()
-            || request_provider.is_open_code_go();
+            || request_provider.is_open_code_go()
+            || request_provider.is_zai_coding_plan();
         let auth_provider = (request_provider == xai_grok_sampling_types::ProviderId::Custom
             && (matches!(error.kind, SamplingErrorKind::Auth) || error.status_code == Some(401)))
         .then(|| self.model_auth_provider(&failed_model_id, &failed_base_url))
@@ -1744,6 +1748,10 @@ impl SessionActor {
                     );
                 } else if request_provider.is_kimi_code() {
                     msg.push_str("\n\n  Re-authenticate: run `grok login --provider kimi-code`.");
+                } else if request_provider.is_zai_coding_plan() {
+                    msg.push_str(
+                        "\n\n  Re-authenticate: run `grok login --provider zai-coding-plan`.",
+                    );
                 } else if request_provider.is_open_code_go() {
                     msg.push_str("\n\n  Re-authenticate: run `grok login --provider opencode-go`.");
                 }
@@ -2018,7 +2026,11 @@ impl SessionActor {
         // binder, which runs after reconstructing the request config. Do not
         // evaluate the global xAI or generic static-key refresh paths for a
         // Codex or Kimi session.
-        if provider.is_openai_codex() || provider.is_kimi_code() || provider.is_open_code_go() {
+        if provider.is_openai_codex()
+            || provider.is_kimi_code()
+            || provider.is_open_code_go()
+            || provider.is_zai_coding_plan()
+        {
             return Ok(());
         }
         if provider == xai_grok_sampling_types::ProviderId::Custom {
