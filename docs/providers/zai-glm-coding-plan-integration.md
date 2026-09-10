@@ -168,7 +168,9 @@ obtain the Z.AI key.
 ### Remaining credential-gated acceptance
 
 The 2026-09-11 catalog fix passed 56 focused Z.AI tests, 90 model-manager
-tests, and 27 auth-method tests. Coverage includes logged-out picker visibility
+tests, 27 auth-method tests, and the full `xai-grok-pager-bin` cargo check.
+Formatting, fork contracts, and strict committed-tree ownership also passed.
+Coverage includes logged-out picker visibility
 in both xAI auth modes, stale-cache upgrades, current metadata precedence,
 foreign-cache rejection, and runtime rejection of foreign keys. The wider
 configuration suite passed 337/338 tests; its unchanged
