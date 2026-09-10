@@ -98,6 +98,13 @@ jobs:
             'app::cli::tests::upgrade_alias_uses_the_enhanced_update_command' -- --exact
           cargo test --locked -p xai-grok-pager --lib 'views::welcome::tests'
 
+      - name: Exercise Coding Plan tools, Flash, quota, and credential boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p xai-grok-sampler -p xai-grok-shell -p xai-grok-tools --lib zai
+          cargo test --locked -p xai-grok-pager --lib zai
+
       - name: Check the composed Enhanced binary
         shell: bash
         run: cargo check --locked -p xai-grok-pager-bin

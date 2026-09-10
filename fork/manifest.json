@@ -7392,6 +7392,7 @@
         "glm-5"
       ],
       "paths": [
+        ".github/workflows/fork-contracts.yml",
         "README.md",
         "crates/codegen/xai-grok-agent/src/builder.rs",
         "crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md",
@@ -7445,6 +7446,7 @@
         "fork/parity/current.json"
       ],
       "integration_paths": [
+        ".github/workflows/fork-contracts.yml",
         "crates/codegen/xai-grok-agent/src/builder.rs",
         "crates/codegen/xai-grok-pager/src/acp/model_state.rs",
         "crates/codegen/xai-grok-pager/src/app/actions.rs",
