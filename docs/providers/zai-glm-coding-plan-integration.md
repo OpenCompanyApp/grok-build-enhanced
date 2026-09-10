@@ -167,6 +167,14 @@ obtain the Z.AI key.
 
 ### Remaining credential-gated acceptance
 
+The 2026-09-11 catalog fix passed 56 focused Z.AI tests, 90 model-manager
+tests, and 27 auth-method tests. Coverage includes logged-out picker visibility
+in both xAI auth modes, stale-cache upgrades, current metadata precedence,
+foreign-cache rejection, and runtime rejection of foreign keys. The wider
+configuration suite passed 337/338 tests; its unchanged
+`known_non_serde_config_paths_are_not_reported_unused` assertion fails on
+`marketplace.plugin_cta_marketplace`, outside the model-catalog path.
+
 Offline validation on 2026-09-10 passed the 51 focused Z.AI tests (7 sampler,
 23 shell, 21 tools), plus the auth-method (27), provider-media-switch (16),
 web-search (49), web-fetch (143), and authentication-error (44) regression
