@@ -141,16 +141,23 @@ pub fn load_cached_model_entries() -> IndexMap<String, ModelEntry> {
     let grok_home = crate::util::grok_home::grok_home();
     let store = super::ZaiCodingPlanCredentialStore::new(&grok_home);
     match store.load() {
-        Ok(Some(credentials)) => model_entries_for(&grok_home, &credentials.credential_id),
-        Ok(None) if super::credentials_from_env().is_ok() => map_models(default_models()),
-        _ => IndexMap::new(),
+        Ok(Some(credentials)) => model_entries_for(&grok_home, Some(&credentials.credential_id)),
+        // Public, audited model metadata is discoverable before login. Provider
+        // selection and the runtime binder still require Coding Plan credentials.
+        _ => model_entries_for(&grok_home, None),
     }
 }
 
-fn model_entries_for(grok_home: &Path, credential_id: &str) -> IndexMap<String, ModelEntry> {
+fn model_entries_for(
+    grok_home: &Path,
+    credential_id: Option<&str>,
+) -> IndexMap<String, ModelEntry> {
     // The audited catalog ships with the binary, not the login. Older saved
     // catalogs must never suppress new routes or override their current metadata.
     let mut entries = map_models(default_models());
+    let Some(credential_id) = credential_id else {
+        return entries;
+    };
     for (id, entry) in load_cached_model_entries_for(grok_home, credential_id) {
         entries.entry(id).or_insert(entry);
     }
@@ -287,7 +294,7 @@ mod tests {
             }],
         )
         .unwrap();
-        let entries = model_entries_for(home.path(), &credentials.credential_id);
+        let entries = model_entries_for(home.path(), Some(&credentials.credential_id));
         for model in default_models() {
             assert!(
                 entries[&format!("zai-coding-plan/{}", model.id)]
@@ -311,7 +318,7 @@ mod tests {
             }],
         )
         .unwrap();
-        let entries = model_entries_for(home.path(), &credentials.credential_id);
+        let entries = model_entries_for(home.path(), Some(&credentials.credential_id));
         assert_eq!(
             entries["zai-coding-plan/glm-5.3-flash"]
                 .info
@@ -334,9 +341,42 @@ mod tests {
             }],
         )
         .unwrap();
-        let entries = model_entries_for(home.path(), "different-record");
+        let entries = model_entries_for(home.path(), Some("different-record"));
         assert_eq!(entries.len(), default_models().len());
         assert!(!entries.contains_key("zai-coding-plan/foreign-model"));
+    }
+
+    #[test]
+    fn logged_out_catalog_shows_audited_models_without_using_cached_records() {
+        let home = tempfile::tempdir().unwrap();
+        let credentials = ZaiCodingPlanCredentials::new("synthetic-catalog-test-key").unwrap();
+        save_cache(
+            home.path(),
+            &credentials,
+            &[ZaiCodingPlanModel {
+                id: "foreign-model".to_owned(),
+                display_name: None,
+            }],
+        )
+        .unwrap();
+        let entries = model_entries_for(home.path(), None);
+        assert_eq!(entries.len(), default_models().len());
+        for entry in entries.values() {
+            assert_eq!(entry.info.provider, ProviderId::ZaiCodingPlan);
+            assert!(entry.info.user_selectable);
+            assert!(entry.api_key.is_none());
+            assert!(entry.env_key.is_none());
+            assert!(entry.auth_provider.is_none());
+        }
+        assert!(entries.contains_key("zai-coding-plan/glm-5.3-flash"));
+        assert!(!entries.contains_key("zai-coding-plan/foreign-model"));
+        for is_session_auth in [false, true] {
+            let picker = crate::agent::models::available_models(&entries, is_session_auth);
+            assert_eq!(picker.len(), default_models().len());
+            assert!(picker.contains_key(&agent_client_protocol::ModelId::new(
+                "zai-coding-plan/glm-5.3-flash"
+            )));
+        }
     }
 
     #[test]

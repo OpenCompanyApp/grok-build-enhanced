@@ -50,6 +50,10 @@ grok -m 'zai-coding-plan/glm-5.3-flash[1m]'
 
 Startup merges the current audited catalog with credential-bound cached entries;
 an old login cache cannot hide newly shipped models or override their metadata.
+The audited models are also visible before login, under Z.AI Coding Plan.
+Visibility is not authentication: selecting or running them still requires a
+provider-scoped Coding Plan key, never another provider's key. GLM models listed
+under OpenCode Go or custom providers are separate routes and are not relabeled.
 If an older installation only shows GLM-5.2, update the executable actually
 selected by your shell (`command -v grok` and `grok version`), run
 `grok models --provider zai-coding-plan` to refresh its saved catalog, then fully

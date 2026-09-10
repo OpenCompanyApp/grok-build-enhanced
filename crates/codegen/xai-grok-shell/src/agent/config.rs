@@ -3612,9 +3612,9 @@ pub fn resolve_model_list(
         tracing::debug!(count = kimi_models.len(), "loaded Kimi Code model catalog");
         resolved.extend(kimi_models);
     }
-    // Coding Plan model metadata is an audited static provider contract. The
-    // cache is bound to the opaque ID of the currently stored credential so a
-    // stale or foreign provider record cannot make these routes selectable.
+    // Coding Plan's audited static catalog is discoverable before login.
+    // Additional cached entries remain credential-bound; selecting a route
+    // still requires provider-local authentication at the runtime binder.
     let zai_models = crate::auth::zai_coding_plan::load_cached_model_entries();
     if !zai_models.is_empty() {
         tracing::debug!(

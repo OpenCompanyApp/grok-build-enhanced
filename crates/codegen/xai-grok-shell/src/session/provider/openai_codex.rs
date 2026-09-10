@@ -720,6 +720,27 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
+    fn zai_visible_catalog_does_not_authorize_requests_with_foreign_keys() {
+        use xai_grok_test_support::EnvGuard;
+        let dir = TempDir::new().unwrap();
+        let auth_path = dir.path().join("absent-auth.json");
+        let _path = EnvGuard::set("GROK_AUTH_PATH", auth_path.to_str().unwrap());
+        let _key = EnvGuard::unset("Z_AI_API_KEY");
+        let models = crate::auth::zai_coding_plan::load_cached_model_entries();
+        assert!(models.contains_key("zai-coding-plan/glm-5.3-flash"));
+        let mut config = SamplerConfig::zai_coding_plan("glm-5.3-flash");
+        config.api_key = Some("foreign-provider-sentinel".to_owned());
+        let error = bind_zai_coding_plan(config)
+            .err()
+            .expect("own key is required");
+        assert!(matches!(
+            error,
+            ProviderBindingError::ZaiCodingPlanAuth(ZaiCodingPlanAuthError::Unavailable)
+        ));
+    }
+
+    #[test]
     fn zai_aux_candidates_keep_the_active_api_key_record() {
         let mut active = CredentialBinding::zai_coding_plan(Some("record-a".to_owned()));
         active.generation = 4;
