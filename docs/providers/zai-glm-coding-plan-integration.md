@@ -154,6 +154,15 @@ obtain the Z.AI key.
 
 ### Remaining credential-gated acceptance
 
+Offline validation on 2026-09-10 passed the 51 focused Z.AI tests (7 sampler,
+23 shell, 21 tools), plus the auth-method (27), provider-media-switch (16),
+web-search (49), web-fetch (143), and authentication-error (44) regression
+suites. These suite counts overlap and are not a unique-test total. Fork
+contracts, strict committed-tree ownership coverage, formatting, and
+`CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin` also passed. Test
+binaries were linked with the Rust toolchain's bundled LLD because the system
+linker caused severe memory pressure; repository build settings were unchanged.
+
 No entitled credential was present on 2026-09-10. Do not infer current live
 qualification from the historical July implementation. Before claiming the
 live matrix complete, verify: Flash text/images; a streamed reasoning/tool
