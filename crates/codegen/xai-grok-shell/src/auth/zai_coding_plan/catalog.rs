@@ -141,17 +141,20 @@ pub fn load_cached_model_entries() -> IndexMap<String, ModelEntry> {
     let grok_home = crate::util::grok_home::grok_home();
     let store = super::ZaiCodingPlanCredentialStore::new(&grok_home);
     match store.load() {
-        Ok(Some(credentials)) => {
-            let cached = load_cached_model_entries_for(&grok_home, &credentials.credential_id);
-            if cached.is_empty() {
-                map_models(default_models())
-            } else {
-                cached
-            }
-        }
+        Ok(Some(credentials)) => model_entries_for(&grok_home, &credentials.credential_id),
         Ok(None) if super::credentials_from_env().is_ok() => map_models(default_models()),
         _ => IndexMap::new(),
     }
+}
+
+fn model_entries_for(grok_home: &Path, credential_id: &str) -> IndexMap<String, ModelEntry> {
+    // The audited catalog ships with the binary, not the login. Older saved
+    // catalogs must never suppress new routes or override their current metadata.
+    let mut entries = map_models(default_models());
+    for (id, entry) in load_cached_model_entries_for(grok_home, credential_id) {
+        entries.entry(id).or_insert(entry);
+    }
+    entries
 }
 
 fn load_cached_model_entries_for(
@@ -270,6 +273,71 @@ fn capability_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_login_cache_cannot_hide_new_glm_models() {
+        let home = tempfile::tempdir().unwrap();
+        let credentials = ZaiCodingPlanCredentials::new("synthetic-catalog-test-key").unwrap();
+        save_cache(
+            home.path(),
+            &credentials,
+            &[ZaiCodingPlanModel {
+                id: "glm-5.2".to_owned(),
+                display_name: Some("GLM-5.2".to_owned()),
+            }],
+        )
+        .unwrap();
+        let entries = model_entries_for(home.path(), &credentials.credential_id);
+        for model in default_models() {
+            assert!(
+                entries[&format!("zai-coding-plan/{}", model.id)]
+                    .info
+                    .user_selectable
+            );
+        }
+        assert!(!entries["zai-coding-plan/glm-5.2"].info.user_selectable);
+    }
+
+    #[test]
+    fn current_catalog_metadata_wins_over_cached_labels() {
+        let home = tempfile::tempdir().unwrap();
+        let credentials = ZaiCodingPlanCredentials::new("synthetic-catalog-test-key").unwrap();
+        save_cache(
+            home.path(),
+            &credentials,
+            &[ZaiCodingPlanModel {
+                id: "glm-5.3-flash".to_owned(),
+                display_name: Some("Old cached label".to_owned()),
+            }],
+        )
+        .unwrap();
+        let entries = model_entries_for(home.path(), &credentials.credential_id);
+        assert_eq!(
+            entries["zai-coding-plan/glm-5.3-flash"]
+                .info
+                .name
+                .as_deref(),
+            Some("GLM-5.3-Flash")
+        );
+    }
+
+    #[test]
+    fn foreign_credential_cache_cannot_add_models() {
+        let home = tempfile::tempdir().unwrap();
+        let credentials = ZaiCodingPlanCredentials::new("synthetic-catalog-test-key").unwrap();
+        save_cache(
+            home.path(),
+            &credentials,
+            &[ZaiCodingPlanModel {
+                id: "foreign-model".to_owned(),
+                display_name: None,
+            }],
+        )
+        .unwrap();
+        let entries = model_entries_for(home.path(), "different-record");
+        assert_eq!(entries.len(), default_models().len());
+        assert!(!entries.contains_key("zai-coding-plan/foreign-model"));
+    }
 
     #[test]
     fn glm_53_is_text_only_and_uses_one_million_context() {

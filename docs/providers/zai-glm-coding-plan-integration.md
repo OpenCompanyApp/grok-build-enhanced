@@ -48,6 +48,15 @@ grok -m 'zai-coding-plan/glm-5.3'
 grok -m 'zai-coding-plan/glm-5.3-flash[1m]'
 ```
 
+Startup merges the current audited catalog with credential-bound cached entries;
+an old login cache cannot hide newly shipped models or override their metadata.
+If an older installation only shows GLM-5.2, update the executable actually
+selected by your shell (`command -v grok` and `grok version`), run
+`grok models --provider zai-coding-plan` to refresh its saved catalog, then fully
+quit and restart Grok. A separately installed `~/.local/bin/grok` can take
+precedence over Homebrew's executable. Model listing does not prove entitlement
+or perform a live inference request.
+
 | Model | Input | Context | Max output | Reasoning |
 | --- | --- | ---: | ---: | --- |
 | `glm-5.3` | text | 1,000,000 | 131,072 | `low`, `high`, `max` |
