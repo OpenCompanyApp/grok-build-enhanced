@@ -113,5 +113,16 @@ v0.3.18 installed; `brew style`, `brew audit --strict --online`, `brew test`,
 `brew list --versions`, `grok version` and `agent version` passed. Those baseline
 checks are not a substitute for repeating them against a new formula and upgrade.
 
-Rust catalog/provider and binary checks are in progress. No authenticated provider
-payloads or credentials were read or recorded.
+Validation passed: 154 focused Rust tests (model/version, catalog, Codex and Z.AI
+transport, and credential rejection), binary `cargo check`, formatting, strict
+ownership, fork/generated-workspace contracts, five release-pipeline tests,
+fifteen installer tests, and the 343-theme vendor lock. The release contract
+accepts proposed version 0.3.19, which remains unconfirmed and unpublished.
+Implementation is recorded in `d88a666f1ac19f0ebc26b6b6245b25d7109167ed`;
+fetch evidence is separate in `3c948d7a`. No authenticated provider payloads
+or credentials were read or recorded.
+
+The model candidate remains local. No new acknowledgement, tag, project push,
+release, or tap mutation has occurred. This run's Cargo target directory is
+removed after validation; the isolated Homebrew baseline is retained for the
+pending installed upgrade check.

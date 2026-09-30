@@ -75,8 +75,17 @@ full-source Reviewed revisions do not advance on the strength of this scoped aud
 
 ## Validation and release status
 
-The xai-grok-models test and all five xai-grok-version tests pass. Catalog, provider,
-binary, release-contract, and Homebrew validation results are pending.
+The xai-grok-models test, all five xai-grok-version tests, and all 110
+xai-grok-shell catalog tests pass, including both new GPT-6 catalog regressions.
+Strict ownership, fork contracts, five release-pipeline tests, fifteen installer
+tests, and the 343-theme Warp vendor lock pass. The release contract accepts
+proposed version 0.3.19; this does not confirm or publish that version.
+All 30 Codex transport tests, seven Z.AI transport tests, and the explicit
+Codex static/generic-credential rejection test pass (154 focused Rust tests
+in total). `cargo fmt --all -- --check` passes. The required
+`cargo check --locked -p xai-grok-pager-bin` passes (7m07s).
+Rust validation uses locked dependencies with `CARGO_INCREMENTAL=0`,
+`CARGO_PROFILE_DEV_DEBUG=0`, and `CARGO_PROFILE_TEST_DEBUG=0`.
 No live credential-bearing provider requests have been made, so entitled-account
 availability is not asserted. No credentials or authenticated payloads were read
 or included in this report.
@@ -84,4 +93,13 @@ or included in this report.
 Homebrew validation uses the official ARM64 image
 `ghcr.io/homebrew/brew@sha256:63f9a03880f954b2dc05ee0b8e93903dae2f161883af0072d77f476303fc834a`,
 with Homebrew 7.0.7. Its installation is isolated from the host. The existing
-v0.3.18 formula is installed first so a candidate upgrade can be tested.
+v0.3.18 formula is installed first so a candidate upgrade can be tested. Baseline
+`brew style`, `brew audit --strict --online`, `brew test`, `brew list --versions`,
+`grok version`, and `agent version` all pass. The container is named
+`gbe-brew-models-20260930`; the local tap checkout is the sibling
+`homebrew-tap-models-20260930` worktree.
+
+These results validate the Homebrew environment and installed baseline only.
+A new formula still requires release assets, all four verified hashes, repeated
+style/audit/test checks, and the installed v0.3.18-to-new-version upgrade check.
+No release tag, project push, or tap push has been made.
