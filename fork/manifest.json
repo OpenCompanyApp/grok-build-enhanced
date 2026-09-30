@@ -163,7 +163,7 @@
         "commit": "c9b19deb09c1841ce7acc33ddb96276030936a29"
       },
       "latest_fetched": {
-        "commit": "5d3f8752fc49662356832373db448f2b4bb21c34"
+        "commit": "49be2c7ab029434dc9545cf85a7a41fd5d3beb1a"
       }
     },
     {
@@ -175,7 +175,7 @@
         "commit": "3a31c4ea801915c0b050df4b3842997ea62b6e93"
       },
       "latest_fetched": {
-        "commit": "9f8db119fcbd4999379129ac7734375ac23460fb"
+        "commit": "97a86b7677c38e7a5a9cc2a0f6849cfb4f2ce462"
       }
     },
     {
@@ -187,7 +187,7 @@
         "commit": "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8"
       },
       "latest_fetched": {
-        "commit": "37949780c144e37df692e3d669051a21fec24f20"
+        "commit": "2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8"
       }
     },
     {
@@ -211,7 +211,7 @@
         "commit": "160ed439ac0df594347e7d7018b813a7ffdb5e81"
       },
       "latest_fetched": {
-        "commit": "61b1b8aef634334eaf1412afd003a763e1d1b9c1"
+        "commit": "30aec05d9641e18084b0d7d1c146b9580aac5b72"
       }
     },
     {
@@ -235,7 +235,7 @@
         "commit": "492300cad104195411d12217dd22f1cd05f31376"
       },
       "latest_fetched": {
-        "commit": "fde3449b348d8e36c0d52fd39bb33ea66744b958"
+        "commit": "76895d97b74ff6b24c2b1543bcd69ccc18048a4d"
       }
     },
     {
@@ -247,7 +247,7 @@
         "commit": "a2b128978a154c02311b90da778ca115758f75d7"
       },
       "latest_fetched": {
-        "commit": "985d3442b4b8a6f2e25a62821aab58d63d8ce2cf"
+        "commit": "347f9c99bc95672e5ebcb26753648e85801d3c71"
       }
     },
     {
@@ -259,7 +259,7 @@
         "commit": "ea0626ad48ee318045a22490d52c86be7d086033"
       },
       "latest_fetched": {
-        "commit": "aad4a7df2f745cc2936ecc159df6607a74671ad0"
+        "commit": "21406fb4c805cc8c715e6d1f16ad3fb5f25f4fe3"
       }
     },
     {
@@ -271,7 +271,7 @@
         "commit": "cbc15c076d17f70fec9f89c90c0502e68657f505"
       },
       "latest_fetched": {
-        "commit": "86f136422a0aae6b217ea49e7ea1d2e8a1defcd2"
+        "commit": "9ab1286b8fe4e6bcd116949a27ce5e0ac3389c82"
       }
     },
     {
@@ -304,10 +304,10 @@
       "remote": "https://github.com/zai-org/GLM-5.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "414ad9eb891b05b5d7d51d573939bfe9ce538223"
+        "commit": "c8ad661c6cf4cb0a78064987bc42f97e14355929"
       },
       "latest_fetched": {
-        "commit": "008de4dbcc220032eb9b80a9a9802afad46a4053"
+        "commit": "c8ad661c6cf4cb0a78064987bc42f97e14355929"
       }
     },
     {
@@ -319,7 +319,7 @@
         "commit": "4b14ed9c57d3506d1455b2736a1d1a8ff2b9c718"
       },
       "latest_fetched": {
-        "commit": "5e5a9003efb26b9291e48b31a0088e7b666b65c0"
+        "commit": "5de8b9ccfdcf3ed13d7c67e3639a2dd18d11230f"
       }
     },
     {
@@ -343,7 +343,7 @@
         "commit": "59d624d4fb0c5c4f6fd44d1f701f17db1bd6ae4b"
       },
       "latest_fetched": {
-        "commit": "6d4bbee7609f9225850377f68d9424067c1882eb"
+        "commit": "a4c769d670e04d5954148bb735c7453e01b84a01"
       }
     },
     {
@@ -355,7 +355,7 @@
         "commit": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed"
       },
       "latest_fetched": {
-        "commit": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed"
+        "commit": "f3d71fb6b0ff4b4683f108f05bc2bae61a9f7e97"
       }
     }
   ],
@@ -7652,6 +7652,80 @@
         "docs/upstream-refresh-2026-09-09.md",
         "docs/upstream-refresh-2026-09-09-pins.json",
         "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "september29-refresh-evidence",
+      "description": "Pinned source identities, exhaustive raw Grok tree inventories, bounded GLM and Exa inspections, and explicit carried refresh obligations; no Grok parity or acknowledgement claim.",
+      "source_ids": [
+        "openai-codex",
+        "opencode",
+        "grok-build-upstream",
+        "opencode-codex-auth",
+        "oh-my-pi",
+        "warp-themes",
+        "ghostty",
+        "herdr",
+        "kimi-code",
+        "kimi-cli",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper",
+        "models-dev",
+        "exa-mcp-server"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "docs/upstream-refresh-2026-09-29.md",
+        "docs/upstream-refresh-2026-09-29-pins.json",
+        "docs/upstream-refresh-2026-09-29-grok-paths.json",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "september30-refresh-evidence",
+      "description": "Pinned September 30 sources and raw Grok range evidence, retaining earlier open behavior obligations without claiming full parity.",
+      "source_ids": [
+        "openai-codex",
+        "opencode",
+        "grok-build-upstream",
+        "opencode-codex-auth",
+        "oh-my-pi",
+        "warp-themes",
+        "ghostty",
+        "herdr",
+        "kimi-code",
+        "kimi-cli",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper",
+        "models-dev",
+        "exa-mcp-server"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "fork/manifest.json",
+        "docs/upstream-refresh-2026-09-30.md",
+        "docs/upstream-refresh-2026-09-30-pins.json",
+        "docs/upstream-refresh-2026-09-30-grok-paths.json"
       ],
       "integration_paths": [
         "UPSTREAM_VERSIONS.md",

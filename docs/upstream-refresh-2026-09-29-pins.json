@@ -1,0 +1,386 @@
+{
+  "checked_at": "2026-09-28T23:07:29.904023+00:00",
+  "sources": [
+    {
+      "id": "openai-codex",
+      "reviewed": "c9b19deb09c1841ce7acc33ddb96276030936a29",
+      "previous_fetched": "5d3f8752fc49662356832373db448f2b4bb21c34",
+      "remote": "https://github.com/openai/codex.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "9563713df2f748e7bd0792e96bbb2a49b916e66b",
+      "tree": "87d7b1a61285e7c9c2088d5b770298e1bb4b88b1",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "c9b19deb09c1841ce7acc33ddb96276030936a29",
+          "to": "9563713df2f748e7bd0792e96bbb2a49b916e66b",
+          "raw_diff_sha256": "28f71c5fa89ecf3f9d21553ef6bfc3326387791a6c54072ae8fa1dcb77e838b8",
+          "changed_paths": 5947
+        },
+        {
+          "from": "5d3f8752fc49662356832373db448f2b4bb21c34",
+          "to": "9563713df2f748e7bd0792e96bbb2a49b916e66b",
+          "raw_diff_sha256": "7f9f5fc6154cec9161406677fa57b74c402f68458385b6919128fd0c1873e60c",
+          "changed_paths": 4733
+        }
+      ]
+    },
+    {
+      "id": "opencode",
+      "reviewed": "3a31c4ea801915c0b050df4b3842997ea62b6e93",
+      "previous_fetched": "9f8db119fcbd4999379129ac7734375ac23460fb",
+      "remote": "https://github.com/anomalyco/opencode.git",
+      "tracked_ref": "dev",
+      "status": "fetched",
+      "commit": "7945de208964a49300d7f770d1a71d078db9a4c4",
+      "tree": "eff2f402a25440725e3603328c29ec16ba9a2a88",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "3a31c4ea801915c0b050df4b3842997ea62b6e93",
+          "to": "7945de208964a49300d7f770d1a71d078db9a4c4",
+          "raw_diff_sha256": "b471c2b4f4bc38968b8c927917efcf5891102d2e34b7e73166ab3fdc1fd9481c",
+          "changed_paths": 514
+        },
+        {
+          "from": "9f8db119fcbd4999379129ac7734375ac23460fb",
+          "to": "7945de208964a49300d7f770d1a71d078db9a4c4",
+          "raw_diff_sha256": "a36dd6244d25ba492d57c33cc809a3358250e789d6082cd3d856a550f6dfc009",
+          "changed_paths": 238
+        }
+      ]
+    },
+    {
+      "id": "grok-build-upstream",
+      "reviewed": "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8",
+      "previous_fetched": "37949780c144e37df692e3d669051a21fec24f20",
+      "remote": "https://github.com/xai-org/grok-build.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "f0e3be1100ef5252488e3be8bb0e91cf68d8c305",
+      "tree": "7b13fb498bf5d9bcfced2053e56a48b5deb27b34",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8",
+          "to": "f0e3be1100ef5252488e3be8bb0e91cf68d8c305",
+          "raw_diff_sha256": "9b068eeba6e8d0a44556762ae997c6f343588082697c99cc69d7fd75c5225c77",
+          "changed_paths": 3828
+        },
+        {
+          "from": "37949780c144e37df692e3d669051a21fec24f20",
+          "to": "f0e3be1100ef5252488e3be8bb0e91cf68d8c305",
+          "raw_diff_sha256": "d7cdfc43175f43e3d403574bf0819211bbe4eca76f8fc4dd334854c0b76f0e6e",
+          "changed_paths": 2027
+        }
+      ]
+    },
+    {
+      "id": "opencode-codex-auth",
+      "reviewed": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
+      "previous_fetched": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
+      "remote": "https://github.com/numman-ali/opencode-openai-codex-auth.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
+      "tree": "1da59bae7069563b2817143567b57c78e5758300",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
+          "to": "bec2ad69b252ef4ad7dd33b9532ff8b4fdb6d016",
+          "raw_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "changed_paths": 0
+        }
+      ]
+    },
+    {
+      "id": "oh-my-pi",
+      "reviewed": "160ed439ac0df594347e7d7018b813a7ffdb5e81",
+      "previous_fetched": "61b1b8aef634334eaf1412afd003a763e1d1b9c1",
+      "remote": "https://github.com/can1357/oh-my-pi.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "93fec3c966f75c3b81f539a6c24718d58b22adcd",
+      "tree": "9a52db191ed911be0e6d2fdbdba3c1610f79683f",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "160ed439ac0df594347e7d7018b813a7ffdb5e81",
+          "to": "93fec3c966f75c3b81f539a6c24718d58b22adcd",
+          "raw_diff_sha256": "40b892faad673fa2d6ea13f8af30b2d18fe9379e2455927f8c75d0dfa626224f",
+          "changed_paths": 6768
+        },
+        {
+          "from": "61b1b8aef634334eaf1412afd003a763e1d1b9c1",
+          "to": "93fec3c966f75c3b81f539a6c24718d58b22adcd",
+          "raw_diff_sha256": "b71d37110d5b6e32ead2d58a89597b750d6b5f7a31da5531de3cd5a6666d8e8e",
+          "changed_paths": 5614
+        }
+      ]
+    },
+    {
+      "id": "warp-themes",
+      "reviewed": "4154072de03bea5dd070afa947ba6a6f2310ed5d",
+      "previous_fetched": "4154072de03bea5dd070afa947ba6a6f2310ed5d",
+      "remote": "https://github.com/warpdotdev/themes.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "4154072de03bea5dd070afa947ba6a6f2310ed5d",
+      "tree": "0ba990236c4ad1d2026815bdde9463e2b1e07c61",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "4154072de03bea5dd070afa947ba6a6f2310ed5d",
+          "to": "4154072de03bea5dd070afa947ba6a6f2310ed5d",
+          "raw_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "changed_paths": 0
+        }
+      ]
+    },
+    {
+      "id": "ghostty",
+      "reviewed": "492300cad104195411d12217dd22f1cd05f31376",
+      "previous_fetched": "fde3449b348d8e36c0d52fd39bb33ea66744b958",
+      "remote": "https://github.com/ghostty-org/ghostty.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "12752b2ac1bb05ce53402ed8c853ed1f96eef0b1",
+      "tree": "05b056a72acfcc3b83c87f45cc9702767d4a6e4f",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "492300cad104195411d12217dd22f1cd05f31376",
+          "to": "12752b2ac1bb05ce53402ed8c853ed1f96eef0b1",
+          "raw_diff_sha256": "1dd7c006b560331b0f6676124aab5e5758947755e29b8280f0085af0c30aff26",
+          "changed_paths": 213
+        },
+        {
+          "from": "fde3449b348d8e36c0d52fd39bb33ea66744b958",
+          "to": "12752b2ac1bb05ce53402ed8c853ed1f96eef0b1",
+          "raw_diff_sha256": "8516680bbd08a4b18f385a431c220d3b99ad72a2505af2d05a8985905ac8f519",
+          "changed_paths": 175
+        }
+      ]
+    },
+    {
+      "id": "herdr",
+      "reviewed": "a2b128978a154c02311b90da778ca115758f75d7",
+      "previous_fetched": "985d3442b4b8a6f2e25a62821aab58d63d8ce2cf",
+      "remote": "https://github.com/herdrdev/herdr.git",
+      "tracked_ref": "master",
+      "status": "fetched",
+      "commit": "d5680d84fd1df3b592424eae5c50d54642f0727d",
+      "tree": "f8849a87322470c3e79ff6a4b53d6cd0baa59a11",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "a2b128978a154c02311b90da778ca115758f75d7",
+          "to": "d5680d84fd1df3b592424eae5c50d54642f0727d",
+          "raw_diff_sha256": "fb2c97d4e606d5a6ac47cb24e0caa04673574b014bd0b59edbac88f0304a5987",
+          "changed_paths": 1290
+        },
+        {
+          "from": "985d3442b4b8a6f2e25a62821aab58d63d8ce2cf",
+          "to": "d5680d84fd1df3b592424eae5c50d54642f0727d",
+          "raw_diff_sha256": "cfe1ff57d3fbd877c6f1aad1477dd6e22e8ed9658515d147a66b83878316f085",
+          "changed_paths": 1142
+        }
+      ]
+    },
+    {
+      "id": "kimi-code",
+      "reviewed": "ea0626ad48ee318045a22490d52c86be7d086033",
+      "previous_fetched": "aad4a7df2f745cc2936ecc159df6607a74671ad0",
+      "remote": "https://github.com/MoonshotAI/kimi-code.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "a940f2ff049ed57abce68c59526de7a6628a4112",
+      "tree": "ecf4f4e0d2fbe8f6b0039a9b5e495cb4c85cc64e",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "ea0626ad48ee318045a22490d52c86be7d086033",
+          "to": "a940f2ff049ed57abce68c59526de7a6628a4112",
+          "raw_diff_sha256": "4d6287c4d02a01f3356669d4f3a04d3c9c31e3b739b6428643888a445dc3d9c6",
+          "changed_paths": 3329
+        },
+        {
+          "from": "aad4a7df2f745cc2936ecc159df6607a74671ad0",
+          "to": "a940f2ff049ed57abce68c59526de7a6628a4112",
+          "raw_diff_sha256": "a16efe9cf88a2e416b3ae5669403b6a5cae007b6bca369b32d01f62b3b9cc55c",
+          "changed_paths": 1074
+        }
+      ]
+    },
+    {
+      "id": "kimi-cli",
+      "reviewed": "cbc15c076d17f70fec9f89c90c0502e68657f505",
+      "previous_fetched": "86f136422a0aae6b217ea49e7ea1d2e8a1defcd2",
+      "remote": "https://github.com/MoonshotAI/kimi-cli.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "9ab1286b8fe4e6bcd116949a27ce5e0ac3389c82",
+      "tree": "ccd615bec5d1e8b1e69508b1aa67aab5518093cd",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "cbc15c076d17f70fec9f89c90c0502e68657f505",
+          "to": "9ab1286b8fe4e6bcd116949a27ce5e0ac3389c82",
+          "raw_diff_sha256": "b09e93a9e332d502f17574de3f15fc659e3b91edf0ea045a0887bf3d31985672",
+          "changed_paths": 39
+        },
+        {
+          "from": "86f136422a0aae6b217ea49e7ea1d2e8a1defcd2",
+          "to": "9ab1286b8fe4e6bcd116949a27ce5e0ac3389c82",
+          "raw_diff_sha256": "65fa5f927b5ca707d9bcfdd55e36c8513d23a8ef67d1d391fa33bafd16424895",
+          "changed_paths": 36
+        }
+      ]
+    },
+    {
+      "id": "zai-sdk-python",
+      "reviewed": "ca5109c0aa9bf173839be391b4b14aeadf9a9bf9",
+      "previous_fetched": "ca5109c0aa9bf173839be391b4b14aeadf9a9bf9",
+      "remote": "https://github.com/zai-org/z-ai-sdk-python.git",
+      "tracked_ref": "main",
+      "status": "unavailable",
+      "error": "remote: Repository not found.\nfatal: repository 'https://github.com/zai-org/z-ai-sdk-python.git/' not found"
+    },
+    {
+      "id": "zai-coding-plugins",
+      "reviewed": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254",
+      "previous_fetched": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254",
+      "remote": "https://github.com/zai-org/zai-coding-plugins.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254",
+      "tree": "efea84479dc67bc4af7d2c3b59b4aca8f5332899",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254",
+          "to": "0446d0bb0bc537d97d3ab3664c4b8b9c4a0e1254",
+          "raw_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "changed_paths": 0
+        }
+      ]
+    },
+    {
+      "id": "glm-5",
+      "reviewed": "414ad9eb891b05b5d7d51d573939bfe9ce538223",
+      "previous_fetched": "008de4dbcc220032eb9b80a9a9802afad46a4053",
+      "remote": "https://github.com/zai-org/GLM-5.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "c8ad661c6cf4cb0a78064987bc42f97e14355929",
+      "tree": "a91c75827c1c07c8766456e967a5996b2d1ab4f4",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "414ad9eb891b05b5d7d51d573939bfe9ce538223",
+          "to": "c8ad661c6cf4cb0a78064987bc42f97e14355929",
+          "raw_diff_sha256": "99a00af39f282edbec20e3aa5ef7b343f016b442090f16a59852dc1677aed9cc",
+          "changed_paths": 2
+        },
+        {
+          "from": "008de4dbcc220032eb9b80a9a9802afad46a4053",
+          "to": "c8ad661c6cf4cb0a78064987bc42f97e14355929",
+          "raw_diff_sha256": "a991e2213e0aefd1c918fe26d0d84ef8085d6bd08b5e648093285bd513bca6c5",
+          "changed_paths": 1
+        }
+      ]
+    },
+    {
+      "id": "codexbar",
+      "reviewed": "4b14ed9c57d3506d1455b2736a1d1a8ff2b9c718",
+      "previous_fetched": "5e5a9003efb26b9291e48b31a0088e7b666b65c0",
+      "remote": "https://github.com/steipete/CodexBar.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "2db68ee85555117b9e5b5566af0876c2592d2a85",
+      "tree": "02613ebfe6fd5716670f6f6710dbf35711953489",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "4b14ed9c57d3506d1455b2736a1d1a8ff2b9c718",
+          "to": "2db68ee85555117b9e5b5566af0876c2592d2a85",
+          "raw_diff_sha256": "a655636a95e8b98ec589fd1e7e35c1cf5ae881f528f4a26a3231aa663c40d1dd",
+          "changed_paths": 2519
+        },
+        {
+          "from": "5e5a9003efb26b9291e48b31a0088e7b666b65c0",
+          "to": "2db68ee85555117b9e5b5566af0876c2592d2a85",
+          "raw_diff_sha256": "cb4430a886f579550b5ba7aeb8864ced05ed9c0319227c63894d938ce057f72f",
+          "changed_paths": 2196
+        }
+      ]
+    },
+    {
+      "id": "zai-usage-helper",
+      "reviewed": "54cd1f33a703c417f2492ee1f21f22b3633a43c4",
+      "previous_fetched": "54cd1f33a703c417f2492ee1f21f22b3633a43c4",
+      "remote": "https://github.com/nniicckk6/zai-extention.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "54cd1f33a703c417f2492ee1f21f22b3633a43c4",
+      "tree": "08b00849b96c5883a265f4d4d43e2836d01cdd9d",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "54cd1f33a703c417f2492ee1f21f22b3633a43c4",
+          "to": "54cd1f33a703c417f2492ee1f21f22b3633a43c4",
+          "raw_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "changed_paths": 0
+        }
+      ]
+    },
+    {
+      "id": "models-dev",
+      "reviewed": "59d624d4fb0c5c4f6fd44d1f701f17db1bd6ae4b",
+      "previous_fetched": "6d4bbee7609f9225850377f68d9424067c1882eb",
+      "remote": "https://github.com/sst/models.dev.git",
+      "tracked_ref": "dev",
+      "status": "fetched",
+      "commit": "71ad600088ab6b0618b82f420663b6094a5897cb",
+      "tree": "332c7227bb6fcea0fda28b95f0ddce69430b6f93",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "59d624d4fb0c5c4f6fd44d1f701f17db1bd6ae4b",
+          "to": "71ad600088ab6b0618b82f420663b6094a5897cb",
+          "raw_diff_sha256": "58f304f77109c7b1417c038fecfd9d4d7bfc666ed6876c761a9f0a67a9978fad",
+          "changed_paths": 4255
+        },
+        {
+          "from": "6d4bbee7609f9225850377f68d9424067c1882eb",
+          "to": "71ad600088ab6b0618b82f420663b6094a5897cb",
+          "raw_diff_sha256": "087c64c6e734a3362905a1fa9dd9db5fe80543e3408f64d7b9393c8a70c824e4",
+          "changed_paths": 2409
+        }
+      ]
+    },
+    {
+      "id": "exa-mcp-server",
+      "reviewed": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed",
+      "previous_fetched": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed",
+      "remote": "https://github.com/exa-labs/exa-mcp-server.git",
+      "tracked_ref": "main",
+      "status": "fetched",
+      "commit": "f3d71fb6b0ff4b4683f108f05bc2bae61a9f7e97",
+      "tree": "e85153247049a7639181e697ec99d96d88104de2",
+      "reviewed_is_ancestor": true,
+      "ranges": [
+        {
+          "from": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed",
+          "to": "f3d71fb6b0ff4b4683f108f05bc2bae61a9f7e97",
+          "raw_diff_sha256": "2dd68b3b1df0ee5313af152277f6fe3d89db5c0f701e57dedc03a06b31b1210b",
+          "changed_paths": 4
+        }
+      ]
+    }
+  ],
+  "pre_refresh_commit": "c162abc66648ead54a3da233db523c692d0a5f5d",
+  "pre_refresh_tree": "f999ffdf9cdd516de3d39987d27ec9d873359c74"
+}
