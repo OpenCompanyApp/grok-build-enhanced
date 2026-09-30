@@ -73,6 +73,22 @@ upstream instructions, model prompts, source code, or assets were copied. Existi
 source notices remain intact. Latest fetched advances for sources actually fetched;
 full-source Reviewed revisions do not advance on the strength of this scoped audit.
 
+## Follow-up: “5.3 Flash Fast”
+
+The September 30 follow-up checked the requested fast variant against primary
+provider documentation. Z.AI names its faster Flash offering `glm-5.3-flashx`;
+the [Flash/FlashX documentation](https://docs.z.ai/guides/vlm/glm-5.3-flash)
+explicitly says FlashX is not yet available on the Coding Plan. The existing
+Coding Plan transport therefore continues to reject it.
+
+[Baseten also advertises GLM-5.3 Fast](https://www.baseten.co/library/glm-53-fast/)
+as a separate Model API offering. That page does not establish a Z.AI Coding
+Plan alias. No verified `glm-5.3-flash-fast` Coding Plan ID or Fast service-tier
+parameter was found in the official Z.AI pages checked. The intended provider
+and model need clarification before configuring a separate API route. No
+subscription credential may be reused for it. No runtime change was made for
+this ambiguous name; the prior runtime validation remains applicable.
+
 ## Validation and release status
 
 The xai-grok-models test, all five xai-grok-version tests, and all 110
