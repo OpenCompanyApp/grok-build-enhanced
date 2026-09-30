@@ -1,5 +1,7 @@
 # OpenAI Codex subscription provider reference
 
+> Model discovery updated on 2026-09-30: see [current model audit](model-catalog-2026-09-30.md).
+>
 > Status: implemented, experimental provider reference. Reconciled on
 > 2026-07-21 against the checked-in fork implementation, tests, and normalized
 > standalone-search contract. [`UPSTREAM_VERSIONS.md`][upstream-versions]
@@ -97,7 +99,7 @@ target/debug/xai-grok-pager logout --provider openai-codex
 | Usage management | `https://chatgpt.com/codex/settings/usage` |
 | OAuth issuer | `https://auth.openai.com` |
 | OAuth client originator | `grok_build_codex` |
-| Current client compatibility version | `0.144.0` |
+| Current client compatibility version | `0.155.0` |
 
 The provider and credential source are explicit Rust types in
 [`xai-grok-sampling-types/src/provider.rs`][provider-types]. Kimi Code, Z.AI
@@ -240,7 +242,7 @@ X-OpenAI-Fedramp: true                 # only for FedRAMP credentials
 ```
 
 Product/compatibility clients additionally send the current `User-Agent`,
-`originator: grok_build_codex`, and `version: 0.144.0`. Responses Lite requests
+`originator: grok_build_codex`, and `version: 0.155.0`. Responses Lite requests
 carry `x-openai-internal-codex-responses-lite: true`. Responses inference also
 uses sensitive `session-id`, `thread-id`, and `x-client-request-id` values plus
 an optional sensitive `x-codex-turn-state`; standalone search instead uses a
@@ -305,7 +307,7 @@ Responses or usage paths as if the catalog/search/image caps covered them.
 Model discovery is authenticated and account-scoped. The client calls:
 
 ```text
-GET https://chatgpt.com/backend-api/codex/models?client_version=0.144.0
+GET https://chatgpt.com/backend-api/codex/models?client_version=0.155.0
 ```
 
 It parses model visibility, priority, context and compaction limits, input

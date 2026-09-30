@@ -16,11 +16,11 @@ pub const ENHANCED_SUBTITLE: &str = "The unofficial daily-driver fork of Grok Bu
 /// User-facing name for the source distribution this fork tracks.
 pub const UPSTREAM_PRODUCT_NAME: &str = "Grok Build";
 
-/// Minimum client compatibility version required by the Sol, Terra, and Luna
-/// entries in the public OpenAI Codex model catalog audited at upstream commit
-/// `f737605606c14e3aa59a4c17be80d338f164dff5`. Review that source again before
-/// changing this backend-protocol value; it is not the Grok Build app version.
-pub const OPENAI_CODEX_COMPATIBILITY_VERSION: &str = "0.144.0";
+/// Minimum catalog compatibility version for the currently audited GPT-6
+/// family (including Astra and Sol 6.1), from OpenAI Codex model metadata at
+/// `49be2c7ab029434dc9545cf85a7a41fd5d3beb1a`. This is a provider-wire version,
+/// not the Grok app version or a claim that the entire upstream app was adopted.
+pub const OPENAI_CODEX_COMPATIBILITY_VERSION: &str = "0.155.0";
 
 /// Installed Grok Build Enhanced release version. Distribution builds may
 /// override this with the fork release tag through `GROK_VERSION`.
@@ -180,7 +180,7 @@ mod tests {
         let rendered = enhanced_cli_version("1.4.0", "0.2.5", Some("fork123"), " [stable]");
         assert_eq!(
             rendered,
-            "Grok Build Enhanced 1.4.0 · upstream base 0.2.5 · Enhanced updates [stable] · fork fork123 · Codex compat 0.144.0"
+            "Grok Build Enhanced 1.4.0 · upstream base 0.2.5 · Enhanced updates [stable] · fork fork123 · Codex compat 0.155.0"
         );
 
         let without_revision = enhanced_cli_version("1.4.0", "0.2.5", Some("unknown"), "");

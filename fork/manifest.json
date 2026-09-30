@@ -7734,6 +7734,38 @@
       "legal_paths": [
         "LICENSE"
       ]
+    },
+    {
+      "id": "september30-model-catalog-update",
+      "description": "Current Codex catalog version gates and isolated model metadata regressions, audited Grok 4.7 bundled defaults, and Coding Plan Flash availability evidence.",
+      "source_ids": [
+        "grok-build-upstream",
+        "openai-codex",
+        "kimi-code",
+        "glm-5"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-models/default_models.json",
+        "crates/codegen/xai-grok-models/src/lib.rs",
+        "crates/codegen/xai-grok-version/src/lib.rs",
+        "crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models/codex_catalog.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/zai_coding_plan/mod.rs",
+        "docs/providers/openai-codex-subscription-provider-reference.md",
+        "docs/providers/model-catalog-2026-09-30.md"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-grok-models/default_models.json",
+        "crates/codegen/xai-grok-models/src/lib.rs",
+        "crates/codegen/xai-grok-version/src/lib.rs",
+        "crates/codegen/xai-grok-shell/src/remote/openai_codex_catalog.rs",
+        "crates/codegen/xai-grok-shell/src/agent/models/codex_catalog.rs",
+        "crates/codegen/xai-grok-sampler/src/provider/zai_coding_plan/mod.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES"
+      ]
     }
   ]
 }

@@ -472,11 +472,14 @@ mod tests {
 
     #[test]
     fn unaudited_model_is_rejected_before_transport() {
-        let request = ChatCompletionRequest::new("glm-5.2", vec![ChatRequestMessage::user("test")]);
-        assert!(matches!(
-            chat_body(&request, false),
-            Err(SamplingError::InvalidConfiguration(_))
-        ));
+        // FlashX is a separate pay-as-you-go route, not a Coding Plan model.
+        for model in ["glm-5.2", "glm-5.3-flashx", "gpt-6.1-sol"] {
+            let request = ChatCompletionRequest::new(model, vec![ChatRequestMessage::user("test")]);
+            assert!(matches!(
+                chat_body(&request, false),
+                Err(SamplingError::InvalidConfiguration(_))
+            ));
+        }
     }
 
     #[tokio::test]

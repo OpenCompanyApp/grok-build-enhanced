@@ -1044,6 +1044,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn current_client_version_discovers_latest_codex_models() {
+        // Synthetic public metadata: availability is still decided by the
+        // authenticated service, never by a local model-name allowlist.
+        let slugs = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"];
+        let models: Vec<Value> = slugs
+            .iter()
+            .map(|slug| {
+                let body: Value = serde_json::from_str(&rich_body(slug)).unwrap();
+                body["models"][0].clone()
+            })
+            .collect();
+        let (base_url, state) = spawn_server(vec![reply(
+            StatusCode::OK,
+            serde_json::json!({"models": models}).to_string(),
+        )])
+        .await;
+        let cache = tempfile::tempdir().unwrap();
+        let config = CodexCatalogClientConfig::new(cache.path())
+            .unwrap()
+            .with_base_url(base_url)
+            .unwrap();
+        let client = CodexCatalogClient::new(config).unwrap();
+        let result = client
+            .fetch(&auth(
+                "synthetic-token",
+                "synthetic-account",
+                "record",
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.catalog.models.len(), slugs.len());
+        for (model, slug) in result.catalog.models.iter().zip(slugs) {
+            assert_eq!(model.slug, slug);
+            assert_eq!(model.id, format!("openai-codex/{slug}"));
+            assert!(model.visible_in_picker());
+        }
+        let requests = state.requests.lock().await;
+        assert_eq!(
+            requests[0].path_and_query,
+            "/backend-api/codex/models?client_version=0.155.0"
+        );
+        assert!(header_value_is(
+            &requests[0].headers,
+            &CODEX_VERSION,
+            "0.155.0"
+        ));
+    }
+
+    #[tokio::test]
     async fn sends_exact_scoped_headers_and_parses_rich_catalog() {
         let (base_url, state) =
             spawn_server(vec![reply(StatusCode::OK, rich_body("gpt-codex"))]).await;

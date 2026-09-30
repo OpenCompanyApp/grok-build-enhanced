@@ -1005,6 +1005,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn latest_codex_models_preserve_provider_metadata_and_visibility() {
+        let slugs = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"];
+        let models = slugs
+            .iter()
+            .map(|slug| {
+                serde_json::from_value(serde_json::json!({
+                    "id": format!("openai-codex/{slug}"),
+                    "slug": slug,
+                    "visibility": "list",
+                    "supported_in_api": true,
+                    "context_window": 272_000,
+                    "max_context_window": 872_000,
+                    "input_modalities": ["text", "image"],
+                    "default_reasoning_level": "low",
+                    "supported_reasoning_levels": [
+                        {"effort": "low"}, {"effort": "max"}, {"effort": "ultra"}
+                    ],
+                    "service_tiers": [{"id": "priority", "name": "Fast"}],
+                    "default_service_tier": null
+                }))
+                .unwrap()
+            })
+            .collect();
+        let mapped =
+            CodexCatalogController::map_catalog(crate::remote::CodexModelCatalog { models });
+        for slug in slugs {
+            let model = &mapped[&format!("openai-codex/{slug}")];
+            assert_eq!(model.info.provider, ProviderId::OpenAiCodex);
+            assert_eq!(model.info.model, slug);
+            assert_eq!(
+                model.info.base_url,
+                xai_grok_sampling_types::OPENAI_CODEX_BASE_URL
+            );
+            assert_eq!(
+                model.info.api_backend,
+                xai_grok_sampling_types::ApiBackend::Responses
+            );
+            // Preserve the subscription catalog's active window; the public
+            // Platform API window must not override account-scoped metadata.
+            assert_eq!(model.info.context_window.get(), 272_000);
+            assert_eq!(model.info.reasoning_effort, Some(ReasoningEffort::Low));
+            assert!(
+                model
+                    .info
+                    .reasoning_efforts
+                    .iter()
+                    .any(|e| e.value == ReasoningEffort::Max)
+            );
+            assert!(
+                model
+                    .info
+                    .reasoning_efforts
+                    .iter()
+                    .any(|e| e.value == ReasoningEffort::Ultra)
+            );
+            assert!(model.info.supports_image_input);
+            assert!(model.info.user_selectable);
+            assert!(!model.info.hidden);
+            assert!(model.info.default_service_tier.is_none());
+            assert_eq!(model.info.service_tiers[0].id, "priority");
+            assert!(!model.has_own_credentials());
+        }
+    }
+
+    #[test]
     fn identity_debug_redacts_all_scope_and_fedramp_state() {
         let identity = CodexCatalogIdentity::for_test(
             "sentinel-record-id",
