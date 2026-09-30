@@ -352,7 +352,7 @@
       "remote": "https://github.com/exa-labs/exa-mcp-server.git",
       "tracked_ref": "main",
       "reviewed": {
-        "commit": "15ffb50519e719dc791cdc750ce5ed1934c0a1ed"
+        "commit": "f3d71fb6b0ff4b4683f108f05bc2bae61a9f7e97"
       },
       "latest_fetched": {
         "commit": "f3d71fb6b0ff4b4683f108f05bc2bae61a9f7e97"
@@ -7765,6 +7765,31 @@
       "legal_paths": [
         "LICENSE",
         "THIRD-PARTY-NOTICES"
+      ]
+    },
+    {
+      "id": "september30-reference-follow-up",
+      "description": "Focused Exa review closure, bounded terminal-theme and Codex wire findings, and correction of stale bundled-theme test IDs; separate from the immutable model release.",
+      "source_ids": [
+        "exa-mcp-server",
+        "ghostty",
+        "herdr",
+        "openai-codex",
+        "warp-themes"
+      ],
+      "paths": [
+        "docs/upstream-refresh-2026-09-30-follow-up.md",
+        "UPSTREAM_VERSIONS.md",
+        "fork/manifest.json",
+        "docs/upstream-refresh-2026-09-30.md",
+        "crates/codegen/xai-grok-pager-render/src/theme/warp/catalog.rs"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
       ]
     }
   ]

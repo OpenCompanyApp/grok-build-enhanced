@@ -3,6 +3,10 @@
 Status: source fetch and scoped model audit completed; full behavior adoption
 remains open. This record is not acknowledgement evidence.
 
+A [subsequent reference audit](upstream-refresh-2026-09-30-follow-up.md) closes
+the Exa review after focused tests and records bounded terminal-theme findings.
+The original fetch-time tables below remain historical evidence.
+
 ## Boundary and preservation
 
 Work is isolated on `release/models-20260930`, based on mainline

@@ -130,8 +130,8 @@ mod tests {
 
     #[test]
     fn paper_botanical_pair_is_bundled() {
-        let light = find("standard/paper_botanical").expect("Paper Botanical");
-        let dark = find("standard/paper_botanical_dark").expect("Paper Botanical Dark");
+        let light = find("warp_bundled/paper_botanical").expect("Paper Botanical");
+        let dark = find("warp_bundled/paper_botanical_dark").expect("Paper Botanical Dark");
         assert_eq!(light.data.details.as_deref(), Some("lighter"));
         assert_eq!(dark.data.details.as_deref(), Some("darker"));
     }
