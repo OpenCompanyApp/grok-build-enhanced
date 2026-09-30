@@ -84,8 +84,8 @@ Coding Plan transport therefore continues to reject it.
 [Baseten also advertises GLM-5.3 Fast](https://www.baseten.co/library/glm-53-fast/)
 as a separate Model API offering. That page does not establish a Z.AI Coding
 Plan alias. No verified `glm-5.3-flash-fast` Coding Plan ID or Fast service-tier
-parameter was found in the official Z.AI pages checked. The intended provider
-and model need clarification before configuring a separate API route. No
+parameter was found in the official Z.AI pages checked. The user subsequently clarified that only models available through the Coding
+Plan are wanted, so neither separately hosted Fast nor FlashX is added. No
 subscription credential may be reused for it. No runtime change was made for
 this ambiguous name; the prior runtime validation remains applicable.
 
@@ -95,7 +95,8 @@ The xai-grok-models test, all five xai-grok-version tests, and all 110
 xai-grok-shell catalog tests pass, including both new GPT-6 catalog regressions.
 Strict ownership, fork contracts, five release-pipeline tests, fifteen installer
 tests, and the 343-theme Warp vendor lock pass. The release contract accepts
-proposed version 0.3.19; this does not confirm or publish that version.
+version 0.3.19, selected for the focused model release. This validation
+record does not itself establish publication.
 All 30 Codex transport tests, seven Z.AI transport tests, and the explicit
 Codex static/generic-credential rejection test pass (154 focused Rust tests
 in total). `cargo fmt --all -- --check` passes. The required
@@ -119,3 +120,13 @@ These results validate the Homebrew environment and installed baseline only.
 A new formula still requires release assets, all four verified hashes, repeated
 style/audit/test checks, and the installed v0.3.18-to-new-version upgrade check.
 No release tag, project push, or tap push has been made.
+
+## Publication scope confirmed after validation
+
+The release version is 0.3.19. The Z.AI scope is every model available through
+the Coding Plan, retaining the existing GLM-5.3 and GLM-5.3-Flash routes.
+Publication is a focused downstream model update on the validated first-parent
+history. It does not complete the full upstream refresh or acknowledge a newly
+fetched Grok snapshot. The twelve carried parity obligations remain open.
+Release assets, attestations, formula checks, and installed upgrade validation
+will be verified during publication.

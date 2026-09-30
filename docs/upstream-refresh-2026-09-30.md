@@ -105,8 +105,8 @@ review, thematic adoption and closure tests remain required for acknowledgement.
 The user authorized a model update and Homebrew release and separately requested
 this refresh. A model release must be described as a downstream model update,
 not a completed upstream refresh. No publication or new acknowledgement is claimed
-by this document. Release-version confirmation and the refresh skill's
-acknowledgement/publication gates remain explicit.
+by this document. The focused model publication is separate from the refresh skill's
+acknowledgement/publication stages; those full-refresh gates remain unmet.
 
 Homebrew's official ARM64 container solves the absent-host-Homebrew environment:
 v0.3.18 installed; `brew style`, `brew audit --strict --online`, `brew test`,
@@ -117,12 +117,13 @@ Validation passed: 154 focused Rust tests (model/version, catalog, Codex and Z.A
 transport, and credential rejection), binary `cargo check`, formatting, strict
 ownership, fork/generated-workspace contracts, five release-pipeline tests,
 fifteen installer tests, and the 343-theme vendor lock. The release contract
-accepts proposed version 0.3.19, which remains unconfirmed and unpublished.
+accepts version 0.3.19. The subsequent user clarification selects the focused
+model release and restricts Z.AI additions to Coding Plan availability.
 Implementation is recorded in `d88a666f1ac19f0ebc26b6b6245b25d7109167ed`;
 fetch evidence is separate in `3c948d7a`. No authenticated provider payloads
 or credentials were read or recorded.
 
-The model candidate remains local. No new acknowledgement, tag, project push,
-release, or tap mutation has occurred. This run's Cargo target directory is
+At this validation checkpoint the model candidate is local; no new
+acknowledgement, tag, project push, release, or tap mutation has occurred. This run's Cargo target directory is
 removed after validation; the isolated Homebrew baseline is retained for the
 pending installed upgrade check.
