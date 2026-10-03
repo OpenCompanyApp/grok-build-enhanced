@@ -163,7 +163,7 @@
         "commit": "c9b19deb09c1841ce7acc33ddb96276030936a29"
       },
       "latest_fetched": {
-        "commit": "49be2c7ab029434dc9545cf85a7a41fd5d3beb1a"
+        "commit": "b741e480e203f037ca726bc2a76d99a8e8668e66"
       }
     },
     {
@@ -175,7 +175,7 @@
         "commit": "3a31c4ea801915c0b050df4b3842997ea62b6e93"
       },
       "latest_fetched": {
-        "commit": "97a86b7677c38e7a5a9cc2a0f6849cfb4f2ce462"
+        "commit": "907b3bc518fa48e90e8ec24dd327d13eee71c36c"
       }
     },
     {
@@ -211,7 +211,7 @@
         "commit": "160ed439ac0df594347e7d7018b813a7ffdb5e81"
       },
       "latest_fetched": {
-        "commit": "30aec05d9641e18084b0d7d1c146b9580aac5b72"
+        "commit": "9348320cc4a30a7195d36a1f05a6c11bcb701a17"
       }
     },
     {
@@ -235,7 +235,7 @@
         "commit": "492300cad104195411d12217dd22f1cd05f31376"
       },
       "latest_fetched": {
-        "commit": "76895d97b74ff6b24c2b1543bcd69ccc18048a4d"
+        "commit": "822e84272f60e320526e6c2c223ccdf786d334c9"
       }
     },
     {
@@ -247,7 +247,7 @@
         "commit": "a2b128978a154c02311b90da778ca115758f75d7"
       },
       "latest_fetched": {
-        "commit": "347f9c99bc95672e5ebcb26753648e85801d3c71"
+        "commit": "5da0a01e1eedda054db0c81dd3a780000c40d9f0"
       }
     },
     {
@@ -319,7 +319,7 @@
         "commit": "4b14ed9c57d3506d1455b2736a1d1a8ff2b9c718"
       },
       "latest_fetched": {
-        "commit": "5de8b9ccfdcf3ed13d7c67e3639a2dd18d11230f"
+        "commit": "3bbf6bc48c20d8e507b30ed93dbdce19ed928bb6"
       }
     },
     {
@@ -343,7 +343,7 @@
         "commit": "59d624d4fb0c5c4f6fd44d1f701f17db1bd6ae4b"
       },
       "latest_fetched": {
-        "commit": "a4c769d670e04d5954148bb735c7453e01b84a01"
+        "commit": "808e15e16abb81be1140cda4f62d78e9ad831522"
       }
     },
     {
@@ -7862,6 +7862,42 @@
       "legal_paths": [
         "LICENSE",
         "THIRD-PARTY-NOTICES"
+      ]
+    },
+    {
+      "id": "october03-refresh-evidence",
+      "description": "Fresh source pins and scoped compatibility review for the xAI 426 repair, retaining all open parity obligations and reviewed revisions.",
+      "source_ids": [
+        "openai-codex",
+        "opencode",
+        "grok-build-upstream",
+        "opencode-codex-auth",
+        "oh-my-pi",
+        "warp-themes",
+        "ghostty",
+        "herdr",
+        "kimi-code",
+        "kimi-cli",
+        "zai-sdk-python",
+        "zai-coding-plugins",
+        "glm-5",
+        "codexbar",
+        "zai-usage-helper",
+        "models-dev",
+        "exa-mcp-server"
+      ],
+      "paths": [
+        "UPSTREAM_VERSIONS.md",
+        "fork/manifest.json",
+        "docs/upstream-refresh-2026-10-03.md",
+        "docs/upstream-refresh-2026-10-03-pins.json"
+      ],
+      "integration_paths": [
+        "UPSTREAM_VERSIONS.md",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
       ]
     }
   ]
