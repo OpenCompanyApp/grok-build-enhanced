@@ -1331,28 +1331,24 @@ impl AuthRequestMeta {
 ///
 /// Headers injected:
 ///  - `x-grok-client-version` -- required by the proxy's version-gate check.
-///    Uses `client_version` when provided, otherwise falls back to cli-chat-proxy
-///    compile-time `CARGO_PKG_VERSION`.
+///    Uses the xAI compatibility version, independently of the fork release.
 ///  - `X-XAI-Token-Auth` / `x-authenticateresponse` -- required by the
 ///    cli-chat-proxy auth middleware when the `base_url` is a known proxy URL.
 ///  - optional extra access header -- only set when the corresponding key is
 ///    `Some` *and* the `base_url` points at a matching non-production host
 ///    (requires the optional non-production feature).
 ///
-/// Existing entries are never overwritten so callers can pre-set a value.
+/// The version header is authoritative; other entries preserve caller values.
 fn inject_proxy_headers(
     headers: &mut indexmap::IndexMap<String, String>,
-    client_version: Option<&str>,
+    _client_version: Option<&str>,
     alpha_test_key: Option<&str>,
     base_url: &str,
 ) {
-    headers
-        .entry("x-grok-client-version".to_string())
-        .or_insert_with(|| {
-            client_version
-                .map(String::from)
-                .unwrap_or_else(|| xai_grok_version::VERSION.to_string())
-        });
+    headers.insert(
+        "x-grok-client-version".to_string(),
+        xai_grok_version::XAI_CLIENT_COMPATIBILITY_VERSION.to_string(),
+    );
     if crate::util::is_cli_chat_proxy_url(base_url) {
         headers
             .entry("X-XAI-Token-Auth".to_string())

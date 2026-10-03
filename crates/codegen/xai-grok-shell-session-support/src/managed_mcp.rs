@@ -160,7 +160,10 @@ async fn get_authenticated_json<T: serde::de::DeserializeOwned>(
         .timeout(std::time::Duration::from_secs(10))
         .header("Authorization", format!("Bearer {auth_key}"))
         .header("X-XAI-Token-Auth", "xai-grok-cli")
-        .header("x-grok-client-version", xai_grok_version::VERSION)
+        .header(
+            "x-grok-client-version",
+            xai_grok_version::XAI_CLIENT_COMPATIBILITY_VERSION,
+        )
         .send()
         .await
     {
@@ -214,7 +217,10 @@ pub async fn call_gateway_tool(
         .timeout(GATEWAY_TOOL_CALL_TIMEOUT)
         .header("Authorization", format!("Bearer {auth_key}"))
         .header("X-XAI-Token-Auth", "xai-grok-cli")
-        .header("x-grok-client-version", xai_grok_version::VERSION)
+        .header(
+            "x-grok-client-version",
+            xai_grok_version::XAI_CLIENT_COMPATIBILITY_VERSION,
+        )
         .json(&request)
         .send()
         .await

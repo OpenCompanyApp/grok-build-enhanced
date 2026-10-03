@@ -7791,6 +7791,74 @@
       "legal_paths": [
         "LICENSE"
       ]
+    },
+    {
+      "id": "xai-wire-version-compatibility",
+      "description": "Separate xAI proxy compatibility from Enhanced distribution versions to fix HTTP 426 across inference and auxiliary xAI routes.",
+      "source_ids": [
+        "grok-build-upstream"
+      ],
+      "paths": [
+        "crates/codegen/xai-file-utils/src/storage_client.rs",
+        "crates/codegen/xai-grok-memory/src/embedding.rs",
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/config.rs",
+        "crates/codegen/xai-grok-shell-session-support/src/managed_mcp.rs",
+        "crates/codegen/xai-grok-shell/src/agent/feedback_client.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs",
+        "crates/codegen/xai-grok-shell/src/agent/relay.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subscription_check.rs",
+        "crates/codegen/xai-grok-shell/src/auth/device_code.rs",
+        "crates/codegen/xai-grok-shell/src/auth/manager/enrichment.rs",
+        "crates/codegen/xai-grok-shell/src/auth/oidc/protocol.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/billing.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/consent.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/privacy.rs",
+        "crates/codegen/xai-grok-shell/src/remote/agent.rs",
+        "crates/codegen/xai-grok-shell/src/remote/chat_models_client.rs",
+        "crates/codegen/xai-grok-shell/src/remote/client.rs",
+        "crates/codegen/xai-grok-shell/src/remote/conversations_client.rs",
+        "crates/codegen/xai-grok-shell/src/remote/skills_client.rs",
+        "crates/codegen/xai-grok-shell/src/remote/workspaces_client.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/session_setup.rs",
+        "crates/codegen/xai-grok-telemetry/src/otel_layer/mod.rs",
+        "crates/codegen/xai-grok-version/src/lib.rs",
+        "crates/codegen/xai-grok-workspace/src/session/tool_config.rs",
+        "docs/providers/xai-version-gate-2026-10-03.md"
+      ],
+      "integration_paths": [
+        "crates/codegen/xai-file-utils/src/storage_client.rs",
+        "crates/codegen/xai-grok-memory/src/embedding.rs",
+        "crates/codegen/xai-grok-pager-bin/src/main.rs",
+        "crates/codegen/xai-grok-sampler/src/client.rs",
+        "crates/codegen/xai-grok-sampler/src/config.rs",
+        "crates/codegen/xai-grok-shell-session-support/src/managed_mcp.rs",
+        "crates/codegen/xai-grok-shell/src/agent/feedback_client.rs",
+        "crates/codegen/xai-grok-shell/src/agent/mvp_agent/mod.rs",
+        "crates/codegen/xai-grok-shell/src/agent/relay.rs",
+        "crates/codegen/xai-grok-shell/src/agent/subscription_check.rs",
+        "crates/codegen/xai-grok-shell/src/auth/device_code.rs",
+        "crates/codegen/xai-grok-shell/src/auth/manager/enrichment.rs",
+        "crates/codegen/xai-grok-shell/src/auth/oidc/protocol.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/billing.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/consent.rs",
+        "crates/codegen/xai-grok-shell/src/extensions/privacy.rs",
+        "crates/codegen/xai-grok-shell/src/remote/agent.rs",
+        "crates/codegen/xai-grok-shell/src/remote/chat_models_client.rs",
+        "crates/codegen/xai-grok-shell/src/remote/client.rs",
+        "crates/codegen/xai-grok-shell/src/remote/conversations_client.rs",
+        "crates/codegen/xai-grok-shell/src/remote/skills_client.rs",
+        "crates/codegen/xai-grok-shell/src/remote/workspaces_client.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/session_setup.rs",
+        "crates/codegen/xai-grok-telemetry/src/otel_layer/mod.rs",
+        "crates/codegen/xai-grok-version/src/lib.rs",
+        "crates/codegen/xai-grok-workspace/src/session/tool_config.rs"
+      ],
+      "legal_paths": [
+        "LICENSE",
+        "THIRD-PARTY-NOTICES"
+      ]
     }
   ]
 }

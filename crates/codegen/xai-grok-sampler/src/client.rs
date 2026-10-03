@@ -1038,14 +1038,10 @@ impl SamplingClient {
             ProviderId::Xai if xai_trusted_origin => {
                 // xAI request identity is meaningful only on the two
                 // canonical xAI inference routes.
-                if let Some(client_version) = config.client_version.as_ref()
-                    && let Ok(header_value) = HeaderValue::from_str(client_version)
-                {
-                    headers.insert(
-                        HeaderName::from_static("x-grok-client-version"),
-                        header_value,
-                    );
-                }
+                headers.insert(
+                    HeaderName::from_static("x-grok-client-version"),
+                    HeaderValue::from_static(xai_grok_version::XAI_CLIENT_COMPATIBILITY_VERSION),
+                );
 
                 if let Some(deployment_id) = config.deployment_id.as_ref()
                     && let Ok(header_value) = HeaderValue::from_str(deployment_id)
@@ -6653,6 +6649,70 @@ mod tests {
             .expect("trusted xAI request should carry its bearer");
         assert_eq!(authorization.as_bytes(), b"Bearer synthetic-live-xai");
         assert!(authorization.is_sensitive());
+    }
+
+    #[tokio::test]
+    async fn xai_version_gate_uses_compatibility_not_enhanced_release() {
+        use axum::{Router, http::StatusCode, routing::post};
+        async fn version_gate(headers: axum::http::HeaderMap) -> StatusCode {
+            let version: Vec<u64> = headers
+                .get("x-grok-client-version")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .split('.')
+                .filter_map(|part| part.parse().ok())
+                .collect();
+            if version.len() == 3 && version >= vec![1, 0, 13] {
+                StatusCode::NO_CONTENT
+            } else {
+                StatusCode::UPGRADE_REQUIRED
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_url = format!("http://{}/responses", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/responses", post(version_gate)),
+            )
+            .await
+            .unwrap();
+        });
+        let transport = reqwest::Client::new();
+        let old_response = transport
+            .post(&local_url)
+            .header("x-grok-client-version", "0.3.18")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(old_response.status(), reqwest::StatusCode::UPGRADE_REQUIRED);
+        for base_url in [
+            xai_grok_sampling_types::XAI_API_BASE_URL,
+            xai_grok_sampling_types::XAI_CLI_CHAT_PROXY_BASE_URL,
+        ] {
+            for release in [None, Some("0.3.18"), Some("0.3.20")] {
+                let mut config = minimal_config();
+                config.provider = ProviderId::Xai;
+                config.base_url = base_url.to_string();
+                config.client_version = release.map(str::to_string);
+                let client = SamplingClient::new(config).unwrap();
+                let mut request = client
+                    .post(&format!("{base_url}/responses"))
+                    .await
+                    .unwrap()
+                    .builder
+                    .build()
+                    .unwrap();
+                let version = request.headers()["x-grok-client-version"].to_str().unwrap();
+                assert_eq!(version, xai_grok_version::XAI_CLIENT_COMPATIBILITY_VERSION);
+                assert_eq!(version, "1.0.13");
+                // Keep the production-built headers; send only to the local mock.
+                *request.url_mut() = local_url.parse().unwrap();
+                let response = transport.execute(request).await.unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+            }
+        }
+        server.abort();
     }
 
     #[test]

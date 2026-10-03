@@ -416,7 +416,10 @@ impl SkillsClient {
                 self.auth.grok_com_config().token_header.clone(),
             )
             .header("x-userid", user_id)
-            .header("x-grok-client-version", xai_grok_version::VERSION)
+            .header(
+                "x-grok-client-version",
+                xai_grok_version::XAI_CLIENT_COMPATIBILITY_VERSION,
+            )
             .header(
                 "x-grok-client-identifier",
                 crate::http::process_client_identifier(),

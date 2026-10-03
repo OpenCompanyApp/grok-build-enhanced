@@ -559,14 +559,12 @@ impl StorageClient {
     /// Configures the client identity reported to the storage backend on all
     /// storage requests (including the high-traffic `batch_upload`).
     ///
-    /// These become the headers:
-    ///   - `x-grok-client-version`
-    ///   - `x-grok-client-identifier` (one of "grok-shell", "grok-pager",
+    /// The identifier becomes `x-grok-client-identifier` (one of "grok-shell", "grok-pager",
     ///     "grok-desktop", "grok-extension", "grok-agent-sdk")
     ///
-    /// Server-side logs in `cli-chat-proxy` and analytics queries now
-    /// surface these values, making it easy to attribute 400/403 errors to
-    /// specific client versions and products.
+    /// The supplied version is retained for source compatibility. The xAI
+    /// `x-grok-client-version` gate always uses the separately audited xAI
+    /// compatibility version, not the Enhanced release number.
     ///
     /// Preferred way to construct the client from the Grok shell/pager:
     ///   `build_storage_client_for_proxy(..., client_identifier)`
@@ -1111,15 +1109,11 @@ impl StorageClient {
         &self,
         builder: reqwest_middleware::RequestBuilder,
     ) -> reqwest_middleware::RequestBuilder {
-        // Prefer caller-provided identity (from shell/pager/etc.) so that
-        // cli-chat-proxy logs and metrics see the real end-user client
-        // (e.g. "0.1.210-alpha.5", "grok-shell" / "grok-pager").
-        // Falls back to the library's own version for bins/tests.
-        let version = self
-            .client_version
-            .as_deref()
-            .unwrap_or(xai_grok_version::VERSION);
-        let mut builder = builder.header("x-grok-client-version", version);
+        // xAI's version gate uses its compatibility sequence, not the fork tag.
+        let mut builder = builder.header(
+            "x-grok-client-version",
+            xai_grok_version::XAI_CLIENT_COMPATIBILITY_VERSION,
+        );
 
         if let Some(id) = &self.client_identifier {
             builder = builder.header("x-grok-client-identifier", id);
@@ -1994,7 +1988,10 @@ async fn upload_part_streaming(
         let mut request = client
             .post(&url)
             .header("Content-Type", "application/octet-stream")
-            .header("x-grok-client-version", xai_grok_version::VERSION)
+            .header(
+                "x-grok-client-version",
+                xai_grok_version::XAI_CLIENT_COMPATIBILITY_VERSION,
+            )
             .header("Content-Length", length.to_string());
         for (name, value) in crate::trace_context::trace_context_headers().iter() {
             request = request.header(name.clone(), value.clone());

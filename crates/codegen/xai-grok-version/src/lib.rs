@@ -22,6 +22,12 @@ pub const UPSTREAM_PRODUCT_NAME: &str = "Grok Build";
 /// not the Grok app version or a claim that the entire upstream app was adopted.
 pub const OPENAI_CODEX_COMPATIBILITY_VERSION: &str = "0.155.0";
 
+/// xAI wire compatibility floor, separate from the Enhanced release sequence.
+/// The proxy requires Grok CLI 1.0.13 or newer. The version-header contract was
+/// reviewed against Grok snapshot `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8`.
+/// This is not a claim of full upstream application parity or an update version.
+pub const XAI_CLIENT_COMPATIBILITY_VERSION: &str = "1.0.13";
+
 /// Installed Grok Build Enhanced release version. Distribution builds may
 /// override this with the fork release tag through `GROK_VERSION`.
 pub const VERSION: &str = match option_env!("GROK_VERSION") {
@@ -154,6 +160,18 @@ mod tests {
         // display_version uses compiled VERSION — just verify the label appends
         assert_eq!(display_version(""), VERSION);
         assert!(display_version(" [stable]").ends_with("[stable]"));
+    }
+
+    #[test]
+    fn xai_compatibility_is_independent_of_distribution_version() {
+        assert!(
+            Version::parse(XAI_CLIENT_COMPATIBILITY_VERSION).unwrap() >= Version::new(1, 0, 13)
+        );
+        assert_eq!(
+            VERSION,
+            option_env!("GROK_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(OPENAI_CODEX_COMPATIBILITY_VERSION, "0.155.0");
     }
 
     #[test]

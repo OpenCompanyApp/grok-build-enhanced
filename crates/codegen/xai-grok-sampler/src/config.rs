@@ -116,6 +116,7 @@ pub struct SamplerConfig {
     pub client_identifier: Option<String>,
     pub deployment_id: Option<String>,
     pub user_id: Option<String>,
+    /// Origin release metadata; xAI version gating uses its separate compatibility constant.
     pub client_version: Option<String>,
 
     /// Optional hook invoked at every UNAUTHORIZED (401) response site. The

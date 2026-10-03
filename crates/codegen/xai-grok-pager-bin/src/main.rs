@@ -1873,6 +1873,7 @@ fn version_json_payload(fork_revision: Option<&str>, channel: Option<&str>) -> s
         "upstreamBaseVersion": xai_grok_version::UPSTREAM_BASE_VERSION,
         "forkRevision": fork_revision,
         "codexCompatibilityVersion": xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION,
+        "xaiCompatibilityVersion": xai_grok_version::XAI_CLIENT_COMPATIBILITY_VERSION,
         "updateSource": "enhanced-fork",
     })
 }
@@ -1892,6 +1893,10 @@ fn version_report_lines(fork_revision: Option<&str>, channel_label: &str) -> Vec
     if let Some(revision) = fork_revision {
         lines.push(format!("  Fork revision: {revision}"));
     }
+    lines.push(format!(
+        "  xAI compatibility: {}",
+        xai_grok_version::XAI_CLIENT_COMPATIBILITY_VERSION
+    ));
     lines.push(format!(
         "  Codex compatibility: {}",
         xai_grok_version::OPENAI_CODEX_COMPATIBILITY_VERSION
@@ -2746,6 +2751,9 @@ mod tests {
     #[test]
     fn version_reports_distinguish_fork_upstream_and_codex_layers() {
         let lines = version_report_lines(Some("fork123"), " [stable]");
+        let json = version_json_payload(Some("fork123"), Some("stable"));
+        assert_eq!(json["xaiCompatibilityVersion"], "1.0.13");
+        assert_eq!(json["enhancedVersion"], xai_grok_version::VERSION);
         assert_eq!(
             lines[0],
             format!("Grok Build Enhanced {}", xai_grok_version::VERSION)
@@ -2759,6 +2767,11 @@ mod tests {
             line.contains("Enhanced update channel:") && line.contains("[stable]")
         }));
         assert!(lines.iter().any(|line| line == "  Fork revision: fork123"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "  xAI compatibility: 1.0.13")
+        );
         assert!(
             lines
                 .iter()
