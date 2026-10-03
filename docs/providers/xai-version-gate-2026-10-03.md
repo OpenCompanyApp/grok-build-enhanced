@@ -40,6 +40,15 @@ in `fork/parity/current.json` remain unchanged. No reviewed source revision or
 upstream acknowledgement is advanced. Changes are independently implemented;
 existing source licenses and notices remain intact.
 
+## Existing test correction
+
+The full sampler suite exposed a stale wire-test assertion introduced before
+`7607152d` fixed Responses Lite. The production boundary and its focused test
+already require `parallel_tool_calls=false` for Lite, but the integration test
+still expected true. Correct only that assertion; Codex production behavior is
+unchanged. The same test continues to prove that xAI headers do not cross the
+Codex boundary.
+
 ## Validation
 
 Pending focused Rust tests, binary check, formatting, strict ownership and

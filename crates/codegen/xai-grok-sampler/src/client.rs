@@ -6082,8 +6082,8 @@ mod tests {
         assert_eq!(body["reasoning"]["summary"], "auto");
         assert_eq!(body["reasoning"]["context"], "all_turns");
         assert_eq!(
-            body["parallel_tool_calls"], true,
-            "the Codex Responses boundary advertises parallel tool-call capability"
+            body["parallel_tool_calls"], false,
+            "Responses Lite disables parallel tool calls at the final wire boundary"
         );
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["input"][0]["type"], "additional_tools");
