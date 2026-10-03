@@ -51,5 +51,18 @@ Codex boundary.
 
 ## Validation
 
-Pending focused Rust tests, binary check, formatting, strict ownership and
-release contracts before publication.
+Passed before publication:
+
+- 382 sampler tests, including the mock 426 reproduction and corrected Codex
+  wire assertion; 6 version tests; 1 storage-header test; 82 shell xAI/provider
+  tests; and 1 CLI version-report test: **472 tests passed**.
+- `CARGO_INCREMENTAL=0 cargo check -p xai-grok-pager-bin`, with the simulated
+  `GROK_VERSION=0.3.18` stamp and generic ARM64 CPU settings.
+- Formatting, fork contracts, strict first-parent ownership (137 features,
+  2,802/2,802 downstream paths), 5 release-pipeline tests, 15 installer tests,
+  and the v0.3.20 release contract.
+
+The full CLI check and version-report test completed after resuming the
+interrupted host session, reusing the task-owned build artifacts. Publication
+version v0.3.20 was explicitly confirmed. Release assets and installed Homebrew
+upgrade are separately verified after the tag-triggered workflow completes.
