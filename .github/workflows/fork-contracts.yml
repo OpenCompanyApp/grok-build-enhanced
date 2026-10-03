@@ -84,6 +84,21 @@ jobs:
           cargo test --locked -p xai-grok-shell --lib \
             'agent::models::tests::provider_scoped_fallback_never_crosses_from_codex_to_xai' -- --exact
 
+      - name: Exercise xAI version gating and provider isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p xai-grok-sampler --lib \
+            'client::tests::xai_version_gate_uses_compatibility_not_enhanced_release' -- --exact
+          cargo test --locked -p xai-grok-sampler --lib \
+            'client::tests::fake_server_provider_matrix_never_receives_xai_headers_off_trusted_xai_routes' -- --exact
+          cargo test --locked -p xai-grok-sampler --lib \
+            'client::tests::codex_responses_wire_request_has_exact_auth_and_no_xai_extensions' -- --exact
+          cargo test --locked -p xai-file-utils --lib \
+            'storage_client::xai_storage_version_gate_ignores_fork_release_identity' -- --exact
+          cargo test --locked -p xai-grok-shell --lib \
+            'agent::mvp_agent::xai_tool_version_gate_ignores_fork_release_identity' -- --exact
+
       - name: Exercise Enhanced identity and fork updater
         shell: bash
         run: |
