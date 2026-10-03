@@ -2760,3 +2760,13 @@ mod replay_tests;
 mod tests;
 #[cfg(test)]
 mod prompt_response_meta_tests;
+
+#[cfg(test)]
+#[test]
+fn xai_tool_version_gate_ignores_fork_release_identity() {
+    let mut headers = indexmap::IndexMap::new();
+    headers.insert("x-grok-client-version".to_owned(), "0.3.18".to_owned());
+    inject_proxy_headers(&mut headers, Some("0.3.18"), None,
+        xai_grok_sampling_types::XAI_CLI_CHAT_PROXY_BASE_URL);
+    assert_eq!(headers["x-grok-client-version"], "1.0.13");
+}

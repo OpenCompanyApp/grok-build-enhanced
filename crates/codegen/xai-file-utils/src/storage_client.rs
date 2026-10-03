@@ -3473,3 +3473,16 @@ mod forbidden_tests {
 #[cfg(test)]
 #[path = "storage_client_breaker_tests.rs"]
 mod breaker_tests;
+
+#[cfg(test)]
+#[test]
+fn xai_storage_version_gate_ignores_fork_release_identity() {
+    let client = StorageClient::new("http://127.0.0.1:1/v1", "synthetic-token")
+        .with_client_identity("0.3.18", "grok-pager");
+    let request = client
+        .add_common_headers(client.http_client.post("http://127.0.0.1:1/v1/storage"))
+        .build()
+        .unwrap();
+    assert_eq!(request.headers()["x-grok-client-version"], "1.0.13");
+    assert_eq!(request.headers()["x-grok-client-identifier"], "grok-pager");
+}
