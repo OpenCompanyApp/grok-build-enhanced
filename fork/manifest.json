@@ -7899,6 +7899,26 @@
       "legal_paths": [
         "LICENSE"
       ]
+    },
+    {
+      "id": "zai-search-json-string-decoding",
+      "description": "Issue #7: bounded decoding of JSON-string-wrapped Z.AI Search MCP results, preserving domain filtering, citations, output limits, credential isolation and redacted errors.",
+      "source_ids": [
+        "zai-coding-plugins"
+      ],
+      "paths": [
+        "crates/codegen/xai-grok-tools/src/implementations/web_search/backends/zai_coding_plan.rs",
+        ".github/workflows/release.yml",
+        "docs/providers/zai-search-issue7.md",
+        "fork/manifest.json"
+      ],
+      "integration_paths": [
+        ".github/workflows/release.yml",
+        "fork/manifest.json"
+      ],
+      "legal_paths": [
+        "LICENSE"
+      ]
     }
   ]
 }

@@ -7,6 +7,7 @@ use crate::implementations::zai_mcp::{SEARCH_ENDPOINT, ZaiMcpClient, ZaiMcpError
 use crate::types::{SharedApiKeyProvider, ZAI_CODING_PLAN_PROVIDER_ID};
 
 const MAX_RENDERED_BYTES: usize = 256 * 1024;
+const MAX_JSON_STRING_LAYERS: usize = 2;
 
 #[derive(Clone)]
 pub(in crate::implementations::web_search) struct ZaiCodingPlanBackend {
@@ -183,8 +184,18 @@ fn project_content(
             "Z.AI search response exceeded the projection limit",
         ));
     }
-    let payload: serde_json::Value = serde_json::from_str(content)
+    let mut payload: serde_json::Value = serde_json::from_str(content)
         .map_err(|_| execution_error("Z.AI search returned an unsupported result format"))?;
+    // Search MCP can JSON-encode its result JSON as a string. Unwrap only a
+    // bounded number of layers before applying the same strict projection;
+    // never render undecoded provider text or include it in parse errors.
+    for _ in 0..MAX_JSON_STRING_LAYERS {
+        let Some(encoded) = payload.as_str() else {
+            break;
+        };
+        payload = serde_json::from_str(encoded)
+            .map_err(|_| execution_error("Z.AI search returned an unsupported result format"))?;
+    }
     let values = payload
         .as_array()
         .or_else(|| {
@@ -229,6 +240,79 @@ fn project_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encoded_content(payload: serde_json::Value, string_layers: usize) -> String {
+        let mut text = payload.to_string();
+        for _ in 0..string_layers {
+            text = serde_json::to_string(&text).unwrap();
+        }
+        // Exercise the same MCP text extraction used by execute(). These are
+        // synthetic results, never a capture of an authenticated response.
+        text_content(&serde_json::json!({
+            "content": [{"type": "text", "text": text}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn zai_search_decodes_string_wrapped_results_and_preserves_filters() {
+        let results = serde_json::json!([
+            {"title": "reference", "link": "https://example.com/doc", "content": "safe snippet"},
+            {"title": "blocked", "url": "https://blocked.example/doc", "snippet": "excluded-content"}
+        ]);
+        let allow = vec!["example.com".to_owned()];
+        let block = vec!["blocked.example".to_owned()];
+        for payload in [
+            results.clone(),
+            serde_json::json!({"search_result": results, "request_id": "private-trace"}),
+            serde_json::json!({"results": results}),
+        ] {
+            for layers in 0..=2 {
+                let content = encoded_content(payload.clone(), layers);
+                for (allowed, excluded) in [
+                    (Some(allow.as_slice()), None),
+                    (None, Some(block.as_slice())),
+                ] {
+                    let output = project_content(&content, allowed, excluded).unwrap();
+                    assert!(output.content.contains("safe snippet"));
+                    assert!(!output.content.contains("excluded-content"));
+                    assert!(!output.content.contains("private-trace"));
+                    assert_eq!(output.citations(), vec!["https://example.com/doc"]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zai_search_accepts_encoded_empty_results() {
+        for layers in 0..=2 {
+            let output =
+                project_content(&encoded_content(serde_json::json!([]), layers), None, None)
+                    .unwrap();
+            assert!(output.citations().is_empty());
+        }
+    }
+
+    #[test]
+    fn zai_search_rejects_excessive_encoding_and_redacts_invalid_content() {
+        for content in [
+            encoded_content(serde_json::json!([]), 3),
+            encoded_content(serde_json::json!({"error": "sentinel-secret"}), 1),
+            encoded_content(serde_json::json!("sentinel-secret"), 1),
+            "{sentinel-secret".to_owned(),
+            "null".to_owned(),
+        ] {
+            let error = project_content(&content, None, None).err().unwrap();
+            assert!(!error.to_string().contains("sentinel-secret"));
+        }
+        let oversized = encoded_content(
+            serde_json::json!([{
+                "link": "https://example.com", "content": "x".repeat(MAX_RENDERED_BYTES)
+            }]),
+            1,
+        );
+        assert!(project_content(&oversized, None, None).is_err());
+    }
 
     #[test]
     fn domain_filters_are_sent_to_search_and_applied_to_citations() {

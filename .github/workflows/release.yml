@@ -141,6 +141,9 @@ jobs:
           cargo test --locked -p xai-grok-shell --lib \
             'agent::models::tests::provider_scoped_fallback_never_crosses_from_codex_to_xai' -- --exact
 
+      - name: Exercise Z.AI search decoding and MCP credential boundaries
+        run: cargo test --locked -p xai-grok-tools --lib zai
+
       - name: Exercise xAI version gating and provider isolation
         shell: bash
         run: |
